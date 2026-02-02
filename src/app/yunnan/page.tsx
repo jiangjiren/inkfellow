@@ -2,62 +2,62 @@ const spots = [
   {
     name: "翠湖公园",
     desc: "昆明市中心的湖景公园，冬季红嘴鸥打卡地。",
-    img: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?cuihu%20kunming%20lake%20park",
   },
   {
     name: "云南大学（老校区）",
     desc: "银杏林+民国建筑，文艺出片。",
-    img: "https://images.unsplash.com/photo-1469474968028-56623f02e42e?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?yunnan%20university%20kunming%20campus",
   },
   {
     name: "金马碧鸡坊",
     desc: "城市地标，夜景最有氛围。",
-    img: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?jinma%20biji%20archway%20kunming",
   },
   {
     name: "滇池·海埂大坝",
     desc: "看日落、喂海鸥、沿湖散步。",
-    img: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?dianchi%20haigen%20dam%20kunming",
   },
   {
     name: "西山龙门",
     desc: "登高俯瞰滇池，轻徒步。",
-    img: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?xishan%20longmen%20kunming",
   },
   {
     name: "官渡古镇",
     desc: "老昆明味道，适合慢逛吃小吃。",
-    img: "https://images.unsplash.com/photo-1467269204594-9661b134dd2b?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?guandu%20ancient%20town%20kunming",
   },
   {
     name: "捞鱼河公园（呈贡）",
     desc: "大草地+湖景，亲子放风首选。",
-    img: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?laoyu%20river%20park%20chenggong%20kunming",
   },
   {
     name: "斗南花市",
     desc: "亚洲最大鲜花市场，拍照超好看。",
-    img: "https://images.unsplash.com/photo-1469474968028-56623f02e42e?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?dounan%20flower%20market%20kunming",
   },
   {
     name: "石林",
     desc: "世界自然遗产，喀斯特奇观。",
-    img: "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?stone%20forest%20shilin%20kunming",
   },
   {
     name: "九乡",
     desc: "溶洞+地下河，亲子探险感。",
-    img: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?jiuxiang%20cave%20kunming",
   },
   {
     name: "大观公园",
     desc: "名联与湖景，适合散步。",
-    img: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?daguan%20park%20kunming",
   },
   {
     name: "圆通山",
     desc: "春季樱花，动物园适合亲子。",
-    img: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=1200&auto=format&fit=crop",
+    img: "https://source.unsplash.com/featured/1200x800/?yuantongshan%20park%20kunming",
   },
 ];
 

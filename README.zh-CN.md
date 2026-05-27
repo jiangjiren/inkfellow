@@ -205,26 +205,28 @@ claude auth status
 
 应用内置了 Git 面板，支持 pull / push / 撤销 / 历史查看。要让本地 Obsidian 和服务器保持同步，有以下两种方式，按需选择。
 
-### 方式一：在服务器自建裸仓库（不依赖外部服务）
+### 方式一：在服务器自建裸仓库（不依赖外部服务，推荐）
 
 所有数据都留在自己服务器上。用一个**裸仓库**作为中转——本地 Obsidian 推送到裸仓库，服务器从裸仓库拉取。
 
 ```
 本地 Obsidian ──push──▶ 服务器上的裸仓库 ◀──pull── Notes App（工作目录）
-                         ~/git/vault.git
+                         ~/git/notes-vault.git
 ```
 
-**第一步：在服务器上创建裸仓库**
+> **✅ 如果你已运行过 `bash scripts/setup-vault.sh`**，服务器端的裸仓库和工作目录都已自动创建完毕，脚本末尾也打印了 SSH remote 地址。跳过下方第一步和第二步，**直接从第三步开始**配置本地电脑即可。
+
+**第一步：在服务器上创建裸仓库**（已运行 setup-vault.sh 则跳过）
 
 ```bash
 mkdir -p ~/git
-git init --bare ~/git/my-vault.git
+git init --bare ~/git/notes-vault.git
 ```
 
-**第二步：克隆为工作目录（Notes App 读这里）**
+**第二步：克隆为工作目录（Notes App 读这里）**（已运行 setup-vault.sh 则跳过）
 
 ```bash
-git clone ~/git/my-vault.git ~/vault
+git clone ~/git/notes-vault.git ~/vault
 # 然后在 .env.local 里设置 VAULT_PATH=~/vault
 ```
 

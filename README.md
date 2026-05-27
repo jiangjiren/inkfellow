@@ -205,26 +205,28 @@ Add an account in the settings panel and select the corresponding provider. Refe
 
 The app has a built-in Git panel (pull / push / discard / history). To keep your local Obsidian in sync with the server, pick one of the two methods below.
 
-### Method A: Self-hosted bare repo on the server (no external service)
+### Method A: Self-hosted bare repo on the server (no external service, recommended)
 
 This keeps everything on your own machine. A *bare repository* acts as the central hub — local Obsidian pushes to it, the server pulls from it.
 
 ```
 Local Obsidian ──push──▶ bare repo on server ◀──pull── Notes App (working dir)
-                         /home/you/git/vault.git
+                         ~/git/notes-vault.git
 ```
 
-**1. Create the bare repo on the server**
+> **✅ Already ran `bash scripts/setup-vault.sh`?** The bare repo and working vault were created automatically — the script printed the SSH remote address at the end. Skip steps 1 and 2 below and **jump straight to step 3** to configure your local machine.
+
+**1. Create the bare repo on the server** (skip if you ran setup-vault.sh)
 
 ```bash
 mkdir -p ~/git
-git init --bare ~/git/my-vault.git
+git init --bare ~/git/notes-vault.git
 ```
 
-**2. Clone it as the working vault**
+**2. Clone it as the working vault** (skip if you ran setup-vault.sh)
 
 ```bash
-git clone ~/git/my-vault.git ~/vault
+git clone ~/git/notes-vault.git ~/vault
 # then set VAULT_PATH=~/vault in .env.local
 ```
 

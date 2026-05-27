@@ -1,0 +1,35 @@
+# systemd service unit for the claude-chat AI backend
+# ─────────────────────────────────────────────────────────────────
+# 1. Copy to /etc/systemd/system/claude-chat.service
+# 2. Edit User, WorkingDirectory, and the VAULT_PATH value below.
+# 3. sudo systemctl daemon-reload
+# 4. sudo systemctl enable --now claude-chat
+# ─────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=ClawApp AI Chat Service (claude-chat)
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/clawapp/claude-chat
+
+# ── Environment ───────────────────────────────────────────────────
+Environment=PORT=8082
+# Set VAULT_PATH to the same directory used by the Notes App.
+# The AI agent uses this as its working directory when reading notes.
+Environment=VAULT_PATH=/path/to/your/vault
+
+# Agent permission mode: plan | acceptEdits | auto | bypassPermissions
+Environment=CLAUDE_PERMISSION_MODE=auto
+
+# Optional: set a default API key so users don't have to enter one in the UI.
+# Environment=ANTHROPIC_API_KEY=sk-ant-...
+
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

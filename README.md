@@ -79,6 +79,14 @@ After deploying, go to Vercel → Project → Settings → **Environment Variabl
 - npm.
 - A local Markdown vault (any folder with `.md` files; Obsidian format works best).
 
+On a fresh Ubuntu / Debian VPS, install all prerequisites in one line:
+
+```bash
+sudo apt update && sudo apt install -y git nodejs npm nginx
+```
+
+> Ubuntu 24.04+ ships Node.js 20+ via `apt`, which already meets the version requirement.
+
 ## Quick Start
 
 ```bash
@@ -121,7 +129,15 @@ npm install
 npm start            # runs on http://127.0.0.1:8082 by default
 ```
 
-Then configure your reverse proxy (Nginx) to forward `/notes-claude/` to `127.0.0.1:8082`. A template is provided in `deploy/nginx.conf.example`.
+**Nginx is required for the AI panel.** The chat uses WebSocket for real-time streaming; Nginx must forward both HTTP and WebSocket upgrade requests to port 8082. A ready-to-use template is provided in `deploy/nginx.conf.example`, which includes the `/notes-claude/` block with all required headers.
+
+> **Why 404 on `/notes-claude/`?** If you access the app directly via `:3000` (bypassing Nginx), Next.js has no route for `/notes-claude/` and returns 404. Always go through Nginx (port 80/443) in production.
+
+Generate the AI panel password file (recommended to protect API credits):
+
+```bash
+echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.htpasswd
+```
 
 Once running, click the **✦ AI** button in the notes toolbar to open the panel, then connect your provider from the settings icon.
 
@@ -311,15 +327,28 @@ node scripts/create-share-link.mjs "path/in/vault/note.md"
 
 A typical production setup:
 
-1. **systemd** keeps both processes running — see `deploy/notes-app.service.example`.
-2. **Nginx** proxies traffic: `/` and `/share` → port 3000; `/notes-claude/` → port 8082 — see `deploy/nginx.conf.example`.
+1. **systemd** keeps both processes running persistently.
+2. **Nginx** proxies traffic: `/` and `/share` → port 3000; `/notes-claude/` → port 8082.
 
 ```bash
-# Install and enable the notes service
+# ── Notes App (Next.js) ──────────────────────────────────────────
 sudo cp deploy/notes-app.service.example /etc/systemd/system/notes-app.service
-# Edit the file: set User, WorkingDirectory, EnvironmentFile
+# Edit: set User, WorkingDirectory, EnvironmentFile
 sudo systemctl daemon-reload
 sudo systemctl enable --now notes-app
+
+# ── AI Chat Service (claude-chat) ────────────────────────────────
+sudo cp deploy/claude-chat.service.example /etc/systemd/system/claude-chat.service
+# Edit: set User, WorkingDirectory, and VAULT_PATH
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-chat
+
+# ── Nginx ────────────────────────────────────────────────────────
+sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/notes-app
+sudo ln -s /etc/nginx/sites-available/notes-app /etc/nginx/sites-enabled/
+# Generate the AI panel password file
+echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.htpasswd
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 For HTTPS with a real domain:

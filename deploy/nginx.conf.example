@@ -4,6 +4,12 @@
 # Option B — With a public IP only (no domain required)
 #
 # Replace all placeholders in ALL_CAPS before use.
+#
+# ── Quick-start checklist ────────────────────────────────────────
+# 1. Copy to /etc/nginx/sites-available/notes-app
+# 2. sudo ln -s /etc/nginx/sites-available/notes-app /etc/nginx/sites-enabled/
+# 3. Create the AI panel password file (see "Basic Auth" note below)
+# 4. sudo nginx -t && sudo systemctl reload nginx
 # ─────────────────────────────────────────────────────────────────
 
 # ── Option A: Domain + HTTPS (Certbot / Let's Encrypt) ───────────
@@ -22,17 +28,46 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # Proxy all traffic to the Next.js app
+    # ── Notes App (Next.js on port 3000) ─────────────────────────
     location / {
         proxy_pass         http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade $http_upgrade;
-        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Connection "upgrade";
         proxy_set_header   Host $host;
         proxy_set_header   X-Real-IP $remote_addr;
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+    }
+
+    # ── AI Assistant Panel (claude-chat on port 8082) ─────────────
+    #
+    # The AI panel uses WebSocket for real-time streaming.
+    # The "Upgrade" and "Connection" headers are REQUIRED — without
+    # them, WebSocket handshakes fail and the chat will not connect.
+    #
+    # Basic Auth is recommended here: the AI panel can consume API
+    # credits, so restricting access is good practice.
+    #
+    # Generate the password file before enabling:
+    #   echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.htpasswd
+    #
+    location /notes-claude/ {
+        auth_basic           "AI Assistant";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        proxy_pass         http://127.0.0.1:8082/;   # trailing slash strips the prefix
+        proxy_http_version 1.1;
+
+        # Required for WebSocket upgrade
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
     }
 }
 
@@ -49,15 +84,25 @@ server {
 #         proxy_pass         http://127.0.0.1:3000;
 #         proxy_http_version 1.1;
 #         proxy_set_header   Upgrade $http_upgrade;
-#         proxy_set_header   Connection 'upgrade';
+#         proxy_set_header   Connection "upgrade";
 #         proxy_set_header   Host $host;
 #         proxy_set_header   X-Real-IP $remote_addr;
 #         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
 #         proxy_set_header   X-Forwarded-Proto $scheme;
 #         proxy_cache_bypass $http_upgrade;
 #     }
-# }
 #
-# Alternatively, skip Nginx entirely and expose Next.js directly:
-#   set PORT=80 in .env.local, then open firewall port 80.
-#   SITE_URL=http://YOUR_PUBLIC_IP
+#     location /notes-claude/ {
+#         auth_basic           "AI Assistant";
+#         auth_basic_user_file /etc/nginx/.htpasswd;
+#
+#         proxy_pass         http://127.0.0.1:8082/;
+#         proxy_http_version 1.1;
+#         proxy_set_header   Upgrade    $http_upgrade;
+#         proxy_set_header   Connection "upgrade";
+#         proxy_set_header   Host              $host;
+#         proxy_set_header   X-Real-IP         $remote_addr;
+#         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+#         proxy_set_header   X-Forwarded-Proto $scheme;
+#     }
+# }

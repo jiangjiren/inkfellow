@@ -85,14 +85,14 @@ After deploying, go to Vercel → Project → Settings → **Environment Variabl
 git clone <this-repo> notes-app
 cd notes-app
 npm install
-cp .env.example .env.local
+bash scripts/setup-vault.sh   # creates vault + bare git repo, writes VAULT_PATH to .env.local
 ```
 
 Edit `.env.local`:
 
 ```bash
 NEXT_PUBLIC_APP_NAME=My Notes       # Shown in the UI and page titles
-VAULT_PATH=/absolute/path/to/vault  # Your Markdown folder
+VAULT_PATH=/home/you/vault          # Set automatically by setup-vault.sh
 SITE_URL=http://localhost:3000      # Replace with your domain or public IP
 
 # ↓ These two lines are your login credentials for the knowledge base

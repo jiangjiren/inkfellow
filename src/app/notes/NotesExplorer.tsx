@@ -763,6 +763,7 @@ export default function NotesExplorer() {
         const { updatedAt } = (await res.json()) as { updatedAt: string };
         if (updatedAt && updatedAt !== knownUpdatedAt) {
           isReloadingRef.current = true;
+          setHasGitChanges(true); // 外部改动（如 AI Agent）→ 标记未同步
           await loadNote(path, null, {
             preserveScroll: true,
             silent: true,

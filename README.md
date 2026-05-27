@@ -2,7 +2,7 @@
 
 English | [中文](./README.zh-CN.md)
 
-This is an **LLM Wiki** — turn your Markdown folder into a cloud-accessible personal knowledge base you can **browse, organize, sync, and share** from any device, anywhere, while letting AI truly understand every note you've written and talk with you about it anytime.
+Turn your Markdown folder into a cloud-accessible personal knowledge base — **browse, organize, sync, and share** from any device, anywhere. The built-in AI Agent panel works as an **LLM Wiki**: AI reads and understands every note you've written, so you can ask questions and get answers grounded in your own knowledge.
 
 Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, **OpenRouter** (200+ models), and any Anthropic-compatible API — swap providers anytime from the UI.
 

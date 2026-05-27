@@ -1,6 +1,6 @@
 # Markdown 渲染效果展示
 
-这篇笔记展示 Notes App 支持的 Markdown 语法。
+这篇笔记展示 inkfellow 支持的 Markdown 语法。
 
 ## 文字样式
 
@@ -22,7 +22,7 @@
 3. 复盘
 
 **任务列表：**
-- [x] 部署 Notes App
+- [x] 部署 inkfellow
 - [x] 配置 AI 面板
 - [ ] 导入我的笔记库
 - [ ] 建立知识索引习惯

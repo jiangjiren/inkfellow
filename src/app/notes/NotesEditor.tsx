@@ -33,15 +33,18 @@ function loadScript(src: string): Promise<void> {
 interface NotesEditorProps {
   value: string;
   onChange: (value: string) => void;
+  onReady?: () => void; // CM 初始化完成后回调（CDN 异步加载完毕）
 }
 
-export default function NotesEditor({ value, onChange }: NotesEditorProps) {
+export default function NotesEditor({ value, onChange, onReady }: NotesEditorProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const cmRef         = useRef<any>(null);
   const onChangeRef   = useRef(onChange);
+  const onReadyRef    = useRef(onReady);
 
-  // 始终持有最新的 onChange，避免 stale closure
+  // 始终持有最新回调，避免 stale closure
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
 
   // ── 初始化 CodeMirror（只执行一次）─────────────────────────────
   useEffect(() => {
@@ -62,7 +65,7 @@ export default function NotesEditor({ value, onChange }: NotesEditorProps) {
         value,
         mode: "markdown",
         lineWrapping: true,
-        autofocus: true,
+        autofocus: false,   // 手动 focus，避免浏览器自动滚动到顶部
         indentUnit: 2,
         tabSize: 2,
         extraKeys: {
@@ -76,6 +79,11 @@ export default function NotesEditor({ value, onChange }: NotesEditorProps) {
       });
 
       cmRef.current = cm;
+
+      // preventScroll: true — 聚焦但不触发滚动，保持当前阅读位置
+      (cm.getInputField() as HTMLElement).focus({ preventScroll: true });
+      // 通知父组件 CM 已就绪（父组件再次恢复滚动位置，防止异步加载后偏移）
+      onReadyRef.current?.();
     }
 
     void init();

@@ -1,4 +1,4 @@
-# Notes App
+# inkfellow
 
 English | [中文](./README.zh-CN.md)
 
@@ -68,7 +68,7 @@ After deploying, go to Vercel → Project → Settings → **Environment Variabl
 |----------|-------|-------|
 | `NOTES_BASIC_AUTH_USERNAME` | `demo` (or anything) | Login username for the demo |
 | `NOTES_BASIC_AUTH_PASSWORD` | your chosen password | Login password — **must not be empty** |
-| `NEXT_PUBLIC_APP_NAME` | `Notes App Demo` | Shown in the page title |
+| `NEXT_PUBLIC_APP_NAME` | `inkfellow` | Shown in the page title |
 | `SITE_URL` | your Vercel URL (e.g. `https://xxx.vercel.app`) | Used for share link generation |
 
 > **Note**: The Vercel version uses the bundled `vault/` sample notes and does not support Git sync or the AI panel (both require a persistent server environment). Deploy to a VPS for full functionality.
@@ -109,7 +109,7 @@ bash scripts/setup-vault.sh   # creates vault + bare git repo, writes VAULT_PATH
 Edit `.env.local`:
 
 ```bash
-NEXT_PUBLIC_APP_NAME=My Notes       # Shown in the UI and page titles
+NEXT_PUBLIC_APP_NAME=inkfellow       # Shown in the UI and page titles
 VAULT_PATH=/home/you/vault          # Set automatically by setup-vault.sh
 SITE_URL=http://localhost:3000      # Replace with your domain or public IP
 
@@ -210,7 +210,7 @@ The app has a built-in Git panel (pull / push / discard / history). To keep your
 This keeps everything on your own machine. A *bare repository* acts as the central hub — local Obsidian pushes to it, the server pulls from it.
 
 ```
-Local Obsidian ──push──▶ bare repo on server ◀──pull── Notes App (working dir)
+Local Obsidian ──push──▶ bare repo on server ◀──pull── inkfellow (working dir)
                          ~/git/notes-vault.git
 ```
 
@@ -265,14 +265,14 @@ In Obsidian → Settings → Community plugins → search **Obsidian Git**, inst
 - *Auto pull interval*: `10` (minutes)
 - *Auto push interval*: `5` (minutes)
 
-After each push, open the Git panel in Notes App and click **Pull** to update the working vault.
+After each push, open the Git panel in inkfellow and click **Pull** to update the working vault.
 
 ---
 
 ### Method B: GitHub private repo (easiest, works from any machine)
 
 ```
-Local Obsidian ──push──▶ GitHub private repo ◀──pull── Notes App on server
+Local Obsidian ──push──▶ GitHub private repo ◀──pull── inkfellow on server
 ```
 
 **1. Push your local vault to GitHub**
@@ -313,7 +313,7 @@ git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vau
 
 **4. Install the Obsidian Git plugin** (same as Method A, step 5)
 
-After each push, open the Git panel in Notes App and click **Pull**.
+After each push, open the Git panel in inkfellow and click **Pull**.
 
 ---
 
@@ -321,8 +321,8 @@ After each push, open the Git panel in Notes App and click **Pull**.
 
 | Action | What to do |
 |--------|-----------|
-| Wrote notes locally | Obsidian Git auto-pushes → click **Pull** in Notes App |
-| Edited notes on the web | Click **Push** in Notes App → Obsidian Git auto-pulls |
+| Wrote notes locally | Obsidian Git auto-pushes → click **Pull** in inkfellow |
+| Edited notes on the web | Click **Push** in inkfellow → Obsidian Git auto-pulls |
 | Want automatic server pull | Add a cron job: `*/10 * * * * cd ~/vault && git pull` |
 
 ## Access Without a Domain (Public IP)
@@ -350,11 +350,11 @@ The app works identically over IP — share links will include the IP in the URL
 
 ## Environment Variables
 
-### Notes App (`clawapp/`)
+### inkfellow
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `NEXT_PUBLIC_APP_NAME` | No | `My Notes` | App name shown in UI and page titles. |
+| `NEXT_PUBLIC_APP_NAME` | No | `inkfellow` | App name shown in UI and page titles. |
 | `VAULT_PATH` | Yes | `./vault` | Absolute path to the Markdown vault. |
 | `NOTES_BASIC_AUTH_USERNAME` | Yes | `notes` | Login username for the knowledge base. |
 | `NOTES_BASIC_AUTH_PASSWORD` | Yes | *(empty)* | Password. If empty, access is always denied. |
@@ -393,7 +393,7 @@ A typical production setup:
 2. **Nginx** proxies traffic: `/` and `/share` → port 3000; `/notes-claude/` → port 8082.
 
 ```bash
-# ── Notes App (Next.js) ──────────────────────────────────────────
+# ── inkfellow (Next.js) ──────────────────────────────────────────
 sudo cp deploy/notes-app.service.example /etc/systemd/system/notes-app.service
 # Edit: set User, WorkingDirectory, EnvironmentFile
 sudo systemctl daemon-reload

@@ -1,4 +1,4 @@
-# systemd service unit for the Notes App (Next.js)
+# systemd service unit for inkfellow (Next.js)
 # ─────────────────────────────────────────────────────────────────
 # 1. Copy to /etc/systemd/system/notes-app.service
 # 2. Edit User, WorkingDirectory, and EnvironmentFile to match your setup.
@@ -7,14 +7,14 @@
 # ─────────────────────────────────────────────────────────────────
 
 [Unit]
-Description=Notes App — Next.js Service
+Description=inkfellow — Next.js Service
 After=network.target
 
 [Service]
 Type=simple
 User=YOUR_USER
-WorkingDirectory=/path/to/clawapp
-EnvironmentFile=/path/to/clawapp/.env.local
+WorkingDirectory=/path/to/inkfellow
+EnvironmentFile=/path/to/inkfellow/.env.local
 ExecStart=/usr/bin/npm start
 Restart=on-failure
 RestartSec=5

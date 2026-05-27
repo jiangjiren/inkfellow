@@ -1,4 +1,4 @@
-# 欢迎使用 Notes App 👋
+# 欢迎使用 inkfellow 👋
 
 这是一个 **LLM Wiki** 演示知识库。
 
@@ -20,8 +20,8 @@
 ## 部署你自己的知识库
 
 ```bash
-git clone https://github.com/jiangjiren/clawapp
-cd clawapp
+git clone https://github.com/jiangjiren/clawapp inkfellow
+cd inkfellow
 npm install
 cp .env.example .env.local
 # 编辑 .env.local，填写你的笔记路径和密码

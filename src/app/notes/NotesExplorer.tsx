@@ -21,11 +21,11 @@ const NotesEditor = dynamic(() => import("./NotesEditor"), { ssr: false });
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
-const PANEL_WIDTH_KEY = "mindflow-notes-panel-width-v1";
-const PANEL_VISIBLE_KEY = "mindflow-notes-panel-visible-v1";
-const PANEL_TAB_KEY = "mindflow-notes-panel-tab-v1";
-const SIDEBAR_VISIBLE_KEY = "mindflow-notes-sidebar-visible-v1";
-const NOTE_SCROLL_STORAGE_PREFIX = "mindflow-notes-scroll-v1:";
+const PANEL_WIDTH_KEY = "inkfellow-notes-panel-width-v1";
+const PANEL_VISIBLE_KEY = "inkfellow-notes-panel-visible-v1";
+const PANEL_TAB_KEY = "inkfellow-notes-panel-tab-v1";
+const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
+const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 
 type PanelTab = "claude" | "toc" | "git";
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
@@ -321,7 +321,9 @@ export default function NotesExplorer() {
   const [editContent, setEditContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
+  const [editorMinHeight, setEditorMinHeight] = useState(0); // 占位高度，防 scroll 被钳制
   const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
   const noteUpdatedAtRef = useRef<string | null>(null);
@@ -872,12 +874,13 @@ export default function NotesExplorer() {
   /** 进入编辑模式 */
   const handleEditStart = useCallback(() => {
     if (!note || /\.html?$/i.test(note.path)) return;
+    // 用当前 reader.scrollHeight 做占位，防止切换后内容高度骤降导致 scrollTop 被钳制
+    setEditorMinHeight(readerRef.current?.scrollHeight ?? 0);
     setEditContent(note.content);
     setIsEditing(true);
-    // NotesEditor 组件内部自动 focus
   }, [note]);
 
-  /** 保存（不退出编辑模式），⌘S 触发 */
+  /** 保存（⌘S 或切换前 flush 时使用） */
   const handleSave = useCallback(async (notePath?: string, content?: string) => {
     const path = notePath ?? activePath;
     const body = content ?? editContent;
@@ -891,7 +894,6 @@ export default function NotesExplorer() {
       });
       if (!res.ok) throw new Error("保存失败");
       const saved = (await res.json()) as { updatedAt: string; content: string };
-      // 更新 note 对象，避免「切换笔记」误判为有未保存改动
       setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
       noteUpdatedAtRef.current = saved.updatedAt;
       setSavedFlash(true);
@@ -901,38 +903,75 @@ export default function NotesExplorer() {
     }
   }, [activePath, editContent]);
 
-  /** 完成编辑（保存 + 退出） */
-  const handleEditDone = useCallback(async () => {
+  /** Editor onChange — 更新状态 + 防抖自动保存 */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleEditorChange = useCallback((value: string) => {
+    setEditContent(value);
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(async () => {
+      const path = activePathRef.current;
+      if (!path) return;
+      try {
+        const res = await fetch("/api/notes/file", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, content: value }),
+        });
+        if (!res.ok) return;
+        const saved = (await res.json()) as { updatedAt: string; content: string };
+        setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
+        noteUpdatedAtRef.current = saved.updatedAt;
+        setSavedFlash(true);
+        setTimeout(() => setSavedFlash(false), 1600);
+      } catch { /* 网络错误静默忽略 */ }
+    }, 1500);
+  }, []); // stable — intentionally no deps, uses refs
+
+  /** 切换阅读 / 编辑模式 */
+  const handleEditToggle = useCallback(async () => {
+    if (!isEditing) {
+      handleEditStart();
+      return;
+    }
+    // 退出编辑：取消 pending auto-save，有未保存内容先 flush
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
     if (isDirty) await handleSave();
     setIsEditing(false);
-  }, [isDirty, handleSave]);
-
-  /** 取消编辑，有未保存修改时弹确认 */
-  const handleEditCancel = useCallback(() => {
-    if (isDirty && !window.confirm("放弃未保存的修改？")) return;
-    setIsEditing(false);
-    // 把 editContent 还原为当前 note 内容（下次进编辑时重新加载）
-    if (note) setEditContent(note.content);
-  }, [isDirty, note]);
+  }, [isEditing, isDirty, handleSave, handleEditStart]);
 
   /** 切换笔记前自动保存未提交的修改 */
   const flushEditBeforeSwitch = useCallback(async () => {
     if (isEditing && isDirty && activePath) {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
       await handleSave(activePath, editContent);
     }
   }, [isEditing, isDirty, activePath, editContent, handleSave]);
 
-  /** 退出编辑模式当 note 切换时 */
+  /** 退出编辑模式当 note 切换时，清理 pending auto-save */
   useEffect(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
     setIsEditing(false);
   }, [note?.path]);
 
-  /** ⌘S 保存快捷键 */
+  /** ⌘S 立即保存（取消 pending debounce，直接 flush） */
   useEffect(() => {
     if (!isEditing) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
+        if (autoSaveTimerRef.current) {
+          clearTimeout(autoSaveTimerRef.current);
+          autoSaveTimerRef.current = null;
+        }
         void handleSave();
       }
     };
@@ -1235,7 +1274,7 @@ export default function NotesExplorer() {
       <aside className={`${styles.sidebar} ${isDesktopSidebarHidden ? styles.sidebarHidden : ""}`} aria-hidden={!isSidebarOpen}>
         <div className={styles.sidebarHeader}>
           <div>
-            <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes"}</p>
+            <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
             <h1 className={styles.title}>知识库</h1>
           </div>
           <span className={styles.counter}>{files.length} 篇</span>
@@ -1335,84 +1374,74 @@ export default function NotesExplorer() {
             ) : null}
           </div>
           <div className={styles.readerActions}>
-            {isEditing ? (
-              /* 编辑模式右侧：已保存提示 + 取消 + 完成 */
-              <>
-                {savedFlash ? (
-                  <span className={styles.savedHint}>已保存</span>
-                ) : null}
-                <button
-                  type="button"
-                  className={styles.editCancelBtn}
-                  onClick={handleEditCancel}
-                  disabled={isSaving}
-                  aria-label="取消编辑"
-                  title="取消编辑，放弃修改"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.editDoneBtn} ${isDirty ? styles.editDoneBtnDirty : ""}`}
-                  onClick={() => void handleEditDone()}
-                  disabled={isSaving}
-                  aria-label="完成编辑"
-                  title="保存并完成编辑 (⌘S)"
-                >
-                  {isSaving ? "保存中…" : isDirty ? "保存" : "完成"}
-                </button>
-              </>
-            ) : (
-              /* 阅读模式右侧：分享 + 铅笔 + AI */
-              <>
-                <button
-                  type="button"
-                  className={styles.shareButton}
-                  onClick={handleOpenShareDialog}
-                  disabled={!note}
-                  aria-label="分享当前文章"
-                  title="分享当前文章"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path d="M7.2 11.2 12 6.4l4.8 4.8" />
-                    <path d="M12 6.4v11.2" />
-                    <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className={styles.editBtn}
-                  onClick={handleEditStart}
-                  disabled={!note || /\.html?$/i.test(note.path ?? "")}
-                  aria-label="编辑笔记"
-                  title="编辑笔记"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
-                  onClick={handleClaudeToggle}
-                  aria-pressed={isAssistantPanelOpen}
-                  aria-label="AI 助手"
-                  title="AI 助手"
-                >
-                  <span aria-hidden="true">✦</span>
-                </button>
-              </>
-            )}
+            {savedFlash ? (
+              <span className={styles.savedHint}>已保存</span>
+            ) : null}
+            {!isEditing ? (
+              <button
+                type="button"
+                className={styles.shareButton}
+                onClick={handleOpenShareDialog}
+                disabled={!note}
+                aria-label="分享当前文章"
+                title="分享当前文章"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7.2 11.2 12 6.4l4.8 4.8" />
+                  <path d="M12 6.4v11.2" />
+                  <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
+                </svg>
+              </button>
+            ) : null}
+            {/* 阅读 / 编辑 切换按钮 */}
+            <button
+              type="button"
+              className={`${styles.editBtn} ${isEditing ? styles.editBtnActive : ""}`}
+              onClick={() => void handleEditToggle()}
+              disabled={!note || /\.html?$/i.test(note.path ?? "")}
+              aria-label={isEditing ? "退出编辑" : "编辑笔记"}
+              title={isEditing ? "退出编辑模式" : "编辑笔记"}
+            >
+              {isEditing ? (
+                /* 翻开的书 — 回到阅读模式 */
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                </svg>
+              ) : (
+                /* 铅笔图标 — 进入编辑模式 */
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
+              onClick={handleClaudeToggle}
+              aria-pressed={isAssistantPanelOpen}
+              aria-label="AI 助手"
+              title="AI 助手"
+            >
+              <span aria-hidden="true">✦</span>
+            </button>
           </div>
         </header>
 
         {/* 编辑模式 — CodeMirror inline markdown 编辑 */}
         {isEditing ? (
-          <div className={styles.editorPane}>
+          <div
+            className={styles.editorPane}
+            style={editorMinHeight ? { minHeight: editorMinHeight } : undefined}
+          >
             <NotesEditor
               value={editContent}
-              onChange={setEditContent}
+              onChange={handleEditorChange}
+              onReady={() => {
+                // CM 渲染完毕，内容高度已由 CM 自身撑起，释放占位高度
+                setEditorMinHeight(0);
+              }}
             />
           </div>
         ) : (

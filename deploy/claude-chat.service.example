@@ -7,17 +7,17 @@
 # ─────────────────────────────────────────────────────────────────
 
 [Unit]
-Description=ClawApp AI Chat Service (claude-chat)
+Description=inkfellow AI Chat Service (claude-chat)
 After=network.target
 
 [Service]
 Type=simple
 User=YOUR_USER
-WorkingDirectory=/path/to/clawapp/claude-chat
+WorkingDirectory=/path/to/inkfellow/claude-chat
 
 # ── Environment ───────────────────────────────────────────────────
 Environment=PORT=8082
-# Set VAULT_PATH to the same directory used by the Notes App.
+# Set VAULT_PATH to the same directory used by inkfellow.
 # The AI agent uses this as its working directory when reading notes.
 Environment=VAULT_PATH=/path/to/your/vault
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Claude Chat</title>
+<title>inkfellow</title>
 <script src="marked.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -577,7 +577,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 /* ── Chat header ── */
 #chat-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 8px;
   padding: 0 14px;
@@ -586,12 +586,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
-#chat-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
+#chat-title { display: none; }
 #header-controls {
   display: flex;
   align-items: center;
@@ -782,9 +777,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .picker-option-desc { font-size: 10.5px; color: var(--text-dim); }
 @media (max-width: 360px) {
-  #chat-title { display: none; }
   #chat-header {
-    grid-template-columns: minmax(0, 1fr) auto;
     padding: 0 10px;
     column-gap: 6px;
   }
@@ -1148,7 +1141,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 <body>
 <div id="app">
   <header id="chat-header">
-    <span id="chat-title">Claude</span>
     <div id="header-controls">
       <div id="model-picker">
         <button id="model-btn" class="picker-btn" aria-label="选择模型" aria-haspopup="listbox">
@@ -1461,12 +1453,17 @@ function genId() {
 }
 
 
+let _historyCache = null;  // in-memory cache, avoids fetch delay on open
+
 async function fetchHistory() {
   try {
     const res = await fetch("api/history");
-    if (res.ok) return await res.json();
+    if (res.ok) {
+      _historyCache = await res.json();
+      return _historyCache;
+    }
   } catch { }
-  return [];
+  return _historyCache ?? [];
 }
 
 // ── Auth: 账号配置列表 ────────────────────────────────────────
@@ -1831,6 +1828,12 @@ async function saveCurrentConversation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(conv),
     });
+    // 更新内存缓存，使下次打开历史面板时可立即渲染
+    if (_historyCache !== null) {
+      const idx = _historyCache.findIndex(h => h.id === conv.id);
+      if (idx >= 0) _historyCache[idx] = conv;
+      else _historyCache.unshift(conv);
+    }
   } catch { }
 }
 
@@ -2901,7 +2904,12 @@ const historyBackdrop = document.getElementById("history-backdrop");
 async function deleteConversation(id) {
   try { await fetch(`api/history/${id}`, { method: "DELETE" }); } catch { }
   if (currentConvId === id) currentConvId = null;
-  renderHistoryList();
+  if (_historyCache !== null) {
+    _historyCache = _historyCache.filter(h => h.id !== id);
+    renderHistoryFromData(_historyCache); // 立即从缓存刷新，不等网络
+  } else {
+    renderHistoryList();
+  }
 }
 
 async function loadConversation(conv) {
@@ -2949,11 +2957,18 @@ async function startNewConversation() {
 }
 
 async function openHistoryPanel() {
-  await renderHistoryList();
+  // 立即打开面板（无延迟）
   historyDropdown.classList.add("open");
   historyBackdrop.classList.add("open");
   modelDropdown.classList.remove("open"); // 互斥
   modelBtn.classList.remove("open");
+  // 有缓存先渲染缓存，同时后台刷新；没缓存才等 fetch
+  if (_historyCache !== null) {
+    renderHistoryFromData(_historyCache);
+    renderHistoryList(); // 后台静默刷新
+  } else {
+    await renderHistoryList();
+  }
 }
 
 function closeHistoryPanel() {
@@ -2972,10 +2987,8 @@ function formatRelDate(iso) {
   return d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
-async function renderHistoryList() {
+function renderHistoryFromData(history) {
   const listEl = document.getElementById("history-list");
-  listEl.innerHTML = '<div class="history-empty">加载中…</div>';
-  const history = await fetchHistory();
   if (history.length === 0) {
     listEl.innerHTML = '<div class="history-empty">暂无历史对话</div>';
     return;
@@ -3011,6 +3024,15 @@ async function renderHistoryList() {
       deleteConversation(btn.dataset.del);
     });
   });
+}
+
+async function renderHistoryList() {
+  const listEl = document.getElementById("history-list");
+  if (_historyCache === null) {
+    listEl.innerHTML = '<div class="history-empty">加载中…</div>';
+  }
+  const history = await fetchHistory();
+  renderHistoryFromData(history);
 }
 
 document.getElementById("btn-history").addEventListener("click", (e) => {

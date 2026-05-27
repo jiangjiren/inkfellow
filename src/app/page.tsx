@@ -3,7 +3,7 @@ import NotesExplorer from "./notes/NotesExplorer";
 
 export const dynamic = "force-dynamic";
 
-const appName = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes";
+const appName = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow";
 
 export const metadata: Metadata = {
   title: appName,

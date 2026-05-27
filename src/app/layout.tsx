@@ -6,8 +6,8 @@ import { localeCookie } from "@/i18n/config";
 import { getLocaleFromAcceptLanguage, normalizeLocale } from "@/i18n/locale";
 
 export const metadata: Metadata = {
-  title: "Free Online Image Tools",
-  description: "Minimalist toolset for fast & private image processing. 100% private, no upload needed.",
+  title: "inkfellow",
+  description: "inkfellow — Personal knowledge base powered by LLM Wiki",
 };
 
 export const viewport: Viewport = {

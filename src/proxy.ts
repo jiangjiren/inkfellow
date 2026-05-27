@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const NOTES_AUTH_REALM = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes";
+const NOTES_AUTH_REALM = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow";
 
 const isNotesApiPath = (pathname: string) => pathname.startsWith("/api/notes/");
 

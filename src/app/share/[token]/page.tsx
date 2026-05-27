@@ -37,7 +37,7 @@ export async function generateMetadata({ params }: SharePageProps): Promise<Meta
     const noindex = share.noindex !== false;
 
     return {
-      title: `${title} | ${process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes"}`,
+      title: `${title} | ${process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}`,
       robots: noindex
         ? {
             index: false,
@@ -51,7 +51,7 @@ export async function generateMetadata({ params }: SharePageProps): Promise<Meta
     };
   } catch {
     return {
-      title: `Shared Note | ${process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes"}`,
+      title: `Shared Note | ${process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}`,
       robots: {
         index: false,
         follow: false,
@@ -75,7 +75,7 @@ export default async function SharePage({ params }: SharePageProps) {
         <div className={styles.shell}>
           <header className={styles.header}>
             <div className={styles.brand}>
-              <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes"}</p>
+              <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
               <h1 className={styles.title}>{title}</h1>
             </div>
             <p className={styles.meta}>更新于 {formatUpdatedAt(note.updatedAt)}</p>

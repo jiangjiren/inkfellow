@@ -1,14 +1,14 @@
 export const HOME_MESSAGES = {
   "en": {
-    brand: "Free Online Image Tools",
-    tagline: "Minimalist toolset for fast & private image processing",
+    brand: "inkfellow",
+    tagline: "Personal knowledge base powered by LLM Wiki",
     langLabel: "Language",
     langEnglish: "EN",
     langChinese: "中文",
   },
   "zh-CN": {
-    brand: "免费在线工具合集",
-    tagline: "极简高效的图片处理工具箱 · 无需上传 · 隐私安全",
+    brand: "inkfellow",
+    tagline: "LLM Wiki 驱动的个人知识库",
     langLabel: "语言",
     langEnglish: "EN",
     langChinese: "中文",

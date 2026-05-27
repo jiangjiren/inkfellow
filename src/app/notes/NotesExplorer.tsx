@@ -10,10 +10,14 @@ import type {
   NotesTreeResponse,
 } from "@/lib/notesTypes";
 import { extractHeadings, type TocEntry } from "@/lib/noteToc";
+import dynamic from "next/dynamic";
 import NotesHtml from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
 import NotesGit from "./NotesGit";
 import styles from "./notes.module.css";
+
+// CodeMirror 不支持 SSR，动态加载
+const NotesEditor = dynamic(() => import("./NotesEditor"), { ssr: false });
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
@@ -317,7 +321,7 @@ export default function NotesExplorer() {
   const [editContent, setEditContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
-  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
   const noteUpdatedAtRef = useRef<string | null>(null);
@@ -870,7 +874,7 @@ export default function NotesExplorer() {
     if (!note || /\.html?$/i.test(note.path)) return;
     setEditContent(note.content);
     setIsEditing(true);
-    setTimeout(() => editorRef.current?.focus(), 30);
+    // NotesEditor 组件内部自动 focus
   }, [note]);
 
   /** 保存（不退出编辑模式），⌘S 触发 */
@@ -1403,30 +1407,13 @@ export default function NotesExplorer() {
           </div>
         </header>
 
-        {/* 编辑模式 — 左右分栏：textarea + 实时预览 */}
+        {/* 编辑模式 — CodeMirror inline markdown 编辑 */}
         {isEditing ? (
           <div className={styles.editorPane}>
-            <textarea
-              ref={editorRef}
-              className={styles.editor}
+            <NotesEditor
               value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              aria-label="编辑笔记内容"
-              placeholder="在此输入 Markdown 内容…"
+              onChange={setEditContent}
             />
-            <div className={styles.editorPreview} aria-label="预览">
-              <article className={styles.document}>
-                <NotesMarkdown
-                  markdown={editContent}
-                  currentPath={note?.path ?? ""}
-                  noteIndex={noteIndex}
-                  onNavigate={handleMarkdownNavigate}
-                />
-              </article>
-            </div>
           </div>
         ) : (
           <article

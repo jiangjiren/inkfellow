@@ -2748,67 +2748,151 @@
   cursor: not-allowed;
 }
 
-/* ── 编辑器分栏容器 ────────────────────────────────── */
+/* ── 编辑器容器 ────────────────────────────────────── */
 .editorPane {
-  display: flex;
   flex: 1;
   min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-/* ── Markdown 编辑器（左侧 textarea）──────────────── */
-.editor {
-  flex: 1;
-  min-width: 0;
-  min-height: 100%;
-  box-sizing: border-box;
-  padding: 32px 36px 96px;
-  border: 0;
-  border-right: 1px solid var(--notes-border);
-  outline: 0;
-  resize: none;
-  background: var(--notes-bg-sidebar);
-  color: var(--notes-text-primary);
-  font-family: var(--notes-font-mono);
-  font-size: 13.5px;
-  line-height: 1.85;
-  caret-color: var(--notes-accent);
-  tab-size: 2;
   overflow-y: auto;
-}
-
-.editor::placeholder {
-  color: var(--notes-text-muted);
-  opacity: 0.6;
-}
-
-/* ── 右侧实时预览 ──────────────────────────────────── */
-.editorPreview {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   background: var(--notes-bg-app);
 }
 
-/* 预览区里的 document 卡片，去掉动画避免每次输入都抖 */
-.editorPreview .document {
-  animation: none !important;
-  margin: 24px auto;
-  width: min(100%, 780px);
+/* ── CodeMirror 5 外层包裹 div ─────────────────────── */
+.cmContainer {
+  width: min(100%, 820px);
+  min-height: calc(100vh - 64px);
+  padding: 40px 56px 96px;
+  box-sizing: border-box;
 }
 
-/* 移动端：只显示编辑器，隐藏预览（太窄放不下） */
-@media (max-width: 900px) {
-  .editorPreview {
-    display: none;
-  }
+/* ── CodeMirror 5 基础覆盖 ─────────────────────────── */
+.cmContainer :global(.CodeMirror) {
+  height: auto !important;
+  min-height: 400px;
+  font-family: var(--notes-font-sans) !important;
+  font-size: 16px !important;
+  line-height: 1.75 !important;
+  color: var(--notes-text-primary) !important;
+  background: transparent !important;
+  border: none !important;
+}
 
-  .editor {
-    padding: 20px 18px 60px;
-    font-size: 13px;
-    border-right: 0;
-    background: transparent;
+.cmContainer :global(.CodeMirror-scroll) {
+  overflow: visible !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.cmContainer :global(.CodeMirror-sizer) {
+  margin: 0 !important;
+}
+
+/* 隐藏光标行左侧高亮背景，只保留极淡蓝 */
+.cmContainer :global(.CodeMirror-activeline-background) {
+  background: rgba(79, 109, 245, 0.04) !important;
+  border-radius: 4px;
+}
+
+/* 选中 */
+.cmContainer :global(.CodeMirror-selected) {
+  background: rgba(79, 109, 245, 0.15) !important;
+}
+
+/* ── Markdown 视觉渲染样式 ─────────────────────────── */
+
+/* # 符号和 ** * 等标记：变浅，退到背景 */
+.cmContainer :global(.cm-formatting-header),
+.cmContainer :global(.cm-formatting-strong),
+.cmContainer :global(.cm-formatting-em),
+.cmContainer :global(.cm-formatting-strikethrough),
+.cmContainer :global(.cm-formatting-code),
+.cmContainer :global(.cm-formatting-link),
+.cmContainer :global(.cm-formatting-image) {
+  opacity: 0.35;
+  font-weight: 400 !important;
+  font-size: 0.82em;
+}
+
+/* 标题：层级递减 */
+.cmContainer :global(.cm-header-1) { font-size: 1.75em; font-weight: 700; line-height: 1.3; }
+.cmContainer :global(.cm-header-2) { font-size: 1.4em;  font-weight: 650; line-height: 1.35; }
+.cmContainer :global(.cm-header-3) { font-size: 1.15em; font-weight: 600; line-height: 1.4; }
+.cmContainer :global(.cm-header-4) { font-size: 1.05em; font-weight: 600; }
+.cmContainer :global(.cm-header-5),
+.cmContainer :global(.cm-header-6) { font-size: 1em;    font-weight: 600; }
+
+/* 粗体 */
+.cmContainer :global(.cm-strong) {
+  font-weight: 700;
+  color: var(--notes-text-primary);
+}
+
+/* 斜体 */
+.cmContainer :global(.cm-em) {
+  font-style: italic;
+  color: var(--notes-text-primary);
+}
+
+/* 删除线 */
+.cmContainer :global(.cm-strikethrough) {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+/* 行内代码 */
+.cmContainer :global(.cm-inline-code),
+.cmContainer :global(span.cm-code) {
+  font-family: var(--notes-font-mono) !important;
+  font-size: 0.88em;
+  background: rgba(120, 120, 128, 0.10);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #c7254e;
+}
+
+/* 链接 */
+.cmContainer :global(.cm-link),
+.cmContainer :global(.cm-url) {
+  color: var(--notes-accent, #4f6df5);
+}
+
+.cmContainer :global(.cm-url) {
+  text-decoration: underline;
+}
+
+/* 引用块 */
+.cmContainer :global(.cm-quote) {
+  color: var(--notes-text-muted);
+  font-style: italic;
+}
+
+/* HR / 图片 / 其他标点 */
+.cmContainer :global(.cm-hr) {
+  color: var(--notes-text-muted);
+  opacity: 0.5;
+}
+
+/* 深色模式 */
+@media (prefers-color-scheme: dark) {
+  .cmContainer :global(.CodeMirror) {
+    color: #e5e5ea !important;
+  }
+  .cmContainer :global(.cm-inline-code),
+  .cmContainer :global(span.cm-code) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ff8080;
+  }
+}
+
+/* 移动端 */
+@media (max-width: 900px) {
+  .cmContainer {
+    padding: 24px 18px 60px;
+  }
+  .cmContainer :global(.CodeMirror) {
+    font-size: 15px !important;
   }
 }
 

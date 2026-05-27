@@ -1,0 +1,3019 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Claude Chat</title>
+<script src="marked.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f9f9f8;
+  --bg2: #f2f1ef;
+  --bg3: #eae9e6;
+  --border: #dddbd7;
+  --text: #1a1916;
+  --text-dim: #8a8680;
+  --accent: #1a6cf6;
+  --green: #1a7a3f;
+  --yellow: #92600a;
+  --red: #c0392b;
+  --tool-bg: #f0eee9;
+}
+
+html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; background: var(--bg); color: var(--text); }
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  position: relative;
+}
+
+/* ── Messages ── */
+#messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+.msg { display: flex; flex-direction: column; gap: 4px; }
+.msg-user {
+  align-items: flex-end;
+}
+.msg-user .msg-body {
+  max-width: min(78%, 520px);
+  padding: 8px 12px;
+  border-radius: 17px;
+  border-bottom-right-radius: 6px;
+  background: #ececea;
+  color: #1d1d1f;
+  line-height: 1.55;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.025);
+}
+.msg-body { line-height: 1.6; word-break: break-word; }
+.msg-user .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-body p { margin: 4px 0; }
+.msg-body p:first-child { margin-top: 0; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-body h1,.msg-body h2,.msg-body h3,.msg-body h4 { font-weight: 600; line-height: 1.3; margin: 10px 0 4px; }
+.msg-body h1 { font-size: 15px; }
+.msg-body h2 { font-size: 14px; }
+.msg-body h3,.msg-body h4 { font-size: 13px; }
+.msg-body ul,.msg-body ol { padding-left: 18px; margin: 4px 0; }
+.msg-body li { margin: 2px 0; }
+.msg-body li > p { margin: 0; }
+.msg-body blockquote { border-left: 3px solid var(--border); padding: 2px 0 2px 10px; margin: 6px 0; color: var(--text-dim); }
+.msg-body a { color: var(--accent); text-decoration: none; }
+.msg-body a:hover { text-decoration: underline; }
+.msg-body hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.msg-body table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
+.msg-body th,.msg-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.msg-body th { background: var(--bg2); font-weight: 600; }
+.msg-body code { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-family: "Fira Code", "JetBrains Mono", monospace; font-size: 12px; }
+.msg-body pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+.msg-body pre code { background: none; border: none; padding: 0; font-size: 12px; }
+.tool-call { display: flex; align-items: center; gap: 8px; background: var(--tool-bg); border: 1px solid var(--border); border-left: 2px solid var(--yellow); border-radius: 6px; padding: 7px 10px; margin: 4px 0; font-family: "Fira Code", monospace; font-size: 11px; transition: border-left-color 0.2s, background 0.2s; }
+.tool-call.running { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--tool-bg)); }
+.tool-call.running .tool-name { color: var(--accent); }
+.tool-name { color: var(--yellow); font-weight: 600; white-space: nowrap; flex-shrink: 0; transition: color 0.2s; }
+.tool-input { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tool-spinner { flex-shrink: 0; width: 11px; height: 11px; border: 1.5px solid rgba(26,108,246,0.25); border-top-color: var(--accent); border-radius: 50%; animation: toolSpin 0.65s linear infinite; }
+@keyframes toolSpin { to { transform: rotate(360deg); } }
+.cost { font-size: 10px; color: var(--text-dim); text-align: right; margin-top: 2px; }
+.typing { display: flex; gap: 4px; align-items: center; padding: 4px 0; }
+.typing span { width: 5px; height: 5px; background: var(--text-dim); border-radius: 50%; animation: blink 1.2s infinite; }
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
+
+/* ── Slash popup ── */
+#input-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+#slash-popup {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  z-index: 100;
+  max-height: 260px;
+  overflow-y: auto;
+}
+#slash-popup.open { display: block; }
+
+.slash-header {
+  padding: 6px 12px 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border: none;
+  width: 100%;
+  background: none;
+  text-align: left;
+  color: var(--text);
+}
+.slash-item:hover,
+.slash-item.active { background: var(--bg3); }
+.slash-item.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg3)); }
+
+.slash-cmd {
+  font-family: "Fira Code", "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--accent);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slash-cmd em {
+  font-style: normal;
+  color: var(--text);
+  font-weight: 600;
+}
+.slash-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.slash-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.slash-badge.builtin {
+  background: rgba(26, 108, 246, 0.08);
+  color: var(--accent);
+  border: 1px solid rgba(26, 108, 246, 0.15);
+}
+.slash-badge.skill {
+  background: rgba(26, 122, 63, 0.08);
+  color: var(--green);
+  border: 1px solid rgba(26, 122, 63, 0.15);
+}
+
+/* ── Composer ── */
+#input-wrap {
+  padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+}
+
+/* ── Inline error message ── */
+.msg-error {
+  display: flex;
+  justify-content: center;
+  padding: 0 14px;
+}
+.msg-error-text {
+  font-size: 11.5px;
+  color: var(--red);
+  background: rgba(192,57,43,0.07);
+  border: 1px solid rgba(192,57,43,0.14);
+  border-radius: 6px;
+  padding: 5px 12px;
+  max-width: 90%;
+  text-align: center;
+  line-height: 1.5;
+}
+
+#composer {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 0px rgba(26,108,246,0);
+  transition: box-shadow 0.2s;
+  overflow: hidden;
+}
+#composer:focus-within {
+  border-color: rgba(26,108,246,0.35);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 3px rgba(26,108,246,0.08);
+}
+
+/* context chip — sits inside composer, above textarea */
+#context-chip {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin: 9px 10px 0;
+  padding: 4px 5px 4px 9px;
+  background: rgba(26,108,246,0.07);
+  border: 1px solid rgba(26,108,246,0.15);
+  border-radius: 20px;
+  width: fit-content;
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+#context-chip.visible { display: flex; }
+#context-chip:hover {
+  background: rgba(26,108,246,0.10);
+  border-color: rgba(26,108,246,0.24);
+}
+#context-chip.context-disabled {
+  background: rgba(138,134,128,0.07);
+  border-color: rgba(138,134,128,0.18);
+}
+#context-chip.context-disabled:hover {
+  background: rgba(138,134,128,0.11);
+  border-color: rgba(138,134,128,0.26);
+}
+#context-chip.context-disabled #ctx-path {
+  color: var(--text-dim);
+}
+
+/* quote chip — selected text from reader */
+#quote-chip {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 10px 0;
+  padding: 5px 6px 5px 10px;
+  background: rgba(146, 96, 10, 0.06);
+  border: 1px solid rgba(146, 96, 10, 0.18);
+  border-left: 2px solid rgba(146, 96, 10, 0.45);
+  border-radius: 6px;
+  max-width: calc(100% - 20px);
+}
+#quote-chip.visible { display: flex; }
+#quote-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #92600a;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+#quote-text {
+  font-size: 11px;
+  color: #92600a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  font-style: italic;
+  opacity: 0.85;
+}
+#quote-dismiss {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  color: #92600a;
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0.5;
+  line-height: 1;
+}
+#quote-dismiss:hover { opacity: 1; }
+#quote-lines {
+  font-size: 10px;
+  color: #92600a;
+  flex-shrink: 0;
+  opacity: 0.55;
+  font-weight: 500;
+}
+
+#ctx-path {
+  font-size: 11px;
+  color: var(--accent);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+#ctx-toggle {
+  flex-shrink: 0;
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  border: 1px solid rgba(26,108,246,0.22);
+  border-radius: 50%;
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+}
+#ctx-toggle:hover {
+  background: rgba(26,108,246,0.08);
+  border-color: rgba(26,108,246,0.38);
+}
+#ctx-toggle:active { transform: scale(0.94); }
+#context-chip.context-disabled #ctx-toggle {
+  background: #fff;
+  border-color: rgba(138,134,128,0.26);
+  color: var(--text-dim);
+}
+#ctx-toggle svg { width: 14px; height: 14px; }
+#ctx-eye-off { display: none; }
+#context-chip.context-disabled #ctx-eye { display: none; }
+#context-chip.context-disabled #ctx-eye-off { display: block; }
+
+/* textarea row */
+#prompt-row {
+  display: flex;
+  align-items: flex-end;
+  padding: 6px 6px 6px 12px;
+  gap: 6px;
+}
+
+#prompt {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 4px 0;
+  font-size: 13.5px;
+  font-family: inherit;
+  resize: none;
+  line-height: 1.55;
+  max-height: 140px;
+  min-height: 26px;
+  outline: none;
+}
+#prompt::placeholder { color: #b0aea9; }
+
+#send {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: var(--text);
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, transform 0.1s;
+}
+#send:disabled { background: #d0cdc9; cursor: default; }
+#send:not(:disabled):hover { background: #3a3835; }
+#send:not(:disabled):active { transform: scale(0.93); }
+#send.stopping { background: var(--red); }
+#send.stopping:hover { background: #a02d22; }
+
+#messages::-webkit-scrollbar { width: 5px; }
+#messages::-webkit-scrollbar-track { background: transparent; }
+#messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+#slash-popup::-webkit-scrollbar { width: 4px; }
+#slash-popup::-webkit-scrollbar-track { background: transparent; }
+#slash-popup::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Thinking block ── */
+.thinking-block {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  transition: border-left-color 0.4s ease;
+}
+.thinking-block.thinking-active {
+  border-left-color: var(--accent);
+}
+.thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  list-style: none;
+  user-select: none;
+}
+.thinking-summary::-webkit-details-marker { display: none; }
+
+/* 思考进行中：脉冲圆点 */
+.thinking-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: none;
+  animation: thinkingPulse 1.6s ease-in-out infinite;
+}
+.thinking-active .thinking-dot { display: block; }
+@keyframes thinkingPulse {
+  0%, 100% { opacity: 0.28; transform: scale(0.65); }
+  50%       { opacity: 1;    transform: scale(1); }
+}
+
+.thinking-label { flex: 1; }
+.thinking-active .thinking-label { color: var(--accent); opacity: 0.8; }
+
+/* 折叠箭头：思考中隐藏，结束后显示 */
+.thinking-chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  opacity: 0.45;
+  transition: transform 0.15s;
+}
+.thinking-active .thinking-chevron { display: none; }
+details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg); }
+
+.thinking-content {
+  padding: 4px 10px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 思考进行中限高，防止刷屏 */
+  max-height: 120px;
+  overflow-y: auto;
+}
+.thinking-block:not(.thinking-active) .thinking-content {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.history-block {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  background: rgba(0, 0, 0, 0.015);
+}
+.history-block summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  list-style: none;
+  user-select: none;
+}
+.history-block summary::-webkit-details-marker { display: none; }
+.history-block summary::after {
+  content: "▶";
+  margin-left: auto;
+  font-size: 9px;
+  opacity: 0.45;
+  transition: transform 0.15s;
+}
+.history-block[open] summary::after { transform: rotate(90deg); }
+.history-block-content {
+  padding: 4px 10px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+.history-block-results {
+  display: grid;
+  gap: 6px;
+  padding: 2px 10px 8px;
+}
+.history-result {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.history-result-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.history-result-url {
+  margin-top: 2px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* ── Image attachment ── */
+#image-chip {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 10px 0;
+  max-width: calc(100% - 20px);
+}
+#image-chip.visible { display: flex; }
+.img-thumb-wrap {
+  position: relative;
+  width: 52px; height: 52px;
+  flex-shrink: 0;
+}
+.img-thumb-wrap img {
+  width: 52px; height: 52px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  display: block;
+}
+.img-thumb-del {
+  position: absolute;
+  top: -5px; right: -5px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.12s;
+}
+.img-thumb-del:hover { background: var(--red); }
+#btn-attach {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  border-radius: 6px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+#btn-attach:hover { background: var(--bg3); color: var(--text); }
+
+/* ── Chat header ── */
+#chat-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 0 14px;
+  height: 44px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+#chat-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+#header-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 5px 0;
+}
+#header-controls::-webkit-scrollbar { display: none; }
+#header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: max-content;
+}
+#rate-limit-chip {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 13px;
+  border: 1px solid rgba(138,134,128,0.18);
+  background: rgba(138,134,128,0.07);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+#rate-limit-chip.visible { display: inline-flex; }
+#rate-limit-chip.available {
+  border-color: rgba(26,122,63,0.18);
+  background: rgba(26,122,63,0.07);
+  color: var(--green);
+}
+#rate-limit-chip.warning {
+  border-color: rgba(146,96,10,0.24);
+  background: rgba(146,96,10,0.08);
+  color: var(--yellow);
+}
+#rate-limit-chip.critical {
+  border-color: rgba(192,57,43,0.22);
+  background: rgba(192,57,43,0.08);
+  color: var(--red);
+}
+#rate-limit-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+}
+.header-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+.header-btn:hover { background: var(--bg3); color: var(--text); }
+
+/* ── History dropdown ── */
+#history-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+}
+#history-backdrop.open { display: block; }
+
+#history-dropdown {
+  display: none;
+  position: absolute;
+  top: 48px;
+  right: 10px;
+  width: min(300px, calc(100% - 20px));
+  max-height: 62vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
+  z-index: 200;
+  flex-direction: column;
+  overflow: hidden;
+  transform-origin: top right;
+}
+#history-dropdown.open {
+  display: flex;
+  animation: dropFadeIn 0.15s ease;
+}
+@keyframes dropFadeIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0); }
+}
+
+/* ── Header pickers ── */
+#model-picker,
+#permission-picker,
+#effort-picker {
+  position: relative;
+}
+.picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  max-width: 128px;
+}
+.picker-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picker-btn:hover { background: var(--bg3); color: var(--text); }
+.picker-btn svg { opacity: 0.45; transition: transform 0.15s; }
+.picker-btn.open svg { transform: rotate(180deg); }
+.picker-dropdown {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: min(190px, calc(100vw - 28px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06);
+  z-index: 1000;
+  overflow: hidden;
+}
+#permission-dropdown {
+  width: min(210px, calc(100vw - 28px));
+}
+.picker-dropdown.open { display: block; animation: dropFadeIn 0.12s ease; }
+.picker-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--border);
+}
+.picker-option:last-child { border-bottom: none; }
+.picker-option:hover { background: var(--bg2); }
+.picker-option.active { background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.picker-menu-title {
+  padding: 7px 12px 5px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.picker-option-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.picker-option-code {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.picker-option-desc { font-size: 10.5px; color: var(--text-dim); }
+@media (max-width: 360px) {
+  #chat-title { display: none; }
+  #chat-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0 10px;
+    column-gap: 6px;
+  }
+  #header-controls { gap: 4px; }
+  #rate-limit-chip { padding: 0 6px; font-size: 10.5px; }
+  #rate-limit-dot { display: none; }
+  .picker-btn {
+    height: 25px;
+    padding: 0 6px;
+    font-size: 11px;
+    max-width: 96px;
+  }
+}
+@media (max-width: 300px) {
+  #rate-limit-chip { width: 28px; padding: 0; justify-content: center; }
+  #rate-limit-label { display: none; }
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.history-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.history-close {
+  width: 22px; height: 22px;
+  border: none; background: var(--bg3); border-radius: 50%;
+  cursor: pointer; font-size: 15px;
+  display: grid; place-items: center; color: var(--text-dim);
+  line-height: 1; padding: 0; transition: background 0.12s;
+}
+.history-close:hover { background: var(--border); color: var(--text); }
+.history-list { overflow-y: auto; flex: 1; }
+.history-list::-webkit-scrollbar { width: 4px; }
+.history-list::-webkit-scrollbar-track { background: transparent; }
+.history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.history-empty {
+  padding: 28px 14px; text-align: center;
+  color: var(--text-dim); font-size: 12px;
+}
+.history-item {
+  display: flex; align-items: center;
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; gap: 8px; transition: background 0.1s;
+}
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: var(--bg2); }
+.history-item.current { background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.history-item-info { flex: 1; min-width: 0; }
+.history-item-title {
+  font-size: 12px; font-weight: 500; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.history-item-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.history-item-del {
+  flex-shrink: 0; width: 26px; height: 26px;
+  border: none; background: none; border-radius: 5px;
+  cursor: pointer; display: grid; place-items: center;
+  color: var(--text-dim); opacity: 0.4;
+  transition: all 0.12s; padding: 0;
+}
+.history-item-del:hover { background: rgba(192,57,43,0.1); color: var(--red); opacity: 1; }
+
+/* ── Auth settings (账号配置列表) ── */
+#auth-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 290;
+  background: rgba(26,25,22,0.14);
+}
+#auth-backdrop.open { display: block; }
+#auth-dialog {
+  display: none;
+  position: fixed;
+  top: 54px;
+  right: 10px;
+  z-index: 300;
+  width: min(320px, calc(100% - 20px));
+  max-height: calc(100dvh - 74px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 14px 44px rgba(0,0,0,0.16), 0 3px 10px rgba(0,0,0,0.08);
+  transform-origin: top right;
+  flex-direction: column;
+}
+#auth-dialog.open {
+  display: flex;
+  animation: dropFadeIn 0.15s ease;
+}
+
+/* header */
+.auth-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 12px 11px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.auth-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+  flex: 1;
+}
+#auth-status {
+  font-size: 10.5px;
+  opacity: 0;
+  transition: opacity 0.25s;
+  white-space: nowrap;
+}
+#auth-status.visible { opacity: 1; }
+#auth-status.saving { color: var(--text-dim); }
+#auth-status.saved  { color: var(--green); }
+#auth-status.error  { color: var(--red); }
+.auth-close {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border: 0; border-radius: 50%;
+  background: var(--bg3);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  display: grid; place-items: center;
+  transition: background 0.12s, color 0.12s;
+}
+.auth-close:hover { background: var(--border); color: var(--text); }
+
+/* ── Profile list ── */
+#auth-profile-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 6px 0;
+}
+#auth-profile-list::-webkit-scrollbar { width: 4px; }
+#auth-profile-list::-webkit-scrollbar-track { background: transparent; }
+#auth-profile-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.auth-profile-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--bg3);
+}
+.auth-profile-item:last-child { border-bottom: none; }
+.auth-profile-item:hover { background: var(--bg2); }
+.auth-profile-item.active { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+
+/* 左侧 checkmark */
+.auth-profile-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  display: grid;
+  place-items: center;
+  color: transparent;
+  font-size: 10px;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.auth-profile-item.active .auth-profile-check {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 中间文字 */
+.auth-profile-info {
+  flex: 1;
+  min-width: 0;
+}
+.auth-profile-name {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-profile-item.active .auth-profile-name { color: var(--accent); font-weight: 650; }
+.auth-profile-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右侧操作按钮组 */
+.auth-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.auth-profile-item:hover .auth-profile-actions { opacity: 1; }
+
+.auth-profile-edit,
+.auth-profile-del {
+  width: 24px; height: 24px;
+  border: none; border-radius: 5px;
+  background: none;
+  cursor: pointer;
+  display: grid; place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+}
+.auth-profile-edit { color: var(--text-dim); }
+.auth-profile-edit:hover { background: var(--bg3); color: var(--text); }
+.auth-profile-del  { color: var(--text-dim); }
+.auth-profile-del:hover  { background: rgba(192,57,43,0.1); color: var(--red); }
+
+/* ── Add account 区域 ── */
+#auth-add-section {
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#auth-add-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s, background 0.12s;
+}
+#auth-add-toggle:hover { color: var(--text); background: var(--bg2); }
+#auth-add-toggle .add-icon {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  display: grid; place-items: center;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* 展开的添加表单 */
+#auth-add-form {
+  display: none;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--bg3);
+}
+#auth-add-form.open { display: flex; }
+
+/* 表单内的 segmented control（provider 选择） */
+.add-segment {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+  margin: 10px 0 10px;
+}
+.add-seg-btn {
+  height: 24px;
+  border: none; border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit; font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+}
+.add-seg-btn:hover:not(.active) { color: var(--text); }
+.add-seg-btn.active {
+  background: #fff; color: var(--text); font-weight: 650;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.09), 0 0 0 0.5px rgba(0,0,0,0.05);
+}
+
+/* 表单字段行 */
+.add-field {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--bg3);
+}
+.add-field:first-of-type { border-top: none; }
+.add-field > label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.add-field input {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit; font-size: 12px;
+  padding: 0 8px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+.add-field input:focus {
+  border-color: rgba(26,108,246,0.38);
+  box-shadow: 0 0 0 3px rgba(26,108,246,0.08);
+}
+.add-field.hidden { display: none; }
+.add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.add-cancel {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit; font-size: 12px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.add-cancel:hover { background: var(--bg3); color: var(--text); }
+.add-submit {
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: var(--text);
+  color: #fff;
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.add-submit:hover { background: #3a3835; }
+.add-submit:disabled { background: #d0cdc9; cursor: default; }
+.add-error {
+  font-size: 11px;
+  color: var(--red);
+  min-height: 0;
+  margin-top: 4px;
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="chat-header">
+    <span id="chat-title">Claude</span>
+    <div id="header-controls">
+      <div id="model-picker">
+        <button id="model-btn" class="picker-btn" aria-label="选择模型" aria-haspopup="listbox">
+          <span id="model-label">Sonnet 4.6</span>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 2.8L4 5.3l2.5-2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div id="model-dropdown" class="picker-dropdown" role="listbox" aria-label="模型列表">
+          <button class="picker-option model-option active" data-model="claude-sonnet-4-6" data-label="Sonnet 4.6" role="option" aria-selected="true">
+            <span class="picker-option-name">Sonnet 4.6</span>
+            <span class="picker-option-desc">快速均衡</span>
+          </button>
+          <button class="picker-option model-option" data-model="claude-opus-4-7" data-label="Opus 4.7" role="option" aria-selected="false">
+            <span class="picker-option-name">Opus 4.7</span>
+            <span class="picker-option-desc">最强推理</span>
+          </button>
+          <button class="picker-option model-option" data-model="claude-haiku-4-5-20251001" data-label="Haiku 4.5" role="option" aria-selected="false">
+            <span class="picker-option-name">Haiku 4.5</span>
+            <span class="picker-option-desc">极速轻量</span>
+          </button>
+        </div>
+      </div>
+      <div id="effort-picker">
+        <button id="effort-btn" class="picker-btn" aria-label="选择思考深度" aria-haspopup="listbox">
+          <span id="effort-label">思考：标准</span>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 2.8L4 5.3l2.5-2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div id="effort-dropdown" class="picker-dropdown" role="listbox" aria-label="思考深度">
+          <div class="picker-menu-title">思考深度</div>
+          <button class="picker-option effort-option" data-effort="low" data-label="轻" role="option" aria-selected="false">
+            <span class="picker-option-name">轻 <span class="picker-option-code">low</span></span>
+            <span class="picker-option-desc">少想一点，更快回复</span>
+          </button>
+          <button class="picker-option effort-option active" data-effort="medium" data-label="标准" role="option" aria-selected="true">
+            <span class="picker-option-name">标准 <span class="picker-option-code">medium</span></span>
+            <span class="picker-option-desc">日常思考强度</span>
+          </button>
+          <button class="picker-option effort-option" data-effort="high" data-label="深" role="option" aria-selected="false">
+            <span class="picker-option-name">深 <span class="picker-option-code">high</span></span>
+            <span class="picker-option-desc">多想一些，适合复杂问题</span>
+          </button>
+          <button class="picker-option effort-option" data-effort="xhigh" data-label="更深" role="option" aria-selected="false">
+            <span class="picker-option-name">更深 <span class="picker-option-code">xhigh</span></span>
+            <span class="picker-option-desc">更充分地推理</span>
+          </button>
+          <button class="picker-option effort-option" data-effort="max" data-label="最深" role="option" aria-selected="false">
+            <span class="picker-option-name">最深 <span class="picker-option-code">max</span></span>
+            <span class="picker-option-desc">尽可能深入思考</span>
+          </button>
+        </div>
+      </div>
+      <div id="permission-picker">
+        <button id="permission-btn" class="picker-btn" aria-label="选择权限模式" aria-haspopup="listbox">
+          <span id="permission-label">自动执行</span>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 2.8L4 5.3l2.5-2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div id="permission-dropdown" class="picker-dropdown" role="listbox" aria-label="权限模式">
+          <button class="picker-option permission-option" data-permission-mode="plan" data-label="计划" role="option" aria-selected="false">
+            <span class="picker-option-name">计划 <span class="picker-option-code">plan</span></span>
+            <span class="picker-option-desc">Plan mode</span>
+          </button>
+          <button class="picker-option permission-option" data-permission-mode="acceptEdits" data-label="允许编辑" role="option" aria-selected="false">
+            <span class="picker-option-name">允许编辑 <span class="picker-option-code">acceptEdits</span></span>
+            <span class="picker-option-desc">acceptEdits</span>
+          </button>
+          <button class="picker-option permission-option active" data-permission-mode="auto" data-label="自动执行" role="option" aria-selected="true">
+            <span class="picker-option-name">自动执行 <span class="picker-option-code">auto</span></span>
+            <span class="picker-option-desc">Auto mode</span>
+          </button>
+          <button class="picker-option permission-option" data-permission-mode="bypassPermissions" data-label="跳过权限检查" role="option" aria-selected="false">
+            <span class="picker-option-name">跳过权限检查 <span class="picker-option-code">bypassPermissions</span></span>
+            <span class="picker-option-desc">bypassPermissions</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="header-actions">
+      <div id="rate-limit-chip" aria-live="polite">
+        <span id="rate-limit-dot"></span>
+        <span id="rate-limit-label"></span>
+      </div>
+      <button id="btn-settings" class="header-btn" title="账号设置" aria-label="账号设置">
+        <svg width="17" height="17" viewBox="3 3 18 18" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M10.45 6.2L9.93 4.27L14.07 4.27L13.55 6.2A6 6 0 0 1 16.24 7.76L17.66 6.34L19.73 9.93L17.8 10.45A6 6 0 0 1 17.8 13.55L19.73 14.07L17.66 17.66L16.24 16.24A6 6 0 0 1 13.55 17.8L14.07 19.73L9.93 19.73L10.45 17.8A6 6 0 0 1 7.76 16.24L6.34 17.66L4.27 14.07L6.2 13.55A6 6 0 0 1 6.2 10.45L4.27 9.93L6.34 6.34L7.76 7.76A6 6 0 0 1 10.45 6.2ZM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0Z"/>
+        </svg>
+      </button>
+      <button id="btn-history" class="header-btn" title="历史对话" aria-label="历史对话">
+        <svg width="17" height="17" viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="7.5" cy="7.5" r="5.8" stroke="currentColor" stroke-width="1.3"/><path d="M7.5 4.5V7.5l2.2 2.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-new" class="header-btn" title="新建对话" aria-label="新建对话">
+        <svg width="17" height="17" viewBox="0 0 1025 1024" fill="currentColor" aria-hidden="true"><path d="M362.35275031 744.50915281C360.90735406 745.95456594 355.00876719 749.18733219 353.07266187 749.61593937L201.24437562 783.22678063 240.72035281 822.70274188 274.33119406 670.87445562C274.78279156 668.83448844 277.92121344 663.1111175 279.43796375 661.59436719L784.37849937 156.65383156C797.30620719 143.72614063 797.30620719 122.76619625 784.37849937 109.83848844 771.45079156 96.9107975 750.49084719 96.9107975 737.56315625 109.83848844L232.62262062 614.77902313C222.18862906 625.21301562 212.86610187 642.21395281 209.68928 656.56441344L176.07843875 808.3927175C170.84650437 832.02665938 191.92047406 853.10062906 215.55441689 847.86867875L367.38270313 814.2578375C381.62422062 811.10513094 398.80176594 801.69082437 409.16811031 791.32449687L914.10862906 286.38397812C927.03633687 273.45627031 927.03633687 252.49632594 914.10862906 239.56863406 901.18093813 226.64092719 880.22099281 226.64092719 867.29328594 239.56863406L362.35275031 744.50915281ZM420.73357813 100.14272L80.49633687 100.14272C53.71030063 100.14272 32 121.85523875 32 148.63905687L32 943.45078062C32 970.23681687 53.71251875 991.9471175 80.49633687 991.9471175L875.30806062 991.9471175C902.09409687 991.9471175 923.80441344 970.23459875 923.80441344 943.45078062L923.80441344 603.21353938 923.80441344 433.09491875C923.80441344 414.8123975 908.98348719 399.99147031 890.70096594 399.99147031 872.41842781 399.99147031 857.5975175 414.8123975 857.5975175 433.09491875L857.5975175 603.21353938 857.5975175 943.45078062C857.5975175 933.67106188 865.52753094 925.74022063 875.30806062 925.74022063L80.49633687 925.74022063C90.27607156 925.74022063 98.20689687 933.67025094 98.20689687 943.45078062L98.20689687 148.63905687C98.20689687 158.41879156 90.2768825 166.34961687 80.49633687 166.34961687L420.73357813 166.34961687 590.85219875 166.34961687C609.13473689 166.34961687 623.95564719 151.52868969 623.95564719 133.24616844 623.95564719 114.96363031 609.13473689 100.14272 590.85219875 100.14272L420.73357813 100.14272ZM977.81932719 222.67326313C996.72561687 203.76697344 996.71626437 173.26116969 977.85502906 154.39993344L923.70111406 100.24601938 869.54718313 46.09208844C850.76566063 27.31056594 820.11883625 27.28280844 801.27385344 46.12779031L737.56315625 109.83848844C724.63544844 122.76619625 724.63544844 143.72614063 737.56315625 156.65383156 750.49084719 169.58153938 771.45079156 169.58153938 784.37849937 156.65383156L848.0891975 92.94313344C841.05977938 99.97255156 829.78674781 99.96235625 822.73184 92.90743156L876.88577094 147.0613625 931.03968594 201.2152775C924.05194437 194.22753687 924.04845219 182.81346781 931.00398311 175.85792L867.29328594 239.56863406C854.36557813 252.49632594 854.36557813 273.45627031 867.29328594 286.38397812 880.22099281 299.31166906 901.18093813 299.31166906 914.10862906 286.38397812L977.81932719 222.67326313Z"/></svg>
+      </button>
+    </div>
+  </header>
+  <div id="messages"></div>
+  <div id="history-backdrop"></div>
+  <div id="history-dropdown" role="dialog" aria-label="历史对话">
+    <div class="history-head">
+      <span class="history-title">历史对话</span>
+      <button class="history-close" id="history-close" title="关闭" aria-label="关闭历史面板">×</button>
+    </div>
+    <div class="history-list" id="history-list"></div>
+  </div>
+  <div id="auth-backdrop"></div>
+  <section id="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-dialog-title">
+    <header class="auth-head">
+      <span class="auth-title" id="auth-dialog-title">账号</span>
+      <span id="auth-status" aria-live="polite"></span>
+      <button class="auth-close" id="auth-close" title="关闭" aria-label="关闭账号设置">×</button>
+    </header>
+
+    <!-- 账号列表 -->
+    <div id="auth-profile-list" role="listbox" aria-label="账号列表"></div>
+
+    <!-- 底部添加区域 -->
+    <div id="auth-add-section">
+      <button id="auth-add-toggle" type="button" aria-expanded="false">
+        <span class="add-icon" aria-hidden="true">＋</span>
+        添加账号
+      </button>
+      <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
+        <!-- provider 三段选择（编辑时隐藏，不能改类型） -->
+        <div class="add-segment" id="add-segment" role="radiogroup" aria-label="账号类型">
+          <button class="add-seg-btn active" data-value="deepseek" role="radio" aria-checked="true">DeepSeek</button>
+          <button class="add-seg-btn" data-value="openrouter" role="radio" aria-checked="false">OpenRouter</button>
+          <button class="add-seg-btn" data-value="custom" role="radio" aria-checked="false">自定义</button>
+        </div>
+        <!-- 名称 -->
+        <div class="add-field">
+          <label for="add-name">名称</label>
+          <input id="add-name" type="text" autocomplete="off" spellcheck="false" placeholder="DeepSeek Pro" />
+        </div>
+        <!-- API Key -->
+        <div class="add-field" id="add-field-key">
+          <label for="add-key">Key</label>
+          <input id="add-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+        </div>
+        <!-- Opus 模型 -->
+        <div class="add-field" id="add-field-opus">
+          <label for="add-opus">Opus 模型</label>
+          <input id="add-opus" type="text" autocomplete="off" spellcheck="false" placeholder="旗舰级任务" />
+        </div>
+        <!-- Sonnet 模型 -->
+        <div class="add-field" id="add-field-sonnet">
+          <label for="add-sonnet">Sonnet 模型</label>
+          <input id="add-sonnet" type="text" autocomplete="off" spellcheck="false" placeholder="均衡任务（留空同 Opus）" />
+        </div>
+        <!-- Haiku 模型 -->
+        <div class="add-field" id="add-field-haiku">
+          <label for="add-haiku">Haiku 模型</label>
+          <input id="add-haiku" type="text" autocomplete="off" spellcheck="false" placeholder="快速 / subagent（留空同 Sonnet）" />
+        </div>
+        <!-- Base URL（仅自定义时显示） -->
+        <div class="add-field hidden" id="add-field-baseurl">
+          <label for="add-baseurl">Base URL</label>
+          <input id="add-baseurl" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com" />
+        </div>
+        <p class="add-error" id="add-error"></p>
+        <div class="add-actions">
+          <button class="add-cancel" id="add-cancel" type="button">取消</button>
+          <button class="add-submit" id="add-submit" type="button">添加</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div id="input-wrap">
+    <div id="slash-popup" role="listbox" aria-label="命令列表"></div>
+    <div id="composer">
+      <div id="image-chip"></div>
+      <div id="quote-chip">
+        <span id="quote-label">引用</span>
+        <span id="quote-text"></span>
+        <span id="quote-lines"></span>
+        <button id="quote-dismiss" title="移除引用" aria-label="移除引用">×</button>
+      </div>
+      <div id="context-chip">
+        <span id="ctx-path"></span>
+        <button id="ctx-toggle" title="不发送当前笔记上下文" aria-label="切换当前笔记上下文" aria-pressed="true">
+          <svg id="ctx-eye" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.7" stroke="currentColor" stroke-width="1.8"/></svg>
+          <svg id="ctx-eye-off" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 3l18 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M10.6 5.2A10.8 10.8 0 0 1 12 5c6.1 0 9.5 7 9.5 7a16.3 16.3 0 0 1-3 3.6M6.4 6.8C3.9 8.5 2.5 12 2.5 12s3.4 7 9.5 7c1.5 0 2.8-.4 4-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.9 9.9A2.7 2.7 0 0 0 12 14.7c.7 0 1.3-.2 1.8-.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div id="prompt-row">
+        <button id="btn-attach" title="附加图片（或直接粘贴）" aria-label="附加图片">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="11" height="9" rx="1.2" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="5.5" r="1" stroke="currentColor" stroke-width="1.1"/><path d="M1.5 9.5 4.5 6.5l2.5 2.5 2-2 3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <input type="file" id="file-input" accept="image/*" style="display:none" />
+        <textarea id="prompt" rows="1" placeholder="发消息给 Claude… (/ 调用 skill)"></textarea>
+        <button id="send" aria-label="发送">
+          <svg id="icon-send" width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 12V2M7 2L2.5 6.5M7 2L11.5 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <svg id="icon-stop" width="10" height="10" viewBox="0 0 10 10" fill="none" style="display:none">
+            <rect x="1" y="1" width="8" height="8" rx="1.5" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const messagesEl  = document.getElementById("messages");
+const promptEl    = document.getElementById("prompt");
+const sendBtn     = document.getElementById("send");
+const popupEl     = document.getElementById("slash-popup");
+const contextChip = document.getElementById("context-chip");
+const ctxPathEl   = document.getElementById("ctx-path");
+const ctxToggle   = document.getElementById("ctx-toggle");
+const rateLimitChip  = document.getElementById("rate-limit-chip");
+const rateLimitLabel = document.getElementById("rate-limit-label");
+const quoteChip    = document.getElementById("quote-chip");
+const quoteTextEl  = document.getElementById("quote-text");
+const quoteLinesEl = document.getElementById("quote-lines");
+const settingsBtn   = document.getElementById("btn-settings");
+const authDialog    = document.getElementById("auth-dialog");
+const authBackdrop  = document.getElementById("auth-backdrop");
+const authStatusEl  = document.getElementById("auth-status");
+const iconSend = document.getElementById("icon-send");
+const iconStop = document.getElementById("icon-stop");
+
+function showInlineError(text) {
+  const el = document.createElement("div");
+  el.className = "msg-error";
+  el.innerHTML = `<div class="msg-error-text">${renderPlain(text)}</div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+let isGenerating = false;
+let quotedText = null;
+
+// ── Image attachment ──────────────────────────────────────
+const MAX_IMAGES = 20;
+let pendingImages = []; // [{ data: base64, mediaType, previewUrl }]
+
+const imageChip = document.getElementById("image-chip");
+const fileInput = document.getElementById("file-input");
+
+function renderImageChip() {
+  if (pendingImages.length === 0) {
+    imageChip.classList.remove("visible");
+    imageChip.innerHTML = "";
+    return;
+  }
+  imageChip.classList.add("visible");
+  imageChip.innerHTML = pendingImages.map((img, i) =>
+    `<div class="img-thumb-wrap">
+      <img src="${img.previewUrl}" alt="附图${i + 1}" />
+      <button class="img-thumb-del" data-idx="${i}" title="移除" aria-label="移除图片">×</button>
+    </div>`
+  ).join("");
+  imageChip.querySelectorAll(".img-thumb-del").forEach(btn => {
+    btn.addEventListener("click", () => {
+      pendingImages.splice(Number(btn.dataset.idx), 1);
+      renderImageChip();
+    });
+  });
+}
+
+function addImage(dataUrl, mediaType) {
+  if (pendingImages.length >= MAX_IMAGES) return;
+  pendingImages.push({ data: dataUrl.split(",")[1], mediaType, previewUrl: dataUrl });
+  renderImageChip();
+}
+
+function clearImages() {
+  pendingImages = [];
+  renderImageChip();
+}
+
+document.getElementById("btn-attach").addEventListener("click", () => {
+  fileInput.value = "";
+  fileInput.click();
+});
+
+fileInput.addEventListener("change", () => {
+  Array.from(fileInput.files).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => addImage(e.target.result, file.type);
+    reader.readAsDataURL(file);
+  });
+});
+
+// Capture pasted images
+document.addEventListener("paste", (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imgItems = items.filter(item => item.type.startsWith("image/"));
+  if (imgItems.length === 0) return;
+  e.preventDefault();
+  imgItems.forEach(item => {
+    const file = item.getAsFile();
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => addImage(ev.target.result, file.type);
+    reader.readAsDataURL(file);
+  });
+});
+
+// ── History state ─────────────────────────────────────────
+let messageLog = [];       // messages in current conversation
+let currentConvId = null;  // current conversation id
+let currentSessionId = null; // current Claude session id
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+
+async function fetchHistory() {
+  try {
+    const res = await fetch("api/history");
+    if (res.ok) return await res.json();
+  } catch { }
+  return [];
+}
+
+// ── Auth: 账号配置列表 ────────────────────────────────────────
+const CLAUDE_MODELS = [
+  { model: "claude-sonnet-4-6",          label: "Sonnet 4.6", name: "Sonnet 4.6", desc: "快速均衡" },
+  { model: "claude-opus-4-7",            label: "Opus 4.7",   name: "Opus 4.7",   desc: "最强推理" },
+  { model: "claude-haiku-4-5-20251001",  label: "Haiku 4.5",  name: "Haiku 4.5",  desc: "极速轻量" },
+];
+
+let _profileData = { activeProfileId: "p_claude", profiles: [] };
+
+function getActiveProfile() {
+  return _profileData.profiles.find(p => p.id === _profileData.activeProfileId) ?? _profileData.profiles[0] ?? null;
+}
+
+function renderModelOptions(activeProfile) {
+  const provider = activeProfile?.provider || "claude";
+  let options;
+  if (provider === "claude") {
+    options = CLAUDE_MODELS;
+  } else {
+    // 收集三档模型，相同模型合并显示 tier 标签
+    const tierEntries = [
+      ["Opus",   activeProfile?.opusModel   || ""],
+      ["Sonnet", activeProfile?.sonnetModel || ""],
+      ["Haiku",  activeProfile?.haikuModel  || ""],
+    ].filter(([, m]) => m);
+    // 合并相同模型的 tier 标签
+    const modelTiers = {};
+    for (const [tier, m] of tierEntries) {
+      if (!modelTiers[m]) modelTiers[m] = [];
+      modelTiers[m].push(tier);
+    }
+    options = Object.entries(modelTiers).map(([model, tiers]) => {
+      const shortName = model.split("/").pop() || model;
+      return { model, label: shortName, name: shortName, desc: tiers.join("/") };
+    });
+    if (!options.length) options = CLAUDE_MODELS;
+  }
+  const key = `model:${provider === "claude" ? "claude" : activeProfile?.id || provider}`;
+  const saved = localStorage.getItem(key);
+  selectedModel = options.some(o => o.model === saved) ? saved : options[0].model;
+  modelDropdown.innerHTML = options.map(o => `
+    <button class="picker-option model-option${o.model === selectedModel ? " active" : ""}" data-model="${escapeAttr(o.model)}" data-label="${escapeAttr(o.label)}" role="option" aria-selected="${o.model === selectedModel ? "true" : "false"}">
+      <span class="picker-option-name">${escapeAttr(o.name)}</span>
+      <span class="picker-option-desc">${escapeAttr(o.desc)}</span>
+    </button>
+  `).join("");
+  modelLabel.textContent = options.find(o => o.model === selectedModel)?.label ?? options[0].label;
+}
+
+// ── Escape helpers ─────────────────────────────────────────
+function escapeAttr(value) {
+  return String(value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function escapeHtml(value) {
+  return String(value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// ── Status indicator ──────────────────────────────────────
+let _statusHideTimer = null;
+function setAuthStatus(type, text) {
+  clearTimeout(_statusHideTimer);
+  authStatusEl.textContent = text;
+  authStatusEl.className = `visible ${type}`;
+  if (type === "saved") {
+    _statusHideTimer = setTimeout(() => authStatusEl.classList.remove("visible"), 2000);
+  }
+}
+
+// ── Provider display metadata ─────────────────────────────
+const PROVIDER_COLOR = {
+  claude: "#d97757", deepseek: "#1a6cf6", openrouter: "#8b5cf6", custom: "#6b7280",
+};
+const PROVIDER_LABEL = {
+  claude: "Claude", deepseek: "DeepSeek", openrouter: "OpenRouter", custom: "自定义",
+};
+
+function providerBadge(provider) {
+  const c = PROVIDER_COLOR[provider] ?? PROVIDER_COLOR.custom;
+  const l = PROVIDER_LABEL[provider] ?? provider;
+  return `<span style="font-size:9.5px;font-weight:650;letter-spacing:.04em;padding:1px 5px;border-radius:3px;background:${c}1a;color:${c};border:1px solid ${c}30;flex-shrink:0">${escapeHtml(l)}</span>`;
+}
+
+// ── Render profile list ────────────────────────────────────
+const authProfileList = document.getElementById("auth-profile-list");
+
+function renderProfileList(data) {
+  _profileData = data;
+  authProfileList.innerHTML = data.profiles.map(p => {
+    const isActive = p.id === data.activeProfileId;
+    const metaParts = [];
+    if (p.maskedApiKey) metaParts.push(p.maskedApiKey);
+    // 显示去重后的模型（opus=sonnet 时只显示一个）
+    const allModels = [p.opusModel, p.sonnetModel, p.haikuModel].filter(Boolean);
+    const uniqueModels = [...new Set(allModels)];
+    if (uniqueModels.length) metaParts.push(uniqueModels.map(m => m.split("/").pop() || m).join(" · "));
+    const meta = p.provider === "claude" ? "服务器凭据" : metaParts.join("  ");
+    const canEdit   = p.provider !== "claude";
+    const canDelete = p.provider !== "claude";
+    const actions = (canEdit || canDelete) ? `
+      <span class="auth-profile-actions">
+        ${canEdit   ? `<span class="auth-profile-edit" data-edit="${escapeAttr(p.id)}" title="编辑" aria-label="编辑" role="button">✎</span>` : ""}
+        ${canDelete ? `<span class="auth-profile-del"  data-del="${escapeAttr(p.id)}"  title="删除" aria-label="删除" role="button">×</span>` : ""}
+      </span>` : "";
+    return `<button class="auth-profile-item${isActive ? " active" : ""}" data-id="${escapeAttr(p.id)}" role="option" aria-selected="${isActive}">
+      <span class="auth-profile-check" aria-hidden="true">${isActive ? "✓" : ""}</span>
+      <span class="auth-profile-info">
+        <span class="auth-profile-name">${escapeHtml(p.name)}</span>
+        <span class="auth-profile-meta" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          ${providerBadge(p.provider)}
+          <span style="opacity:.65;font-size:10.5px">${escapeHtml(meta)}</span>
+        </span>
+      </span>
+      ${actions}
+    </button>`;
+  }).join("");
+  renderModelOptions(getActiveProfile());
+}
+
+// ── Activate / delete ─────────────────────────────────────
+async function activateProfile(id) {
+  setAuthStatus("saving", "切换中…");
+  try {
+    const res = await fetch("api/auth-profile", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "activate", profileId: id }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "切换失败");
+    renderProfileList(d.data);
+    if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
+    setAuthStatus("saved", "已切换");
+  } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
+}
+
+async function deleteProfile(id) {
+  setAuthStatus("saving", "删除中…");
+  try {
+    const res = await fetch("api/auth-profile", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", profileId: id }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "删除失败");
+    renderProfileList(d.data);
+    if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
+    setAuthStatus("saved", "已删除");
+  } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "删除失败"); }
+}
+
+// ── Add form ──────────────────────────────────────────────
+const addToggleBtn    = document.getElementById("auth-add-toggle");
+const addForm         = document.getElementById("auth-add-form");
+const addSegment      = document.getElementById("add-segment");
+const addNameInput    = document.getElementById("add-name");
+const addKeyInput     = document.getElementById("add-key");
+const addOpusInput    = document.getElementById("add-opus");
+const addSonnetInput  = document.getElementById("add-sonnet");
+const addHaikuInput   = document.getElementById("add-haiku");
+const addBaseUrlInput = document.getElementById("add-baseurl");
+const addFieldBaseUrl = document.getElementById("add-field-baseurl");
+const addCancelBtn    = document.getElementById("add-cancel");
+const addSubmitBtn    = document.getElementById("add-submit");
+const addErrorEl      = document.getElementById("add-error");
+
+const ADD_PRESETS = {
+  deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "sk-...",    namePlaceholder: "DeepSeek" },
+  openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "sk-or-...", namePlaceholder: "OpenRouter" },
+  custom:     { baseUrl: "",                                    opusModel: "",                                sonnetModel: "",                                 haikuModel: "",                              keyPlaceholder: "sk-...",    namePlaceholder: "自定义账号" },
+};
+let _addProvider = "deepseek";
+let _editingProfileId = null;  // null = add mode; string = edit mode (profile id)
+
+function setAddProvider(value) {
+  _addProvider = value;
+  addSegment.querySelectorAll(".add-seg-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.value === value);
+    btn.setAttribute("aria-checked", String(btn.dataset.value === value));
+  });
+  const p = ADD_PRESETS[value] ?? ADD_PRESETS.custom;
+  addOpusInput.value   = p.opusModel;
+  addSonnetInput.value = p.sonnetModel;
+  addHaikuInput.value  = p.haikuModel;
+  addKeyInput.placeholder = p.keyPlaceholder;
+  addBaseUrlInput.value = p.baseUrl;
+  addFieldBaseUrl.classList.toggle("hidden", value !== "custom");
+  if (!addNameInput.value.trim()) addNameInput.placeholder = p.namePlaceholder;
+}
+
+addSegment.querySelectorAll(".add-seg-btn").forEach(btn => {
+  btn.addEventListener("click", () => setAddProvider(btn.dataset.value));
+});
+
+// openAccountForm: pass null/undefined to add, or a profile object to edit
+function openAccountForm(existingProfile) {
+  _editingProfileId = existingProfile ? existingProfile.id : null;
+  addForm.classList.add("open");
+  addToggleBtn.setAttribute("aria-expanded", "true");
+  addToggleBtn.style.display = "none";
+  addErrorEl.textContent = "";
+
+  if (existingProfile) {
+    // Edit mode — hide provider segment (can't change type), pre-fill fields
+    addSegment.style.display = "none";
+    addSubmitBtn.textContent = "保存";
+    const provider = existingProfile.provider;
+    _addProvider = provider;
+    addNameInput.value   = existingProfile.name || "";
+    addKeyInput.value    = "";  // masked — leave blank to keep existing
+    addKeyInput.placeholder = "留空则保留原 Key";
+    addOpusInput.value   = existingProfile.opusModel   || "";
+    addSonnetInput.value = existingProfile.sonnetModel || "";
+    addHaikuInput.value  = existingProfile.haikuModel  || "";
+    const baseUrl = existingProfile.baseUrl || (ADD_PRESETS[provider]?.baseUrl ?? "");
+    addBaseUrlInput.value = baseUrl;
+    addFieldBaseUrl.classList.toggle("hidden", provider !== "custom");
+  } else {
+    // Add mode
+    addSegment.style.display = "";
+    addSubmitBtn.textContent = "添加";
+    setAddProvider("deepseek");
+    addNameInput.value   = "";
+    addKeyInput.value    = "";
+    addOpusInput.value   = "";
+    addSonnetInput.value = "";
+    addHaikuInput.value  = "";
+  }
+  setTimeout(() => addNameInput.focus(), 50);
+}
+
+function closeAddForm() {
+  addForm.classList.remove("open");
+  addToggleBtn.style.display = "";
+  addToggleBtn.setAttribute("aria-expanded", "false");
+  addSegment.style.display = "";
+  addSubmitBtn.textContent = "添加";
+  _editingProfileId = null;
+}
+
+addToggleBtn.addEventListener("click", () => openAccountForm(null));
+addCancelBtn.addEventListener("click", closeAddForm);
+
+addSubmitBtn.addEventListener("click", async () => {
+  const isEdit    = !!_editingProfileId;
+  const provider  = _addProvider;
+  const name      = addNameInput.value.trim()   || addNameInput.placeholder;
+  const apiKey    = addKeyInput.value.trim();
+  const opusModel   = addOpusInput.value.trim()   || (ADD_PRESETS[provider]?.opusModel   ?? "");
+  const sonnetModel = addSonnetInput.value.trim() || opusModel;
+  const haikuModel  = addHaikuInput.value.trim()  || sonnetModel;
+  const baseUrl   = provider === "custom"
+    ? addBaseUrlInput.value.trim()
+    : (ADD_PRESETS[provider]?.baseUrl ?? "");
+  addErrorEl.textContent = "";
+  if (!isEdit && !apiKey)  { addErrorEl.textContent = "API Key 不能为空";  return; }
+  if (!baseUrl && provider === "custom") { addErrorEl.textContent = "Base URL 不能为空"; return; }
+  addSubmitBtn.disabled = true;
+  try {
+    const profilePayload = isEdit
+      ? { id: _editingProfileId, name, opusModel, sonnetModel, haikuModel, ...(apiKey ? { apiKey } : {}), ...(provider === "custom" ? { baseUrl } : {}) }
+      : { name, provider, apiKey, opusModel, sonnetModel, haikuModel, baseUrl };
+    const res = await fetch("api/auth-profile", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: isEdit ? "update" : "add", profile: profilePayload }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || (isEdit ? "保存失败" : "添加失败"));
+    renderProfileList(d.data);
+    if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
+    closeAddForm();
+    setAuthStatus("saved", isEdit ? "已保存" : "已添加");
+  } catch (err) {
+    addErrorEl.textContent = err instanceof Error ? err.message : (isEdit ? "保存失败" : "添加失败");
+  } finally { addSubmitBtn.disabled = false; }
+});
+
+// ── Profile list click delegation ─────────────────────────
+authProfileList.addEventListener("click", (e) => {
+  const editBtn = e.target.closest(".auth-profile-edit");
+  if (editBtn) {
+    e.stopPropagation();
+    const id = editBtn.dataset.edit;
+    const profile = _profileData?.profiles.find(p => p.id === id);
+    if (profile) openAccountForm(profile);
+    return;
+  }
+  const delBtn = e.target.closest(".auth-profile-del");
+  if (delBtn) { e.stopPropagation(); void deleteProfile(delBtn.dataset.del); return; }
+  const item = e.target.closest(".auth-profile-item");
+  if (item?.dataset.id && item.dataset.id !== _profileData.activeProfileId) {
+    void activateProfile(item.dataset.id);
+  }
+});
+
+// ── Dialog open/close ─────────────────────────────────────
+async function fetchProfiles() {
+  try {
+    const res = await fetch("api/auth-profile", { cache: "no-store" });
+    if (res.ok) renderProfileList(await res.json());
+  } catch { }
+}
+
+function openAuthDialog() {
+  closeHeaderPickers();
+  closeHistoryPanel();
+  authDialog.classList.add("open");
+  authBackdrop.classList.add("open");
+  closeAddForm();
+  void fetchProfiles();
+}
+
+function closeAuthDialog() {
+  authDialog.classList.remove("open");
+  authBackdrop.classList.remove("open");
+}
+
+settingsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (authDialog.classList.contains("open")) closeAuthDialog();
+  else openAuthDialog();
+});
+document.getElementById("auth-close").addEventListener("click", closeAuthDialog);
+authBackdrop.addEventListener("click", closeAuthDialog);
+void fetchProfiles();
+
+async function saveCurrentConversation() {
+  if (!currentConvId || messageLog.length === 0) return;
+  const firstUser = messageLog.find(m => m.role === "user");
+  const title = firstUser
+    ? firstUser.text.replace(/[\n\r]+/g, " ").slice(0, 60)
+    : "新对话";
+  const conv = {
+    id: currentConvId,
+    title,
+    date: new Date().toISOString(),
+    sessionId: currentSessionId,
+    messages: messageLog.map(m => ({
+      role: m.role,
+      text: m.text,
+      blocks: m.blocks ?? null,
+      raw: m.raw ?? null,
+      events: m.events ?? null,
+      cost: m.cost ?? null,
+    })),
+  };
+  try {
+    await fetch(`api/history/${conv.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(conv),
+    });
+  } catch { }
+}
+
+// ── Markdown renderer ─────────────────────────────
+function renderPlain(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+let _markedReady = false;
+try {
+  if (typeof marked !== "undefined") {
+    marked.use({ gfm: true, breaks: true });
+    _markedReady = true;
+  }
+} catch { }
+function renderMarkdown(text) {
+  if (!_markedReady) return `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
+  try {
+    const result = marked.parse(text);
+    return typeof result === "string" ? result : `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
+  } catch {
+    return `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
+  }
+}
+
+function cloneJson(value) {
+  if (value == null) return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function blockTypeLabel(type) {
+  const labels = {
+    sdk_event: "运行事件",
+    redacted_thinking: "隐藏思考过程",
+    server_tool_use: "服务端工具调用",
+    web_search_tool_result: "网页搜索结果",
+    web_fetch_tool_result: "网页读取结果",
+    code_execution_tool_result: "代码执行结果",
+    bash_code_execution_tool_result: "Bash 执行结果",
+    text_editor_code_execution_tool_result: "文件编辑结果",
+    tool_search_tool_result: "工具搜索结果",
+    mcp_tool_use: "MCP 工具调用",
+    mcp_tool_result: "MCP 工具结果",
+    tool_progress: "工具进度",
+    tool_use_summary: "工具摘要",
+    permission_denied: "权限拒绝",
+    prompt_suggestion: "提示建议",
+    notification: "通知",
+    task_notification: "任务通知",
+    status: "状态",
+    refusal: "拒绝回复",
+  };
+  return labels[type] || type || "未知信息";
+}
+
+function jsonPreview(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function normalizeAssistantBlocks(content, fallbackText = "") {
+  const blocks = [];
+  for (const item of content || []) {
+    const raw = cloneJson(item);
+    if (item.type === "thinking" && item.thinking) {
+      blocks.push({ type: "thinking", thinking: item.thinking, signature: item.signature ?? null, raw });
+    } else if (item.type === "redacted_thinking") {
+      blocks.push({ type: "redacted_thinking", data: item.data ?? null, raw });
+    } else if (item.type === "text" && item.text) {
+      blocks.push({ type: "text", text: item.text, citations: item.citations ?? null, raw });
+    } else if (item.type === "refusal") {
+      blocks.push({ type: "refusal", text: item.refusal ?? "", raw });
+    } else if (item.type === "tool_use" || item.type === "server_tool_use" || item.type === "mcp_tool_use") {
+      blocks.push({
+        type: item.type,
+        id: item.id ?? "",
+        name: item.name ?? "tool",
+        serverName: item.server_name ?? item.serverName ?? null,
+        input: item.input ?? {},
+        raw,
+      });
+    } else {
+      blocks.push({
+        type: item.type || "unknown",
+        raw,
+      });
+    }
+  }
+  if (!blocks.some((block) => block.type === "text") && fallbackText) {
+    blocks.push({ type: "text", text: fallbackText });
+  }
+  return blocks;
+}
+
+function textFromAssistantBlocks(blocks) {
+  return (blocks || [])
+    .filter((block) => (block.type === "text" || block.type === "refusal") && block.text)
+    .map((block) => block.text)
+    .join("\n\n");
+}
+
+function appendAssistantBlock(body, block) {
+  if (block.type === "thinking" && block.thinking) {
+    const el = document.createElement("details");
+    el.className = "thinking-block";
+    el.innerHTML = `<summary class="thinking-summary"><span class="thinking-dot"></span><span class="thinking-label">思考过程</span><span class="thinking-chevron">▶</span></summary><div class="thinking-content"></div>`;
+    el.querySelector(".thinking-content").textContent = block.thinking;
+    body.appendChild(el);
+    return;
+  }
+
+  if (block.type === "redacted_thinking") {
+    body.appendChild(makeHistoryBlock("隐藏思考过程", block.raw ?? block.data ?? block, "该思考内容由 Claude 加密或隐藏，原始数据已保存在历史记录中。"));
+    return;
+  }
+
+  if (block.type === "text" && block.text) {
+    const el = document.createElement("div");
+    el.className = "msg-text";
+    el.innerHTML = renderMarkdown(block.text);
+    body.appendChild(el);
+    return;
+  }
+
+  if (block.type === "refusal" && block.text) {
+    body.appendChild(makeHistoryBlock("拒绝回复", block.raw ?? block, block.text));
+    return;
+  }
+
+  if (block.type === "tool_use" || block.type === "server_tool_use" || block.type === "mcp_tool_use") {
+    body.appendChild(makeToolEl(block));
+    return;
+  }
+
+  if (block.type === "web_search_tool_result" || block.type === "web_fetch_tool_result") {
+    body.appendChild(makeSearchResultBlock(block));
+    return;
+  }
+
+  if (block.type === "tool_result" || block.type === "mcp_tool_result" || block.type?.includes("tool_result")) {
+    body.appendChild(makeHistoryBlock(blockTypeLabel(block.type), block.raw ?? block));
+    return;
+  }
+
+  if (block.type === "sdk_event") {
+    const label = blockTypeLabel(block.eventType) || "运行事件";
+    body.appendChild(makeHistoryBlock(label, block.raw ?? block));
+    return;
+  }
+
+  body.appendChild(makeHistoryBlock(blockTypeLabel(block.type), block.raw ?? block));
+}
+
+function renderAssistantBlocks(body, blocks) {
+  for (const block of blocks || []) appendAssistantBlock(body, block);
+}
+
+function setGenerating(v) {
+  isGenerating = v;
+  sendBtn.disabled = false;
+  sendBtn.classList.toggle("stopping", v);
+  sendBtn.setAttribute("aria-label", v ? "停止" : "发送");
+  iconSend.style.display = v ? "none" : "";
+  iconStop.style.display = v ? "" : "none";
+}
+
+// ── Note context (injected by parent via postMessage) ─────
+let currentNoteFile = null;
+let noteContextEnabled = true;
+
+function renderNoteContext() {
+  if (!currentNoteFile) {
+    contextChip.classList.remove("visible");
+    return;
+  }
+  const fileName = currentNoteFile.split("/").pop().replace(/\.(md|html?)$/i, "");
+  ctxPathEl.textContent = fileName;
+  contextChip.classList.add("visible");
+  contextChip.classList.toggle("context-disabled", !noteContextEnabled);
+  ctxToggle.setAttribute("aria-pressed", noteContextEnabled ? "true" : "false");
+  ctxToggle.title = noteContextEnabled ? "不发送当前笔记上下文" : "发送当前笔记上下文";
+}
+
+window.addEventListener("message", (e) => {
+  if (e.data?.type === "note-context" && e.data.filePath) {
+    const isNewFile = currentNoteFile !== e.data.filePath;
+    currentNoteFile = e.data.filePath;
+    if (isNewFile) noteContextEnabled = true;
+    renderNoteContext();
+  }
+  if (e.data?.type === "note-selection" && e.data.text) {
+    quotedText = e.data.text;
+    const lines = quotedText.split("\n").filter(l => l.trim()).length;
+    const preview = quotedText.length > 55 ? quotedText.slice(0, 55) + "…" : quotedText;
+    quoteTextEl.textContent = preview;
+    quoteLinesEl.textContent = `(${lines} 行)`;
+    quoteChip.classList.add("visible");
+  }
+  if (e.data?.type === "note-selection-clear") {
+    quotedText = null;
+    quoteChip.classList.remove("visible");
+  }
+});
+
+ctxToggle.addEventListener("click", () => {
+  noteContextEnabled = !noteContextEnabled;
+  renderNoteContext();
+});
+
+contextChip.addEventListener("click", (e) => {
+  if (!currentNoteFile || e.target.closest("#ctx-toggle")) return;
+  noteContextEnabled = !noteContextEnabled;
+  renderNoteContext();
+});
+
+document.getElementById("quote-dismiss").addEventListener("click", () => {
+  quotedText = null;
+  quoteChip.classList.remove("visible");
+});
+
+// ── WebSocket ─────────────────────────────────────────────
+const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${location.pathname}`;
+let ws = null;
+
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => { setGenerating(false); };
+  ws.onclose = () => {
+    sendBtn.disabled = true;
+    setGenerating(false);
+    setTimeout(connect, 3000);
+  };
+  ws.onerror = () => { };
+  ws.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch { } };
+}
+connect();
+
+// ── Slash commands ────────────────────────────────────────
+const BUILTIN = [
+  { name: "clear",       desc: "清空对话，开启新 session",  kind: "builtin" },
+  { name: "compact",     desc: "压缩对话上下文以节省 token", kind: "builtin" },
+  { name: "context",     desc: "查看当前上下文窗口用量",    kind: "builtin" },
+  { name: "memory",      desc: "管理 Claude 记忆",          kind: "builtin" },
+  { name: "model",       desc: "切换当前会话的模型",        kind: "builtin" },
+  { name: "usage",       desc: "查看 API 用量和费用",       kind: "builtin" },
+  { name: "status",      desc: "查看会话状态",              kind: "builtin" },
+  { name: "help",        desc: "显示帮助信息",              kind: "builtin" },
+  { name: "doctor",      desc: "诊断配置问题",              kind: "builtin" },
+  { name: "permissions", desc: "管理工具权限",              kind: "builtin" },
+];
+
+let slashCommands = [...BUILTIN];
+
+function buildCommandList(skills) {
+  slashCommands = [
+    ...BUILTIN,
+    ...skills.map((s) => ({ name: s, desc: "", kind: "skill" })),
+  ];
+}
+
+// ── State ─────────────────────────────────────────────────
+let assistantEl   = null;
+let assistantTxt  = "";   // full text across all turns (for saving)
+let assistantBlocks = [];  // rich blocks for history restore
+let assistantRawMessages = []; // original assistant messages for maximum-fidelity history
+let assistantEvents = []; // non-content SDK events that still explain the AI turn
+  let blockMap      = {};   // block index → { el, type, accumulated }
+  let prevTurnTexts = [];   // text from earlier turns within same response
+
+  function isToolUseType(type) {
+    return type === "tool_use" || type === "server_tool_use" || type === "mcp_tool_use";
+  }
+
+  function isToolResultType(type) {
+    return type === "tool_result" || type === "mcp_tool_result" || type?.includes("tool_result");
+  }
+
+  function isToolResultEvent(ev) {
+    const content = ev?.message?.content ?? ev?.content ?? [];
+    const items = Array.isArray(content) ? content : [content];
+    return items.some((item) => isToolResultType(item?.type));
+  }
+
+  function markToolRunning(el) {
+    if (!el || el.classList.contains("running")) return;
+    el.classList.add("running");
+    if (!el.querySelector(".tool-spinner")) {
+      const spinner = document.createElement("span");
+      spinner.className = "tool-spinner";
+      el.appendChild(spinner);
+    }
+  }
+
+  function cssEscapeValue(value) {
+    if (window.CSS?.escape) return CSS.escape(value);
+    return String(value).replace(/["\\]/g, "\\$&");
+  }
+
+  function markLiveToolBlocksRunning(blocks) {
+    if (!assistantEl) return;
+    for (const block of blocks || []) {
+      if (!isToolUseType(block.type)) continue;
+      const selector = block.id
+        ? `.tool-call[data-tool-id="${cssEscapeValue(block.id)}"]`
+        : ".tool-call:last-of-type";
+      const el = assistantEl.querySelector(selector);
+      markToolRunning(el);
+    }
+  }
+
+  function cleanupRunningTools() {
+    if (!assistantEl) return;
+    assistantEl.querySelectorAll(".tool-call.running").forEach(el => {
+    el.classList.remove("running");
+    el.querySelector(".tool-spinner")?.remove();
+  });
+}
+
+function resetAssistantState() {
+  cleanupRunningTools();
+  assistantEl = null; assistantTxt = ""; assistantBlocks = []; assistantRawMessages = []; assistantEvents = []; blockMap = {}; prevTurnTexts = [];
+}
+
+function captureAssistantEvent(ev) {
+  if (!ev?.type || ev.type === "user") return;
+  const raw = cloneJson(ev);
+  const block = { type: "sdk_event", eventType: ev.type, raw };
+  assistantEvents.push(raw);
+  assistantBlocks.push(block);
+  if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+  appendAssistantBlock(assistantEl.querySelector(".msg-body"), block);
+  scrollBottom();
+}
+
+function formatResetTime(value) {
+  if (!value) return "";
+  const ms = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function hideRateLimit() {
+  rateLimitLabel.textContent = "";
+  rateLimitChip.title = "";
+  rateLimitChip.classList.remove("visible", "available", "warning", "critical");
+}
+
+function updateRateLimit(info) {
+  if (!info || info.rateLimitType !== "five_hour") {
+    hideRateLimit();
+    return;
+  }
+  if (info.utilization == null) {
+    if (info.status !== "rejected") {
+      hideRateLimit();
+      return;
+    }
+    rateLimitLabel.textContent = "5小时 已用尽";
+    rateLimitChip.title = "Claude 5 小时额度已用尽";
+    rateLimitChip.classList.add("visible", "critical");
+    rateLimitChip.classList.remove("available", "warning");
+    return;
+  }
+  const usedPercent = info.utilization <= 1 ? info.utilization * 100 : info.utilization;
+  const remaining = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+  rateLimitLabel.textContent = `5小时 ${remaining}%`;
+  const reset = formatResetTime(info.resetsAt);
+  const statusText = info.status === "rejected" ? "已用尽" : info.status === "allowed_warning" ? "接近上限" : "可用";
+  rateLimitChip.title = `Claude 5 小时额度：剩余约 ${remaining}%${reset ? `，${reset} 重置` : ""}（${statusText}）`;
+  rateLimitChip.classList.add("visible", "available");
+  rateLimitChip.classList.toggle("warning", remaining <= 25 && remaining > 10);
+  rateLimitChip.classList.toggle("critical", remaining <= 10 || info.status === "rejected");
+}
+
+// ── Event handling ────────────────────────────────────────
+function handleEvent(ev) {
+  if (ev.type === "system" && ev.subtype === "init") {
+    if (Array.isArray(ev.slash_commands)) buildCommandList(ev.slash_commands);
+    return;
+  }
+
+  if (ev.type === "rate_limit_event") {
+    updateRateLimit(ev.rate_limit_info);
+    return;
+  }
+
+  // ── Streaming deltas ──────────────────────────────────────
+  if (ev.type === "stream_event") {
+    const event = ev.event;
+    if (!event) return;
+
+    // New turn after tool call — tool finished, remove running state, reset indices
+    if (event.type === "message_start") {
+      cleanupRunningTools();
+      for (const b of Object.values(blockMap)) {
+        if (b.type === "text" && b.accumulated) prevTurnTexts.push(b.accumulated);
+      }
+      blockMap = {};
+      return;
+    }
+
+    // New block — create DOM element in arrival order and append to body
+    if (event.type === "content_block_start") {
+      const block = event.content_block;
+      if (!block) return;
+      const idx = event.index;
+      if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+      const body = assistantEl.querySelector(".msg-body");
+
+      if (block.type === "thinking") {
+        const el = document.createElement("details");
+        el.className = "thinking-block thinking-active";
+        el.setAttribute("open", "");
+        el.innerHTML = `<summary class="thinking-summary"><span class="thinking-dot"></span><span class="thinking-label">正在思考</span><span class="thinking-chevron">▶</span></summary><div class="thinking-content"></div>`;
+        body.appendChild(el);
+        blockMap[idx] = { el, type: "thinking", accumulated: "" };
+      } else if (block.type === "text") {
+        const el = document.createElement("div");
+        el.className = "msg-text";
+        body.appendChild(el);
+        blockMap[idx] = { el, type: "text", accumulated: "" };
+      } else if (isToolUseType(block.type)) {
+        const el = makeToolEl({
+          id: block.id,
+          name: block.name,
+          serverName: block.server_name ?? block.serverName ?? null,
+          input: block.input ?? {},
+        });
+        body.appendChild(el);
+        markToolRunning(el);
+        blockMap[idx] = { el, type: block.type, accumulated: "", id: block.id };
+      } else if (block.type === "web_search_tool_result" || block.type === "web_fetch_tool_result" || isToolResultType(block.type)) {
+        cleanupRunningTools();
+        const el = makeHistoryBlock(blockTypeLabel(block.type), block);
+        body.appendChild(el);
+        blockMap[idx] = { el, type: block.type, accumulated: "", raw: block };
+      } else {
+        const el = makeHistoryBlock(blockTypeLabel(block.type), block);
+        body.appendChild(el);
+        blockMap[idx] = { el, type: block.type || "unknown", accumulated: "", raw: block };
+      }
+      return;
+    }
+
+    // Delta — stream content into the existing element
+    if (event.type === "content_block_delta") {
+      const { delta, index: idx } = event;
+      if (!delta || !blockMap[idx]) return;
+      const b = blockMap[idx];
+
+      if (delta.type === "text_delta" && delta.text) {
+        b.accumulated += delta.text;
+        b.el.innerHTML = renderMarkdown(b.accumulated);
+        assistantTxt = [...prevTurnTexts,
+          ...Object.values(blockMap).filter(x => x.type === "text").map(x => x.accumulated),
+        ].filter(Boolean).join("\n\n");
+        scrollBottom();
+      } else if (delta.type === "thinking_delta" && delta.thinking) {
+        b.accumulated += delta.thinking;
+        const tc = b.el.querySelector(".thinking-content");
+        tc.textContent = b.accumulated;
+        tc.scrollTop = tc.scrollHeight;
+        scrollBottom();
+      } else if (delta.type === "input_json_delta" && delta.partial_json != null) {
+        b.accumulated += delta.partial_json;
+        const inp = b.el.querySelector(".tool-input");
+        if (inp) { inp.textContent = b.accumulated.slice(0, 120); scrollBottom(); }
+      }
+      return;
+    }
+
+    // Block complete — finalise tool input, then mark chip as running
+    if (event.type === "content_block_stop") {
+      const b = blockMap[event.index];
+      if (b?.type === "thinking") {
+        // 思考结束：去掉动画，折叠，改回"思考过程"
+        b.el.classList.remove("thinking-active");
+        b.el.removeAttribute("open");
+        const label = b.el.querySelector(".thinking-label");
+        if (label) label.textContent = "思考过程";
+      }
+      if (isToolUseType(b?.type)) {
+        try {
+          const raw = JSON.parse(b.accumulated || "{}");
+          const preview = raw.command ?? raw.file_path ?? raw.path ?? raw.query ?? JSON.stringify(raw);
+          const inp = b.el.querySelector(".tool-input");
+          if (inp) { inp.textContent = String(preview).slice(0, 120); inp.title = JSON.stringify(raw, null, 2); }
+        } catch { }
+        // 输入完成 → 工具执行中，保持 spinner
+        markToolRunning(b.el);
+      }
+      return;
+    }
+    return;
+  }
+
+  // ── Complete assistant turn ────────────────────────────────
+  if (ev.type === "assistant") {
+    const content = ev.message?.content ?? [];
+    const turnBlocks = normalizeAssistantBlocks(content, "");
+    if (turnBlocks.length) assistantBlocks.push(...turnBlocks);
+    assistantRawMessages.push(cloneJson(ev.message ?? ev));
+
+    if (!assistantEl) {
+      // No streaming — render each block in order
+      removeTyping();
+      assistantEl = addMessage("assistant", "");
+    }
+    const body = assistantEl.querySelector(".msg-body");
+    if (!assistantBlocks.some((block) => block.type === "text") && assistantTxt) {
+      assistantBlocks.push({ type: "text", text: assistantTxt });
+    }
+    body.innerHTML = "";
+    renderAssistantBlocks(body, assistantBlocks);
+    markLiveToolBlocksRunning(turnBlocks);
+    assistantTxt = textFromAssistantBlocks(assistantBlocks) || assistantTxt;
+    scrollBottom();
+    return;
+  }
+
+  if (ev.type === "user" && isToolResultEvent(ev)) {
+    cleanupRunningTools();
+    return;
+  }
+
+  if (isToolUseType(ev.type)) {
+    if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+    const block = {
+      type: ev.type,
+      id: ev.id ?? "",
+      name: ev.name ?? "tool",
+      serverName: ev.server_name ?? ev.serverName ?? null,
+      input: ev.input ?? {},
+      raw: cloneJson(ev),
+    };
+    assistantBlocks.push(block);
+    const el = makeToolEl(block);
+    assistantEl.querySelector(".msg-body").appendChild(el);
+    markToolRunning(el);
+    scrollBottom();
+    return;
+  }
+
+  if (isToolResultType(ev.type)) {
+    cleanupRunningTools();
+    if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+    const block = { type: ev.type, raw: cloneJson(ev) };
+    assistantBlocks.push(block);
+    appendAssistantBlock(assistantEl.querySelector(".msg-body"), block);
+    scrollBottom();
+    return;
+  }
+
+  if (ev.type === "result") {
+    const savedText = assistantTxt;
+    const savedBlocks = cloneJson(assistantBlocks);
+    const savedRawMessages = cloneJson(assistantRawMessages);
+    const savedEvents = cloneJson(assistantEvents);
+    let resultCost = null;
+    if (ev.total_cost_usd != null) {
+      resultCost = ev.total_cost_usd;
+      const costEl = document.createElement("div");
+      costEl.className = "cost";
+      costEl.textContent = `$${resultCost.toFixed(4)}`;
+      const all = messagesEl.querySelectorAll(".msg");
+      if (all.length) all[all.length - 1].appendChild(costEl);
+    }
+    resetAssistantState();
+    if (savedText || savedBlocks?.length) {
+      messageLog.push({ role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost });
+      saveCurrentConversation();
+    }
+    setGenerating(false); removeTyping();
+    return;
+  }
+
+  if (ev.type === "done" || ev.type === "stopped") {
+    resetAssistantState();
+    setGenerating(false); removeTyping();
+    return;
+  }
+
+  if (ev.type === "error") {
+    cleanupRunningTools();
+    showInlineError(ev.text?.trim() || "发生错误");
+    setGenerating(false); removeTyping();
+  }
+
+  if (ev.type === "session" && ev.sessionId) {
+    currentSessionId = ev.sessionId;
+    return;
+  }
+
+  captureAssistantEvent(ev);
+}
+
+// ── DOM helpers ───────────────────────────────────────────
+function addMessage(role, text, imageUrls) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg msg-${role}`;
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  if (imageUrls?.length) {
+    const imgRow = document.createElement("div");
+    imgRow.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;";
+    imageUrls.forEach(url => {
+      const img = document.createElement("img");
+      img.src = url;
+      img.style.cssText = "max-height:160px;max-width:100%;border-radius:5px;object-fit:cover;";
+      imgRow.appendChild(img);
+    });
+    body.appendChild(imgRow);
+  }
+  // For assistant, only add initial text element if there's actual text (shell calls pass "")
+  if (role !== "assistant" || text) {
+    const textEl = document.createElement("div");
+    textEl.className = role === "assistant" ? "msg-text" : "";
+    textEl.innerHTML = role === "assistant" ? renderMarkdown(text) : renderPlain(text);
+    if (role === "user") textEl.style.whiteSpace = "pre-wrap";
+    body.appendChild(textEl);
+  }
+  wrap.appendChild(body);
+  messagesEl.appendChild(wrap);
+  scrollBottom();
+  return wrap;
+}
+
+function makeToolEl(tool) {
+  const el = document.createElement("div");
+  el.className = "tool-call";
+  el.dataset.toolId = tool.id;
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = tool.serverName ? `${tool.serverName}:${tool.name}` : tool.name;
+  const inp = document.createElement("span");
+  inp.className = "tool-input";
+  const raw = tool.input ?? {};
+  const preview = raw.command ?? raw.file_path ?? raw.path ?? raw.query ?? JSON.stringify(raw);
+  inp.textContent = String(preview).slice(0, 120);
+  inp.title = JSON.stringify(raw, null, 2);
+  el.appendChild(name); el.appendChild(inp);
+  return el;
+}
+
+function makeHistoryBlock(label, raw, leadText = "") {
+  const el = document.createElement("details");
+  el.className = "history-block";
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+  const content = document.createElement("div");
+  content.className = "history-block-content";
+  const rawText = jsonPreview(raw);
+  content.textContent = leadText ? `${leadText}\n\n${rawText}` : rawText;
+  el.appendChild(summary);
+  el.appendChild(content);
+  return el;
+}
+
+function extractResultItems(raw) {
+  const content = raw?.content ?? raw?.raw?.content ?? [];
+  if (Array.isArray(content)) return content;
+  if (content && typeof content === "object") return [content];
+  return [];
+}
+
+function makeSearchResultBlock(block) {
+  const raw = block.raw ?? block;
+  const el = document.createElement("details");
+  el.className = "history-block";
+  const summary = document.createElement("summary");
+  summary.textContent = blockTypeLabel(block.type);
+  el.appendChild(summary);
+
+  const results = extractResultItems(raw);
+  if (results.length) {
+    const list = document.createElement("div");
+    list.className = "history-block-results";
+    for (const item of results.slice(0, 8)) {
+      const row = document.createElement("div");
+      row.className = "history-result";
+      const title = document.createElement("div");
+      title.className = "history-result-title";
+      title.textContent = item.title || item.type || "结果";
+      row.appendChild(title);
+      if (item.url) {
+        const url = document.createElement("div");
+        url.className = "history-result-url";
+        url.textContent = item.url;
+        row.appendChild(url);
+      }
+      if (item.page_age) {
+        const age = document.createElement("div");
+        age.className = "history-result-url";
+        age.textContent = item.page_age;
+        row.appendChild(age);
+      }
+      list.appendChild(row);
+    }
+    el.appendChild(list);
+  }
+
+  const rawEl = document.createElement("div");
+  rawEl.className = "history-block-content";
+  rawEl.textContent = jsonPreview(raw);
+  el.appendChild(rawEl);
+  return el;
+}
+
+function addTyping() {
+  removeTyping();
+  const el = document.createElement("div");
+  el.id = "typing"; el.className = "msg";
+  el.innerHTML = `<div class="typing"><span></span><span></span><span></span></div>`;
+  messagesEl.appendChild(el); scrollBottom();
+}
+function removeTyping() { document.getElementById("typing")?.remove(); }
+function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+
+// ── Slash popup ───────────────────────────────────────────
+let popupItems  = [];
+let activeIndex = -1;
+
+function getSlashQuery() {
+  const val = promptEl.value;
+  if (!val.startsWith("/")) return null;
+  const afterSlash = val.slice(1);
+  // hide once user typed a space (they've committed to a command)
+  if (afterSlash.includes(" ")) return null;
+  return afterSlash.toLowerCase();
+}
+
+function renderPopup(query) {
+  const matches = slashCommands.filter((c) =>
+    query === "" || c.name.toLowerCase().includes(query)
+  );
+
+  if (matches.length === 0) { hidePopup(); return; }
+
+  popupItems = matches;
+  activeIndex = 0;
+
+  const builtins = matches.filter((c) => c.kind === "builtin");
+  const skills   = matches.filter((c) => c.kind === "skill");
+
+  let idx = 0;
+  const renderGroup = (label, items) => {
+    if (!items.length) return "";
+    let html = `<div class="slash-header">${label}</div>`;
+    for (const c of items) {
+      const highlighted = query
+        ? c.name.replace(new RegExp(`(${query})`, "i"), "<em>$1</em>")
+        : c.name;
+      const badge = c.kind === "builtin"
+        ? `<span class="slash-badge builtin">内置</span>`
+        : `<span class="slash-badge skill">skill</span>`;
+      html += `<button class="slash-item${idx === 0 ? " active" : ""}" data-i="${idx++}" role="option">
+        <span class="slash-cmd">/${highlighted}</span>
+        ${c.desc ? `<span class="slash-desc">${c.desc}</span>` : ""}
+        ${badge}
+      </button>`;
+    }
+    return html;
+  };
+
+  popupEl.innerHTML =
+    renderGroup("内置命令", builtins) +
+    renderGroup("Skills", skills);
+
+  popupEl.classList.add("open");
+}
+
+function hidePopup() {
+  popupEl.classList.remove("open");
+  popupItems = [];
+  activeIndex = -1;
+}
+
+function setActive(i) {
+  const items = popupEl.querySelectorAll(".slash-item");
+  items.forEach((el, idx) => el.classList.toggle("active", idx === i));
+  activeIndex = i;
+  items[i]?.scrollIntoView({ block: "nearest" });
+}
+
+function selectItem(i) {
+  const item = popupItems[i];
+  if (!item) return;
+  // /clear is handled locally; everything else is sent to claude
+  if (item.name === "clear") {
+    saveCurrentConversation();
+    messagesEl.innerHTML = "";
+    messageLog = []; currentConvId = null; currentSessionId = null;
+    promptEl.value = "";
+    promptEl.style.height = "36px";
+    hidePopup();
+    ws?.send(JSON.stringify({ reset: true }));
+    return;
+  }
+  // commands with no args: send immediately; skills need args typed first
+  promptEl.value = `/${item.name}${item.kind === "builtin" ? "" : " "}`;
+  promptEl.style.height = "36px";
+  hidePopup();
+  promptEl.focus();
+}
+
+// click on popup item
+popupEl.addEventListener("mousedown", (e) => {
+  const btn = e.target.closest(".slash-item");
+  if (btn) { e.preventDefault(); selectItem(Number(btn.dataset.i)); }
+});
+
+// ── Input events ──────────────────────────────────────────
+promptEl.addEventListener("input", () => {
+  promptEl.style.height = "36px";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+
+  const query = getSlashQuery();
+  if (query !== null) renderPopup(query);
+  else hidePopup();
+});
+
+promptEl.addEventListener("keydown", (e) => {
+  if (popupEl.classList.contains("open")) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive(Math.min(activeIndex + 1, popupItems.length - 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive(Math.max(activeIndex - 1, 0));
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      selectItem(activeIndex);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hidePopup();
+      return;
+    }
+  }
+
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+// hide popup when clicking elsewhere
+document.addEventListener("mousedown", (e) => {
+  if (!popupEl.contains(e.target) && e.target !== promptEl) hidePopup();
+});
+
+// ── Send ──────────────────────────────────────────────────
+function send() {
+  const text = promptEl.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  if (text === "/clear") {
+    saveCurrentConversation();
+    messagesEl.innerHTML = "";
+    messageLog = []; currentConvId = null; currentSessionId = null;
+    promptEl.value = "";
+    promptEl.style.height = "36px";
+    ws.send(JSON.stringify({ reset: true }));
+    hidePopup();
+    return;
+  }
+
+  hidePopup();
+  if (!currentConvId) currentConvId = genId();
+  const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
+  addMessage("user", text, imagePreviewUrls);
+  messageLog.push({ role: "user", text, cost: null });
+  promptEl.value = "";
+  promptEl.style.height = "36px";
+  addTyping();
+  setGenerating(true);
+
+  const parts = [];
+  if (currentNoteFile && noteContextEnabled) parts.push(`当前查看的文件：${currentNoteFile}`);
+  if (quotedText) {
+    parts.push(`用户引用了以下文段：\n"${quotedText}"`);
+    quotedText = null;
+    quoteChip.classList.remove("visible");
+  }
+  parts.push(text);
+  const wsPayload = {
+    prompt: parts.join("\n\n"),
+    model: selectedModel,
+    permissionMode: selectedPermissionMode,
+    effort: selectedEffort,
+  };
+  if (pendingImages.length > 0) {
+    wsPayload.images = pendingImages.map(img => ({ data: img.data, mediaType: img.mediaType }));
+    clearImages();
+  }
+  ws.send(JSON.stringify(wsPayload));
+}
+
+// ── Visual viewport fix (mobile browser chrome) ───────────
+// visualViewport.height = actual visible area, excludes browser toolbars
+function syncHeight() {
+  const h = window.visualViewport?.height ?? window.innerHeight;
+  document.getElementById("app").style.height = h + "px";
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncHeight);
+  window.visualViewport.addEventListener("scroll", syncHeight);
+}
+syncHeight();
+
+sendBtn.addEventListener("click", () => {
+  if (isGenerating) {
+    ws?.send(JSON.stringify({ stop: true }));
+    setGenerating(false);
+    removeTyping();
+  } else {
+    send();
+  }
+});
+
+// ── Header pickers ───────────────────────────────────────
+let selectedModel = "claude-sonnet-4-6";
+const permissionModeDefaultVersion = "auto-default-v1";
+if (
+  localStorage.getItem("permissionModeDefaultVersion") !== permissionModeDefaultVersion &&
+  localStorage.getItem("permissionMode") === "acceptEdits"
+) {
+  localStorage.setItem("permissionMode", "auto");
+}
+localStorage.setItem("permissionModeDefaultVersion", permissionModeDefaultVersion);
+let selectedPermissionMode = localStorage.getItem("permissionMode") || "auto";
+let selectedEffort = localStorage.getItem("effort") || "medium";
+const modelBtn      = document.getElementById("model-btn");
+const modelDropdown = document.getElementById("model-dropdown");
+const modelLabel    = document.getElementById("model-label");
+const permissionBtn      = document.getElementById("permission-btn");
+const permissionDropdown = document.getElementById("permission-dropdown");
+const permissionLabel    = document.getElementById("permission-label");
+const effortBtn      = document.getElementById("effort-btn");
+const effortDropdown = document.getElementById("effort-dropdown");
+const effortLabel    = document.getElementById("effort-label");
+
+function closeHeaderPickers() {
+  modelDropdown.classList.remove("open");
+  modelBtn.classList.remove("open");
+  permissionDropdown.classList.remove("open");
+  permissionBtn.classList.remove("open");
+  effortDropdown.classList.remove("open");
+  effortBtn.classList.remove("open");
+}
+
+function positionHeaderDropdown(btn, dropdown, align = "left") {
+  dropdown.classList.add("open");
+  const rect = btn.getBoundingClientRect();
+  const width = dropdown.offsetWidth;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  let left = align === "right" ? rect.right - width : rect.left;
+  left = Math.max(8, Math.min(left, viewportWidth - width - 8));
+  const top = Math.min(rect.bottom + 5, viewportHeight - 12);
+  dropdown.style.left = `${left}px`;
+  dropdown.style.top = `${top}px`;
+}
+
+function toggleHeaderPicker(btn, dropdown, align = "left") {
+  const wasOpen = dropdown.classList.contains("open");
+  closeHeaderPickers();
+  if (wasOpen) return;
+  btn.classList.add("open");
+  positionHeaderDropdown(btn, dropdown, align);
+  closeHistoryPanel();
+}
+
+function setPickerValue(dropdown, optionSelector, activeEl, valueAttr, labelEl) {
+  const label = activeEl.dataset.label;
+  labelEl.textContent = labelEl.id === "effort-label" ? `思考：${label}` : label;
+  dropdown.querySelectorAll(optionSelector).forEach(el => {
+    el.classList.toggle("active", el === activeEl);
+    el.setAttribute("aria-selected", el === activeEl ? "true" : "false");
+  });
+  return activeEl.dataset[valueAttr];
+}
+
+function restorePicker(dropdown, optionSelector, attrName, value, labelEl) {
+  const opt = dropdown.querySelector(`${optionSelector}[data-${attrName}="${value}"]`);
+  if (!opt) return null;
+  labelEl.textContent = labelEl.id === "effort-label" ? `思考：${opt.dataset.label}` : opt.dataset.label;
+  dropdown.querySelectorAll(optionSelector).forEach(el => {
+    el.classList.toggle("active", el === opt);
+    el.setAttribute("aria-selected", el === opt ? "true" : "false");
+  });
+  return opt;
+}
+
+modelBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleHeaderPicker(modelBtn, modelDropdown, "left");
+});
+
+modelDropdown.addEventListener("mousedown", (e) => {
+  const opt = e.target.closest(".model-option");
+  if (!opt) return;
+  e.preventDefault();
+  selectedModel = setPickerValue(modelDropdown, ".model-option", opt, "model", modelLabel);
+  localStorage.setItem(getModelStorageKey(authProfile.provider), selectedModel);
+  closeHeaderPickers();
+});
+
+effortBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleHeaderPicker(effortBtn, effortDropdown, "right");
+});
+
+effortDropdown.addEventListener("mousedown", (e) => {
+  const opt = e.target.closest(".effort-option");
+  if (!opt) return;
+  e.preventDefault();
+  selectedEffort = setPickerValue(effortDropdown, ".effort-option", opt, "effort", effortLabel);
+  localStorage.setItem("effort", selectedEffort);
+  closeHeaderPickers();
+});
+
+permissionBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleHeaderPicker(permissionBtn, permissionDropdown, "right");
+});
+
+permissionDropdown.addEventListener("mousedown", (e) => {
+  const opt = e.target.closest(".permission-option");
+  if (!opt) return;
+  e.preventDefault();
+  selectedPermissionMode = setPickerValue(permissionDropdown, ".permission-option", opt, "permissionMode", permissionLabel);
+  localStorage.setItem("permissionMode", selectedPermissionMode);
+  closeHeaderPickers();
+});
+
+document.addEventListener("click", () => {
+  closeHeaderPickers();
+});
+
+window.addEventListener("resize", closeHeaderPickers);
+
+if (!restorePicker(permissionDropdown, ".permission-option", "permission-mode", selectedPermissionMode, permissionLabel)) {
+  selectedPermissionMode = "auto";
+}
+if (!restorePicker(effortDropdown, ".effort-option", "effort", selectedEffort, effortLabel)) {
+  selectedEffort = "medium";
+}
+
+// ── History panel ─────────────────────────────────────────
+const historyDropdown = document.getElementById("history-dropdown");
+const historyBackdrop = document.getElementById("history-backdrop");
+
+async function deleteConversation(id) {
+  try { await fetch(`api/history/${id}`, { method: "DELETE" }); } catch { }
+  if (currentConvId === id) currentConvId = null;
+  renderHistoryList();
+}
+
+async function loadConversation(conv) {
+  await saveCurrentConversation();
+  messagesEl.innerHTML = "";
+  messageLog = conv.messages.map(m => ({
+    role: m.role,
+    text: m.text,
+    blocks: m.blocks ?? null,
+    raw: m.raw ?? null,
+    events: m.events ?? null,
+    cost: m.cost ?? null,
+  }));
+  for (const msg of conv.messages) {
+    const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
+    const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text);
+    if (hasAssistantBlocks) {
+      renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
+    }
+    if (msg.cost != null) {
+      const costEl = document.createElement("div");
+      costEl.className = "cost";
+      costEl.textContent = `$${Number(msg.cost).toFixed(4)}`;
+      el.appendChild(costEl);
+    }
+  }
+  currentConvId = conv.id;
+  currentSessionId = conv.sessionId;
+  if (conv.sessionId && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ setSession: conv.sessionId }));
+  }
+  closeHistoryPanel();
+  scrollBottom();
+}
+
+async function startNewConversation() {
+  await saveCurrentConversation();
+  messagesEl.innerHTML = "";
+  messageLog = [];
+  currentConvId = null;
+  currentSessionId = null;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ reset: true }));
+  }
+}
+
+async function openHistoryPanel() {
+  await renderHistoryList();
+  historyDropdown.classList.add("open");
+  historyBackdrop.classList.add("open");
+  modelDropdown.classList.remove("open"); // 互斥
+  modelBtn.classList.remove("open");
+}
+
+function closeHistoryPanel() {
+  historyDropdown.classList.remove("open");
+  historyBackdrop.classList.remove("open");
+}
+
+function formatRelDate(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffH = (now - d) / 3600000;
+  if (diffH < 1) return "刚刚";
+  if (diffH < 24) return `${Math.floor(diffH)} 小时前`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD < 7) return `${diffD} 天前`;
+  return d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
+async function renderHistoryList() {
+  const listEl = document.getElementById("history-list");
+  listEl.innerHTML = '<div class="history-empty">加载中…</div>';
+  const history = await fetchHistory();
+  if (history.length === 0) {
+    listEl.innerHTML = '<div class="history-empty">暂无历史对话</div>';
+    return;
+  }
+  const esc = (s) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  listEl.innerHTML = history.map(conv => {
+    const isCurrent = conv.id === currentConvId;
+    const msgCount = conv.messages ? conv.messages.length : 0;
+    return `<div class="history-item${isCurrent ? " current" : ""}" data-id="${conv.id}">
+      <div class="history-item-info">
+        <div class="history-item-title">${esc(conv.title || "对话")}</div>
+        <div class="history-item-meta">${formatRelDate(conv.date)} · ${msgCount} 条消息</div>
+      </div>
+      <button class="history-item-del" data-del="${conv.id}" title="删除此对话" aria-label="删除此对话">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+          <path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>`;
+  }).join("");
+
+  listEl.querySelectorAll(".history-item").forEach(item => {
+    item.addEventListener("click", async (e) => {
+      if (e.target.closest(".history-item-del")) return;
+      const conv = history.find(h => h.id === item.dataset.id);
+      if (conv) loadConversation(conv);
+    });
+  });
+
+  listEl.querySelectorAll(".history-item-del").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteConversation(btn.dataset.del);
+    });
+  });
+}
+
+document.getElementById("btn-history").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (historyDropdown.classList.contains("open")) closeHistoryPanel();
+  else openHistoryPanel();
+});
+document.getElementById("btn-new").addEventListener("click", startNewConversation);
+document.getElementById("history-close").addEventListener("click", closeHistoryPanel);
+historyBackdrop.addEventListener("click", closeHistoryPanel);
+</script>
+</body>
+</html>

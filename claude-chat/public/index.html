@@ -1062,16 +1062,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 /* 表单内的 provider 下拉选择 */
 .add-provider-select {
   width: 100%;
-  padding: 5px 8px;
-  margin: 10px 0 6px;
+  padding: 4px 6px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--bg);
   color: var(--text);
   font: inherit; font-size: 12.5px;
   cursor: pointer;
   outline: none;
-  appearance: auto;
 }
 .add-provider-select:focus { border-color: var(--accent, #888); }
 
@@ -1272,12 +1270,15 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </button>
       <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
         <!-- provider 下拉选择（编辑时隐藏，不能改类型） -->
-        <select class="add-provider-select" id="add-provider-select" aria-label="账号类型">
-          <option value="anthropic">Anthropic</option>
-          <option value="deepseek">DeepSeek</option>
-          <option value="openrouter">OpenRouter</option>
-          <option value="custom">自定义</option>
-        </select>
+        <div class="add-field" id="add-segment">
+          <label for="add-provider-select">厂商</label>
+          <select class="add-provider-select" id="add-provider-select" aria-label="账号类型">
+            <option value="anthropic">Anthropic</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
         <!-- 名称 -->
         <div class="add-field">
           <label for="add-name">名称</label>
@@ -1634,9 +1635,10 @@ async function deleteProfile(id) {
 }
 
 // ── Add form ──────────────────────────────────────────────
-const addToggleBtn      = document.getElementById("auth-add-toggle");
-const addForm           = document.getElementById("auth-add-form");
-const addProviderSelect = document.getElementById("add-provider-select");
+const addToggleBtn        = document.getElementById("auth-add-toggle");
+const addForm             = document.getElementById("auth-add-form");
+const addProviderWrap     = document.getElementById("add-segment");      // label + select wrapper
+const addProviderSelect   = document.getElementById("add-provider-select");
 const addNameInput      = document.getElementById("add-name");
 const addKeyInput     = document.getElementById("add-key");
 const addOpusInput    = document.getElementById("add-opus");
@@ -1681,8 +1683,8 @@ function openAccountForm(existingProfile) {
   addErrorEl.textContent = "";
 
   if (existingProfile) {
-    // Edit mode — hide provider select (can't change type), pre-fill fields
-    addProviderSelect.style.display = "none";
+    // Edit mode — hide provider row (can't change type), pre-fill fields
+    addProviderWrap.style.display = "none";
     addSubmitBtn.textContent = "保存";
     const provider = existingProfile.provider;
     _addProvider = provider;
@@ -1697,7 +1699,7 @@ function openAccountForm(existingProfile) {
     addFieldBaseUrl.classList.toggle("hidden", provider !== "custom");
   } else {
     // Add mode
-    addProviderSelect.style.display = "";
+    addProviderWrap.style.display = "";
     addSubmitBtn.textContent = "添加";
     setAddProvider("anthropic");
     addNameInput.value   = "";
@@ -1713,7 +1715,7 @@ function closeAddForm() {
   addForm.classList.remove("open");
   addToggleBtn.style.display = "";
   addToggleBtn.setAttribute("aria-expanded", "false");
-  addProviderSelect.style.display = "";
+  addProviderWrap.style.display = "";
   addSubmitBtn.textContent = "添加";
   _editingProfileId = null;
 }

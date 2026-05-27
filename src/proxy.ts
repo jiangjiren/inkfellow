@@ -3,7 +3,7 @@ import { localeCookie } from "@/i18n/config";
 import { getLocaleFromAcceptLanguage, normalizeLocale } from "@/i18n/locale";
 
 const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
-const NOTES_AUTH_REALM = (process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes") + " — Private";
+const NOTES_AUTH_REALM = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes";
 
 const isNotesPath = (pathname: string) => pathname === "/notes" || pathname.startsWith("/notes/");
 const isNotesApiPath = (pathname: string) => pathname.startsWith("/api/notes/");

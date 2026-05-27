@@ -1361,6 +1361,28 @@ export default function NotesExplorer() {
       style={shellStyle}
     >
       <aside className={`${styles.sidebar} ${isDesktopSidebarHidden ? styles.sidebarHidden : ""}`} aria-hidden={!isSidebarOpen}>
+        <button
+          type="button"
+          className={styles.sidebarResizer}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            setIsResizingSidebar(true);
+          }}
+          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight") {
+              event.preventDefault();
+              setSidebarWidth((w) => clamp(w + 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+            }
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              setSidebarWidth((w) => clamp(w - 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+            }
+          }}
+          aria-label="调整侧边栏宽度"
+          title="拖拽调整侧边栏宽度，双击恢复默认"
+          tabIndex={!isMobileViewport && isSidebarOpen ? 0 : -1}
+        />
         <div className={styles.sidebarHeader}>
           <div>
             <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
@@ -1420,30 +1442,6 @@ export default function NotesExplorer() {
           ) : null}
         </div>
       </aside>
-
-      {!isMobileViewport && !isDesktopSidebarHidden && (
-        <button
-          type="button"
-          className={styles.sidebarResizer}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setIsResizingSidebar(true);
-          }}
-          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowRight") {
-              event.preventDefault();
-              setSidebarWidth((w) => clamp(w + 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-            }
-            if (event.key === "ArrowLeft") {
-              event.preventDefault();
-              setSidebarWidth((w) => clamp(w - 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-            }
-          }}
-          aria-label="调整侧边栏宽度"
-          title="拖拽调整侧边栏宽度，双击恢复默认"
-        />
-      )}
 
       <button
         type="button"

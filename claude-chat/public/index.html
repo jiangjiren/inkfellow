@@ -2219,7 +2219,12 @@ function updateRateLimit(info) {
 // ── Event handling ────────────────────────────────────────
 function handleEvent(ev) {
   if (ev.type === "system" && ev.subtype === "init") {
-    if (Array.isArray(ev.slash_commands)) buildCommandList(ev.slash_commands);
+    // ev.skills 是实际的技能列表；ev.slash_commands 是内置命令列表
+    // 优先使用 ev.skills，否则回退到 ev.slash_commands（旧版 SDK 兼容）
+    const skillList = Array.isArray(ev.skills) && ev.skills.length > 0
+      ? ev.skills
+      : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
+    buildCommandList(skillList);
     return;
   }
 

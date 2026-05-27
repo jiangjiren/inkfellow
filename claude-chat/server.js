@@ -1,13 +1,14 @@
 import { createServer } from "node:http";
-import { chmodSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, existsSync, writeFileSync, readdirSync, statSync, lstatSync } from "node:fs";
 import { extname } from "node:path";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, startup } from "@anthropic-ai/claude-agent-sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -456,11 +457,38 @@ const http = createServer((req, res) => {
   res.end(readFileSync(htmlPath, "utf8"));
 });
 
+// ── Skills preload ─────────────────────────────────────────
+// Read skill slugs from ~/.claude/skills/ directory (fast, no subprocess needed)
+function loadSkillsFromDisk() {
+  const dirs = [
+    join(homedir(), ".claude", "skills"),
+    join(DEFAULT_CWD, ".claude", "skills"),
+  ];
+  const slugs = new Set();
+  for (const dir of dirs) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        try {
+          // Use lstatSync so broken symlinks are counted (symlink = installed skill)
+          const st = lstatSync(join(dir, entry));
+          if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
+        } catch { /* skip */ }
+      }
+    } catch { /* dir not found */ }
+  }
+  return [...slugs].sort();
+}
+
+let cachedSkills = loadSkillsFromDisk();
+console.log(`Loaded ${cachedSkills.length} skills from disk`);
+
 // ── WebSocket ─────────────────────────────────────────────
 const wss = new WebSocketServer({ server: http });
 
 wss.on("connection", (ws) => {
   let abortCtrl = null;
+  // Send cached skills immediately so "/" popup works before first message
+  ws.send(JSON.stringify({ type: "system", subtype: "init", skills: cachedSkills, slash_commands: cachedSkills }));
 
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
@@ -543,9 +571,17 @@ wss.on("connection", (ws) => {
           if (ev.type === "system" && ev.subtype === "init") {
             saveSession(ev.session_id);
             send({ type: "session", sessionId: ev.session_id });
-            if (Array.isArray(ev.slash_commands)) {
-              send({ type: "system", subtype: "init", slash_commands: ev.slash_commands });
-            }
+            // ev.skills = skill slugs only; ev.slash_commands = skills + built-in names
+            const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
+              ? ev.skills
+              : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
+            if (skillsFromSdk.length > 0) cachedSkills = skillsFromSdk; // keep cache fresh
+            send({
+              type: "system",
+              subtype: "init",
+              slash_commands: skillsFromSdk,
+              skills: skillsFromSdk,
+            });
             continue;
           }
           if (ev.type !== "system") send(ev);

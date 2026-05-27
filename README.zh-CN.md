@@ -77,8 +77,10 @@ cp .env.example .env.local
 NEXT_PUBLIC_APP_NAME=我的笔记        # 显示在界面标题和页面 title 中
 VAULT_PATH=/绝对路径/你的笔记文件夹  # Markdown 文件夹的绝对路径
 SITE_URL=http://localhost:3000       # 替换为你的域名或公网 IP
-NOTES_BASIC_AUTH_USERNAME=notes
-NOTES_BASIC_AUTH_PASSWORD=改成强密码
+
+# ↓ 这两行就是访问 /notes 页面时的登录账号和密码，自己设置、自己记住
+NOTES_BASIC_AUTH_USERNAME=notes      # 用户名，可以改成任意字符串
+NOTES_BASIC_AUTH_PASSWORD=改成强密码  # 密码，务必修改，不能留空
 ```
 
 构建并启动笔记应用：
@@ -88,7 +90,9 @@ npm run build
 npm start            # 默认监听 http://localhost:3000
 ```
 
-在浏览器中打开 `http://localhost:3000/notes`，用上面设置的账号密码登录。
+在浏览器中打开 `http://localhost:3000/notes`，浏览器会弹出一个登录框，输入你在 `.env.local` 中设置的用户名和密码即可进入。
+
+> **登录账号从哪里来？** 就是你自己在 `.env.local` 里填写的 `NOTES_BASIC_AUTH_USERNAME`（用户名）和 `NOTES_BASIC_AUTH_PASSWORD`（密码），没有注册流程，改了配置重启服务即可生效。
 
 ### 启用 AI 面板
 

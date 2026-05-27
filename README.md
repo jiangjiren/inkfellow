@@ -77,8 +77,10 @@ Edit `.env.local`:
 NEXT_PUBLIC_APP_NAME=My Notes       # Shown in the UI and page titles
 VAULT_PATH=/absolute/path/to/vault  # Your Markdown folder
 SITE_URL=http://localhost:3000      # Replace with your domain or public IP
-NOTES_BASIC_AUTH_USERNAME=notes
-NOTES_BASIC_AUTH_PASSWORD=change-me # Pick a strong password
+
+# ↓ These two lines are your login credentials for the /notes page
+NOTES_BASIC_AUTH_USERNAME=notes     # Username — change to anything you like
+NOTES_BASIC_AUTH_PASSWORD=change-me # Password — must not be left empty
 ```
 
 Build and start the notes app:
@@ -88,7 +90,9 @@ npm run build
 npm start            # runs on http://localhost:3000
 ```
 
-Open `http://localhost:3000/notes` in your browser and log in.
+Open `http://localhost:3000/notes` in your browser. A login prompt will appear — enter the username and password you set in `.env.local`.
+
+> **Where does the login account come from?** There is no registration. The credentials are exactly what you put in `NOTES_BASIC_AUTH_USERNAME` and `NOTES_BASIC_AUTH_PASSWORD`. Change either value and restart the service to update your credentials.
 
 ### Enabling the AI Panel
 

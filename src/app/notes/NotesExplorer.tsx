@@ -1400,7 +1400,10 @@ export default function NotesExplorer() {
               aria-label={isSidebarOpen ? "隐藏目录" : "显示目录"}
               title={isSidebarOpen ? "隐藏目录" : "显示目录"}
             >
-              <span aria-hidden="true">☰</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
             </button>
           </div>
           <div className={styles.noteMeta}>
@@ -1668,7 +1671,7 @@ export default function NotesExplorer() {
               onClick={() => setPanelTab("toc")}
               tabIndex={isAssistantPanelOpen ? 0 : -1}
             >
-              ☰ 目录
+              大纲
             </button>
             <button
               type="button"

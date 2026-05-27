@@ -56,6 +56,23 @@ The AI backend is a lightweight Node.js service that runs alongside the notes ap
 - View Git status, diffs, commit history, and run pull / push / discard actions.
 - Create tokenized public share links under `/share/:token`.
 
+## Live Demo (Vercel)
+
+The repo includes a `vault/` sample knowledge base so you can deploy a working demo to Vercel instantly.
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/jiangjiren/clawapp)
+
+After deploying, go to Vercel → Project → Settings → **Environment Variables** and add:
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `NOTES_BASIC_AUTH_USERNAME` | `demo` (or anything) | Login username for the demo |
+| `NOTES_BASIC_AUTH_PASSWORD` | your chosen password | Login password — **must not be empty** |
+| `NEXT_PUBLIC_APP_NAME` | `Notes App Demo` | Shown in the page title |
+| `SITE_URL` | your Vercel URL (e.g. `https://xxx.vercel.app`) | Used for share link generation |
+
+> **Note**: The Vercel version uses the bundled `vault/` sample notes and does not support Git sync or the AI panel (both require a persistent server environment). Deploy to a VPS for full functionality.
+
 ## Requirements
 
 - Node.js 20 or newer.

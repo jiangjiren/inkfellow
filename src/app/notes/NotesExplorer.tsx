@@ -1379,6 +1379,17 @@ export default function NotesExplorer() {
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen && panelTab === "claude" ? 0 : -1}
+          onLoad={() => {
+            // Re-send the current note context once the iframe is ready.
+            // The useEffect fires when activePath changes, but the iframe may
+            // still be loading at that point and miss the message.
+            if (activePathRef.current) {
+              claudeFrameRef.current?.contentWindow?.postMessage(
+                { type: "note-context", filePath: activePathRef.current },
+                window.location.origin,
+              );
+            }
+          }}
         />
       </aside>
 

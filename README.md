@@ -1,5 +1,7 @@
 # Notes App
 
+English | [中文](./README.zh-CN.md)
+
 A self-hosted web reader for an Obsidian-style Markdown vault. Keeps your notes as plain files, adds a mobile-friendly reading UI, supports private Git sync controls, and can generate public read-only share links for selected notes.
 
 ## Features

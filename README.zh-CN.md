@@ -125,6 +125,126 @@ npm start            # 默认监听 http://127.0.0.1:8082
 
 启动后，点击笔记工具栏中的 **✦ AI** 按钮打开面板，在设置图标中连接你的服务商即可开始使用。
 
+## 本地 Obsidian Vault 同步到服务器
+
+应用内置了 Git 面板，支持 pull / push / 撤销 / 历史查看。要让本地 Obsidian 和服务器保持同步，有以下两种方式，按需选择。
+
+### 方式一：在服务器自建裸仓库（不依赖外部服务）
+
+所有数据都留在自己服务器上。用一个**裸仓库**作为中转——本地 Obsidian 推送到裸仓库，服务器从裸仓库拉取。
+
+```
+本地 Obsidian ──push──▶ 服务器上的裸仓库 ◀──pull── Notes App（工作目录）
+                         ~/git/vault.git
+```
+
+**第一步：在服务器上创建裸仓库**
+
+```bash
+mkdir -p ~/git
+git init --bare ~/git/my-vault.git
+```
+
+**第二步：克隆为工作目录（Notes App 读这里）**
+
+```bash
+git clone ~/git/my-vault.git ~/vault
+# 然后在 .env.local 里设置 VAULT_PATH=~/vault
+```
+
+**第三步：把本地电脑的 SSH 公钥加到服务器**
+
+本地电脑如果没有 SSH 密钥，先生成一个：
+
+```bash
+ssh-keygen -t ed25519 -C "obsidian-local"
+```
+
+把公钥复制到服务器（会提示输一次服务器密码）：
+
+```bash
+ssh-copy-id user@your-server.com
+```
+
+验证是否配置成功（不需要密码直接登录）：
+
+```bash
+ssh user@your-server.com
+```
+
+**第四步：本地 vault 添加服务器为 remote**
+
+```bash
+cd /path/to/local/obsidian-vault
+git init                   # 已是 git 仓库则跳过
+git remote add origin ssh://user@your-server.com/home/you/git/my-vault.git
+git pull origin main
+```
+
+**第五步：安装 Obsidian Git 插件**
+
+Obsidian → 设置 → 第三方插件 → 社区插件 → 搜索 **Obsidian Git**，安装并启用。建议设置：
+- *Auto pull interval*：`10`（分钟，自动拉取）
+- *Auto push interval*：`5`（分钟，自动提交并推送）
+
+每次本地 push 后，在 Notes App 网页端点 Git 面板的 **Pull** 即可同步到服务器工作目录。
+
+---
+
+### 方式二：使用 GitHub 私有仓库（最简单，多设备通用）
+
+```
+本地 Obsidian ──push──▶ GitHub 私有仓库 ◀──pull── 服务器上的 Notes App
+```
+
+**第一步：把本地 vault 推送到 GitHub**
+
+在 GitHub 新建一个私有仓库，然后在本地 vault 目录：
+
+```bash
+git init
+git remote add origin https://github.com/yourname/my-vault.git
+git add . && git commit -m "init"
+git push -u origin main
+```
+
+**第二步：在服务器上 clone 该仓库**
+
+```bash
+git clone https://github.com/yourname/my-vault.git ~/vault
+# 在 .env.local 里设置 VAULT_PATH=~/vault
+```
+
+**第三步：在服务器上配置 GitHub Token**
+
+在 GitHub → Settings → Developer settings → Personal access tokens 生成一个 Token（权限选 `repo`）。
+
+```bash
+# 让 git 永久记住 token
+git config --global credential.helper store
+
+cd ~/vault
+git pull   # 提示输入用户名和 token，输一次后自动记住
+```
+
+或者直接把 token 写进 remote URL：
+
+```bash
+git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vault.git
+```
+
+**第四步：安装 Obsidian Git 插件**（同方式一第五步）
+
+---
+
+### 同步操作汇总
+
+| 场景 | 操作 |
+|------|------|
+| 本地写了新笔记 | Obsidian Git 自动 push → Notes App 点 **Pull** |
+| 网页端编辑了笔记 | Notes App 点 **Push** → Obsidian Git 自动 pull |
+| 想让服务器自动拉取 | 加定时任务：`*/10 * * * * cd ~/vault && git pull` |
+
 ## 无域名访问（直接用公网 IP）
 
 没有域名？没关系。将 `SITE_URL` 设置为服务器的公网 IP：

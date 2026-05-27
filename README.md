@@ -125,6 +125,128 @@ Then configure your reverse proxy (Nginx) to forward `/notes-claude/` to `127.0.
 
 Once running, click the **✦ AI** button in the notes toolbar to open the panel, then connect your provider from the settings icon.
 
+## Syncing Your Local Obsidian Vault
+
+The app has a built-in Git panel (pull / push / discard / history). To keep your local Obsidian in sync with the server, pick one of the two methods below.
+
+### Method A: Self-hosted bare repo on the server (no external service)
+
+This keeps everything on your own machine. A *bare repository* acts as the central hub — local Obsidian pushes to it, the server pulls from it.
+
+```
+Local Obsidian ──push──▶ bare repo on server ◀──pull── Notes App (working dir)
+                         /home/you/git/vault.git
+```
+
+**1. Create the bare repo on the server**
+
+```bash
+mkdir -p ~/git
+git init --bare ~/git/my-vault.git
+```
+
+**2. Clone it as the working vault**
+
+```bash
+git clone ~/git/my-vault.git ~/vault
+# then set VAULT_PATH=~/vault in .env.local
+```
+
+**3. Authorise your local machine via SSH**
+
+On your local computer, generate an SSH key if you don't have one:
+
+```bash
+ssh-keygen -t ed25519 -C "obsidian-local"
+```
+
+Copy the public key to the server (you'll be prompted for the server password once):
+
+```bash
+ssh-copy-id user@your-server.com
+```
+
+Verify it works without a password:
+
+```bash
+ssh user@your-server.com   # should log in directly
+```
+
+**4. Add the server as the remote on your local vault**
+
+```bash
+cd /path/to/local/obsidian-vault
+git init                   # skip if already a git repo
+git remote add origin ssh://user@your-server.com/home/you/git/my-vault.git
+git pull origin main
+```
+
+**5. Install the Obsidian Git plugin**
+
+In Obsidian → Settings → Community plugins → search **Obsidian Git**, install and enable it. Recommended settings:
+- *Auto pull interval*: `10` (minutes)
+- *Auto push interval*: `5` (minutes)
+
+After each push, open the Git panel in Notes App and click **Pull** to update the working vault.
+
+---
+
+### Method B: GitHub private repo (easiest, works from any machine)
+
+```
+Local Obsidian ──push──▶ GitHub private repo ◀──pull── Notes App on server
+```
+
+**1. Push your local vault to GitHub**
+
+Create a private repo on GitHub, then in your local vault:
+
+```bash
+git init
+git remote add origin https://github.com/yourname/my-vault.git
+git add . && git commit -m "init"
+git push -u origin main
+```
+
+**2. Clone it on the server**
+
+```bash
+git clone https://github.com/yourname/my-vault.git ~/vault
+# set VAULT_PATH=~/vault in .env.local
+```
+
+**3. Store a GitHub Personal Access Token on the server**
+
+Generate a token at GitHub → Settings → Developer settings → Personal access tokens (classic), scope: `repo`.
+
+```bash
+# on the server, let git remember the token permanently
+git config --global credential.helper store
+
+cd ~/vault
+git pull   # enter your GitHub username + token when prompted; stored after that
+```
+
+Or embed the token directly in the remote URL:
+
+```bash
+git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vault.git
+```
+
+**4. Install the Obsidian Git plugin** (same as Method A, step 5)
+
+After each push, open the Git panel in Notes App and click **Pull**.
+
+---
+
+### Sync flow summary
+
+| Action | What to do |
+|--------|-----------|
+| Wrote notes locally | Obsidian Git auto-pushes → click **Pull** in Notes App |
+| Edited notes on the web | Click **Push** in Notes App → Obsidian Git auto-pulls |
+| Want automatic server pull | Add a cron job: `*/10 * * * * cd ~/vault && git pull` |
+
 ## Access Without a Domain (Public IP)
 
 No domain? No problem. Set `SITE_URL` to your server's public IP:

@@ -73,6 +73,16 @@ After deploying, go to Vercel → Project → Settings → **Environment Variabl
 
 > **Note**: The Vercel version uses the bundled `vault/` sample notes and does not support Git sync or the AI panel (both require a persistent server environment). Deploy to a VPS for full functionality.
 
+## Not a Developer? Let an AI Agent Install It for You
+
+If you're not comfortable with the command line, the easiest path is to hand the job to an AI coding agent — **Claude Code**, **Codex**, **OpenCode**, or any similar tool. Just paste the repository URL and say something like:
+
+> "Please clone this repo and deploy it on my server: `https://github.com/jiangjiren/clawapp`"
+
+The agent will read the README, run the commands, and guide you through the configuration. Most users get a working installation this way without touching a single line of code themselves.
+
+---
+
 ## Requirements
 
 - Node.js 20 or newer.

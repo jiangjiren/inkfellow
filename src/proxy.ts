@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 const NOTES_AUTH_REALM = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "My Notes";
 
-const isNotesPath = (pathname: string) => pathname === "/notes" || pathname.startsWith("/notes/");
 const isNotesApiPath = (pathname: string) => pathname.startsWith("/api/notes/");
-const isProtectedNotesPath = (pathname: string) => isNotesPath(pathname) || isNotesApiPath(pathname);
+
+const isProtectedPath = (pathname: string) =>
+  pathname === "/" || isNotesApiPath(pathname);
 
 const getNotesAuthConfig = () => ({
   username:
@@ -64,19 +65,13 @@ const createNotesAuthResponse = (isApiRequest: boolean) =>
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isProtectedNotesPath(pathname) && !isValidNotesAuth(request)) {
+  if (isProtectedPath(pathname) && !isValidNotesAuth(request)) {
     return createNotesAuthResponse(isNotesApiPath(pathname));
-  }
-
-  if (pathname === "/") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/notes";
-    return NextResponse.redirect(url, 301);
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/notes/:path*", "/api/notes/:path*", "/((?!_next|api|.*\\..*).*)"],
+  matcher: ["/", "/api/notes/:path*"],
 };

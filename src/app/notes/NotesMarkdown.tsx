@@ -232,7 +232,7 @@ const resolveNotePath = (
 const makeNoteHref = (path: string, heading?: string) => {
   const params = new URLSearchParams({ file: path });
   const hash = heading ? `#${encodeURIComponent(slugifyHeading(heading))}` : "";
-  return `/notes?${params.toString()}${hash}`;
+  return `/?${params.toString()}${hash}`;
 };
 
 const makeAssetHref = (path: string, currentPath: string) => {
@@ -251,7 +251,7 @@ const normalizeMarkdownLink = (
   noteIndex: Map<string, string>,
   allowInternalNoteLinks: boolean,
 ) => {
-  if (!href || href.startsWith("#") || isExternalHref(href) || href.startsWith("/notes")) {
+  if (!href || href.startsWith("#") || isExternalHref(href) || href.startsWith("/?file=")) {
     return href;
   }
 
@@ -418,7 +418,7 @@ export default function NotesMarkdown({
           allowInternalNoteLinks,
         );
         const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-          if (!normalizedHref?.startsWith("/notes")) {
+          if (!normalizedHref?.startsWith("/?file=")) {
             return;
           }
 

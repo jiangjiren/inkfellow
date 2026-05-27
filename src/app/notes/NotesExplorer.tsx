@@ -903,6 +903,14 @@ export default function NotesExplorer() {
     setIsEditing(false);
   }, [isDirty, handleSave]);
 
+  /** 取消编辑，有未保存修改时弹确认 */
+  const handleEditCancel = useCallback(() => {
+    if (isDirty && !window.confirm("放弃未保存的修改？")) return;
+    setIsEditing(false);
+    // 把 editContent 还原为当前 note 内容（下次进编辑时重新加载）
+    if (note) setEditContent(note.content);
+  }, [isDirty, note]);
+
   /** 切换笔记前自动保存未提交的修改 */
   const flushEditBeforeSwitch = useCallback(async () => {
     if (isEditing && isDirty && activePath) {
@@ -1324,20 +1332,30 @@ export default function NotesExplorer() {
           </div>
           <div className={styles.readerActions}>
             {isEditing ? (
-              /* 编辑模式右侧：已保存提示 + 完成按钮 */
+              /* 编辑模式右侧：已保存提示 + 取消 + 完成 */
               <>
                 {savedFlash ? (
                   <span className={styles.savedHint}>已保存</span>
                 ) : null}
                 <button
                   type="button"
+                  className={styles.editCancelBtn}
+                  onClick={handleEditCancel}
+                  disabled={isSaving}
+                  aria-label="取消编辑"
+                  title="取消编辑，放弃修改"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
                   className={`${styles.editDoneBtn} ${isDirty ? styles.editDoneBtnDirty : ""}`}
                   onClick={() => void handleEditDone()}
                   disabled={isSaving}
                   aria-label="完成编辑"
-                  title="完成编辑（自动保存）"
+                  title="保存并完成编辑 (⌘S)"
                 >
-                  {isSaving ? "保存中…" : "完成"}
+                  {isSaving ? "保存中…" : isDirty ? "保存" : "完成"}
                 </button>
               </>
             ) : (
@@ -1385,19 +1403,31 @@ export default function NotesExplorer() {
           </div>
         </header>
 
-        {/* 编辑模式 — 全屏 textarea */}
+        {/* 编辑模式 — 左右分栏：textarea + 实时预览 */}
         {isEditing ? (
-          <textarea
-            ref={editorRef}
-            className={styles.editor}
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-            aria-label="编辑笔记内容"
-            placeholder="在此输入 Markdown 内容…"
-          />
+          <div className={styles.editorPane}>
+            <textarea
+              ref={editorRef}
+              className={styles.editor}
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              aria-label="编辑笔记内容"
+              placeholder="在此输入 Markdown 内容…"
+            />
+            <div className={styles.editorPreview} aria-label="预览">
+              <article className={styles.document}>
+                <NotesMarkdown
+                  markdown={editContent}
+                  currentPath={note?.path ?? ""}
+                  noteIndex={noteIndex}
+                  onNavigate={handleMarkdownNavigate}
+                />
+              </article>
+            </div>
+          </div>
         ) : (
           <article
             key={note?.path || "empty"}

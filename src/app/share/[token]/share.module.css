@@ -1,0 +1,373 @@
+.shareLayout {
+  position: relative;
+}
+
+/* ── Mobile pill toggle ── */
+.tocToggle {
+  position: absolute;
+  left: -18px;
+  top: 12px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  background: #fffefb;
+  color: #6d7666;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.tocToggle:hover {
+  color: #20251d;
+  background: #f5f3ee;
+}
+
+.tocToggleOpen {
+  color: #20251d;
+  background: #edebe3;
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+.tocToggleHidden {
+  /* mobile-only, defined in media query */
+}
+
+.tocToggleLabel {
+  display: none;
+}
+
+/* ── Mobile backdrop ── */
+.tocBackdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.tocBackdropVisible {
+  display: block;
+  opacity: 1;
+}
+
+/* ── Mobile bottom sheet ── */
+.tocSidebar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 19;
+  width: 100%;
+  height: auto;
+  max-height: 65vh;
+  background: #fffefb;
+  border-radius: 20px 20px 0 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow: 0 -4px 32px rgba(0, 0, 0, 0.13);
+  transform: translateY(100%);
+  transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tocSidebarOpen {
+  transform: translateY(0);
+}
+
+.tocHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 8px;
+  font-size: 13px;
+  font-weight: 680;
+  color: #20251d;
+}
+
+.tocHeader::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.13);
+  border-radius: 2px;
+  margin: 0 auto 10px;
+}
+
+.tocTitle {
+  letter-spacing: 0.03em;
+}
+
+.tocClose {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #8b9583;
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.tocClose:hover {
+  color: #20251d;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tocList {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 32px;
+}
+
+.tocItem {
+  margin: 0;
+}
+
+.tocLink {
+  display: block;
+  width: 100%;
+  padding: 7px 20px;
+  border: none;
+  background: transparent;
+  color: #4a5447;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.tocLink:hover {
+  color: #20251d;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* ── PC TOC sidebar (outside the card) ── */
+.pcToc {
+  display: none;
+}
+
+.pcTocList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pcTocLink {
+  display: block;
+  width: 100%;
+  padding: 3px 0 3px 12px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: #8b9583;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  word-break: break-all;
+}
+
+.pcTocLink:hover {
+  color: #3d4239;
+}
+
+.pcTocLinkActive {
+  color: #20251d;
+  border-left-color: #6d7666;
+  font-weight: 500;
+}
+
+.pcTocLinkSub {
+  padding-left: 22px;
+  font-size: 12px;
+  color: #a0a89a;
+}
+
+/* ── Page shell ── */
+.page {
+  min-height: 100vh;
+  background: #eeece6;
+  color: #191b17;
+  padding: 34px 18px 64px;
+}
+
+.shell {
+  width: min(100%, 1100px);
+  margin: 0 auto;
+}
+
+.contentRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 24px;
+  color: #6d7666;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.brand {
+  display: grid;
+  gap: 2px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #8b9583;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: #20251d;
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.meta {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.document {
+  flex: 1;
+  min-width: 0;
+  background: #fffefb;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 40px rgba(0, 0, 0, 0.08);
+  padding: clamp(28px, 6vw, 62px);
+}
+
+.htmlDocument {
+  padding: 0;
+  overflow: hidden;
+}
+
+.state {
+  min-height: 45vh;
+  display: grid;
+  place-items: center;
+  color: #6d7666;
+  font-size: 14px;
+}
+
+/* ── Mobile ── */
+@media (max-width: 720px) {
+  .page {
+    padding: 14px 10px 42px;
+  }
+
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 4px 12px;
+  }
+
+  .meta {
+    text-align: left;
+  }
+
+  .document {
+    border-radius: 8px;
+    padding: 24px 18px 44px;
+  }
+
+  .htmlDocument {
+    padding: 0;
+  }
+
+  /* Pill button fixed at bottom-center */
+  .tocToggle {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    top: unset;
+    right: unset;
+    transform: translateX(-50%);
+    width: auto;
+    height: 38px;
+    padding: 0 18px 0 14px;
+    border-radius: 19px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: rgba(255, 254, 251, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.13), 0 1px 3px rgba(0, 0, 0, 0.07);
+    transition: opacity 0.22s ease, transform 0.22s ease, background 0.15s;
+    z-index: 20;
+  }
+
+  .tocToggleLabel {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: #3a3f37;
+  }
+
+  .tocToggleHidden {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+    pointer-events: none;
+  }
+
+  /* Drag handle on bottom sheet */
+  .tocHeader {
+    padding-top: 16px;
+    padding-bottom: 6px;
+  }
+}
+
+/* ── PC ── */
+@media (min-width: 721px) {
+  /* PC TOC is outside the card — show it */
+  .pcToc {
+    display: block;
+    width: 176px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 36px;
+    max-height: calc(100vh - 72px);
+    overflow-y: auto;
+    padding-top: 2px;
+  }
+
+  /* Hide all mobile TOC elements on PC */
+  .tocToggle,
+  .tocBackdrop,
+  .tocBackdropVisible,
+  .tocSidebar,
+  .tocSidebarOpen {
+    display: none;
+  }
+}

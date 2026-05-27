@@ -3,6 +3,42 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Premium Apple Fonts */
+  --notes-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+  --notes-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+
+  /* App Base Colors (Light Sand/Warm Theme) */
+  --notes-bg-app: #f5f4ef;
+  --notes-bg-sidebar: #eae9e4;
+  --notes-bg-reader: #f5f4ef;
+  --notes-bg-document: #ffffff;
+  
+  --notes-text-primary: #1d1d1f;
+  --notes-text-secondary: #6e6e73;
+  --notes-text-muted: #86868b;
+  --notes-border: rgba(0, 0, 0, 0.08);
+  --notes-border-strong: rgba(0, 0, 0, 0.14);
+
+  /* Brand Accents (Apple Blue & Warm Terracotta Rust) */
+  --notes-accent: #0071e3;          /* SF Blue */
+  --notes-accent-hover: #0066cc;
+  --notes-accent-bg: rgba(0, 113, 227, 0.06);
+  --notes-accent-bg-hover: rgba(0, 113, 227, 0.12);
+  
+  --notes-accent-warm: #c4521c;     /* Warm Rust */
+  --notes-accent-warm-hover: #cd5b24;
+  --notes-accent-warm-bg: rgba(196, 82, 28, 0.08);
+
+  /* Shadows & Radius */
+  --notes-radius-card: 12px;
+  --notes-radius-item: 8px;
+  --notes-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 32px rgba(0, 0, 0, 0.05);
+  --notes-shadow-popover: 0 4px 18px rgba(0, 0, 0, 0.08), 0 12px 42px rgba(0, 0, 0, 0.12);
+
+  /* Transitions */
+  --notes-transition-spring: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  --notes-transition-fast: all 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
 @theme inline {
@@ -16,11 +52,38 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    /* App Base Colors (Graphite Dark Theme) */
+    --notes-bg-app: #09090b;
+    --notes-bg-sidebar: #151516;
+    --notes-bg-reader: #09090b;
+    --notes-bg-document: #18181b;
+
+    --notes-text-primary: #f5f5f7;
+    --notes-text-secondary: #86868b;
+    --notes-text-muted: #6e6e73;
+    --notes-border: rgba(255, 255, 255, 0.08);
+    --notes-border-strong: rgba(255, 255, 255, 0.15);
+
+    /* Brand Accents */
+    --notes-accent: #2997ff;
+    --notes-accent-hover: #54adff;
+    --notes-accent-bg: rgba(41, 151, 255, 0.12);
+    --notes-accent-bg-hover: rgba(41, 151, 255, 0.2);
+    
+    --notes-accent-warm: #d05a22;
+    --notes-accent-warm-hover: #e06c35;
+    --notes-accent-warm-bg: rgba(208, 90, 34, 0.15);
+
+    --notes-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2), 0 8px 30px rgba(0, 0, 0, 0.3);
+    --notes-shadow-popover: 0 4px 20px rgba(0, 0, 0, 0.3), 0 10px 40px rgba(0, 0, 0, 0.4);
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }

@@ -29,9 +29,16 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.next-server.log
+*.log
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+shared-notes.json
+.codex
+.codex/
+public/downloads/
 
 # vercel
 .vercel

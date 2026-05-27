@@ -1,0 +1,2642 @@
+/* ── Layout ────────────────────────────────────── */
+.shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  background: var(--notes-bg-app);
+  color: var(--notes-text-primary);
+  font-family: var(--notes-font-sans);
+  overflow-x: clip;
+}
+
+/* ── Sidebar ───────────────────────────────────── */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 280px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-right: 1px solid var(--notes-border);
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  overflow: hidden;
+  transition: var(--notes-transition-spring);
+  will-change: width, opacity;
+}
+
+.shellSidebarHidden .sidebar {
+  width: 0 !important;
+  opacity: 0;
+  border-right-color: transparent !important;
+  pointer-events: none;
+}
+
+.sidebarHidden,
+.assistantPanelHidden {
+  width: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+  border: 0 !important;
+}
+
+.sidebarHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 20px 18px 8px;
+}
+
+.mobileSidebarClose,
+.mobileScrim {
+  display: none;
+}
+
+.eyebrow {
+  margin: 0 0 3px;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--notes-text-muted);
+}
+
+.title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--notes-text-primary);
+}
+
+.counter {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--notes-border);
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--notes-text-secondary);
+  background: rgba(120, 120, 128, 0.04);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(120, 120, 128, 0.09);
+  padding: 7px 10px;
+  transition: var(--notes-transition-fast);
+}
+
+.search:focus-within {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+  background: var(--notes-bg-document);
+}
+
+.searchIcon {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--notes-text-muted);
+  border-radius: 999px;
+  position: relative;
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.searchIcon::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 5px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--notes-text-muted);
+  transform: rotate(45deg);
+}
+
+.search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.search input::placeholder {
+  color: var(--notes-text-muted);
+  opacity: 0.8;
+}
+
+.treePanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 16px;
+}
+
+.treePanel::-webkit-scrollbar,
+.reader::-webkit-scrollbar {
+  width: 6px;
+}
+
+.treePanel::-webkit-scrollbar-thumb {
+  background: var(--notes-border-strong);
+  border-radius: 999px;
+}
+
+.treeGroup,
+.treeChildren {
+  display: grid;
+  gap: 2px;
+}
+
+.treeFolder,
+.treeFile {
+  --level: 0;
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--notes-radius-item);
+  background: transparent;
+  color: var(--notes-text-secondary);
+  padding: 5px 8px 5px calc(8px + (var(--level) * 14px));
+  text-align: left;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: var(--notes-transition-fast);
+}
+
+.treeFile {
+  color: var(--notes-text-primary);
+}
+
+.treeFolder:hover,
+.treeFile:hover {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.treeFileActive {
+  background: var(--notes-accent) !important;
+  color: #ffffff !important;
+  font-weight: 550;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.treeFileActive:hover {
+  background: var(--notes-accent-hover) !important;
+  color: #ffffff !important;
+}
+
+.chevron {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--notes-text-muted);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), color 150ms;
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+.folderGlyph,
+.fileDot {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.folderGlyph {
+  width: 16px;
+  height: 13px;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+.fileDot {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.treeLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.fileTypeBadge {
+  font-size: 9px;
+  font-weight: 650;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 1;
+  border: 1px solid rgba(80, 140, 220, 0.28);
+  background: rgba(80, 140, 220, 0.09);
+  color: #5e98d4;
+}
+
+.treeFileActive .fileTypeBadge {
+  border-color: rgba(255, 243, 237, 0.22);
+  background: rgba(255, 243, 237, 0.12);
+  color: #ffece4;
+}
+
+.sidebarState {
+  margin: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  padding: 12px 14px;
+  color: #7a8474;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ── Reader ────────────────────────────────────── */
+.reader {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--notes-bg-reader);
+  transition: var(--notes-transition-spring);
+}
+
+.reader::-webkit-scrollbar-thumb {
+  background: var(--notes-border-strong);
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.readerHeader {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--notes-border);
+  background: rgba(245, 244, 239, 0.82);
+  backdrop-filter: blur(20px) saturate(190%);
+  padding: 0 22px;
+  box-sizing: border-box;
+  transition: min-height 0.3s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s ease, border-color 0.3s ease;
+}
+
+@media (prefers-color-scheme: dark) {
+  .readerHeader {
+    background: rgba(9, 9, 11, 0.82);
+  }
+}
+
+.readerHeaderScrolled {
+  min-height: 38px !important;
+  background: rgba(245, 244, 239, 0.92) !important;
+  border-bottom-color: var(--notes-border-strong) !important;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
+}
+
+@media (prefers-color-scheme: dark) {
+  .readerHeaderScrolled {
+    background: rgba(9, 9, 11, 0.92) !important;
+  }
+}
+
+.readerActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.shareButton {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #383c32;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.shareButton svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.shareButton:hover,
+.shareButton:focus-visible {
+  border-color: rgba(196, 82, 28, 0.42);
+  background: #ffffff;
+  color: #943c16;
+}
+
+.shareButton:disabled {
+  cursor: not-allowed;
+  border-color: rgba(0, 0, 0, 0.1);
+  background: #d7d9d1;
+  color: #7d8577;
+}
+
+.shareStatus {
+  max-width: 120px;
+  color: #607157;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shareStatusError {
+  color: #983418;
+}
+
+.shareOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(18, 20, 16, 0.48);
+  padding: 18px;
+}
+
+.shareDialog {
+  width: min(100%, 520px);
+  max-height: min(86vh, 620px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  background: #fffefb;
+  color: #1d211a;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+.shareDialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: #f5f4ef;
+  padding: 16px 18px 14px;
+}
+
+.shareDialogEyebrow {
+  margin: 0 0 3px;
+  color: #899382;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.shareDialogTitle {
+  margin: 0;
+  color: #171a15;
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 700;
+}
+
+.shareDialogClose {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #60685a;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shareDialogClose:hover,
+.shareDialogClose:focus-visible {
+  border-color: rgba(196, 82, 28, 0.42);
+  color: #983418;
+}
+
+.shareDialogBody {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.shareDialogNote {
+  margin: 0 0 14px;
+  color: #6f7968;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.shareDialogState,
+.shareDialogEmpty {
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 7px;
+  background: #f8f8f4;
+  padding: 14px;
+  color: #697262;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.shareLinkField {
+  display: grid;
+  gap: 7px;
+}
+
+.shareLinkField span {
+  color: #687260;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.shareLinkField input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(21, 95, 70, 0.22);
+  border-radius: 7px;
+  background: #f7faf4;
+  color: #1a2118;
+  padding: 10px 11px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.shareLinkField input:focus {
+  outline: 0;
+  border-color: rgba(21, 95, 70, 0.48);
+  box-shadow: 0 0 0 3px rgba(21, 95, 70, 0.1);
+}
+
+.shareDialogMessage {
+  margin: 12px 0 0;
+  color: #607157;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.shareDialogError {
+  color: #983418;
+}
+
+.shareDialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  background: #f5f4ef;
+  padding: 14px 18px;
+}
+
+.sharePrimaryButton,
+.shareSecondaryButton,
+.shareDangerButton {
+  min-height: 32px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  padding: 0 13px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.sharePrimaryButton,
+.shareSecondaryButton {
+  border-color: rgba(21, 95, 70, 0.24);
+  background: #155f46;
+  color: #f7fff9;
+}
+
+.shareSecondaryButton {
+  background: #ffffff;
+  color: #155f46;
+}
+
+.shareDangerButton {
+  border-color: rgba(152, 52, 24, 0.24);
+  background: #ffffff;
+  color: #983418;
+}
+
+.sharePrimaryButton:hover,
+.shareSecondaryButton:hover,
+.sharePrimaryButton:focus-visible,
+.shareSecondaryButton:focus-visible {
+  border-color: rgba(152, 52, 24, 0.42);
+  background: #983418;
+  color: #fff8f4;
+}
+
+.shareDangerButton:hover,
+.shareDangerButton:focus-visible {
+  border-color: rgba(152, 52, 24, 0.48);
+  background: rgba(152, 52, 24, 0.08);
+}
+
+.sharePrimaryButton:disabled,
+.shareSecondaryButton:disabled,
+.shareDangerButton:disabled {
+  cursor: not-allowed;
+  border-color: rgba(0, 0, 0, 0.1);
+  background: #d7d9d1;
+  color: #7d8577;
+}
+
+.noteMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  color: #7e887a;
+  font-size: 11px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.noteMeta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.noteMeta span:not(:last-child)::after {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin-left: 10px;
+  border-radius: 999px;
+  background: #b4bcac;
+  vertical-align: middle;
+}
+
+@keyframes paperSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.document {
+  width: min(100%, 820px);
+  margin: 32px auto;
+  padding: 48px 56px 96px;
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  border-radius: var(--notes-radius-card);
+  box-shadow: var(--notes-shadow-card);
+  animation: paperSlideIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.documentHtml {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  animation: none;
+}
+
+.documentState {
+  border-left: 3px solid var(--notes-accent);
+  background: var(--notes-accent-bg);
+  padding: 14px 18px;
+  border-radius: 0 var(--notes-radius-item) var(--notes-radius-item) 0;
+  color: var(--notes-text-primary);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+/* ── Assistant Panel ──────────────────────────────────── */
+.assistantPanel {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: var(--assistant-panel-width, 520px);
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--notes-border);
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  transition: var(--notes-transition-spring);
+  will-change: width, opacity;
+}
+
+.shellAssistantPanelHidden .assistantPanel {
+  width: 0 !important;
+  opacity: 0;
+  border-left-color: transparent !important;
+  pointer-events: none;
+}
+
+.assistantPanelResizer {
+  position: absolute;
+  left: -7px;
+  top: 0;
+  z-index: 8;
+  width: 14px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.assistantPanelResizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 6px;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.assistantPanelResizer:hover::after,
+.assistantPanelResizer:focus-visible::after,
+.shellResizing .assistantPanelResizer::after {
+  background: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.assistantPanelHeader {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--notes-border);
+  background: var(--notes-bg-sidebar);
+  padding: 0 10px 0 4px;
+}
+
+.assistantPanelTabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  min-height: 44px;
+}
+
+.assistantPanelTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--notes-text-secondary);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--notes-transition-fast);
+}
+
+.assistantPanelTab:hover {
+  color: var(--notes-text-primary);
+}
+
+.assistantPanelTabActive {
+  color: var(--notes-accent);
+  border-bottom-color: var(--notes-accent);
+}
+
+.assistantPanelHeaderLight {
+  background: var(--notes-bg-sidebar) !important;
+  border-bottom-color: var(--notes-border) !important;
+}
+
+.assistantPanelHeaderLight .assistantPanelTab {
+  color: var(--notes-text-secondary) !important;
+}
+
+.assistantPanelHeaderLight .assistantPanelTab:hover {
+  color: var(--notes-text-primary) !important;
+}
+
+.assistantPanelHeaderLight .assistantPanelTabActive {
+  color: var(--notes-accent) !important;
+  border-bottom-color: var(--notes-accent) !important;
+}
+
+.assistantPanelHeaderLight .assistantPanelClose {
+  color: var(--notes-text-secondary) !important;
+}
+
+.assistantPanelHeaderLight .assistantPanelClose:hover {
+  color: var(--notes-text-primary) !important;
+  background: var(--notes-accent-bg) !important;
+}
+
+.assistantPanelControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.articleToc {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--notes-bg-sidebar);
+  padding: 18px 14px;
+}
+
+.articleTocHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--notes-text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.articleTocHeader span {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.articleTocHeader strong {
+  color: var(--notes-text-primary);
+  font-size: 12px;
+}
+
+.articleTocList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.articleTocLink {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  border-radius: var(--notes-radius-item);
+  transition: var(--notes-transition-fast);
+}
+
+.articleTocLink:hover,
+.articleTocLink:focus-visible {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.articleTocLinkActive {
+  background: var(--notes-accent) !important;
+  color: #ffffff !important;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.articleTocLinkSub {
+  padding-left: 24px;
+  font-size: 11.5px;
+  opacity: 0.9;
+}
+
+.articleTocEmpty {
+  margin: 18px 0 0;
+  border-left: 3px solid var(--notes-accent);
+  background: var(--notes-accent-bg);
+  padding: 10px 12px;
+  color: var(--notes-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  border-radius: 0 var(--notes-radius-item) var(--notes-radius-item) 0;
+}
+
+.assistantPanelFrame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #161412;
+}
+
+/* 隐藏时保持 iframe 在布局里，iframe 能持续保留当前内容，避免切回时出现残留字符 */
+.assistantPanelFrameHidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sidebar.sidebarHidden,
+.assistantPanel.assistantPanelHidden {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.shellResizing .assistantPanelFrame {
+  pointer-events: none;
+}
+
+/* ── Buttons ───────────────────────────────────── */
+.assistantPanelClose,
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #383c32;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.iconButton {
+  width: 30px;
+  height: 30px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-weight: 700;
+}
+
+.iconButton:hover,
+.iconButton:focus-visible {
+  border-color: rgba(196, 82, 28, 0.42);
+  background: #ffffff;
+  color: #943c16;
+}
+
+.iconButtonActive {
+  border-color: rgba(92, 124, 70, 0.38);
+  background: rgba(92, 124, 70, 0.1);
+  color: #283a1c;
+}
+
+.assistantPanelClose {
+  width: 26px;
+  height: 26px;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #6a6460;
+  font-size: 16px;
+}
+
+.assistantPanelClose:hover,
+.assistantPanelClose:focus-visible {
+  border-color: rgba(196, 82, 28, 0.5);
+  background: rgba(196, 82, 28, 0.14);
+  color: #ffeee8;
+}
+
+/* ── Front Matter ──────────────────────────────── */
+.frontMatter {
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 8px;
+  background: #fafaf8;
+  padding: 12px 16px 8px;
+  margin-bottom: 2em;
+}
+
+.frontMatterLabel {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #a0a89a;
+}
+
+.frontMatterGrid {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.frontMatterRow {
+  display: grid;
+  grid-template-columns: minmax(80px, 26%) 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.frontMatterRow:first-of-type {
+  border-top: 0;
+}
+
+.frontMatterKey {
+  font-size: 12px;
+  font-weight: 600;
+  color: #7a8072;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frontMatterValue {
+  font-size: 13px;
+  color: #2a2e26;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.frontMatterEmpty {
+  color: #bec4b8;
+}
+
+.frontMatterBool {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  color: #6a5f8f;
+}
+
+.frontMatterTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.frontMatterTag {
+  display: inline-block;
+  border: 1px solid rgba(80, 116, 58, 0.28);
+  border-radius: 4px;
+  background: rgba(80, 116, 58, 0.07);
+  padding: 2px 7px;
+  color: #364826;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.frontMatterList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.frontMatterList li {
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  color: #2a2e26;
+}
+
+.frontMatterList li::before {
+  content: "·";
+  margin-right: 5px;
+  color: #b04c1a;
+}
+
+/* ── Git Panel ─────────────────────────────────── */
+.gitPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: #f7f6f3;
+  display: flex;
+  flex-direction: column;
+}
+
+.gitStack {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 100% 100%;
+  width: 100%;
+  transform: translateX(0);
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.gitStackShowingDetail {
+  transform: translateX(-100%);
+}
+
+.gitStackPane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.gitDiffPane {
+  background: #f7f6f3;
+  overflow: hidden;
+}
+
+.gitStatusBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.gitStatusLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.gitStatusDot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e8a020;
+}
+.gitStatusDot[data-ok="true"] { background: #34a853; }
+
+.gitStatusLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2a2e26;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gitStatusDim { font-size: 12px; color: #9a9590; }
+
+.gitStatusTime {
+  font-size: 11px;
+  color: #a0a098;
+  white-space: nowrap;
+}
+
+.gitRefresh {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  background: transparent;
+  color: #8a8880;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.gitRefresh:hover { background: rgba(0,0,0,0.06); color: #2a2e26; }
+.gitRefresh:disabled { opacity: 0.4; cursor: default; }
+
+.gitFeedback {
+  margin: 10px 14px 0;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: rgba(52, 168, 83, 0.1);
+  border: 1px solid rgba(52, 168, 83, 0.22);
+  color: #1a6a35;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.gitFeedbackError {
+  background: rgba(192, 57, 43, 0.08);
+  border-color: rgba(192, 57, 43, 0.2);
+  color: #a02820;
+}
+
+.gitActions {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-bottom: 1px solid rgba(0,0,0,0.07);
+}
+
+.gitNoteInput {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  color: #1a1916;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.gitNoteInput:focus {
+  border-color: rgba(26, 108, 246, 0.35);
+  box-shadow: 0 0 0 2.5px rgba(26, 108, 246, 0.08);
+}
+.gitNoteInput::placeholder { color: #c0bdb8; }
+.gitNoteInput:disabled { opacity: 0.5; }
+
+/* 次级操作行：获取更新 + 历史记录 */
+.gitSecondaryRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s;
+}
+.gitButton:disabled { opacity: 0.45; cursor: default; }
+
+.gitButtonPrimary {
+  background: #1a1916;
+  border-color: rgba(0,0,0,0.2);
+  color: #fff;
+}
+.gitButtonPrimary:not(:disabled):hover { background: #3a3835; }
+
+/* 全宽主按钮 */
+.gitButtonFull {
+  width: 100%;
+  height: 40px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.gitButtonSecondary {
+  background: rgba(0,0,0,0.06);
+  border-color: rgba(0,0,0,0.1);
+  color: #2a2e26;
+}
+.gitButtonSecondary:not(:disabled):hover { background: rgba(0,0,0,0.11); }
+
+/* 次级操作：较小尺寸 */
+.gitButtonSecondarySmall {
+  flex: 1;
+  height: 28px;
+  font-size: 11.5px;
+}
+
+/* 云端有更新时的「获取更新」按钮 — 蓝色强调 */
+.gitButtonPull {
+  background: rgba(26,108,246,0.09);
+  border-color: rgba(26,108,246,0.22);
+  color: #1a6cf6;
+}
+.gitButtonPull:not(:disabled):hover { background: rgba(26,108,246,0.16); }
+
+/* 无更新时的「检查云端更新」— 极淡文字链接 */
+.gitPullLink {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 8px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: #b0ada8;
+  cursor: pointer;
+  transition: color 0.12s;
+  white-space: nowrap;
+}
+.gitPullLink:not(:disabled):hover { color: #6a6860; }
+.gitPullLink:disabled { opacity: 0.4; cursor: default; }
+
+/* 蓝色小圆圈 badge（用于 pull 按钮）*/
+.gitBadgePull {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #1a6cf6;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* 深色 spinner（用于浅色背景的 pull 按钮）*/
+.gitSpinnerDark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(26,108,246,0.25);
+  border-top-color: #1a6cf6;
+  border-radius: 50%;
+  animation: gitSpin 0.7s linear infinite;
+}
+
+.gitButtonIcon { font-size: 16px; font-weight: 400; line-height: 1; }
+
+.gitBadge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #1a6cf6;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.gitDivider { height: 1px; background: rgba(0,0,0,0.07); margin: 2px 0; }
+
+.gitSpinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: gitSpin 0.7s linear infinite;
+}
+.gitButtonSecondary .gitSpinner {
+  border-color: rgba(0,0,0,0.15);
+  border-top-color: #2a2e26;
+}
+@keyframes gitSpin { to { transform: rotate(360deg); } }
+
+.gitFileList { padding: 0 14px 16px; }
+
+.gitFileListHeader {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #9a9590;
+  margin: 0 0 8px;
+}
+
+.gitFileList ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gitFileItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.03);
+}
+
+.gitFileDot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.gitDotModified { background: #e8a020; }
+.gitDotAdded    { background: #34a853; }
+.gitDotDeleted  { background: #c0392b; }
+
+.gitFileName {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: #2a2e26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitFileState { flex-shrink: 0; font-size: 10.5px; color: #9a9590; }
+
+.gitEmptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #b0ada8;
+  font-size: 12.5px;
+  padding: 30px;
+}
+.gitEmptyState span:first-child {
+  font-size: 20px;
+  opacity: 0.5;
+}
+
+/* file list header with count */
+.gitFileListHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #9a9590;
+  margin: 0 0 6px;
+}
+.gitFileCount {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.1);
+  color: #6a6860;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* file row — clickable header */
+/* file row */
+.gitFileItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+.gitFileItem:hover { background: rgba(0,0,0,0.04); }
+
+/* 文件名 + 路径纵向排列 */
+.gitFileInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.gitFileName {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #2a2e26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitFilePath {
+  font-size: 10.5px;
+  color: #a0a098;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 修改 / 新增 / 删除 badge */
+.gitStateBadge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.gitBadgeModified { background: rgba(232,160,32,0.13); color: #9a6410; }
+.gitBadgeAdded    { background: rgba(52,168,83,0.12);  color: #1a7a35; }
+.gitBadgeDeleted  { background: rgba(192,57,43,0.10);  color: #a02820; }
+
+/* ── Git: 可折叠改动列表 ── */
+.gitToggleBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: inherit;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+}
+.gitToggleBtn:hover .gitStatusLabel {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.gitChevron {
+  display: inline-block;
+  font-size: 8px;
+  opacity: 0.45;
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.gitChevronOpen { transform: rotate(90deg); }
+
+.gitFileListWrap {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.gitFileListWrapOpen { max-height: 360px; }
+
+/* +N -N 行数统计 */
+.gitDiffStats {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  opacity: 0.85;
+}
+.gitDiffAdd    { color: #1a7a35; }
+.gitDiffRemove { color: #a02820; }
+
+.gitDiffStatsButton {
+  border: none;
+  background: transparent;
+  padding: 2px 1px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.gitDiffStatsButton:hover { background: rgba(0,0,0,0.05); }
+
+.gitDiffBtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #8a8880;
+  opacity: 0.45;                        /* 触摸屏：始终可见 */
+  padding: 0;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+/* 有鼠标的设备：默认隐藏，hover 时才显示 */
+@media (hover: hover) {
+  .gitDiffBtn { opacity: 0; }
+  .gitFileItem:hover .gitDiffBtn { opacity: 0.7; color: #8a8880; }
+  .gitDiffBtn:hover { opacity: 1 !important; background: rgba(26,108,246,0.09); color: #1a6cf6; }
+}
+
+.gitDiffHeader {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid rgba(0,0,0,0.07);
+  background: rgba(247,246,243,0.96);
+}
+
+.gitDiffBack {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.05);
+  color: #1a1916;
+  cursor: pointer;
+  font: inherit;
+  font-size: 24px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  padding: 0 0 3px;
+}
+.gitDiffBack:hover { background: rgba(0,0,0,0.09); }
+
+.gitDiffHeaderText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.gitDiffHeaderText strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1a1916;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.gitDiffHeaderText span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9a9590;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.gitDiffSummary {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(0,0,0,0.055);
+}
+
+.gitDiffContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px 16px;
+}
+.gitDiffContent::-webkit-scrollbar { width: 4px; }
+.gitDiffContent::-webkit-scrollbar-track { background: transparent; }
+.gitDiffContent::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.13); border-radius: 2px; }
+
+.gitDiffLines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gitDiffLine {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  gap: 5px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  color: #2a2e26;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.gitDiffLineAdd {
+  background: rgba(52,168,83,0.105);
+  box-shadow: inset 2px 0 0 rgba(52,168,83,0.42);
+}
+.gitDiffLineRemove {
+  background: rgba(192,57,43,0.085);
+  box-shadow: inset 2px 0 0 rgba(192,57,43,0.34);
+}
+.gitDiffLineRemove .gitDiffText {
+  color: #8f2a22;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(143,42,34,0.45);
+}
+.gitDiffLineHunk {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 11px 0 8px;
+  background: transparent;
+}
+
+.gitDiffMarker {
+  color: #9a9590;
+  font-family: "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  text-align: center;
+  user-select: none;
+}
+.gitDiffLineAdd .gitDiffMarker { color: #1a7a35; }
+.gitDiffLineRemove .gitDiffMarker { color: #a02820; }
+
+.gitDiffText {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gitDiffHunkLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #a0a098;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gitDiffHunkLabel::before,
+.gitDiffHunkLabel::after {
+  content: "";
+  width: 22px;
+  height: 1px;
+  background: rgba(0,0,0,0.08);
+}
+
+.gitDiffState {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #9a9590;
+  font-size: 12px;
+  text-align: center;
+}
+.gitDiffStateError {
+  color: #a02820;
+  flex-direction: column;
+}
+.gitDiffStateError button {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(192,57,43,0.22);
+  background: rgba(192,57,43,0.08);
+  color: #a02820;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gitDiffFooter {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(0,0,0,0.07);
+  background: rgba(247,246,243,0.98);
+}
+
+.gitDiffFooterBtn {
+  flex: 1;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.1);
+  background: rgba(255,255,255,0.72);
+  color: #2a2e26;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gitDiffFooterBtn:hover { background: #fff; }
+.gitDiffFooterDanger {
+  color: #a02820;
+  border-color: rgba(192,57,43,0.18);
+  background: rgba(192,57,43,0.065);
+}
+.gitDiffFooterDanger:hover { background: rgba(192,57,43,0.11); }
+
+.gitDiffDiscardConfirm {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gitDiffDiscardConfirm span {
+  flex: 1;
+  min-width: 0;
+  color: #a02820;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* ── Git: 查看历史按钮 ── */
+.gitHistoryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 26px;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  color: #8a8880;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.gitHistoryBtn:hover { background: rgba(0,0,0,0.09); color: #2a2e26; }
+
+/* ── Git: 历史记录抽屉 ── */
+.gitHistoryOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0);
+  z-index: 20;
+  pointer-events: none;
+  transition: background 0.18s;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: inherit;
+}
+.gitHistoryOverlayOpen {
+  background: rgba(0,0,0,0.22);
+  pointer-events: auto;
+}
+
+.gitHistoryPanel {
+  background: #f7f6f3;
+  border-top: 1px solid rgba(0,0,0,0.09);
+  border-radius: 10px 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 68%;
+  transform: translateY(100%);
+  transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow: hidden;
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.08);
+}
+.gitHistoryOverlayOpen .gitHistoryPanel { transform: translateY(0); }
+
+.gitHistoryHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 13px 9px;
+  border-bottom: 1px solid rgba(0,0,0,0.07);
+  flex-shrink: 0;
+}
+.gitHistoryTitle { font-size: 12.5px; font-weight: 600; color: #1a1916; }
+.gitHistoryClose {
+  width: 20px; height: 20px;
+  border: none;
+  background: rgba(0,0,0,0.08);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+  color: #9a9590;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.12s;
+}
+.gitHistoryClose:hover { background: rgba(0,0,0,0.15); color: #1a1916; }
+
+.gitHistoryList {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px 0 12px;
+}
+.gitHistoryList::-webkit-scrollbar { width: 4px; }
+.gitHistoryList::-webkit-scrollbar-track { background: transparent; }
+.gitHistoryList::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
+
+.gitHistoryEmpty {
+  padding: 24px 14px;
+  text-align: center;
+  color: #b0ada8;
+  font-size: 12px;
+}
+
+.gitHistoryItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 13px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+.gitHistoryItem:last-child { border-bottom: none; }
+
+.gitCommitHash {
+  flex-shrink: 0;
+  font-family: "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #9a9590;
+  background: rgba(0,0,0,0.07);
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+
+.gitCommitInfo { flex: 1; min-width: 0; }
+.gitCommitMsg {
+  font-size: 12px;
+  color: #2a2e26;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.gitCommitMeta {
+  font-size: 10.5px;
+  color: #b0ada8;
+  margin-top: 1px;
+  line-height: 1.4;
+}
+
+/* ── Git: 文件名「打开」按钮 ───────────────────────── */
+.gitFileNameBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #2a2e26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  text-align: left;
+  line-height: inherit;
+}
+.gitFileNameBtn:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  color: #1a5fb4;
+}
+
+/* ── Git: 恢复原版按钮（hover 出现）─────────────────── */
+.gitDiscardBtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #c0392b;
+  opacity: 0.45;                        /* 触摸屏：始终可见 */
+  transition: opacity 0.12s, background 0.12s;
+  padding: 0;
+}
+/* 有鼠标的设备：默认隐藏，hover 时才显示 */
+@media (hover: hover) {
+  .gitDiscardBtn { opacity: 0; }
+  .gitFileItem:hover .gitDiscardBtn { opacity: 0.55; }
+  .gitDiscardBtn:hover { opacity: 1 !important; background: rgba(192,57,43,0.1); }
+}
+
+/* ── Git: 行内确认态 ───────────────────────────────── */
+.gitFileItemConfirming {
+  background: rgba(192,57,43,0.05) !important;
+}
+.gitDiscardConfirm {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.gitDiscardMsg {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: #a02820;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gitDiscardBtns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.gitDiscardCancel {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: rgba(255,255,255,0.8);
+  font: inherit;
+  font-size: 11px;
+  color: #6a6860;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.gitDiscardCancel:hover { background: rgba(0,0,0,0.06); }
+.gitDiscardCancel:disabled { opacity: 0.5; cursor: not-allowed; }
+.gitDiscardOk {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: none;
+  background: #c0392b;
+  font: inherit;
+  font-size: 11px;
+  color: white;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.gitDiscardOk:hover { background: #a02820; }
+.gitDiscardOk:disabled { opacity: 0.6; cursor: wait; }
+
+/* ── HTML frame ────────────────────────────────── */
+.htmlFrame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+/* ── Markdown ──────────────────────────────────── */
+.markdown {
+  color: #1c1e19;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  scroll-margin-top: 68px;
+  margin: 1.75em 0 0.6em;
+  color: #0f1110;
+  font-weight: 730;
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+}
+
+.markdown h1 {
+  font-size: clamp(28px, 4.5vw, 46px);
+  line-height: 1.06;
+  letter-spacing: -0.025em;
+  margin-bottom: 0.45em;
+}
+
+.markdown h2 {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 1em;
+  font-size: 24px;
+}
+
+.markdown h3 {
+  font-size: 20px;
+}
+
+.markdown h4 {
+  font-size: 17px;
+}
+
+.markdown h5,
+.markdown h6 {
+  font-size: 15px;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown table,
+.tableWrap,
+.imageFrame {
+  margin: 0 0 1.1em;
+}
+
+.markdown a {
+  color: #155f46;
+  font-weight: 540;
+  text-decoration: underline;
+  text-decoration-color: rgba(21, 95, 70, 0.22);
+  text-underline-offset: 3px;
+  transition: color 110ms ease, text-decoration-color 110ms ease;
+}
+
+.markdown a:hover {
+  color: #983418;
+  text-decoration-color: rgba(152, 52, 24, 0.38);
+}
+
+.markdown strong {
+  color: #0f1110;
+  font-weight: 720;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.25em;
+}
+
+.markdown li {
+  padding-left: 0.2em;
+  margin: 0.22em 0;
+}
+
+.markdown li::marker {
+  color: #983418;
+}
+
+.markdown blockquote {
+  border-left: 3px solid #5a7d45;
+  background: #f7faf4;
+  padding: 14px 18px;
+  color: #3c4438;
+  border-radius: 0 6px 6px 0;
+}
+
+.markdown code {
+  border: 1px solid var(--notes-border);
+  border-radius: 4px;
+  background: rgba(120, 120, 128, 0.08);
+  padding: 0.12em 0.32em;
+  color: var(--notes-accent-warm);
+  font-family: var(--notes-font-mono);
+  font-size: 0.875em;
+}
+
+.markdown pre {
+  overflow: auto;
+  border: 1px solid var(--notes-border);
+  border-radius: 8px;
+  background: #141614; /* macOS dark window background */
+  padding: 16px 18px;
+  color: #f5f5f7;
+  line-height: 1.6;
+}
+
+.markdown pre code {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 13.5px;
+  font-family: var(--notes-font-mono);
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--notes-border);
+  border-radius: 8px;
+  background: var(--notes-bg-document);
+  margin: 1.5em 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.tableWrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.tableWrap th,
+.tableWrap td {
+  border-bottom: 1px solid var(--notes-border);
+  padding: 10px 14px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tableWrap th {
+  background: rgba(120, 120, 128, 0.05);
+  color: var(--notes-text-primary);
+  font-weight: 600;
+}
+
+.tableWrap tr:last-child td {
+  border-bottom: 0;
+}
+
+.tableWrap tr:nth-child(even) td {
+  background: rgba(120, 120, 128, 0.015);
+}
+
+.imageFrame {
+  display: block;
+  margin: 1.5em 0;
+}
+
+.imageFrame img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--notes-border);
+  border-radius: 8px;
+  box-shadow: var(--notes-shadow-card);
+  background: var(--notes-bg-document);
+}
+
+.markdown hr {
+  height: 1px;
+  border: 0;
+  background: var(--notes-border);
+  margin: 2.2em 0;
+}
+
+/* ── Mobile ────────────────────────────────────── */
+@media (max-width: 900px) {
+  .shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(84vw, 320px);
+    height: 100dvh;
+    min-height: 0;
+    border-right: 1px solid var(--notes-border);
+    border-bottom: 0;
+    box-shadow: 20px 0 48px rgba(0, 0, 0, 0.15);
+    transform: translateX(-102%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+    background: var(--notes-bg-sidebar);
+  }
+
+  .shellMobileSidebarOpen .sidebar {
+    transform: translateX(0);
+  }
+
+  .mobileSidebarClose {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--notes-border-strong);
+    border-radius: 6px;
+    background: rgba(120, 120, 128, 0.04);
+    color: var(--notes-text-secondary);
+    font: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    transition: var(--notes-transition-fast);
+  }
+
+  .mobileSidebarClose:hover,
+  .mobileSidebarClose:focus-visible {
+    background: var(--notes-accent-bg);
+    color: var(--notes-accent);
+  }
+
+  .mobileScrim {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: block;
+    border: 0;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 250ms ease;
+  }
+
+  .mobileScrimOpen {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .reader {
+    height: auto;
+    min-height: 58vh;
+    overflow: visible;
+  }
+
+  .assistantPanel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: env(safe-area-inset-bottom, 0px);
+    top: auto;
+    z-index: 40;
+    width: 100% !important;
+    height: min(86dvh, 760px);
+    min-height: min(520px, 86dvh);
+    border-left: 0;
+    border-top: 1px solid var(--notes-border);
+    box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.15);
+    transform: translateY(104%);
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+    will-change: transform, opacity;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .shellMobileAssistantPanelOpen .assistantPanel {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .assistantPanel.assistantPanelHidden {
+    transform: translateY(104%) !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 100% !important;
+    position: fixed !important;
+    border: 0 !important;
+  }
+
+  .assistantPanelResizer {
+    display: none;
+  }
+
+  .readerHeader {
+    min-height: 50px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 max(14px, env(safe-area-inset-right, 0px)) 0 max(14px, env(safe-area-inset-left, 0px));
+  }
+
+  .shareOverlay {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .shareDialog {
+    max-height: 88dvh;
+    width: 100%;
+  }
+
+  .shareDialogActions {
+    flex-wrap: wrap;
+  }
+
+  .sharePrimaryButton,
+  .shareSecondaryButton,
+  .shareDangerButton {
+    flex: 1 1 130px;
+  }
+
+  .noteMeta {
+    font-size: 11px;
+  }
+
+  .document {
+    width: auto;
+    max-width: 100%;
+    margin: 14px;
+    padding: 28px 22px 60px;
+    border-radius: 10px;
+    background: var(--notes-bg-document);
+  }
+
+  .markdown {
+    font-size: 15.5px;
+  }
+
+  .markdown h1 {
+    font-size: 28px;
+  }
+
+  .markdown h2 {
+    font-size: 22px;
+  }
+}
+
+/* ── Tablet ────────────────────────────────────── */
+@media (min-width: 901px) and (max-width: 1260px) {
+  .shell {
+    flex-flow: row wrap;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .sidebar,
+  .reader {
+    height: 100vh !important;
+    transition: height 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .shell:not(.shellAssistantPanelHidden) .sidebar,
+  .shell:not(.shellAssistantPanelHidden) .reader {
+    height: 46vh !important;
+  }
+
+  .assistantPanel {
+    width: 100% !important;
+    height: 54vh !important;
+    border-left: 0 !important;
+    border-top: 1px solid var(--notes-border) !important;
+    position: relative !important;
+  }
+
+  .assistantPanelResizer {
+    display: none;
+  }
+}
+
+/* ── Selection quote pill ──────────────────────── */
+.quotePill {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 7px));
+  background: rgba(28, 28, 30, 0.92);
+  backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  border-radius: 20px;
+  padding: 6px 14px 6px 11px;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  z-index: 9000;
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+  animation: quotePillIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quotePill:hover {
+  background: rgba(44, 44, 46, 0.95);
+  transform: translate(-50%, calc(-100% - 7px)) scale(1.02);
+}
+
+@keyframes quotePillIn {
+  from { opacity: 0; transform: translate(-50%, calc(-100% - 2px)) scale(0.95); }
+  to   { opacity: 1; transform: translate(-50%, calc(-100% - 7px)) scale(1); }
+}
+
+/* ── Claude FAB (mobile only) ────────────────────── */
+.claudeHeaderBtn {
+  /* desktop: visible as normal iconButton */
+}
+
+.claudeFab {
+  display: none; /* hidden on desktop */
+}
+
+@media (max-width: 900px) {
+  .claudeHeaderBtn {
+    display: none; /* hide header button on mobile, FAB takes over */
+  }
+
+  .claudeFab {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    right: calc(20px + env(safe-area-inset-right, 0px));
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    z-index: 50;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: none;
+    background: var(--notes-text-primary);
+    color: var(--notes-bg-document);
+    font-size: 20px;
+    font-family: var(--notes-font-mono);
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow:
+      0 2px 8px rgba(0, 0, 0, 0.28),
+      0 8px 28px rgba(0, 0, 0, 0.18);
+    transition:
+      background 150ms ease,
+      transform 150ms ease,
+      box-shadow 150ms ease,
+      opacity 200ms ease;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  .claudeFab:active {
+    transform: scale(0.92);
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.2),
+      0 4px 14px rgba(0, 0, 0, 0.14);
+  }
+
+  .claudeFabActive {
+    background: var(--notes-border-strong);
+    box-shadow:
+      0 2px 8px rgba(0, 0, 0, 0.28),
+      0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .claudeFabHidden {
+    opacity: 0;
+    transform: scale(0.78);
+    pointer-events: none;
+  }
+}
+
+/* ── macOS Xcode-style Code Blocks ── */
+.codeBlockContainer {
+  position: relative;
+  border-radius: var(--notes-radius-card);
+  border: 1px solid var(--notes-border);
+  background: #141614 !important; /* macOS dark style */
+  overflow: hidden;
+  margin: 1.5em 0;
+  box-shadow: var(--notes-shadow-card);
+}
+
+.codeBlockHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #1e201f;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  user-select: none;
+}
+
+.macDots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.macDot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.macDotRed {
+  background: #ff5f56;
+}
+
+.macDotYellow {
+  background: #ffbd2e;
+}
+
+.macDotGreen {
+  background: #27c93f;
+}
+
+.macSymbol {
+  font-size: 8px;
+  font-weight: bold;
+  color: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+
+.macDots:hover .macSymbol {
+  opacity: 1;
+}
+
+.codeLanguage {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+  font-family: var(--notes-font-sans);
+  letter-spacing: 0.06em;
+  margin-left: 24px;
+  flex: 1;
+}
+
+.codeCopyButton {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.65);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: var(--notes-transition-fast);
+}
+
+.codeCopyButton:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.codeCopyButton:active {
+  transform: scale(0.96);
+}
+
+.codeCopyButtonCopied {
+  border-color: rgba(40, 167, 69, 0.3) !important;
+  background: rgba(40, 167, 69, 0.15) !important;
+  color: #28a745 !important;
+}
+
+.codeBlockContainer pre {
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 14px 18px !important;
+}

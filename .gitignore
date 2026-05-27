@@ -40,6 +40,11 @@ shared-notes.json
 .codex/
 public/downloads/
 
+# AI service credentials (claude-chat)
+claude-chat/auth-profile.json
+claude-chat/session.json
+claude-chat/history.json
+
 # vercel
 .vercel
 

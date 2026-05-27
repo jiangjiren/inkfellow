@@ -404,6 +404,22 @@ export const readVaultImageFromNoteDirectory = async (assetPath: string, notePat
   };
 };
 
+export const updateMarkdownNote = async (relativePath: string, content: string) => {
+  const resolved = await resolveExistingVaultPath(relativePath);
+  if (!isMarkdownPath(resolved.relativePath)) {
+    throw new VaultAccessError("Only .md files can be edited.", 415);
+  }
+  await fs.writeFile(resolved.absolutePath, content, "utf8");
+  const stat = await fs.stat(resolved.absolutePath);
+  return {
+    name: path.basename(resolved.relativePath),
+    path: resolved.relativePath,
+    content,
+    size: stat.size,
+    updatedAt: stat.mtime.toISOString(),
+  };
+};
+
 export const createMarkdownNote = async (relativePath: string, content = "") => {
   const sanitized = sanitizeRelativePath(relativePath);
 

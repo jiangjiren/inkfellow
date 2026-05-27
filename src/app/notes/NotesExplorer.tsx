@@ -312,6 +312,12 @@ export default function NotesExplorer() {
   const [newNoteError, setNewNoteError] = useState<string | null>(null);
   const [newNoteLoading, setNewNoteLoading] = useState(false);
   const newNoteTitleRef = useRef<HTMLInputElement>(null);
+  // ── 编辑模式 ──────────────────────────────────────────
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
+  const editorRef = useRef<HTMLTextAreaElement>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
   const noteUpdatedAtRef = useRef<string | null>(null);
@@ -856,6 +862,72 @@ export default function NotesExplorer() {
     });
   }, [noteState, note?.path]);
 
+  // 计算是否有未保存修改
+  const isDirty = isEditing && note !== null && editContent !== note.content;
+
+  /** 进入编辑模式 */
+  const handleEditStart = useCallback(() => {
+    if (!note || /\.html?$/i.test(note.path)) return;
+    setEditContent(note.content);
+    setIsEditing(true);
+    setTimeout(() => editorRef.current?.focus(), 30);
+  }, [note]);
+
+  /** 保存（不退出编辑模式），⌘S 触发 */
+  const handleSave = useCallback(async (notePath?: string, content?: string) => {
+    const path = notePath ?? activePath;
+    const body = content ?? editContent;
+    if (!path) return;
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/notes/file", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path, content: body }),
+      });
+      if (!res.ok) throw new Error("保存失败");
+      const saved = (await res.json()) as { updatedAt: string; content: string };
+      // 更新 note 对象，避免「切换笔记」误判为有未保存改动
+      setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
+      noteUpdatedAtRef.current = saved.updatedAt;
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1600);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [activePath, editContent]);
+
+  /** 完成编辑（保存 + 退出） */
+  const handleEditDone = useCallback(async () => {
+    if (isDirty) await handleSave();
+    setIsEditing(false);
+  }, [isDirty, handleSave]);
+
+  /** 切换笔记前自动保存未提交的修改 */
+  const flushEditBeforeSwitch = useCallback(async () => {
+    if (isEditing && isDirty && activePath) {
+      await handleSave(activePath, editContent);
+    }
+  }, [isEditing, isDirty, activePath, editContent, handleSave]);
+
+  /** 退出编辑模式当 note 切换时 */
+  useEffect(() => {
+    setIsEditing(false);
+  }, [note?.path]);
+
+  /** ⌘S 保存快捷键 */
+  useEffect(() => {
+    if (!isEditing) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        void handleSave();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isEditing, handleSave]);
+
   /** 打开新建笔记对话框，默认目录 = 当前笔记所在目录 */
   const openNewNote = useCallback(() => {
     const defaultFolder = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
@@ -955,12 +1027,12 @@ export default function NotesExplorer() {
 
   const handleSelect = useCallback(
     (path: string) => {
-      void loadNote(path);
+      void flushEditBeforeSwitch().then(() => loadNote(path));
       if (isMobileViewport) {
         setMobileSidebarOpen(false);
       }
     },
-    [isMobileViewport, loadNote],
+    [isMobileViewport, loadNote, flushEditBeforeSwitch],
   );
 
   const handleMarkdownNavigate = useCallback(
@@ -1251,62 +1323,112 @@ export default function NotesExplorer() {
             ) : null}
           </div>
           <div className={styles.readerActions}>
-            <button
-              type="button"
-              className={styles.shareButton}
-              onClick={handleOpenShareDialog}
-              disabled={!note}
-              aria-label="分享当前文章"
-              title="分享当前文章"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M7.2 11.2 12 6.4l4.8 4.8" />
-                <path d="M12 6.4v11.2" />
-                <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
-              onClick={handleClaudeToggle}
-              aria-pressed={isAssistantPanelOpen}
-              aria-label="AI 助手"
-              title="AI 助手"
-            >
-              <span aria-hidden="true">✦</span>
-            </button>
+            {isEditing ? (
+              /* 编辑模式右侧：已保存提示 + 完成按钮 */
+              <>
+                {savedFlash ? (
+                  <span className={styles.savedHint}>已保存</span>
+                ) : null}
+                <button
+                  type="button"
+                  className={`${styles.editDoneBtn} ${isDirty ? styles.editDoneBtnDirty : ""}`}
+                  onClick={() => void handleEditDone()}
+                  disabled={isSaving}
+                  aria-label="完成编辑"
+                  title="完成编辑（自动保存）"
+                >
+                  {isSaving ? "保存中…" : "完成"}
+                </button>
+              </>
+            ) : (
+              /* 阅读模式右侧：分享 + 铅笔 + AI */
+              <>
+                <button
+                  type="button"
+                  className={styles.shareButton}
+                  onClick={handleOpenShareDialog}
+                  disabled={!note}
+                  aria-label="分享当前文章"
+                  title="分享当前文章"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M7.2 11.2 12 6.4l4.8 4.8" />
+                    <path d="M12 6.4v11.2" />
+                    <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={styles.editBtn}
+                  onClick={handleEditStart}
+                  disabled={!note || /\.html?$/i.test(note.path ?? "")}
+                  aria-label="编辑笔记"
+                  title="编辑笔记"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
+                  onClick={handleClaudeToggle}
+                  aria-pressed={isAssistantPanelOpen}
+                  aria-label="AI 助手"
+                  title="AI 助手"
+                >
+                  <span aria-hidden="true">✦</span>
+                </button>
+              </>
+            )}
           </div>
         </header>
 
-        <article
-          key={note?.path || "empty"}
-          className={`${styles.document} ${note && /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
-        >
-          {noteState === "loading" ? (
-            <div className={styles.documentState}>正在加载文件...</div>
-          ) : null}
+        {/* 编辑模式 — 全屏 textarea */}
+        {isEditing ? (
+          <textarea
+            ref={editorRef}
+            className={styles.editor}
+            value={editContent}
+            onChange={(e) => setEditContent(e.target.value)}
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            aria-label="编辑笔记内容"
+            placeholder="在此输入 Markdown 内容…"
+          />
+        ) : (
+          <article
+            key={note?.path || "empty"}
+            className={`${styles.document} ${note && /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
+          >
+            {noteState === "loading" ? (
+              <div className={styles.documentState}>正在加载文件...</div>
+            ) : null}
 
-          {noteState === "error" ? (
-            <div className={styles.documentState}>{error ?? "Markdown 加载失败"}</div>
-          ) : null}
+            {noteState === "error" ? (
+              <div className={styles.documentState}>{error ?? "Markdown 加载失败"}</div>
+            ) : null}
 
-          {noteState === "ready" && note ? (
-            /\.html?$/i.test(note.path) ? (
-              <NotesHtml html={note.content} />
-            ) : (
-              <NotesMarkdown
-                markdown={note.content}
-                currentPath={note.path}
-                noteIndex={noteIndex}
-                onNavigate={handleMarkdownNavigate}
-              />
-            )
-          ) : null}
+            {noteState === "ready" && note ? (
+              /\.html?$/i.test(note.path) ? (
+                <NotesHtml html={note.content} />
+              ) : (
+                <NotesMarkdown
+                  markdown={note.content}
+                  currentPath={note.path}
+                  noteIndex={noteIndex}
+                  onNavigate={handleMarkdownNavigate}
+                />
+              )
+            ) : null}
 
-          {treeState === "ready" && files.length === 0 ? (
-            <div className={styles.documentState}>知识库中没有可显示的文件。</div>
-          ) : null}
-        </article>
+            {treeState === "ready" && files.length === 0 ? (
+              <div className={styles.documentState}>知识库中没有可显示的文件。</div>
+            ) : null}
+          </article>
+        )}
       </section>
 
       {shareModalOpen ? (

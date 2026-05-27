@@ -2641,6 +2641,125 @@
   padding: 14px 18px !important;
 }
 
+/* ── 编辑按钮（铅笔）& 完成按钮 ──────────────────── */
+.editBtn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #383c32;
+  padding: 0;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.editBtn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.editBtn:hover:not(:disabled) {
+  background: var(--notes-accent-bg);
+  border-color: var(--notes-accent);
+  color: var(--notes-accent);
+}
+
+.editBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@media (prefers-color-scheme: dark) {
+  .editBtn {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.75);
+  }
+}
+
+.editDoneBtn {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--notes-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 580;
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 80ms ease;
+}
+
+.editDoneBtn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.editDoneBtn:active {
+  transform: scale(0.96);
+}
+
+.editDoneBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.editDoneBtnDirty {
+  /* 有未保存内容时加轻微光晕提示 */
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.savedHint {
+  font-size: 12px;
+  color: var(--notes-text-muted);
+  padding: 0 6px;
+  animation: savedFadeOut 1.6s ease forwards;
+}
+
+@keyframes savedFadeOut {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ── Markdown 编辑器（textarea）─────────────────────── */
+.editor {
+  flex: 1;
+  display: block;
+  width: 100%;
+  min-height: calc(100vh - 48px);
+  box-sizing: border-box;
+  /* 水平居中，与 document card 宽度对齐 */
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 40px 56px 96px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--notes-text-primary);
+  font-family: var(--notes-font-mono);
+  font-size: 14px;
+  line-height: 1.85;
+  caret-color: var(--notes-accent);
+  /* tab 键缩进宽度 */
+  tab-size: 2;
+}
+
+.editor::placeholder {
+  color: var(--notes-text-muted);
+  opacity: 0.6;
+}
+
+@media (max-width: 900px) {
+  .editor {
+    padding: 24px 22px 60px;
+    font-size: 13.5px;
+  }
+}
+
 /* ── 新建笔记按钮（侧边栏标题旁） ─────────────────── */
 .newNoteButton {
   display: inline-flex;

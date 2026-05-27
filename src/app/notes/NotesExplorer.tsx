@@ -1144,6 +1144,25 @@ export default function NotesExplorer() {
     }
   }, [isMobileViewport, panelTab, mobileAssistantPanelOpen, assistantPanelVisible]);
 
+  const handleTocToggle = useCallback(() => {
+    if (isMobileViewport) {
+      setMobileSidebarOpen(false);
+      if (panelTab === "toc" && mobileAssistantPanelOpen) {
+        setMobileAssistantPanelOpen(false);
+      } else {
+        setPanelTab("toc");
+        setMobileAssistantPanelOpen(true);
+      }
+    } else {
+      if (panelTab === "toc" && assistantPanelVisible) {
+        setAssistantPanelVisible(false);
+      } else {
+        setPanelTab("toc");
+        setAssistantPanelVisible(true);
+      }
+    }
+  }, [isMobileViewport, panelTab, mobileAssistantPanelOpen, assistantPanelVisible]);
+
   const loadShareInfo = useCallback(async () => {
     if (!note) {
       return;
@@ -1428,6 +1447,21 @@ export default function NotesExplorer() {
                 </svg>
               </button>
             ) : null}
+            {/* 大纲按钮 */}
+            <button
+              type="button"
+              className={`${styles.editBtn} ${isAssistantPanelOpen && panelTab === "toc" ? styles.editBtnActive : ""}`}
+              onClick={handleTocToggle}
+              disabled={!note || /\.html?$/i.test(note.path ?? "")}
+              aria-label="大纲"
+              title="大纲"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="7" y1="12" x2="21" y2="12" />
+                <line x1="7" y1="18" x2="15" y2="18" />
+              </svg>
+            </button>
             {/* 阅读 / 编辑 切换按钮 */}
             <button
               type="button"

@@ -151,6 +151,56 @@ echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.ht
 
 启动后，点击笔记工具栏中的 **✦ AI** 按钮打开面板，在设置图标中连接你的服务商即可开始使用。
 
+### 接入 AI 服务商
+
+点击 AI 面板内的 ⚙ 设置图标，按需选择以下方式：
+
+---
+
+#### 方式 A — Claude 官方会员订阅（无需 API Key）
+
+直接使用已有的 Claude Pro / Teams 订阅额度，无额外费用，无需申请 API Key。
+
+**第一步：在服务器上安装 Claude Code CLI**
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+**第二步：用 Anthropic 账号登录**
+
+```bash
+claude login
+# 会弹出浏览器 OAuth 授权页面，在浏览器中完成登录即可。
+# 凭据会自动保存在服务器上，长期有效。
+```
+
+**第三步：验证登录状态**
+
+```bash
+claude auth status
+# 正常应输出："loggedIn": true, "subscriptionType": "pro"
+```
+
+**第四步**：打开 AI 面板设置，**Claude 会员**那一行会显示 ✅ 已登录，选中即可开始对话。
+
+> `claude-chat` 服务会自动读取 CLI 保存的登录凭据，无需重启服务，登录后立即生效。
+
+---
+
+#### 方式 B — Anthropic API Key
+
+如果你偏好按量付费而非订阅：
+
+1. 前往 [console.anthropic.com](https://console.anthropic.com/) → API Keys 获取密钥。
+2. AI 面板设置 → **添加账号** → 选择 **Anthropic** → 粘贴 `sk-ant-…` 即可。
+
+---
+
+#### 方式 C — DeepSeek / OpenRouter / 自定义
+
+在设置面板添加账号并选择对应厂商，API Key 请前往各厂商官网申请。
+
 ## 本地 Obsidian Vault 同步到服务器
 
 应用内置了 Git 面板，支持 pull / push / 撤销 / 历史查看。要让本地 Obsidian 和服务器保持同步，有以下两种方式，按需选择。

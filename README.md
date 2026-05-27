@@ -151,6 +151,56 @@ echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.ht
 
 Once running, click the **✦ AI** button in the notes toolbar to open the panel, then connect your provider from the settings icon.
 
+### Connecting an AI Provider
+
+Open the settings panel (⚙ icon) inside the AI panel and pick one of the following:
+
+---
+
+#### Option A — Claude Pro / Teams subscription (no API key)
+
+This uses your existing Claude subscription quota — no extra cost, no API key required.
+
+**1. Install Claude Code CLI on the server**
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+**2. Log in with your Anthropic account**
+
+```bash
+claude login
+# Opens a browser-based OAuth flow.
+# Complete the login in your browser; credentials are saved on the server.
+```
+
+**3. Verify the login**
+
+```bash
+claude auth status
+# Should print: "loggedIn": true, "subscriptionType": "pro"
+```
+
+**4. In the AI panel settings** — the **Claude** provider row will show ✅ logged in. Select it and start chatting.
+
+> The `claude-chat` service reads the same credentials stored by the CLI. Once logged in, the service works automatically — no restart needed.
+
+---
+
+#### Option B — Anthropic API Key
+
+If you prefer pay-as-you-go billing instead of a subscription:
+
+1. Get a key at [console.anthropic.com](https://console.anthropic.com/) → API Keys.
+2. In the AI panel settings → **Add account** → choose **Anthropic** → paste `sk-ant-…`.
+
+---
+
+#### Option C — DeepSeek / OpenRouter / Custom
+
+Add an account in the settings panel and select the corresponding provider. Refer to each provider's website for API key instructions.
+
 ## Syncing Your Local Obsidian Vault
 
 The app has a built-in Git panel (pull / push / discard / history). To keep your local Obsidian in sync with the server, pick one of the two methods below.

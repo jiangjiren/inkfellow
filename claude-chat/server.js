@@ -23,6 +23,7 @@ const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, "se
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
 // ── Provider presets ─────────────────────────────────────────
 const PROVIDER_PRESETS = {
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-7",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
 };
@@ -198,27 +199,33 @@ function buildAgentEnv(profileData, effort, requestedModel) {
 
   const active = getActiveProfile(profileData);
   if (!active || active.provider === "claude") return env;
-  if (!active.apiKey || !active.baseUrl) return env;
+  if (!active.apiKey) return env;
+  // anthropic provider uses the default Anthropic base URL — no baseUrl required
+  if (!active.baseUrl && active.provider !== "anthropic") return env;
 
   const opusM   = active.opusModel   || "";
   const sonnetM = active.sonnetModel || opusM;
   const haikuM  = active.haikuModel  || sonnetM;
   // requestedModel = 用户在顶部下拉手动选择的模型，作为当前对话的主模型
   const conversationModel = requestedModel || sonnetM || opusM;
-  env.ANTHROPIC_API_KEY = "";
-  env.ANTHROPIC_BASE_URL = active.baseUrl;
-  env.ANTHROPIC_AUTH_TOKEN = active.apiKey;
+
+  if (active.provider === "anthropic") {
+    // Direct Anthropic API key — standard ANTHROPIC_API_KEY, no base URL override
+    env.ANTHROPIC_API_KEY = active.apiKey;
+  } else {
+    // Third-party providers (DeepSeek / OpenRouter / custom) use bearer token + custom base URL
+    env.ANTHROPIC_API_KEY    = "";
+    env.ANTHROPIC_BASE_URL   = active.baseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = active.apiKey;
+  }
+
   env.ANTHROPIC_MODEL                = conversationModel;
   env.ANTHROPIC_DEFAULT_OPUS_MODEL   = opusM   || conversationModel;
   env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetM || conversationModel;
   env.ANTHROPIC_DEFAULT_HAIKU_MODEL  = haikuM  || conversationModel;  // ← haiku 用快速模型
   env.CLAUDE_CODE_SUBAGENT_MODEL     = haikuM  || conversationModel;  // ← subagent 用快速模型
-  // DeepSeek 成本低，默认给满；OpenRouter / 自定义保守一点用 medium
-  if (active.provider === "deepseek") {
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort || "max";
-  } else if (active.provider === "openrouter" || active.provider === "custom") {
-    env.CLAUDE_CODE_EFFORT_LEVEL = effort || "medium";
-  }
+  // DeepSeek 成本低，默认给满；其余保守用 medium
+  env.CLAUDE_CODE_EFFORT_LEVEL = (active.provider === "deepseek") ? (effort || "max") : (effort || "medium");
   if (active.provider === "openrouter") env.CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK = "1";
 
   return env;
@@ -286,6 +293,25 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // ── Claude subscription auth status ──────────────────────────
+  if (url === "/api/health/claude-auth" && method === "GET") {
+    const homedir = process.env.HOME || process.env.USERPROFILE || "";
+    // Check OAuth credentials file (created by `claude` CLI login)
+    const credFile = join(homedir, ".claude", "credentials.json");
+    // Also accept ANTHROPIC_AUTH_TOKEN injected via environment
+    const hasEnvToken = !!(process.env.ANTHROPIC_AUTH_TOKEN);
+    let authenticated = hasEnvToken;
+    if (!authenticated && existsSync(credFile)) {
+      try {
+        const creds = JSON.parse(readFileSync(credFile, "utf8"));
+        authenticated = typeof creds === "object" && creds !== null && Object.keys(creds).length > 0;
+      } catch { /* ignore */ }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ authenticated }));
+    return;
+  }
+
   if (url === "/api/auth-profile" && method === "PUT") {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
@@ -313,7 +339,7 @@ const http = createServer((req, res) => {
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
             return;
           }
-          if (!profile.baseUrl && profile.provider !== "claude") {
+          if (!profile.baseUrl && profile.provider !== "claude" && profile.provider !== "anthropic") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Base URL 不能为空" }));
             return;

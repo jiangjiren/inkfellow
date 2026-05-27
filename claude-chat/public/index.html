@@ -1283,7 +1283,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
         <!-- provider 三段选择（编辑时隐藏，不能改类型） -->
         <div class="add-segment" id="add-segment" role="radiogroup" aria-label="账号类型">
-          <button class="add-seg-btn active" data-value="deepseek" role="radio" aria-checked="true">DeepSeek</button>
+          <button class="add-seg-btn active" data-value="anthropic" role="radio" aria-checked="true">Anthropic</button>
+          <button class="add-seg-btn" data-value="deepseek" role="radio" aria-checked="false">DeepSeek</button>
           <button class="add-seg-btn" data-value="openrouter" role="radio" aria-checked="false">OpenRouter</button>
           <button class="add-seg-btn" data-value="custom" role="radio" aria-checked="false">自定义</button>
         </div>
@@ -1485,6 +1486,20 @@ const CLAUDE_MODELS = [
 ];
 
 let _profileData = { activeProfileId: "p_claude", profiles: [] };
+let _claudeAuthStatus = null; // null=checking, true=ok, false=not logged in
+
+async function checkClaudeAuth() {
+  try {
+    const res = await fetch("api/health/claude-auth");
+    const d = await res.json().catch(() => ({}));
+    _claudeAuthStatus = !!d.authenticated;
+  } catch {
+    _claudeAuthStatus = false;
+  }
+  // Re-render profile list to show updated status
+  renderProfileList(_profileData);
+}
+checkClaudeAuth();
 
 function getActiveProfile() {
   return _profileData.profiles.find(p => p.id === _profileData.activeProfileId) ?? _profileData.profiles[0] ?? null;
@@ -1547,10 +1562,10 @@ function setAuthStatus(type, text) {
 
 // ── Provider display metadata ─────────────────────────────
 const PROVIDER_COLOR = {
-  claude: "#d97757", deepseek: "#1a6cf6", openrouter: "#8b5cf6", custom: "#6b7280",
+  claude: "#d97757", anthropic: "#c96442", deepseek: "#1a6cf6", openrouter: "#8b5cf6", custom: "#6b7280",
 };
 const PROVIDER_LABEL = {
-  claude: "Claude", deepseek: "DeepSeek", openrouter: "OpenRouter", custom: "自定义",
+  claude: "Claude", anthropic: "Anthropic", deepseek: "DeepSeek", openrouter: "OpenRouter", custom: "自定义",
 };
 
 function providerBadge(provider) {
@@ -1572,7 +1587,11 @@ function renderProfileList(data) {
     const allModels = [p.opusModel, p.sonnetModel, p.haikuModel].filter(Boolean);
     const uniqueModels = [...new Set(allModels)];
     if (uniqueModels.length) metaParts.push(uniqueModels.map(m => m.split("/").pop() || m).join(" · "));
-    const meta = p.provider === "claude" ? "服务器凭据" : metaParts.join("  ");
+    const meta = p.provider === "claude"
+      ? (_claudeAuthStatus === true  ? "✅ 会员已登录"
+       : _claudeAuthStatus === false ? "⚠️ 未登录 — 请在服务器运行 claude 命令完成登录"
+       : "正在检测登录状态…")
+      : metaParts.join("  ");
     const canEdit   = p.provider !== "claude";
     const canDelete = p.provider !== "claude";
     const actions = (canEdit || canDelete) ? `
@@ -1640,11 +1659,12 @@ const addSubmitBtn    = document.getElementById("add-submit");
 const addErrorEl      = document.getElementById("add-error");
 
 const ADD_PRESETS = {
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-7",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "sk-ant-...", namePlaceholder: "Anthropic API" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "sk-...",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "sk-or-...", namePlaceholder: "OpenRouter" },
   custom:     { baseUrl: "",                                    opusModel: "",                                sonnetModel: "",                                 haikuModel: "",                              keyPlaceholder: "sk-...",    namePlaceholder: "自定义账号" },
 };
-let _addProvider = "deepseek";
+let _addProvider = "anthropic";
 let _editingProfileId = null;  // null = add mode; string = edit mode (profile id)
 
 function setAddProvider(value) {
@@ -1659,7 +1679,7 @@ function setAddProvider(value) {
   addHaikuInput.value  = p.haikuModel;
   addKeyInput.placeholder = p.keyPlaceholder;
   addBaseUrlInput.value = p.baseUrl;
-  addFieldBaseUrl.classList.toggle("hidden", value !== "custom");
+  addFieldBaseUrl.classList.toggle("hidden", value !== "custom");   // only custom needs a manual base URL
   if (!addNameInput.value.trim()) addNameInput.placeholder = p.namePlaceholder;
 }
 
@@ -1694,7 +1714,7 @@ function openAccountForm(existingProfile) {
     // Add mode
     addSegment.style.display = "";
     addSubmitBtn.textContent = "添加";
-    setAddProvider("deepseek");
+    setAddProvider("anthropic");
     addNameInput.value   = "";
     addKeyInput.value    = "";
     addOpusInput.value   = "";

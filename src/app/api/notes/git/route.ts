@@ -184,6 +184,19 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── Single file changed check (lightweight) ───────────────
+  const checkPath = url.searchParams.get("check");
+  if (checkPath) {
+    try {
+      await git(["rev-parse", "--git-dir"]);
+      const { cleanPath } = resolveVaultFile(checkPath);
+      const { stdout } = await git(["status", "--porcelain", "--", cleanPath], { trimStdout: false });
+      return NextResponse.json({ changed: stdout.trim().length > 0 });
+    } catch {
+      return NextResponse.json({ changed: false });
+    }
+  }
+
   // ── Single file diff ───────────────────────────────────────
   if (diffPath) {
     try {

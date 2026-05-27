@@ -322,6 +322,7 @@ export default function NotesExplorer() {
   const [isSaving, setIsSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
   const [editorMinHeight, setEditorMinHeight] = useState(0); // 占位高度，防 scroll 被钳制
+  const [hasGitChanges, setHasGitChanges] = useState(false); // 当前文件有未提交改动
   const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
@@ -898,6 +899,7 @@ export default function NotesExplorer() {
       noteUpdatedAtRef.current = saved.updatedAt;
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1600);
+      setHasGitChanges(true);
     } finally {
       setIsSaving(false);
     }
@@ -923,6 +925,7 @@ export default function NotesExplorer() {
         noteUpdatedAtRef.current = saved.updatedAt;
         setSavedFlash(true);
         setTimeout(() => setSavedFlash(false), 1600);
+        setHasGitChanges(true);
       } catch { /* 网络错误静默忽略 */ }
     }, 1500);
   }, []); // stable — intentionally no deps, uses refs
@@ -960,6 +963,21 @@ export default function NotesExplorer() {
       autoSaveTimerRef.current = null;
     }
     setIsEditing(false);
+  }, [note?.path]);
+
+  /** 当前文件切换时检查 git 状态，更新「未同步」指示点 */
+  useEffect(() => {
+    setHasGitChanges(false);
+    const p = note?.path;
+    if (!p || /\.html?$/i.test(p)) return;
+    let cancelled = false;
+    fetch(`/api/notes/git?check=${encodeURIComponent(p)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { changed: boolean } | null) => {
+        if (!cancelled && data) setHasGitChanges(data.changed);
+      })
+      .catch(() => { /* silent */ });
+    return () => { cancelled = true; };
   }, [note?.path]);
 
   /** ⌘S 立即保存（取消 pending debounce，直接 flush） */
@@ -1371,6 +1389,22 @@ export default function NotesExplorer() {
               <>
                 <span>{updatedAt}</span>
               </>
+            ) : null}
+            {!isEditing && hasGitChanges && note ? (
+              <button
+                type="button"
+                className={styles.gitChangeDot}
+                onClick={() => {
+                  if (isMobileViewport) setMobileAssistantPanelOpen(true);
+                  else setAssistantPanelVisible(true);
+                  setPanelTab("git");
+                }}
+                title="有未提交的改动，点击查看"
+                aria-label="有未提交的改动，点击查看"
+              >
+                <span className={styles.gitChangeDotIndicator} aria-hidden="true" />
+                未同步
+              </button>
             ) : null}
           </div>
           <div className={styles.readerActions}>

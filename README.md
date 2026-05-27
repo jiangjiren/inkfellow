@@ -2,7 +2,7 @@
 
 English | [中文](./README.zh-CN.md)
 
-Turn your Markdown folder into a cloud-accessible personal knowledge base — **browse, organize, sync, and share** from any device, anywhere — with a **built-in AI Agent panel** that lets you select any text and instantly bring it into a conversation.
+This is an **LLM Wiki** — turn your Markdown folder into a cloud-accessible personal knowledge base you can **browse, organize, sync, and share** from any device, anywhere, while letting AI truly understand every note you've written and talk with you about it anytime.
 
 Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, **OpenRouter** (200+ models), and any Anthropic-compatible API — swap providers anytime from the UI.
 
@@ -10,11 +10,11 @@ Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, *
 
 ## What is an LLM Wiki?
 
-The traditional way to use notes: **write → search → scroll → find**. Most of what you write gets forgotten over time.
+With ordinary note tools, the workflow is: **write → search → scroll → find**. Most of what you write gets forgotten over time.
 
-**LLM Wiki** changes the flow to: **write → just ask**.
+**LLM Wiki** changes that to: **write → just ask**.
 
-Every note you write becomes part of the AI's memory. You can ask in plain language:
+Every note you write becomes part of the AI's memory. Whatever you want to find or work on, just ask in plain language:
 
 > "What was the core idea in that project plan I wrote last month?"  
 > "Expand this reading note into a full article."  

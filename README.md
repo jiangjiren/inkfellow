@@ -8,12 +8,28 @@ Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, *
 
 ---
 
+## What is an LLM Wiki?
+
+The traditional way to use notes: **write → search → scroll → find**. Most of what you write gets forgotten over time.
+
+**LLM Wiki** changes the flow to: **write → just ask**.
+
+Every note you write becomes part of the AI's memory. You can ask in plain language:
+
+> "What was the core idea in that project plan I wrote last month?"  
+> "Expand this reading note into a full article."  
+> "How does this note connect to my other thoughts on XX?"
+
+The AI answers based on **your own content** — not generic knowledge. Your note folder stops being a pile of files and becomes a **personal knowledge assistant that actually knows what you've written**.
+
+---
+
 ## AI Agent Integration
 
-The AI panel is embedded directly inside the notes reader — no tab switching, no copy-pasting.
+The AI panel is embedded directly inside the notes interface — no tab switching, no copy-pasting.
 
 - **Select text → auto-quote**: Highlight any passage in a note and it appears instantly in the AI chat as a quoted reference.
-- **Note context awareness**: The AI knows which note you are reading.
+- **Note context awareness**: The AI knows which note you are reading and can discuss it directly.
 - **Resizable side panel**: Drag to adjust width; collapses to a floating button on mobile.
 - **Persistent sessions**: Conversation history is preserved across page reloads.
 

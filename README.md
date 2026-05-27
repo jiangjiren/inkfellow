@@ -95,7 +95,7 @@ NEXT_PUBLIC_APP_NAME=My Notes       # Shown in the UI and page titles
 VAULT_PATH=/absolute/path/to/vault  # Your Markdown folder
 SITE_URL=http://localhost:3000      # Replace with your domain or public IP
 
-# ↓ These two lines are your login credentials for the /notes page
+# ↓ These two lines are your login credentials for the knowledge base
 NOTES_BASIC_AUTH_USERNAME=notes     # Username — change to anything you like
 NOTES_BASIC_AUTH_PASSWORD=change-me # Password — must not be left empty
 ```
@@ -107,7 +107,7 @@ npm run build
 npm start            # runs on http://localhost:3000
 ```
 
-Open `http://localhost:3000/notes` in your browser. A login prompt will appear — enter the username and password you set in `.env.local`.
+Open `http://localhost:3000` in your browser. A login prompt will appear — enter the username and password you set in `.env.local`.
 
 > **Where does the login account come from?** There is no registration. The credentials are exactly what you put in `NOTES_BASIC_AUTH_USERNAME` and `NOTES_BASIC_AUTH_PASSWORD`. Change either value and restart the service to update your credentials.
 
@@ -156,7 +156,7 @@ The app works identically over IP — share links will include the IP in the URL
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_APP_NAME` | No | `My Notes` | App name shown in UI and page titles. |
 | `VAULT_PATH` | Yes | `./vault` | Absolute path to the Markdown vault. |
-| `NOTES_BASIC_AUTH_USERNAME` | Yes | `notes` | Username for `/notes` and `/api/notes/*`. |
+| `NOTES_BASIC_AUTH_USERNAME` | Yes | `notes` | Login username for the knowledge base. |
 | `NOTES_BASIC_AUTH_PASSWORD` | Yes | *(empty)* | Password. If empty, access is always denied. |
 | `SHARED_NOTES_PATH` | No | `./shared-notes.json` | JSON file for share tokens. |
 | `SITE_URL` | No | `http://localhost:3000` | Public base URL for share links (domain or IP). |
@@ -190,7 +190,7 @@ node scripts/create-share-link.mjs "path/in/vault/note.md"
 A typical production setup:
 
 1. **systemd** keeps both processes running — see `deploy/notes-app.service.example`.
-2. **Nginx** proxies traffic: `/notes` and `/share` → port 3000; `/notes-claude/` → port 8082 — see `deploy/nginx.conf.example`.
+2. **Nginx** proxies traffic: `/` and `/share` → port 3000; `/notes-claude/` → port 8082 — see `deploy/nginx.conf.example`.
 
 ```bash
 # Install and enable the notes service
@@ -215,7 +215,7 @@ SERVICE_NAME=notes-app bash scripts/update_app.sh
 
 ## Security Model
 
-- Private routes `/notes` and `/api/notes/*` require Basic Auth.
+- The root `/` and `/api/notes/*` require Basic Auth — the entire knowledge base is private by default.
 - `/notes-claude/` should also be protected — the Nginx example includes Basic Auth for this route.
 - Public share routes are tokenized and read-only.
 - Vault reads are restricted to `VAULT_PATH`; `.git`, `.obsidian`, `.claude`, `.claudian`, and `node_modules` are excluded.

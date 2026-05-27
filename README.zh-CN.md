@@ -95,7 +95,7 @@ NEXT_PUBLIC_APP_NAME=我的笔记        # 显示在界面标题和页面 title 
 VAULT_PATH=/绝对路径/你的笔记文件夹  # Markdown 文件夹的绝对路径
 SITE_URL=http://localhost:3000       # 替换为你的域名或公网 IP
 
-# ↓ 这两行就是访问 /notes 页面时的登录账号和密码，自己设置、自己记住
+# ↓ 这两行就是访问知识库时的登录账号和密码，自己设置、自己记住
 NOTES_BASIC_AUTH_USERNAME=notes      # 用户名，可以改成任意字符串
 NOTES_BASIC_AUTH_PASSWORD=改成强密码  # 密码，务必修改，不能留空
 ```
@@ -107,7 +107,7 @@ npm run build
 npm start            # 默认监听 http://localhost:3000
 ```
 
-在浏览器中打开 `http://localhost:3000/notes`，浏览器会弹出一个登录框，输入你在 `.env.local` 中设置的用户名和密码即可进入。
+在浏览器中打开 `http://localhost:3000`，浏览器会弹出一个登录框，输入你在 `.env.local` 中设置的用户名和密码即可进入。
 
 > **登录账号从哪里来？** 就是你自己在 `.env.local` 里填写的 `NOTES_BASIC_AUTH_USERNAME`（用户名）和 `NOTES_BASIC_AUTH_PASSWORD`（密码），没有注册流程，改了配置重启服务即可生效。
 
@@ -156,7 +156,7 @@ sudo ufw allow 3000/tcp
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_APP_NAME` | 否 | `My Notes` | 显示在界面和页面标题中的应用名称。 |
 | `VAULT_PATH` | 是 | `./vault` | Markdown 知识库的绝对路径。 |
-| `NOTES_BASIC_AUTH_USERNAME` | 是 | `notes` | 访问 `/notes` 和 `/api/notes/*` 的用户名。 |
+| `NOTES_BASIC_AUTH_USERNAME` | 是 | `notes` | 知识库登录用户名。 |
 | `NOTES_BASIC_AUTH_PASSWORD` | 是 | *(空)* | 访问密码，为空时始终拒绝访问。 |
 | `SHARED_NOTES_PATH` | 否 | `./shared-notes.json` | 存储分享 token 的 JSON 文件路径。 |
 | `SITE_URL` | 否 | `http://localhost:3000` | 生成分享链接时使用的公开地址（域名或 IP）。 |
@@ -190,7 +190,7 @@ node scripts/create-share-link.mjs "笔记在知识库中的相对路径/note.md
 典型的生产环境部署方案：
 
 1. 用 **systemd** 保持两个进程常驻 — 参考 `deploy/notes-app.service.example`。
-2. 用 **Nginx** 分流请求：`/notes`、`/share` → 端口 3000；`/notes-claude/` → 端口 8082 — 参考 `deploy/nginx.conf.example`。
+2. 用 **Nginx** 分流请求：`/`、`/share` → 端口 3000；`/notes-claude/` → 端口 8082 — 参考 `deploy/nginx.conf.example`。
 
 ```bash
 # 安装并启用 systemd 服务（先编辑模板，填写 User、WorkingDirectory、EnvironmentFile）
@@ -214,7 +214,7 @@ SERVICE_NAME=notes-app bash scripts/update_app.sh
 
 ## 安全说明
 
-- 私有路由 `/notes` 和 `/api/notes/*` 均需通过 Basic Auth 验证。
+- 根路径 `/` 和 `/api/notes/*` 均需通过 Basic Auth 验证，整个知识库默认私有。
 - `/notes-claude/` 同样应受保护，Nginx 示例中已包含对该路由的 Basic Auth 配置。
 - 公开分享路由通过 token 鉴权，仅允许只读访问。
 - 文件读取被限制在 `VAULT_PATH` 目录内，自动排除 `.git`、`.obsidian`、`.claude`、`.claudian`、`node_modules`。

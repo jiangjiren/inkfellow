@@ -2,7 +2,7 @@
 
 English | [中文](./README.zh-CN.md)
 
-A self-hosted Markdown knowledge base reader with a **built-in AI Agent panel**. Browse your Obsidian-style vault, select any text to instantly quote it into the AI chat, and get answers without leaving the page.
+Turn your local Markdown folder into a personal knowledge base you can **browse, organize, sync, and share** — with a **built-in AI Agent panel** that lets you select any text and instantly bring it into a conversation.
 
 Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, **OpenRouter** (200+ models), and any Anthropic-compatible API — swap providers anytime from the UI.
 

@@ -2,7 +2,7 @@
 
 [English](./README.md) | 中文
 
-一个自托管的 Markdown 知识库阅读器，内置 **AI Agent 对话面板**。浏览 Obsidian 风格的笔记库，划选任意文字即可引用到 AI 对话，无需离开页面。
+把你本地的 Markdown 笔记文件夹，变成一个可以随时**浏览、整理、同步、分享**的个人知识库——并内置 **AI Agent 对话面板**，划选任意文字即可引用进 AI 对话，让知识真正活起来。
 
 支持 **Claude 官方订阅**（无需 API Key）、**DeepSeek**、**OpenRouter**（200+ 模型）以及任意兼容 Anthropic API 的第三方服务——随时在界面内切换。
 

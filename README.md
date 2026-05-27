@@ -2,7 +2,7 @@
 
 English | [中文](./README.zh-CN.md)
 
-Turn your local Markdown folder into a personal knowledge base you can **browse, organize, sync, and share** — with a **built-in AI Agent panel** that lets you select any text and instantly bring it into a conversation.
+Turn your Markdown folder into a cloud-accessible personal knowledge base — **browse, organize, sync, and share** from any device, anywhere — with a **built-in AI Agent panel** that lets you select any text and instantly bring it into a conversation.
 
 Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, **OpenRouter** (200+ models), and any Anthropic-compatible API — swap providers anytime from the UI.
 

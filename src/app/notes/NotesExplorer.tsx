@@ -25,15 +25,20 @@ const PANEL_WIDTH_KEY = "inkfellow-notes-panel-width-v1";
 const PANEL_VISIBLE_KEY = "inkfellow-notes-panel-visible-v1";
 const PANEL_TAB_KEY = "inkfellow-notes-panel-tab-v1";
 const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
+const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 
 type PanelTab = "claude" | "toc" | "git";
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
 const MIN_ASSISTANT_PANEL_WIDTH = 340;
 const MAX_ASSISTANT_PANEL_WIDTH = 900;
+const DEFAULT_SIDEBAR_WIDTH = 280;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 400;
 
 type NotesShellStyle = CSSProperties & {
   "--assistant-panel-width": string;
+  "--sidebar-width": string;
 };
 
 type ShareInfo = {
@@ -305,6 +310,8 @@ export default function NotesExplorer() {
   const [panelTab, setPanelTab] = useState<PanelTab>("claude");
   const [assistantPanelWidth, setAssistantPanelWidth] = useState(DEFAULT_ASSISTANT_PANEL_WIDTH);
   const [isResizingAssistantPanel, setIsResizingAssistantPanel] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shareState, setShareState] = useState<ShareState>("idle");
   const [shareToken, setShareToken] = useState<string | null>(null);
@@ -478,11 +485,20 @@ export default function NotesExplorer() {
     if (savedSidebarVisibility === "false") {
       setSidebarVisible(false);
     }
+
+    const savedSidebarWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (Number.isFinite(savedSidebarWidth) && savedSidebarWidth > 0) {
+      setSidebarWidth(clamp(savedSidebarWidth, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+    }
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem(PANEL_WIDTH_KEY, String(assistantPanelWidth));
   }, [assistantPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
 
   useEffect(() => {
     window.localStorage.setItem(PANEL_VISIBLE_KEY, String(assistantPanelVisible));
@@ -561,6 +577,34 @@ export default function NotesExplorer() {
       window.removeEventListener("pointercancel", stopResizing);
     };
   }, [isResizingAssistantPanel]);
+
+  useEffect(() => {
+    if (!isResizingSidebar) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      setSidebarWidth(clamp(event.clientX, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+    };
+
+    const stopResizing = () => {
+      setIsResizingSidebar(false);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResizing);
+    window.addEventListener("pointercancel", stopResizing);
+
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResizing);
+      window.removeEventListener("pointercancel", stopResizing);
+    };
+  }, [isResizingSidebar]);
 
   const openAncestors = useCallback((filePath: string) => {
     setExpandedFolders((current) => {
@@ -1297,6 +1341,7 @@ export default function NotesExplorer() {
   const updatedAt = note ? new Date(note.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "";
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
+    "--sidebar-width": `${sidebarWidth}px`,
   };
   const isDesktopSidebarHidden = !isMobileViewport && !sidebarVisible;
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
@@ -1312,10 +1357,32 @@ export default function NotesExplorer() {
         mobileAssistantPanelOpen ? styles.shellMobileAssistantPanelOpen : ""
       } ${
         isDesktopAssistantPanelHidden ? styles.shellAssistantPanelHidden : ""
-      } ${isResizingAssistantPanel ? styles.shellResizing : ""}`}
+      } ${isResizingAssistantPanel || isResizingSidebar ? styles.shellResizing : ""}`}
       style={shellStyle}
     >
       <aside className={`${styles.sidebar} ${isDesktopSidebarHidden ? styles.sidebarHidden : ""}`} aria-hidden={!isSidebarOpen}>
+        <button
+          type="button"
+          className={styles.sidebarResizer}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            setIsResizingSidebar(true);
+          }}
+          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight") {
+              event.preventDefault();
+              setSidebarWidth((w) => clamp(w + 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+            }
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              setSidebarWidth((w) => clamp(w - 24, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+            }
+          }}
+          aria-label="调整侧边栏宽度"
+          title="拖拽调整侧边栏宽度，双击恢复默认"
+          tabIndex={!isMobileViewport && isSidebarOpen ? 0 : -1}
+        />
         <div className={styles.sidebarHeader}>
           <div>
             <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>

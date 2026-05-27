@@ -763,13 +763,19 @@ export default function NotesExplorer() {
         const { updatedAt } = (await res.json()) as { updatedAt: string };
         if (updatedAt && updatedAt !== knownUpdatedAt) {
           isReloadingRef.current = true;
-          setHasGitChanges(true); // 外部改动（如 AI Agent）→ 标记未同步
           await loadNote(path, null, {
             preserveScroll: true,
             silent: true,
             updateHistory: false,
           });
           isReloadingRef.current = false;
+          // 重载后查实际 git 状态：可能是 Agent 新增改动，也可能是撤销/还原
+          fetch(`/api/notes/git?check=${encodeURIComponent(path)}`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((data: { changed: boolean } | null) => {
+              if (data != null) setHasGitChanges(data.changed);
+            })
+            .catch(() => { /* silent */ });
         }
       } catch {
         isReloadingRef.current = false;

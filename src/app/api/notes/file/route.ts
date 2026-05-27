@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mapVaultError, readMarkdownNote, statMarkdownNote } from "@/lib/notesVault";
+import { mapVaultError, readMarkdownNote, statMarkdownNote, createMarkdownNote } from "@/lib/notesVault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export async function PUT(request: NextRequest) {
+  try {
+    const body = (await request.json()) as { path?: string; content?: string };
+    if (!body.path) {
+      return NextResponse.json({ error: "Missing note path." }, { status: 400 });
+    }
+    const note = await createMarkdownNote(body.path, body.content ?? "");
+    return NextResponse.json(note, { status: 201 });
+  } catch (error) {
+    const mappedError = mapVaultError(error);
+    return NextResponse.json({ error: mappedError.message }, { status: mappedError.status });
+  }
+}
 
 export async function GET(request: NextRequest) {
   const notePath = request.nextUrl.searchParams.get("path");

@@ -404,6 +404,39 @@ export const readVaultImageFromNoteDirectory = async (assetPath: string, notePat
   };
 };
 
+export const createMarkdownNote = async (relativePath: string, content = "") => {
+  const sanitized = sanitizeRelativePath(relativePath);
+
+  if (!isMarkdownPath(sanitized)) {
+    throw new VaultAccessError("Only .md files can be created.", 415);
+  }
+
+  const vaultRoot = await getVaultRoot();
+  const absolutePath = path.resolve(vaultRoot, sanitized);
+  assertInsideVault(absolutePath, vaultRoot);
+
+  // Refuse to overwrite an existing file
+  try {
+    await fs.access(absolutePath);
+    throw new VaultAccessError("A file with this name already exists.", 409);
+  } catch (err) {
+    if (err instanceof VaultAccessError) throw err;
+    // ENOENT → file doesn't exist, which is what we want
+  }
+
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, content, "utf8");
+
+  const stat = await fs.stat(absolutePath);
+  return {
+    name: path.basename(sanitized),
+    path: sanitized,
+    content,
+    size: stat.size,
+    updatedAt: stat.mtime.toISOString(),
+  };
+};
+
 export const mapVaultError = (error: unknown) => {
   if (error instanceof VaultAccessError) {
     return {

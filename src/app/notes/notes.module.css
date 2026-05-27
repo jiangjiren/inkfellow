@@ -2640,3 +2640,169 @@
   background: transparent !important;
   padding: 14px 18px !important;
 }
+
+/* ── 新建笔记按钮（侧边栏标题旁） ─────────────────── */
+.newNoteButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background 120ms ease, color 120ms ease;
+  margin-left: auto;
+}
+
+.newNoteButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+.newNoteButton:hover {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.newNoteButton:active {
+  transform: scale(0.92);
+}
+
+/* ── 新建笔记对话框 ────────────────────────────────── */
+.newNoteBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: newNoteBackdropIn 160ms ease;
+}
+
+@keyframes newNoteBackdropIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.newNoteDialog {
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.08);
+  animation: newNoteDialogIn 180ms cubic-bezier(0.34, 1.36, 0.64, 1);
+}
+
+@keyframes newNoteDialogIn {
+  from { opacity: 0; transform: scale(0.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.newNoteHeading {
+  margin: 0 0 20px;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--notes-text-primary);
+}
+
+.newNoteLabel {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--notes-text-muted);
+  margin-bottom: 6px;
+}
+
+.newNoteInput,
+.newNoteSelect {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  margin-bottom: 16px;
+  border: 1.5px solid var(--notes-border);
+  border-radius: 9px;
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.newNoteSelect {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23999' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 34px;
+}
+
+.newNoteInput:focus,
+.newNoteSelect:focus {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.newNoteError {
+  margin: -8px 0 14px;
+  font-size: 12.5px;
+  color: #e0433a;
+}
+
+.newNoteActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.newNoteCancelBtn,
+.newNoteConfirmBtn {
+  padding: 8px 18px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+.newNoteCancelBtn {
+  border: 1px solid var(--notes-border);
+  background: transparent;
+  color: var(--notes-text-secondary);
+}
+
+.newNoteCancelBtn:hover {
+  background: var(--notes-bg-sidebar);
+}
+
+.newNoteConfirmBtn {
+  border: 0;
+  background: var(--notes-accent);
+  color: #fff;
+}
+
+.newNoteConfirmBtn:hover {
+  opacity: 0.88;
+}
+
+.newNoteConfirmBtn:disabled,
+.newNoteCancelBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

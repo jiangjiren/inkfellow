@@ -122,6 +122,17 @@ const writeStoredScrollSnapshot = (path: string, snapshot: ScrollSnapshot) => {
   } catch { /* ignore storage failures */ }
 };
 
+/** 递归收集所有文件夹路径（含根，用空字符串表示） */
+const collectFolders = (node: NotesTreeNode, result: string[] = []): string[] => {
+  if (node.type === "directory") {
+    result.push(node.path); // 根目录 path 为 ""
+    for (const child of node.children) {
+      collectFolders(child, result);
+    }
+  }
+  return result;
+};
+
 const filterTree = (node: NotesTreeNode, query: string): NotesTreeNode | null => {
   if (!query) {
     return node;
@@ -295,6 +306,12 @@ export default function NotesExplorer() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+  const [newNoteOpen, setNewNoteOpen] = useState(false);
+  const [newNoteTitle, setNewNoteTitle] = useState("");
+  const [newNoteFolder, setNewNoteFolder] = useState("");
+  const [newNoteError, setNewNoteError] = useState<string | null>(null);
+  const [newNoteLoading, setNewNoteLoading] = useState(false);
+  const newNoteTitleRef = useRef<HTMLInputElement>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
   const noteUpdatedAtRef = useRef<string | null>(null);
@@ -839,6 +856,91 @@ export default function NotesExplorer() {
     });
   }, [noteState, note?.path]);
 
+  /** 打开新建笔记对话框，默认目录 = 当前笔记所在目录 */
+  const openNewNote = useCallback(() => {
+    const defaultFolder = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
+    setNewNoteFolder(defaultFolder);
+    setNewNoteTitle("");
+    setNewNoteError(null);
+    setNewNoteOpen(true);
+    // 等 DOM 渲染后聚焦输入框
+    setTimeout(() => newNoteTitleRef.current?.focus(), 30);
+  }, [activePath]);
+
+  const handleCreateNote = useCallback(async () => {
+    const title = newNoteTitle.trim();
+    if (!title) {
+      setNewNoteError("请输入笔记标题");
+      newNoteTitleRef.current?.focus();
+      return;
+    }
+
+    // 将标题转为合法文件名（去掉 / \ : * ? " < > |）
+    const safeName = title.replace(/[/\\:*?"<>|]/g, "-");
+    const filePath = newNoteFolder ? `${newNoteFolder}/${safeName}.md` : `${safeName}.md`;
+
+    setNewNoteLoading(true);
+    setNewNoteError(null);
+
+    try {
+      const res = await fetch("/api/notes/file", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: filePath, content: `# ${title}\n` }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "创建失败");
+      }
+
+      // 刷新文件树
+      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+      if (treeRes.ok) {
+        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
+        setTree(payload.root);
+        // 展开新笔记所在目录
+        if (newNoteFolder) {
+          setExpandedFolders((prev) => {
+            const next = new Set(prev);
+            const parts = newNoteFolder.split("/");
+            let accumulated = "";
+            for (const part of parts) {
+              accumulated = accumulated ? `${accumulated}/${part}` : part;
+              next.add(accumulated);
+            }
+            return next;
+          });
+        }
+      }
+
+      setNewNoteOpen(false);
+      // 跳转到新笔记
+      void loadNote(filePath);
+    } catch (err) {
+      setNewNoteError(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setNewNoteLoading(false);
+    }
+  }, [newNoteTitle, newNoteFolder, loadNote]);
+
+  /** ⌘N / Ctrl+N 快捷键 */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "n" && !e.shiftKey && !e.altKey) {
+        // 避免在输入框内触发
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+        e.preventDefault();
+        openNewNote();
+      }
+      if (e.key === "Escape" && newNoteOpen) {
+        setNewNoteOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [newNoteOpen, openNewNote]);
+
   const handleToggle = useCallback((path: string) => {
     setExpandedFolders((current) => {
       const next = new Set(current);
@@ -1053,6 +1155,18 @@ export default function NotesExplorer() {
             <h1 className={styles.title}>知识库</h1>
           </div>
           <span className={styles.counter}>{files.length} 篇</span>
+          <button
+            type="button"
+            className={styles.newNoteButton}
+            onClick={openNewNote}
+            aria-label="新建笔记 (⌘N)"
+            title="新建笔记 (⌘N)"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <line x1="8" y1="2.5" x2="8" y2="13.5" />
+              <line x1="2.5" y1="8" x2="13.5" y2="8" />
+            </svg>
+          </button>
           <button
             type="button"
             className={styles.mobileSidebarClose}
@@ -1403,6 +1517,71 @@ export default function NotesExplorer() {
       >
         <span aria-hidden="true">✦</span>
       </button>
+
+      {/* ── 新建笔记对话框 ─────────────────────────────── */}
+      {newNoteOpen ? (
+        <div
+          className={styles.newNoteBackdrop}
+          onClick={(e) => { if (e.target === e.currentTarget) setNewNoteOpen(false); }}
+          role="presentation"
+        >
+          <div
+            className={styles.newNoteDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-note-heading"
+          >
+            <h2 id="new-note-heading" className={styles.newNoteHeading}>新建笔记</h2>
+
+            <label className={styles.newNoteLabel} htmlFor="new-note-title">标题</label>
+            <input
+              id="new-note-title"
+              ref={newNoteTitleRef}
+              className={styles.newNoteInput}
+              type="text"
+              placeholder="笔记标题"
+              value={newNoteTitle}
+              onChange={(e) => { setNewNoteTitle(e.target.value); setNewNoteError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleCreateNote(); }}
+              autoComplete="off"
+              spellCheck={false}
+            />
+
+            <label className={styles.newNoteLabel} htmlFor="new-note-folder">位置</label>
+            <select
+              id="new-note-folder"
+              className={styles.newNoteSelect}
+              value={newNoteFolder}
+              onChange={(e) => setNewNoteFolder(e.target.value)}
+            >
+              {tree ? collectFolders(tree).map((f) => (
+                <option key={f} value={f}>{f || "/ 根目录"}</option>
+              )) : null}
+            </select>
+
+            {newNoteError ? <p className={styles.newNoteError}>{newNoteError}</p> : null}
+
+            <div className={styles.newNoteActions}>
+              <button
+                type="button"
+                className={styles.newNoteCancelBtn}
+                onClick={() => setNewNoteOpen(false)}
+                disabled={newNoteLoading}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={styles.newNoteConfirmBtn}
+                onClick={() => void handleCreateNote()}
+                disabled={newNoteLoading}
+              >
+                {newNoteLoading ? "创建中…" : "创建"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
     </main>
   );

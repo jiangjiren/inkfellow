@@ -1059,31 +1059,21 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 #auth-add-form.open { display: flex; }
 
-/* 表单内的 segmented control（provider 选择） */
-.add-segment {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  background: var(--bg3);
+/* 表单内的 provider 下拉选择 */
+.add-provider-select {
+  width: 100%;
+  padding: 5px 8px;
+  margin: 10px 0 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px;
-  gap: 2px;
-  margin: 10px 0 10px;
-}
-.add-seg-btn {
-  height: 24px;
-  border: none; border-radius: 5px;
-  background: none;
-  color: var(--text-dim);
-  font: inherit; font-size: 11px; font-weight: 500;
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit; font-size: 12.5px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+  outline: none;
+  appearance: auto;
 }
-.add-seg-btn:hover:not(.active) { color: var(--text); }
-.add-seg-btn.active {
-  background: #fff; color: var(--text); font-weight: 650;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.09), 0 0 0 0.5px rgba(0,0,0,0.05);
-}
+.add-provider-select:focus { border-color: var(--accent, #888); }
 
 /* 表单字段行 */
 .add-field {
@@ -1281,13 +1271,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         添加账号
       </button>
       <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
-        <!-- provider 三段选择（编辑时隐藏，不能改类型） -->
-        <div class="add-segment" id="add-segment" role="radiogroup" aria-label="账号类型">
-          <button class="add-seg-btn active" data-value="anthropic" role="radio" aria-checked="true">Anthropic</button>
-          <button class="add-seg-btn" data-value="deepseek" role="radio" aria-checked="false">DeepSeek</button>
-          <button class="add-seg-btn" data-value="openrouter" role="radio" aria-checked="false">OpenRouter</button>
-          <button class="add-seg-btn" data-value="custom" role="radio" aria-checked="false">自定义</button>
-        </div>
+        <!-- provider 下拉选择（编辑时隐藏，不能改类型） -->
+        <select class="add-provider-select" id="add-provider-select" aria-label="账号类型">
+          <option value="anthropic">Anthropic — 官方 API Key（sk-ant-…）</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="openrouter">OpenRouter（200+ 模型）</option>
+          <option value="custom">自定义（兼容 Anthropic API 的第三方服务）</option>
+        </select>
         <!-- 名称 -->
         <div class="add-field">
           <label for="add-name">名称</label>
@@ -1644,10 +1634,10 @@ async function deleteProfile(id) {
 }
 
 // ── Add form ──────────────────────────────────────────────
-const addToggleBtn    = document.getElementById("auth-add-toggle");
-const addForm         = document.getElementById("auth-add-form");
-const addSegment      = document.getElementById("add-segment");
-const addNameInput    = document.getElementById("add-name");
+const addToggleBtn      = document.getElementById("auth-add-toggle");
+const addForm           = document.getElementById("auth-add-form");
+const addProviderSelect = document.getElementById("add-provider-select");
+const addNameInput      = document.getElementById("add-name");
 const addKeyInput     = document.getElementById("add-key");
 const addOpusInput    = document.getElementById("add-opus");
 const addSonnetInput  = document.getElementById("add-sonnet");
@@ -1669,10 +1659,7 @@ let _editingProfileId = null;  // null = add mode; string = edit mode (profile i
 
 function setAddProvider(value) {
   _addProvider = value;
-  addSegment.querySelectorAll(".add-seg-btn").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.value === value);
-    btn.setAttribute("aria-checked", String(btn.dataset.value === value));
-  });
+  addProviderSelect.value = value;
   const p = ADD_PRESETS[value] ?? ADD_PRESETS.custom;
   addOpusInput.value   = p.opusModel;
   addSonnetInput.value = p.sonnetModel;
@@ -1683,9 +1670,7 @@ function setAddProvider(value) {
   if (!addNameInput.value.trim()) addNameInput.placeholder = p.namePlaceholder;
 }
 
-addSegment.querySelectorAll(".add-seg-btn").forEach(btn => {
-  btn.addEventListener("click", () => setAddProvider(btn.dataset.value));
-});
+addProviderSelect.addEventListener("change", () => setAddProvider(addProviderSelect.value));
 
 // openAccountForm: pass null/undefined to add, or a profile object to edit
 function openAccountForm(existingProfile) {
@@ -1696,8 +1681,8 @@ function openAccountForm(existingProfile) {
   addErrorEl.textContent = "";
 
   if (existingProfile) {
-    // Edit mode — hide provider segment (can't change type), pre-fill fields
-    addSegment.style.display = "none";
+    // Edit mode — hide provider select (can't change type), pre-fill fields
+    addProviderSelect.style.display = "none";
     addSubmitBtn.textContent = "保存";
     const provider = existingProfile.provider;
     _addProvider = provider;
@@ -1712,7 +1697,7 @@ function openAccountForm(existingProfile) {
     addFieldBaseUrl.classList.toggle("hidden", provider !== "custom");
   } else {
     // Add mode
-    addSegment.style.display = "";
+    addProviderSelect.style.display = "";
     addSubmitBtn.textContent = "添加";
     setAddProvider("anthropic");
     addNameInput.value   = "";
@@ -1728,7 +1713,7 @@ function closeAddForm() {
   addForm.classList.remove("open");
   addToggleBtn.style.display = "";
   addToggleBtn.setAttribute("aria-expanded", "false");
-  addSegment.style.display = "";
+  addProviderSelect.style.display = "";
   addSubmitBtn.textContent = "添加";
   _editingProfileId = null;
 }

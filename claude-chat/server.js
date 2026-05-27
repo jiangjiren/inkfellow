@@ -3,6 +3,7 @@ import { chmodSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { extname } from "node:path";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
@@ -294,21 +295,28 @@ const http = createServer((req, res) => {
   }
 
   // ── Claude subscription auth status ──────────────────────────
+  // Run `claude auth status` — the only reliable way to check login state,
+  // since credentials may be stored in the system keychain rather than a file.
   if (url === "/api/health/claude-auth" && method === "GET") {
-    const homedir = process.env.HOME || process.env.USERPROFILE || "";
-    // Check OAuth credentials file (created by `claude` CLI login)
-    const credFile = join(homedir, ".claude", "credentials.json");
-    // Also accept ANTHROPIC_AUTH_TOKEN injected via environment
-    const hasEnvToken = !!(process.env.ANTHROPIC_AUTH_TOKEN);
-    let authenticated = hasEnvToken;
-    if (!authenticated && existsSync(credFile)) {
-      try {
-        const creds = JSON.parse(readFileSync(credFile, "utf8"));
-        authenticated = typeof creds === "object" && creds !== null && Object.keys(creds).length > 0;
-      } catch { /* ignore */ }
-    }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ authenticated }));
+    let stdout = "";
+    let stderr = "";
+    const proc = spawn("claude", ["auth", "status"], {
+      timeout: 6000,
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    proc.stdout?.on("data", d => { stdout += d; });
+    proc.stderr?.on("data", d => { stderr += d; });
+    proc.on("error", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ authenticated: false, detail: "claude CLI not found" }));
+    });
+    proc.on("close", () => {
+      let detail = {};
+      try { detail = JSON.parse(stdout); } catch { detail = { raw: stdout.trim() || stderr.trim() }; }
+      const authenticated = detail.loggedIn === true;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ authenticated, detail }));
+    });
     return;
   }
 

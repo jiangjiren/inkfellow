@@ -702,3 +702,12 @@ Do not commit:
 - `shared-notes.json` if it contains real share tokens (already in `.gitignore`).
 - `claude-chat/auth-profile.json` and `claude-chat/session.json` — these hold your AI provider credentials.
 - `.next/`, `node_modules/`, vault contents, or generated media.
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+
+## Contact
+
+- **Email**: jiangjiren@hotmail.com
+- **WeChat**: jiangjiren

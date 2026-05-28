@@ -330,6 +330,7 @@ export default function NotesExplorer() {
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
   const [editorMinHeight, setEditorMinHeight] = useState(0); // 占位高度，防 scroll 被钳制
   const [hasGitChanges, setHasGitChanges] = useState(false); // 当前文件有未提交改动
+  const [globalGitPending, setGlobalGitPending] = useState<number | null>(null); // 全局待同步数
   const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
@@ -1018,6 +1019,20 @@ export default function NotesExplorer() {
     setIsEditing(false);
   }, [note?.path]);
 
+  // 全局 Git 状态轮询 — 为侧边栏底部状态条和移动端 badge 提供数据
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/notes/git", { cache: "no-store" });
+        const data = (await res.json()) as { files?: unknown[]; error?: string };
+        if (!data.error) setGlobalGitPending(data.files?.length ?? 0);
+      } catch { /* silent */ }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   /** 当前文件切换时检查 git 状态，更新「未同步」指示点 */
   useEffect(() => {
     setHasGitChanges(false);
@@ -1443,6 +1458,34 @@ export default function NotesExplorer() {
             />
           ) : null}
         </div>
+
+        {globalGitPending !== null && (
+          <div className={styles.sidebarFooter}>
+            <button
+              type="button"
+              className={styles.sidebarGitStatus}
+              onClick={() => {
+                if (isMobileViewport) {
+                  setMobileSidebarOpen(false);
+                  setMobileAssistantPanelOpen(true);
+                } else {
+                  setAssistantPanelVisible(true);
+                }
+                setPanelTab("git");
+              }}
+              tabIndex={isSidebarOpen ? 0 : -1}
+              title={globalGitPending === 0 ? "已同步到云端" : `${globalGitPending} 篇笔记有未同步的改动`}
+            >
+              <span className={`${styles.sidebarGitDot} ${globalGitPending === 0 ? styles.sidebarGitDotSynced : ""}`} />
+              <span className={styles.sidebarGitLabel}>
+                {globalGitPending === 0 ? "已同步到云端" : `${globalGitPending} 篇待同步`}
+              </span>
+              {globalGitPending > 0 && (
+                <span className={styles.sidebarGitArrow} aria-hidden="true">↑↓</span>
+              )}
+            </button>
+          </div>
+        )}
       </aside>
 
       <button
@@ -1462,7 +1505,7 @@ export default function NotesExplorer() {
           <div className={styles.readerActions}>
             <button
               type="button"
-              className={`${styles.iconButton} ${isSidebarOpen ? styles.iconButtonActive : ""}`}
+              className={`${styles.iconButton} ${styles.sidebarToggleBtn} ${isSidebarOpen ? styles.iconButtonActive : ""}`}
               onClick={() => {
                 if (isMobileViewport) {
                   setMobileAssistantPanelOpen(false);
@@ -1479,6 +1522,9 @@ export default function NotesExplorer() {
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <line x1="9" y1="3" x2="9" y2="21" />
               </svg>
+              {globalGitPending !== null && globalGitPending > 0 && !isSidebarOpen && (
+                <span className={styles.sidebarToggleBadge} aria-hidden="true" />
+              )}
             </button>
           </div>
           <div className={styles.noteMeta}>

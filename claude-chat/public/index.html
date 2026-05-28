@@ -22,17 +22,16 @@
   --tool-bg: #f0eee9;
 }
 
-html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; background: var(--bg); color: var(--text); }
+html, body { height: 100%; overflow: hidden; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; background: var(--bg); color: var(--text); }
 
 #app {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
-  position: relative;
+  height: 100%;
 }
 
 /* ── Messages ── */
-#messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+#messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
 .msg { display: flex; flex-direction: column; gap: 4px; }
 .msg-user {
   align-items: flex-end;
@@ -858,19 +857,40 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   top: 54px;
   right: 10px;
   z-index: 300;
-  width: min(320px, calc(100% - 20px));
+  width: min(340px, calc(100% - 20px));
   max-height: calc(100dvh - 74px);
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg);
-  box-shadow: 0 14px 44px rgba(0,0,0,0.16), 0 3px 10px rgba(0,0,0,0.08);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 16px;
+  background: rgba(249, 249, 248, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06);
   transform-origin: top right;
-  flex-direction: column;
 }
 #auth-dialog.open {
   display: flex;
-  animation: dropFadeIn 0.15s ease;
+  flex-direction: column;
+  animation: dropFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes dropFadeIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.auth-view {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: fadeIn 0.15s ease-out;
+}
+.auth-view.active {
+  display: flex;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* header */
@@ -878,44 +898,52 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 11px 12px 11px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
   flex-shrink: 0;
 }
 .auth-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
   color: var(--text);
   flex: 1;
 }
-#auth-status {
-  font-size: 10.5px;
+#auth-status, #auth-form-status {
+  font-size: 11px;
+  font-weight: 500;
   opacity: 0;
   transition: opacity 0.25s;
   white-space: nowrap;
 }
-#auth-status.visible { opacity: 1; }
-#auth-status.saving { color: var(--text-dim); }
-#auth-status.saved  { color: var(--green); }
-#auth-status.error  { color: var(--red); }
-.auth-close {
+#auth-status.visible, #auth-form-status.visible { opacity: 1; }
+#auth-status.saving, #auth-form-status.saving { color: var(--text-dim); }
+#auth-status.saved, #auth-form-status.saved  { color: var(--green); }
+#auth-status.error, #auth-form-status.error  { color: var(--red); }
+
+.auth-close, .auth-back {
   flex-shrink: 0;
-  width: 22px; height: 22px;
+  width: 26px; height: 26px;
   border: 0; border-radius: 50%;
   background: var(--bg3);
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 14px;
   display: grid; place-items: center;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.15s, color 0.15s;
 }
-.auth-close:hover { background: var(--border); color: var(--text); }
+.auth-close:hover, .auth-back:hover { background: rgba(0,0,0,0.06); color: var(--text); }
+.auth-back { background: transparent; margin-left: -6px; }
 
 /* ── Profile list ── */
 #auth-profile-list {
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   flex: 1;
-  padding: 6px 0;
+  min-height: 0;
+  padding: 12px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 #auth-profile-list::-webkit-scrollbar { width: 4px; }
 #auth-profile-list::-webkit-scrollbar-track { background: transparent; }
@@ -924,217 +952,292 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .auth-profile-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 12px;
+  padding: 12px 14px;
   cursor: pointer;
-  border: none;
-  background: none;
+  border: 1px solid rgba(0,0,0,0.04);
+  border-radius: 12px;
+  background: #ffffff;
   width: 100%;
   text-align: left;
-  transition: background 0.1s;
-  border-bottom: 1px solid var(--bg3);
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
 }
-.auth-profile-item:last-child { border-bottom: none; }
-.auth-profile-item:hover { background: var(--bg2); }
-.auth-profile-item.active { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+.auth-profile-item:hover { 
+  background: #fafafa; 
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
+.auth-profile-item.active { 
+  background: color-mix(in srgb, var(--accent) 4%, #ffffff);
+  border-color: rgba(26,108,246,0.2);
+}
 
 /* 左侧 checkmark */
 .auth-profile-check {
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  border: 1.5px solid var(--border);
+  border: 1.5px solid rgba(0,0,0,0.15);
   display: grid;
   place-items: center;
   color: transparent;
-  font-size: 10px;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  font-size: 11px;
+  font-weight: 700;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .auth-profile-item.active .auth-profile-check {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff;
+  transform: scale(1.05);
 }
 
 /* 中间文字 */
 .auth-profile-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .auth-profile-name {
-  font-size: 12.5px;
-  font-weight: 550;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.auth-profile-item.active .auth-profile-name { color: var(--accent); font-weight: 650; }
+.auth-profile-item.active .auth-profile-name { color: var(--accent); }
 .auth-profile-meta {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-dim);
-  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* 右侧操作按钮组 */
 .auth-profile-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex-shrink: 0;
   opacity: 0;
-  transition: opacity 0.12s;
+  transform: translateX(4px);
+  transition: all 0.2s ease;
 }
-.auth-profile-item:hover .auth-profile-actions { opacity: 1; }
+.auth-profile-item:hover .auth-profile-actions { 
+  opacity: 1; 
+  transform: translateX(0);
+}
 
 .auth-profile-edit,
 .auth-profile-del {
-  width: 24px; height: 24px;
-  border: none; border-radius: 5px;
+  width: 26px; height: 26px;
+  border: none; border-radius: 6px;
   background: none;
   cursor: pointer;
   display: grid; place-items: center;
-  font-size: 12px;
-  line-height: 1;
-  transition: background 0.12s, color 0.12s;
+  font-size: 13px;
+  color: var(--text-dim);
+  transition: all 0.15s ease;
   padding: 0;
-  user-select: none;
-  -webkit-user-select: none;
-  flex-shrink: 0;
 }
-.auth-profile-edit { color: var(--text-dim); }
-.auth-profile-edit:hover { background: var(--bg3); color: var(--text); }
-.auth-profile-del  { color: var(--text-dim); }
+.auth-profile-edit:hover { background: rgba(0,0,0,0.05); color: var(--text); }
 .auth-profile-del:hover  { background: rgba(192,57,43,0.1); color: var(--red); }
 
 /* ── Add account 区域 ── */
 #auth-add-section {
-  border-top: 1px solid var(--border);
+  padding: 10px 12px 14px;
   flex-shrink: 0;
 }
 #auth-add-toggle {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 10px 14px;
-  border: none;
-  background: none;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed rgba(0,0,0,0.15);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.5);
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-  transition: color 0.12s, background 0.12s;
-}
-#auth-add-toggle:hover { color: var(--text); background: var(--bg2); }
-#auth-add-toggle .add-icon {
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  border: 1.5px solid currentColor;
-  display: grid; place-items: center;
   font-size: 13px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-/* 展开的添加表单 */
-#auth-add-form {
-  display: none;
-  flex-direction: column;
-  gap: 0;
-  padding: 0 12px 12px;
-  border-top: 1px solid var(--bg3);
-}
-#auth-add-form.open { display: flex; }
-
-/* 表单内的 provider 下拉选择 */
-.add-provider-select {
-  width: 100%;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit; font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
-  outline: none;
+  transition: all 0.15s ease;
 }
-.add-provider-select:focus { border-color: var(--accent, #888); }
+#auth-add-toggle:hover { 
+  color: var(--accent); 
+  border-color: rgba(26,108,246,0.3);
+  background: rgba(26,108,246,0.02);
+}
+#auth-add-toggle .add-icon {
+  display: grid; place-items: center;
+  color: inherit;
+}
 
-/* 表单字段行 */
-.add-field {
-  display: grid;
-  grid-template-columns: 56px 1fr;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  border-top: 1px solid var(--bg3);
+/* 表单视图 */
+#auth-add-form {
+  display: block;
+  padding: 16px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  flex: 1;
+  min-height: 0;
 }
-.add-field:first-of-type { border-top: none; }
+#auth-add-form::-webkit-scrollbar { width: 4px; }
+#auth-add-form::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.form-group-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 6px 4px;
+}
+.form-group-title.hidden { display: none; }
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 20px;
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.form-group.hidden { display: none; }
+
+.add-field {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  background: #ffffff;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+.add-field:last-child { border-bottom: none; }
+.add-field.hidden { display: none; }
+
 .add-field > label {
   font-size: 11px;
   color: var(--text-dim);
   font-weight: 500;
-  white-space: nowrap;
+  margin-bottom: 6px;
 }
+
 .add-field input {
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.03);
   color: var(--text);
-  font: inherit; font-size: 12px;
-  padding: 0 8px;
+  font: inherit; font-size: 13px;
+  padding: 0 10px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: all 0.15s ease;
   width: 100%;
 }
 .add-field input:focus {
-  border-color: rgba(26,108,246,0.38);
-  box-shadow: 0 0 0 3px rgba(26,108,246,0.08);
+  background: #ffffff;
+  border-color: rgba(26,108,246,0.4);
+  box-shadow: 0 0 0 3px rgba(26,108,246,0.1);
 }
-.add-field.hidden { display: none; }
-.add-actions {
+.add-field input::placeholder { color: rgba(0,0,0,0.25); }
+
+/* 自定义 select */
+.select-wrapper {
+  position: relative;
   display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 10px;
+  align-items: center;
 }
-.add-cancel {
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: none;
-  color: var(--text-dim);
-  font: inherit; font-size: 12px;
-  padding: 0 12px;
+.add-provider-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.03);
+  color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 0 32px 0 10px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  outline: none;
+  transition: all 0.15s ease;
 }
-.add-cancel:hover { background: var(--bg3); color: var(--text); }
+.add-provider-select:focus {
+  background: #ffffff;
+  border-color: rgba(26,108,246,0.4);
+  box-shadow: 0 0 0 3px rgba(26,108,246,0.1);
+}
+.select-arrow {
+  position: absolute;
+  right: 12px;
+  pointer-events: none;
+  color: var(--text-dim);
+}
+
+.add-actions {
+  margin-top: 8px;
+}
 .add-submit {
-  height: 28px;
+  width: 100%;
+  height: 38px;
   border: none;
-  border-radius: 7px;
+  border-radius: 10px;
   background: var(--text);
   color: #fff;
-  font: inherit; font-size: 12px; font-weight: 600;
-  padding: 0 14px;
+  font: inherit; font-size: 13px; font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: all 0.15s ease;
+  display: grid; place-items: center;
 }
-.add-submit:hover { background: #3a3835; }
-.add-submit:disabled { background: #d0cdc9; cursor: default; }
+.add-submit:hover { background: #3a3835; transform: scale(0.99); }
+.add-submit:disabled { background: #d0cdc9; cursor: not-allowed; transform: none; }
+
 .add-error {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--red);
   min-height: 0;
-  margin-top: 4px;
+  margin-top: 0;
+  text-align: center;
+}
+
+/* ── Mobile Slide-in UI ── */
+@media (max-width: 768px) {
+  #auth-dialog, #history-dropdown {
+    position: fixed;
+    top: 0; right: 0; bottom: 0; left: 0;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border: none;
+    background: #f9f9f8;
+    z-index: 1000;
+  }
+  #auth-dialog.open, #history-dropdown.open {
+    animation: slideInRight 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .auth-view {
+    max-height: 100dvh;
+  }
+  @keyframes slideInRight {
+    from { transform: translateX(100%); opacity: 1; }
+    to { transform: translateX(0); opacity: 1; }
+  }
 }
 </style>
 </head>
@@ -1245,66 +1348,95 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </div>
   <div id="auth-backdrop"></div>
   <section id="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-dialog-title">
-    <header class="auth-head">
-      <span class="auth-title" id="auth-dialog-title">账号</span>
-      <span id="auth-status" aria-live="polite"></span>
-      <button class="auth-close" id="auth-close" title="关闭" aria-label="关闭账号设置">×</button>
-    </header>
+    <!-- 视图 1：账号列表 -->
+    <div class="auth-view active" id="auth-view-list">
+      <header class="auth-head">
+        <span class="auth-title" id="auth-dialog-title">账号</span>
+        <span id="auth-status" aria-live="polite"></span>
+        <button class="auth-close" id="auth-close" title="关闭" aria-label="关闭账号设置">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M11 1L1 11M1 1L11 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </header>
 
-    <!-- 账号列表 -->
-    <div id="auth-profile-list" role="listbox" aria-label="账号列表"></div>
+      <!-- 账号列表 -->
+      <div id="auth-profile-list" role="listbox" aria-label="账号列表"></div>
 
-    <!-- 底部添加区域 -->
-    <div id="auth-add-section">
-      <button id="auth-add-toggle" type="button" aria-expanded="false">
-        <span class="add-icon" aria-hidden="true">＋</span>
-        添加账号
-      </button>
+      <!-- 底部添加区域 -->
+      <div id="auth-add-section">
+        <button id="auth-add-toggle" type="button" aria-expanded="false">
+          <span class="add-icon" aria-hidden="true">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1V9M1 5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          添加账号
+        </button>
+      </div>
+    </div>
+
+    <!-- 视图 2：添加/编辑表单 -->
+    <div class="auth-view" id="auth-view-form">
+      <header class="auth-head">
+        <button class="auth-back" id="auth-back" title="返回" aria-label="返回账号列表">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 13L3 7L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="auth-title" id="auth-form-title" style="margin-left: 2px;">添加账号</span>
+        <span id="auth-form-status" aria-live="polite"></span>
+      </header>
+      
       <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
-        <!-- provider 下拉选择（编辑时隐藏，不能改类型） -->
-        <div class="add-field" id="add-segment">
-          <label for="add-provider-select">厂商</label>
-          <select class="add-provider-select" id="add-provider-select" aria-label="账号类型">
-            <option value="anthropic">Anthropic</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="custom">自定义</option>
-          </select>
-        </div>
-        <!-- 名称 -->
-        <div class="add-field">
-          <label for="add-name">名称</label>
-          <input id="add-name" type="text" autocomplete="off" spellcheck="false" placeholder="DeepSeek Pro" />
-        </div>
-        <!-- API Key -->
-        <div class="add-field" id="add-field-key">
-          <label for="add-key">Key</label>
-          <input id="add-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
-        </div>
-        <!-- Opus 模型 -->
-        <div class="add-field" id="add-field-opus">
-          <label for="add-opus">Opus 模型</label>
-          <input id="add-opus" type="text" autocomplete="off" spellcheck="false" placeholder="旗舰级任务" />
-        </div>
-        <!-- Sonnet 模型 -->
-        <div class="add-field" id="add-field-sonnet">
-          <label for="add-sonnet">Sonnet 模型</label>
-          <input id="add-sonnet" type="text" autocomplete="off" spellcheck="false" placeholder="均衡任务（留空同 Opus）" />
-        </div>
-        <!-- Haiku 模型 -->
-        <div class="add-field" id="add-field-haiku">
-          <label for="add-haiku">Haiku 模型</label>
-          <input id="add-haiku" type="text" autocomplete="off" spellcheck="false" placeholder="快速 / subagent（留空同 Sonnet）" />
-        </div>
-        <!-- Base URL（仅自定义时显示） -->
-        <div class="add-field hidden" id="add-field-baseurl">
-          <label for="add-baseurl">Base URL</label>
-          <input id="add-baseurl" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com" />
-        </div>
-        <p class="add-error" id="add-error"></p>
-        <div class="add-actions">
-          <button class="add-cancel" id="add-cancel" type="button">取消</button>
-          <button class="add-submit" id="add-submit" type="button">添加</button>
+          <!-- 分组 1: 基本信息 -->
+          <div class="form-group-title">基本信息</div>
+          <div class="form-group">
+            <div class="add-field" id="add-segment">
+              <label for="add-provider-select">厂商</label>
+              <div class="select-wrapper">
+                <select class="add-provider-select" id="add-provider-select" aria-label="账号类型">
+                  <option value="anthropic">Anthropic</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="custom">自定义</option>
+                </select>
+                <svg class="select-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            </div>
+            <div class="add-field">
+              <label for="add-name">账号名称</label>
+              <input id="add-name" type="text" autocomplete="off" spellcheck="false" placeholder="DeepSeek Pro" />
+            </div>
+            <div class="add-field" id="add-field-key">
+              <label for="add-key">API 密钥</label>
+              <input id="add-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+            </div>
+          </div>
+
+          <!-- 分组 2: 模型配置 -->
+          <div class="form-group-title">模型映射配置</div>
+          <div class="form-group">
+            <div class="add-field" id="add-field-opus">
+              <label for="add-opus">Opus 级别模型 (旗舰)</label>
+              <input id="add-opus" type="text" autocomplete="off" spellcheck="false" placeholder="旗舰级任务" />
+            </div>
+            <div class="add-field" id="add-field-sonnet">
+              <label for="add-sonnet">Sonnet 级别模型 (均衡)</label>
+              <input id="add-sonnet" type="text" autocomplete="off" spellcheck="false" placeholder="均衡任务（留空同 Opus）" />
+            </div>
+            <div class="add-field" id="add-field-haiku">
+              <label for="add-haiku">Haiku 级别模型 (轻量)</label>
+              <input id="add-haiku" type="text" autocomplete="off" spellcheck="false" placeholder="快速 / subagent（留空同 Sonnet）" />
+            </div>
+          </div>
+
+          <!-- 分组 3: 高级配置 -->
+          <div class="form-group-title hidden" id="add-field-baseurl-title">高级配置</div>
+          <div class="form-group hidden" id="add-field-baseurl">
+            <div class="add-field">
+              <label for="add-baseurl">Base URL</label>
+              <input id="add-baseurl" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com" />
+            </div>
+          </div>
+
+          <p class="add-error" id="add-error"></p>
+          <div class="add-actions">
+            <button class="add-submit" id="add-submit" type="button">确认添加</button>
         </div>
       </div>
     </div>
@@ -1362,6 +1494,10 @@ const settingsBtn   = document.getElementById("btn-settings");
 const authDialog    = document.getElementById("auth-dialog");
 const authBackdrop  = document.getElementById("auth-backdrop");
 const authStatusEl  = document.getElementById("auth-status");
+const authViewList  = document.getElementById("auth-view-list");
+const authViewForm  = document.getElementById("auth-view-form");
+const authBackBtn   = document.getElementById("auth-back");
+const authFormStatusEl = document.getElementById("auth-form-status");
 const iconSend = document.getElementById("icon-send");
 const iconStop = document.getElementById("icon-stop");
 
@@ -1539,12 +1675,17 @@ function escapeHtml(value) {
 
 // ── Status indicator ──────────────────────────────────────
 let _statusHideTimer = null;
-function setAuthStatus(type, text) {
-  clearTimeout(_statusHideTimer);
-  authStatusEl.textContent = text;
-  authStatusEl.className = `visible ${type}`;
+let _formStatusHideTimer = null;
+function setAuthStatus(type, text, isForm = false) {
+  const el = isForm ? authFormStatusEl : authStatusEl;
+  const timer = isForm ? _formStatusHideTimer : _statusHideTimer;
+  clearTimeout(timer);
+  el.textContent = text;
+  el.className = `visible ${type}`;
   if (type === "saved") {
-    _statusHideTimer = setTimeout(() => authStatusEl.classList.remove("visible"), 2000);
+    const newTimer = setTimeout(() => el.classList.remove("visible"), 2000);
+    if (isForm) _formStatusHideTimer = newTimer;
+    else _statusHideTimer = newTimer;
   }
 }
 
@@ -1643,9 +1784,10 @@ const addSonnetInput  = document.getElementById("add-sonnet");
 const addHaikuInput   = document.getElementById("add-haiku");
 const addBaseUrlInput = document.getElementById("add-baseurl");
 const addFieldBaseUrl = document.getElementById("add-field-baseurl");
-const addCancelBtn    = document.getElementById("add-cancel");
+const addFieldBaseUrlTitle = document.getElementById("add-field-baseurl-title");
 const addSubmitBtn    = document.getElementById("add-submit");
 const addErrorEl      = document.getElementById("add-error");
+const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-7",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "sk-ant-...", namePlaceholder: "Anthropic API" },
@@ -1665,22 +1807,34 @@ function setAddProvider(value) {
   addHaikuInput.value  = p.haikuModel;
   addKeyInput.placeholder = p.keyPlaceholder;
   addBaseUrlInput.value = p.baseUrl;
-  addFieldBaseUrl.classList.toggle("hidden", value !== "custom");   // only custom needs a manual base URL
+  const isCustom = value === "custom";
+  addFieldBaseUrl.classList.toggle("hidden", !isCustom);
+  addFieldBaseUrlTitle.classList.toggle("hidden", !isCustom);
   if (!addNameInput.value.trim()) addNameInput.placeholder = p.namePlaceholder;
 }
 
 addProviderSelect.addEventListener("change", () => setAddProvider(addProviderSelect.value));
 
+function showListView() {
+  authViewForm.classList.remove("active");
+  authViewList.classList.add("active");
+  _editingProfileId = null;
+}
+
+function showFormView() {
+  authViewList.classList.remove("active");
+  authViewForm.classList.add("active");
+}
+
 // openAccountForm: pass null/undefined to add, or a profile object to edit
 function openAccountForm(existingProfile) {
   _editingProfileId = existingProfile ? existingProfile.id : null;
-  addForm.classList.add("open");
-  addToggleBtn.setAttribute("aria-expanded", "true");
-  addToggleBtn.style.display = "none";
+  showFormView();
   addErrorEl.textContent = "";
 
   if (existingProfile) {
-    // Edit mode — hide provider row (can't change type), pre-fill fields
+    // Edit mode
+    authFormTitle.textContent = "编辑账号";
     addProviderWrap.style.display = "none";
     addSubmitBtn.textContent = "保存";
     const provider = existingProfile.provider;
@@ -1693,11 +1847,14 @@ function openAccountForm(existingProfile) {
     addHaikuInput.value  = existingProfile.haikuModel  || "";
     const baseUrl = existingProfile.baseUrl || (ADD_PRESETS[provider]?.baseUrl ?? "");
     addBaseUrlInput.value = baseUrl;
-    addFieldBaseUrl.classList.toggle("hidden", provider !== "custom");
+    const isCustom = provider === "custom";
+    addFieldBaseUrl.classList.toggle("hidden", !isCustom);
+    addFieldBaseUrlTitle.classList.toggle("hidden", !isCustom);
   } else {
     // Add mode
+    authFormTitle.textContent = "添加账号";
     addProviderWrap.style.display = "";
-    addSubmitBtn.textContent = "添加";
+    addSubmitBtn.textContent = "确认添加";
     setAddProvider("anthropic");
     addNameInput.value   = "";
     addKeyInput.value    = "";
@@ -1705,20 +1862,11 @@ function openAccountForm(existingProfile) {
     addSonnetInput.value = "";
     addHaikuInput.value  = "";
   }
-  setTimeout(() => addNameInput.focus(), 50);
-}
-
-function closeAddForm() {
-  addForm.classList.remove("open");
-  addToggleBtn.style.display = "";
-  addToggleBtn.setAttribute("aria-expanded", "false");
-  addProviderWrap.style.display = "";
-  addSubmitBtn.textContent = "添加";
-  _editingProfileId = null;
+  setTimeout(() => addNameInput.focus(), 300);
 }
 
 addToggleBtn.addEventListener("click", () => openAccountForm(null));
-addCancelBtn.addEventListener("click", closeAddForm);
+authBackBtn.addEventListener("click", showListView);
 
 addSubmitBtn.addEventListener("click", async () => {
   const isEdit    = !!_editingProfileId;
@@ -1746,10 +1894,11 @@ addSubmitBtn.addEventListener("click", async () => {
     if (!res.ok) throw new Error(d.error || (isEdit ? "保存失败" : "添加失败"));
     renderProfileList(d.data);
     if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
-    closeAddForm();
-    setAuthStatus("saved", isEdit ? "已保存" : "已添加");
+    showListView();
+    setAuthStatus("saved", isEdit ? "已保存" : "已添加", false);
   } catch (err) {
     addErrorEl.textContent = err instanceof Error ? err.message : (isEdit ? "保存失败" : "添加失败");
+    setAuthStatus("error", "失败", true);
   } finally { addSubmitBtn.disabled = false; }
 });
 
@@ -1784,7 +1933,7 @@ function openAuthDialog() {
   closeHistoryPanel();
   authDialog.classList.add("open");
   authBackdrop.classList.add("open");
-  closeAddForm();
+  showListView();
   void fetchProfiles();
 }
 
@@ -2754,8 +2903,10 @@ function send() {
 // ── Visual viewport fix (mobile browser chrome) ───────────
 // visualViewport.height = actual visible area, excludes browser toolbars
 function syncHeight() {
-  const h = window.visualViewport?.height ?? window.innerHeight;
-  document.getElementById("app").style.height = h + "px";
+  // Sizing is handled purely by CSS (html/body/#app all use height:100%), which is the
+  // most reliable full-height approach inside an iframe. Just clear any stale inline
+  // height left over from older builds so the CSS value takes effect.
+  document.getElementById("app").style.height = "";
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", syncHeight);

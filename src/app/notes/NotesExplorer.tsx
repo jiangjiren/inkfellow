@@ -472,7 +472,9 @@ export default function NotesExplorer() {
     }
 
     const savedVisibility = window.localStorage.getItem(PANEL_VISIBLE_KEY);
-    if (savedVisibility === "false") {
+    if (savedVisibility === "true") {
+      setAssistantPanelVisible(true);
+    } else if (savedVisibility === "false") {
       setAssistantPanelVisible(false);
     }
 
@@ -1826,7 +1828,18 @@ export default function NotesExplorer() {
         aria-label="AI 助手"
         title="AI 助手"
       >
-        <span aria-hidden="true">✦</span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id="ai-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#4F46E5" />
+              <stop offset="50%" stopColor="#9333EA" />
+              <stop offset="100%" stopColor="#E11D48" />
+            </linearGradient>
+          </defs>
+          <path d="M11.5 2.5a.5.5 0 0 1 1 0v4.293a.5.5 0 0 0 .146.353l3.036 3.036a.5.5 0 0 1 0 .707l-3.036 3.035a.5.5 0 0 0-.146.354V18.5a.5.5 0 0 1-1 0v-4.293a.5.5 0 0 0-.146-.354l-3.036-3.035a.5.5 0 0 1 0-.707l3.036-3.036a.5.5 0 0 0 .146-.353V2.5z" fill="url(#ai-grad)"/>
+          <path d="M19.5 13.5a.5.5 0 0 1 1 0v1.793a.5.5 0 0 0 .146.353l1.236 1.236a.5.5 0 0 1 0 .707l-1.236 1.235a.5.5 0 0 0-.146.354V21.5a.5.5 0 0 1-1 0v-1.793a.5.5 0 0 0-.146-.354l-1.236-1.235a.5.5 0 0 1 0-.707l1.236-1.236a.5.5 0 0 0 .146-.353V13.5z" fill="url(#ai-grad)"/>
+        </svg>
+        <span>Ask AI</span>
       </button>
 
       {/* ── 新建笔记对话框 ─────────────────────────────── */}

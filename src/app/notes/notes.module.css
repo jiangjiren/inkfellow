@@ -15,6 +15,7 @@
 .sidebar {
   position: sticky;
   top: 0;
+  z-index: 1;
   height: 100vh;
   width: var(--sidebar-width, 280px);
   flex: 0 0 auto;
@@ -2542,25 +2543,29 @@
   }
 
   .claudeFab {
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     position: fixed;
     right: calc(20px + env(safe-area-inset-right, 0px));
     bottom: calc(24px + env(safe-area-inset-bottom, 0px));
     z-index: 50;
-    width: 52px;
-    height: 52px;
-    border-radius: 50%;
-    border: none;
-    background: var(--notes-text-primary);
-    color: var(--notes-bg-document);
-    font-size: 20px;
-    font-family: var(--notes-font-mono);
-    font-weight: 700;
+    height: 48px;
+    padding: 0 20px;
+    border-radius: 24px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    color: #111;
+    font-size: 14.5px;
+    font-family: var(--notes-font-sans);
+    font-weight: 600;
     cursor: pointer;
     box-shadow:
-      0 2px 8px rgba(0, 0, 0, 0.28),
-      0 8px 28px rgba(0, 0, 0, 0.18);
+      0 4px 16px rgba(0, 0, 0, 0.06),
+      0 8px 32px rgba(0, 0, 0, 0.04);
     transition:
       background 150ms ease,
       transform 150ms ease,
@@ -2571,17 +2576,16 @@
   }
 
   .claudeFab:active {
-    transform: scale(0.92);
+    transform: scale(0.96);
     box-shadow:
-      0 1px 4px rgba(0, 0, 0, 0.2),
-      0 4px 14px rgba(0, 0, 0, 0.14);
+      0 2px 8px rgba(0, 0, 0, 0.05);
   }
 
   .claudeFabActive {
-    background: var(--notes-border-strong);
+    background: rgba(240, 240, 245, 0.95);
+    border-color: rgba(0, 0, 0, 0.12);
     box-shadow:
-      0 2px 8px rgba(0, 0, 0, 0.28),
-      0 8px 24px rgba(0, 0, 0, 0.18);
+      0 2px 12px rgba(0, 0, 0, 0.08);
   }
 
   .claudeFabHidden {

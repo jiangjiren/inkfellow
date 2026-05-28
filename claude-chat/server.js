@@ -1,14 +1,15 @@
 import { createServer } from "node:http";
-import { chmodSync, readFileSync, existsSync, writeFileSync, readdirSync, statSync, lstatSync } from "node:fs";
+import { chmodSync, readFileSync, existsSync, writeFileSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { extname } from "node:path";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
+import crypto from "node:crypto";
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
-import { query, startup } from "@anthropic-ai/claude-agent-sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -23,7 +24,12 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 const htmlPath   = join(__dirname, "public/index.html");
 const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, "session.json");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
-// ── Provider presets ─────────────────────────────────────────
+
+// ── WeChat Bot Configs & Isolated Paths ──────────────────────
+const WECHAT_CONFIG_FILE = join(__dirname, `wechat-bot-${PORT}.json`);
+const WECHAT_SYNC_FILE = join(__dirname, `wechat-bot-${PORT}.sync.json`);
+const FIXED_BASE_URL = "https://ilinkai.weixin.qq.com";
+
 const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-7",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
@@ -195,7 +201,7 @@ function getActiveProfile(data = readProfiles()) {
   return data.profiles.find(p => p.id === data.activeProfileId) ?? data.profiles[0] ?? null;
 }
 
-function buildAgentEnv(profileData, effort, requestedModel) {
+export function buildAgentEnv(profileData, effort, requestedModel) {
   const env = { ...process.env };
   for (const key of CLAUDE_COMPAT_ENV_KEYS) delete env[key];
 
@@ -237,6 +243,15 @@ function buildAgentEnv(profileData, effort, requestedModel) {
 const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(__dirname, "history.json");
 const MAX_SERVER_HISTORY = 100;
 
+export function resolveAllowedCwd(requestedCwd) {
+  const cwd = typeof requestedCwd === "string" && requestedCwd.trim()
+    ? resolve(requestedCwd)
+    : DEFAULT_CWD;
+  const rel = relative(DEFAULT_CWD, cwd);
+  if (rel.startsWith("..") || isAbsolute(rel)) return DEFAULT_CWD;
+  return cwd;
+}
+
 function resolvePublicFile(urlPath) {
   let decoded;
   try {
@@ -253,15 +268,6 @@ function resolvePublicFile(urlPath) {
   return filePath;
 }
 
-function resolveAllowedCwd(requestedCwd) {
-  const cwd = typeof requestedCwd === "string" && requestedCwd.trim()
-    ? resolve(requestedCwd)
-    : DEFAULT_CWD;
-  const rel = relative(DEFAULT_CWD, cwd);
-  if (rel.startsWith("..") || isAbsolute(rel)) return DEFAULT_CWD;
-  return cwd;
-}
-
 function readHistory() {
   try {
     if (existsSync(HISTORY_FILE)) return JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
@@ -273,13 +279,392 @@ function writeHistory(arr) {
   try { writeFileSync(HISTORY_FILE, JSON.stringify(arr), "utf8"); } catch { }
 }
 
-console.log("Using Claude Agent SDK default runtime");
+// ── Skills preload ─────────────────────────────────────────
+// Read skill slugs from ~/.claude/skills/ directory (fast, no subprocess needed)
+function loadSkillsFromDisk() {
+  const dirs = [
+    join(homedir(), ".claude", "skills"),
+    join(DEFAULT_CWD, ".claude", "skills"),
+  ];
+  const slugs = new Set();
+  for (const dir of dirs) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        try {
+          // Use lstatSync so broken symlinks are counted (symlink = installed skill)
+          const st = lstatSync(join(dir, entry));
+          if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
+        } catch { /* skip */ }
+      }
+    } catch { /* dir not found */ }
+  }
+  return [...slugs].sort();
+}
+
+let cachedSkills = loadSkillsFromDisk();
+console.log(`Loaded ${cachedSkills.length} skills from disk`);
+
+
+// ── WeChat Bot In-Memory Session & Live Poller Loop ──────────
+const activeWechatLogins = new Map();
+let wechatPollingController = null;
+
+function randomWechatUin() {
+  const uint32 = crypto.randomBytes(4).readUInt32BE(0);
+  return Buffer.from(String(uint32), "utf-8").toString("base64");
+}
+
+async function requestWechat(baseUrl, token, endpoint, body = {}) {
+  const url = `${baseUrl.replace(/\/$/, "")}/${endpoint.replace(/^\//, "")}`;
+  const headers = {
+    "Content-Type": "application/json",
+    "AuthorizationType": "ilink_bot_token",
+    "iLink-App-Id": "bot",
+    "iLink-App-ClientVersion": "132099",
+    "X-WECHAT-UIN": randomWechatUin(),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      ...body,
+      base_info: { channel_version: "2.4.3", bot_agent: "inkfellow-wechat" }
+    })
+  });
+  if (!res.ok) throw new Error(`WeChat Gateway HTTP ${res.status}`);
+  return res.json();
+}
+
+async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = undefined) {
+  const clientId = `inkfellow-wechat-${crypto.randomUUID()}`;
+  await requestWechat(baseUrl, token, "ilink/bot/sendmessage", {
+    msg: {
+      from_user_id: "",
+      to_user_id: toUser,
+      client_id: clientId,
+      message_type: 2, // MessageType.BOT
+      message_state: 2, // MessageState.FINISH
+      item_list: [
+        {
+          type: 1, // MessageItemType.TEXT
+          text_item: { text: text }
+        }
+      ],
+      context_token: contextToken || undefined,
+    }
+  });
+}
+
+async function sendWechatTyping(baseUrl, token, toUser, status = 1, contextToken = undefined) {
+  try {
+    const config = await requestWechat(baseUrl, token, "ilink/bot/getconfig", {
+      ilink_user_id: toUser,
+      context_token: contextToken || undefined,
+    });
+    if (config.typing_ticket) {
+      await requestWechat(baseUrl, token, "ilink/bot/sendtyping", {
+        ilink_user_id: toUser,
+        typing_ticket: config.typing_ticket,
+        status
+      });
+    }
+  } catch {}
+}
+
+async function startWechatPolling(baseUrl, token, initialBuf = "") {
+  if (wechatPollingController) {
+    wechatPollingController.abort();
+  }
+  
+  const ac = new AbortController();
+  wechatPollingController = ac;
+  let getUpdatesBuf = initialBuf;
+
+  console.log(`[WeChat Loop] Poller initiated on base: ${baseUrl}`);
+
+  (async () => {
+    while (!ac.signal.aborted) {
+      try {
+        const resp = await requestWechat(baseUrl, token, "ilink/bot/getupdates", {
+          get_updates_buf: getUpdatesBuf
+        });
+
+        if (ac.signal.aborted) break;
+
+        const isApiError = (resp.ret !== undefined && resp.ret !== 0) || (resp.errcode !== undefined && resp.errcode !== 0);
+        if (isApiError) {
+          console.warn(`[WeChat Loop] Polling error ret=${resp.ret} errcode=${resp.errcode}. Backing off...`);
+          await new Promise(r => setTimeout(r, 5000));
+          continue;
+        }
+
+        if (resp.get_updates_buf) {
+          getUpdatesBuf = resp.get_updates_buf;
+          try {
+            writeFileSync(WECHAT_SYNC_FILE, JSON.stringify({ get_updates_buf }), "utf8");
+          } catch {}
+        }
+
+        const messages = resp.msgs ?? [];
+        for (const msg of messages) {
+          const textItem = msg.item_list?.find(i => i.type === 1)?.text_item;
+          if (!textItem) continue;
+
+          const sender = msg.from_user_id;
+          const prompt = textItem.text;
+          const contextToken = msg.context_token;
+          console.log(`[WeChat Inbound] message from ${sender}: "${prompt}"`);
+
+          processWechatQuery(baseUrl, token, sender, prompt, contextToken, ac.signal);
+        }
+      } catch (err) {
+        if (ac.signal.aborted) break;
+        console.error("[WeChat Loop] Error polling updates:", err.message);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    console.log("[WeChat Loop] Poller stopped successfully.");
+  })();
+}
+
+async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal) {
+  console.log(`[WeChat Agent] processWechatQuery starting for ${sender}...`);
+  try {
+    await sendWechatTyping(baseUrl, token, sender, 1, contextToken);
+    const profileData = readProfiles();
+    const active = getActiveProfile(profileData);
+    console.log(`[WeChat Agent] Active profile: ${active ? active.name : "none"} (provider: ${active ? active.provider : "none"})`);
+
+    const options = {
+      cwd: resolveAllowedCwd(""),
+      permissionMode: "auto",
+      allowDangerouslySkipPermissions: true,
+      includePartialMessages: false,
+      env: buildAgentEnv(profileData, "medium", null),
+    };
+
+    console.log(`[WeChat Agent] CWD resolved to: ${options.cwd}`);
+    console.log(`[WeChat Agent] Starting Claude Agent SDK query...`);
+
+    const userMsg = {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      parent_tool_use_id: null,
+    };
+
+    let finalResponse = "";
+    const typingInterval = setInterval(() => {
+      console.log(`[WeChat Agent] Sending keep-alive typing status to ${sender}`);
+      sendWechatTyping(baseUrl, token, sender, 1, contextToken);
+    }, 6000);
+
+    try {
+      const generator = query({
+        prompt: (async function* () { yield userMsg; })(),
+        options: { ...options, abortController: { signal: abortSignal } },
+      });
+
+      for await (const ev of generator) {
+        console.log(`[WeChat Agent] Event received: ${ev.type} ${ev.subtype || ""}`);
+        if (ev.type === "assistant" || ev.type === "result") {
+          console.log(`[WeChat Agent] Event detail: ${JSON.stringify(ev)}`);
+        }
+        
+        // 1. Handle completed message turn (type: "assistant")
+        if (ev.type === "assistant") {
+          const content = ev.message?.content || ev.content;
+          let turnText = "";
+          for (const item of content || []) {
+            if (item.type === "text" && item.text) {
+              turnText += item.text;
+            }
+          }
+          if (turnText) {
+            finalResponse = turnText; // Use the final assembled turn text
+            console.log(`[WeChat Agent] Assembled completed assistant turn text (length: ${turnText.length})`);
+          }
+        }
+        
+        // 2. Handle streaming delta fallback (type: "stream_event")
+        if (ev.type === "stream_event" && ev.event) {
+          const event = ev.event;
+          if (event.type === "content_block_delta" && event.delta) {
+            const delta = event.delta;
+            if (delta.type === "text_delta" && delta.text) {
+              finalResponse += delta.text;
+              console.log(`[WeChat Agent] Accumulated streaming text delta chunk: "${delta.text.slice(0, 30)}..."`);
+            }
+          }
+        }
+
+        // 3. Handle final query result success (type: "result")
+        if (ev.type === "result" && ev.subtype === "success" && ev.result) {
+          finalResponse = ev.result;
+          console.log(`[WeChat Agent] Captured final result text (length: ${ev.result.length})`);
+        }
+      }
+    } catch (err) {
+      if (abortSignal.aborted) {
+        console.warn(`[WeChat Agent] SDK Query aborted by signal.`);
+        return;
+      }
+      console.error("[WeChat Agent] SDK Query Error:", err);
+      finalResponse = `⚠️ 助手发生错误: ${err.message}`;
+    } finally {
+      clearInterval(typingInterval);
+      await sendWechatTyping(baseUrl, token, sender, 2, contextToken);
+    }
+
+    console.log(`[WeChat Agent] Final response gathered (length: ${finalResponse.length}): "${finalResponse.slice(0, 60)}..."`);
+
+    if (!abortSignal.aborted && finalResponse.trim()) {
+      try {
+        console.log(`[WeChat Agent] Sending final message to WeChat via gateway...`);
+        await sendWechatMessage(baseUrl, token, sender, finalResponse.trim(), contextToken);
+        console.log(`[WeChat Agent] WeChat message sent successfully!`);
+      } catch (err) {
+        console.error("[WeChat Agent] Failed to send outbound response to WeChat:", err.message);
+      }
+    }
+  } catch (outerErr) {
+    console.error("[WeChat Agent] Outer execution crash:", outerErr);
+  }
+}
+
+// Automatically spin up WeChat polling at server boot if credentials exist
+if (existsSync(WECHAT_CONFIG_FILE)) {
+  try {
+    const creds = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8"));
+    if (creds.token && creds.baseUrl) {
+      let syncBuf = "";
+      if (existsSync(WECHAT_SYNC_FILE)) {
+        syncBuf = JSON.parse(readFileSync(WECHAT_SYNC_FILE, "utf8")).get_updates_buf ?? "";
+      }
+      startWechatPolling(creds.baseUrl, creds.token, syncBuf);
+    }
+  } catch (err) {
+    console.error("[WeChat Boot] Failed to auto-start polling:", err.message);
+  }
+}
 
 
 // ── HTTP ──────────────────────────────────────────────────
 const http = createServer((req, res) => {
   const url = (req.url ?? "/").split("?")[0];
+  const queryParams = new URLSearchParams((req.url ?? "/").split("?")[1] ?? "");
   const method = req.method?.toUpperCase() ?? "GET";
+
+  // ── WeChat Settings API ──
+  if (url === "/api/wechat/status" && method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (existsSync(WECHAT_CONFIG_FILE)) {
+      try {
+        const creds = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8"));
+        res.end(JSON.stringify({ connected: true, botId: creds.botId ?? "微信助手" }));
+        return;
+      } catch {}
+    }
+    res.end(JSON.stringify({ connected: false }));
+    return;
+  }
+
+  if (url === "/api/wechat/login/start" && method === "POST") {
+    (async () => {
+      try {
+        const qrResp = await requestWechat(FIXED_BASE_URL, null, "ilink/bot/get_bot_qrcode?bot_type=3", { local_token_list: [] });
+        if (!qrResp.qrcode_img_content) {
+          throw new Error("Tencent Gateway returned empty QR code payload");
+        }
+        const sessionKey = `s_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        activeWechatLogins.set(sessionKey, {
+          qrcode: qrResp.qrcode,
+          qrcodeUrl: qrResp.qrcode_img_content,
+          startedAt: Date.now(),
+          pollBaseUrl: FIXED_BASE_URL
+        });
+        
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, sessionKey, qrcodeUrl: qrResp.qrcode_img_content }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (url === "/api/wechat/login/poll" && method === "GET") {
+    const sessionKey = queryParams.get("sessionKey");
+    const verifyCode = queryParams.get("verifyCode") ?? "";
+    const session = activeWechatLogins.get(sessionKey);
+    
+    if (!session) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid or expired login session" }));
+      return;
+    }
+
+    (async () => {
+      try {
+        let endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(session.qrcode)}`;
+        if (verifyCode) endpoint += `&verify_code=${encodeURIComponent(verifyCode)}`;
+
+        const fetchUrl = `${session.pollBaseUrl}/${endpoint}`;
+        const pollRes = await fetch(fetchUrl, {
+          method: "GET",
+          headers: { "iLink-App-Id": "bot", "iLink-App-ClientVersion": "132099" }
+        });
+        
+        if (!pollRes.ok) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "wait" }));
+          return;
+        }
+
+        const data = await pollRes.json();
+        if (data.status === "scaned_but_redirect" && data.redirect_host) {
+          session.pollBaseUrl = `https://${data.redirect_host}`;
+        }
+
+        if (data.status === "confirmed") {
+          const configData = {
+            token: data.bot_token,
+            savedAt: new Date().toISOString(),
+            baseUrl: data.baseurl || session.pollBaseUrl,
+            userId: data.ilink_user_id,
+            botId: data.ilink_bot_id
+          };
+          writeFileSync(WECHAT_CONFIG_FILE, JSON.stringify(configData, null, 2), "utf8");
+          activeWechatLogins.delete(sessionKey);
+
+          // Start WeChat Listener background loop automatically
+          startWechatPolling(configData.baseUrl, configData.token);
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: data.status, botId: data.ilink_bot_id }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (url === "/api/wechat/logout" && method === "POST") {
+    if (wechatPollingController) {
+      wechatPollingController.abort();
+      wechatPollingController = null;
+    }
+    if (existsSync(WECHAT_CONFIG_FILE)) unlinkSync(WECHAT_CONFIG_FILE);
+    if (existsSync(WECHAT_SYNC_FILE)) unlinkSync(WECHAT_SYNC_FILE);
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
 
   // ── REST API: history ─────────────────────────────────────
   if (url === "/api/history" && method === "GET") {
@@ -370,6 +755,11 @@ const http = createServer((req, res) => {
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
             return;
           }
+          if (!updated.baseUrl && updated.provider !== "claude" && updated.provider !== "anthropic") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Base URL 不能为空" }));
+            return;
+          }
           next = { ...current, profiles: current.profiles.map(p => p.id === id ? updated : p) };
 
         } else if (payload.action === "delete") {
@@ -457,30 +847,6 @@ const http = createServer((req, res) => {
   res.end(readFileSync(htmlPath, "utf8"));
 });
 
-// ── Skills preload ─────────────────────────────────────────
-// Read skill slugs from ~/.claude/skills/ directory (fast, no subprocess needed)
-function loadSkillsFromDisk() {
-  const dirs = [
-    join(homedir(), ".claude", "skills"),
-    join(DEFAULT_CWD, ".claude", "skills"),
-  ];
-  const slugs = new Set();
-  for (const dir of dirs) {
-    try {
-      for (const entry of readdirSync(dir)) {
-        try {
-          // Use lstatSync so broken symlinks are counted (symlink = installed skill)
-          const st = lstatSync(join(dir, entry));
-          if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
-        } catch { /* skip */ }
-      }
-    } catch { /* dir not found */ }
-  }
-  return [...slugs].sort();
-}
-
-let cachedSkills = loadSkillsFromDisk();
-console.log(`Loaded ${cachedSkills.length} skills from disk`);
 
 // ── WebSocket ─────────────────────────────────────────────
 const wss = new WebSocketServer({ server: http });

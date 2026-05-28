@@ -1377,6 +1377,30 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
           添加账号
         </button>
       </div>
+      
+      <!-- ── WeChat settings (微信扫码连接模块) ── -->
+      <div id="auth-wechat-section" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 16px; padding-bottom: 8px;">
+        <div class="form-group-title" style="margin-bottom: 8px; font-weight: 600; font-size: 13px; color: var(--fg-color-secondary);">微信连接</div>
+        <div id="wechat-card" style="padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.015); border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px; align-items: center;">
+          <div id="wechat-status-text" style="font-size: 13px; color: var(--fg-color-secondary); width: 100%; text-align: left;">
+            正在检查微信机器人连接状态...
+          </div>
+          <div id="wechat-qr-area" style="display: none; flex-direction: column; align-items: center; gap: 8px; margin: 8px 0; width: 100%;">
+            <img id="wechat-qr-img" src="" style="width: 160px; height: 160px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 4px 12px rgba(0,0,0,0.08);" alt="微信登录二维码"/>
+            <span style="font-size: 12px; color: var(--fg-color-secondary);">请用微信扫码并在手机上同意绑定</span>
+            <div id="wechat-verify-area" style="display: none; flex-direction: column; gap: 6px; width: 100%; align-items: center;">
+              <span style="font-size: 12px; color: #d97757; font-weight: 500;">👉 请输入手机微信显示的 4 位数配对码：</span>
+              <div style="display: flex; gap: 6px; width: 80%;">
+                <input id="wechat-verify-input" type="text" maxlength="6" style="flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; text-align: center; font-weight: bold; background: var(--bg-color); color: var(--fg-color);" placeholder="0000"/>
+                <button id="wechat-verify-submit" style="padding: 6px 12px; font-size: 12px; background: var(--accent-color, #1a6cf6); color: white; border: none; border-radius: 4px; cursor: pointer;">确认</button>
+              </div>
+            </div>
+          </div>
+          <button id="wechat-action-btn" class="auth-add-toggle" style="width: 100%; height: 36px; display: flex; align-items: center; justify-content: center; background: none; border: 1px dashed var(--border-color); border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--fg-color); transition: all 0.2s;">
+            连接微信机器人
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 视图 2：添加/编辑表单 -->
@@ -1943,6 +1967,10 @@ function openAuthDialog() {
   authBackdrop.classList.add("open");
   showListView();
   void fetchProfiles();
+  if (typeof checkWechatStatus === "function") {
+    stopWechatPolling();
+    checkWechatStatus();
+  }
 }
 
 function closeAuthDialog() {
@@ -1958,6 +1986,139 @@ settingsBtn.addEventListener("click", (e) => {
 document.getElementById("auth-close").addEventListener("click", closeAuthDialog);
 authBackdrop.addEventListener("click", closeAuthDialog);
 void fetchProfiles();
+
+// ── WeChat Controller (Browser Scan handler) ──────────────────
+let wechatPollInterval = null;
+let currentWechatSessionKey = null;
+
+async function checkWechatStatus() {
+  try {
+    const res = await fetch("api/wechat/status");
+    const data = await res.json();
+    const statusText = document.getElementById("wechat-status-text");
+    const actionBtn = document.getElementById("wechat-action-btn");
+    const qrArea = document.getElementById("wechat-qr-area");
+
+    if (data.connected) {
+      statusText.innerHTML = `🟢 <strong>微信已连接</strong> (Bot ID: <code style="background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 4px;">${data.botId}</code>)<br/><span style="font-size: 11px; color: var(--fg-color-secondary);">你现在可在微信直接向此 AI 助手发送消息，共享当前笔记知识库。</span>`;
+      actionBtn.innerText = "断开微信机器人连接";
+      actionBtn.style.color = "#ef4444";
+      actionBtn.style.borderColor = "#fecaca";
+      qrArea.style.display = "none";
+      stopWechatPolling();
+    } else {
+      statusText.innerHTML = `🔴 <strong>微信未连接</strong><br/><span style="font-size: 11px; color: var(--fg-color-secondary);">连接后，你可在微信对话使用此助手与笔记知识库。</span>`;
+      actionBtn.innerText = "连接微信机器人";
+      actionBtn.style.color = "var(--fg-color)";
+      actionBtn.style.borderColor = "var(--border-color)";
+    }
+  } catch (err) {
+    console.error("Failed to fetch WeChat status", err);
+  }
+}
+
+function stopWechatPolling() {
+  if (wechatPollInterval) {
+    clearInterval(wechatPollInterval);
+    wechatPollInterval = null;
+  }
+  currentWechatSessionKey = null;
+  document.getElementById("wechat-qr-area").style.display = "none";
+  document.getElementById("wechat-verify-area").style.display = "none";
+}
+
+async function startWechatLogin() {
+  const qrArea = document.getElementById("wechat-qr-area");
+  const qrImg = document.getElementById("wechat-qr-img");
+  const statusText = document.getElementById("wechat-status-text");
+  
+  statusText.innerText = "⏳ 正在生成微信登录二维码...";
+  
+  try {
+    const res = await fetch("api/wechat/login/start", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    currentWechatSessionKey = data.sessionKey;
+    qrImg.src = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(data.qrcodeUrl);
+    qrArea.style.display = "flex";
+    statusText.innerHTML = "🟡 <strong>请扫码</strong><br/><span style='font-size:11px;'>微信扫码并确认以启动桥接器</span>";
+
+    // Poll status every 2 seconds
+    wechatPollInterval = setInterval(pollWechatStatus, 2000);
+  } catch (err) {
+    statusText.innerText = `❌ 生成二维码失败: ${err.message}`;
+  }
+}
+
+async function pollWechatStatus(verifyCode = "") {
+  if (!currentWechatSessionKey) return;
+  
+  let url = `api/wechat/login/poll?sessionKey=${currentWechatSessionKey}`;
+  if (verifyCode) url += `&verifyCode=${encodeURIComponent(verifyCode)}`;
+
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const statusText = document.getElementById("wechat-status-text");
+    const verifyArea = document.getElementById("wechat-verify-area");
+
+    switch (data.status) {
+      case "scaned":
+        statusText.innerHTML = "🟡 <strong>已扫码！</strong><br/><span style='font-size:11px;'>正在微信手机端同意登录以完成绑定...</span>";
+        verifyArea.style.display = "none";
+        break;
+      case "need_verifycode":
+        statusText.innerHTML = "🟡 <strong>安全确认</strong><br/><span style='font-size:11px;'>微信要求数字配对验证...</span>";
+        verifyArea.style.display = "flex";
+        break;
+      case "confirmed":
+        statusText.innerText = "🎉 微信机器人连接成功！";
+        stopWechatPolling();
+        setTimeout(checkWechatStatus, 1000);
+        break;
+      case "expired":
+        statusText.innerText = "❌ 二维码已过期，请重新点击连接。";
+        stopWechatPolling();
+        break;
+      case "verify_code_blocked":
+        statusText.innerText = "❌ 数字验证错误次数过多，请稍后重新连接。";
+        stopWechatPolling();
+        break;
+      case "wait":
+      default:
+        break;
+    }
+  } catch (err) {
+    console.error("Error polling WeChat status", err);
+  }
+}
+
+document.getElementById("wechat-action-btn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (btn.innerText.includes("断开")) {
+    if (!confirm("确认断开此实例的微信连接吗？这会停止微信端的消息助手回复。")) return;
+    try {
+      await fetch("api/wechat/logout", { method: "POST" });
+      checkWechatStatus();
+    } catch (err) {
+      alert(`断开失败: ${err.message}`);
+    }
+  } else {
+    startWechatLogin();
+  }
+});
+
+document.getElementById("wechat-verify-submit").addEventListener("click", () => {
+  const input = document.getElementById("wechat-verify-input");
+  const code = input.value.trim();
+  if (!code) {
+    alert("请输入配对码！");
+    return;
+  }
+  pollWechatStatus(code);
+  input.value = "";
+});
 
 async function saveCurrentConversation() {
   if (!currentConvId || messageLog.length === 0) return;

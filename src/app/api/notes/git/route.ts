@@ -89,6 +89,7 @@ function parseDiff(raw: string): DiffLine[] {
   for (const line of raw.split("\n")) {
     // skip --- +++ diff headers
     if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff ") || line.startsWith("index ")) continue;
+    if (line.startsWith("\\")) continue;
     if (line.startsWith("@@")) {
       // human-friendly hunk header: show line range
       const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -143,10 +144,10 @@ export async function GET(req: Request) {
             ? filePath.split("/").slice(0, -1).join("/")
             : "";
           stats[filePath] = { added: lineCount, removed: 0 };
-          if (dir && !(dir in stats)) {
+          if (dir) {
             stats[dir] = {
               added: (stats[dir]?.added ?? 0) + lineCount,
-              removed: 0,
+              removed: stats[dir]?.removed ?? 0,
             };
           }
         } catch { /* skip unreadable */ }
@@ -267,7 +268,7 @@ export async function GET(req: Request) {
 
         let state: FileStatus["state"] = "modified";
         if (code === "??" || code === "A" || code.startsWith("A")) state = "added";
-        else if (code === "D" || code === "DD" || code === " D") state = "deleted";
+        else if (code === "D" || code === "DD") state = "deleted";
         else if (code === "R" || code.startsWith("R")) state = "renamed";
 
         return { name, path: cleanPath, state };
@@ -301,7 +302,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as { action: "pull" | "push" | "discard"; message?: string; path?: string };
 
     if (body.action === "pull") {
-      const { stdout, stderr } = await git(["pull", "--rebase"]);
+      const { stdout, stderr } = await git(["pull", "--rebase", "--autostash"]);
       return NextResponse.json({ ok: true, output: stdout || stderr });
     }
 

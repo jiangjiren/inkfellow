@@ -310,7 +310,9 @@ const activeWechatLogins = new Map();
 let wechatPollingController = null;
 
 // 每个微信 sender 独立的 Claude 会话 ID（多轮对话）
+// 结构：{ sessionId: string, lastAt: number }
 const wechatSenderSessions = new Map();
+const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 
 function randomWechatUin() {
   const uint32 = crypto.randomBytes(4).readUInt32BE(0);
@@ -416,9 +418,16 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
           if (!textItem) continue;
 
           const sender = msg.from_user_id;
-          const prompt = textItem.text;
+          const prompt = textItem.text.trim();
           const contextToken = msg.context_token;
           console.log(`[WeChat Inbound] message from ${sender}: "${prompt}"`);
+
+          // 用户主动开启新对话
+          if (/^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
+            wechatSenderSessions.delete(sender);
+            sendWechatMessage(baseUrl, token, sender, "✅ 已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
+            continue;
+          }
 
           processWechatQuery(baseUrl, token, sender, prompt, contextToken, ac.signal);
         }
@@ -448,8 +457,14 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       env: buildAgentEnv(profileData, "medium", null),
     };
 
-    // 续接该 sender 的上一轮对话（多轮上下文）
-    const existingSession = wechatSenderSessions.get(sender);
+    // 续接该 sender 的上一轮对话（多轮上下文），超时则开启新对话
+    const sessionEntry = wechatSenderSessions.get(sender);
+    const existingSession = sessionEntry && (Date.now() - sessionEntry.lastAt < WECHAT_SESSION_TTL_MS)
+      ? sessionEntry.sessionId
+      : null;
+    if (!existingSession && sessionEntry) {
+      wechatSenderSessions.delete(sender); // 清除已超时的旧 session
+    }
     if (existingSession) options.resume = existingSession;
 
     console.log(`[WeChat Agent] CWD resolved to: ${options.cwd}`);
@@ -476,7 +491,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       for await (const ev of generator) {
         // 保存新 session_id，用于下一轮对话
         if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
-          wechatSenderSessions.set(sender, ev.session_id);
+          wechatSenderSessions.set(sender, { sessionId: ev.session_id, lastAt: Date.now() });
           console.log(`[WeChat Agent] Session saved for ${sender}: ${ev.session_id}`);
         }
 
@@ -523,6 +538,9 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         console.log(`[WeChat Agent] Sending final message to WeChat via gateway...`);
         await sendWechatMessage(baseUrl, token, sender, finalResponse.trim(), contextToken);
         console.log(`[WeChat Agent] WeChat message sent successfully!`);
+        // 对话成功，刷新 lastAt，滚动续期
+        const entry = wechatSenderSessions.get(sender);
+        if (entry) entry.lastAt = Date.now();
       } catch (err) {
         console.error("[WeChat Agent] Failed to send outbound response to WeChat:", err.message);
       }

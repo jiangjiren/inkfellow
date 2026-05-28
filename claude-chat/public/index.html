@@ -797,20 +797,25 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .history-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   padding: 11px 14px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.history-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.history-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
 .history-close {
-  width: 22px; height: 22px;
-  border: none; background: var(--bg3); border-radius: 50%;
-  cursor: pointer; font-size: 15px;
-  display: grid; place-items: center; color: var(--text-dim);
-  line-height: 1; padding: 0; transition: background 0.12s;
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: grid; place-items: center;
+  padding: 0;
+  margin-left: -6px;
+  transition: background 0.15s, color 0.15s;
 }
-.history-close:hover { background: var(--border); color: var(--text); }
+.history-close:hover { background: rgba(0,0,0,0.06); color: var(--text); }
 .history-list { overflow-y: auto; flex: 1; }
 .history-list::-webkit-scrollbar { width: 4px; }
 .history-list::-webkit-scrollbar-track { background: transparent; }
@@ -1341,8 +1346,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   <div id="history-backdrop"></div>
   <div id="history-dropdown" role="dialog" aria-label="历史对话">
     <div class="history-head">
+      <button class="history-close" id="history-close" title="关闭" aria-label="关闭历史面板">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 13L3 7L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <span class="history-title">历史对话</span>
-      <button class="history-close" id="history-close" title="关闭" aria-label="关闭历史面板">×</button>
     </div>
     <div class="history-list" id="history-list"></div>
   </div>
@@ -1351,11 +1358,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     <!-- 视图 1：账号列表 -->
     <div class="auth-view active" id="auth-view-list">
       <header class="auth-head">
+        <button class="auth-back" id="auth-close" title="关闭" aria-label="关闭账号设置">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 13L3 7L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <span class="auth-title" id="auth-dialog-title">账号</span>
         <span id="auth-status" aria-live="polite"></span>
-        <button class="auth-close" id="auth-close" title="关闭" aria-label="关闭账号设置">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M11 1L1 11M1 1L11 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </button>
       </header>
 
       <!-- 账号列表 -->
@@ -1755,6 +1762,7 @@ async function activateProfile(id) {
     renderProfileList(d.data);
     if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
     setAuthStatus("saved", "已切换");
+    setTimeout(closeAuthDialog, 600);
   } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
 }
 

@@ -14,6 +14,7 @@ import dynamic from "next/dynamic";
 import NotesHtml from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
 import NotesGit from "./NotesGit";
+import NotesDashboard from "./NotesDashboard";
 import styles from "./notes.module.css";
 
 // CodeMirror 不支持 SSR，动态加载
@@ -96,8 +97,7 @@ const getAncestorFolders = (filePath: string) => {
 };
 
 const findPreferredInitialFile = (files: NotesFileNode[]) => {
-  const preferred = files.find((file) => file.path === "wiki/index.md") ?? files.find((file) => file.path === "index.md");
-  return preferred?.path ?? files[0]?.path ?? null;
+  return null;
 };
 
 const getNoteScrollStorageKey = (path: string) => `${NOTE_SCROLL_STORAGE_PREFIX}${path}`;
@@ -1363,6 +1363,8 @@ export default function NotesExplorer() {
   const isDesktopSidebarHidden = !isMobileViewport && !sidebarVisible;
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
+  const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
+  const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && panelTab === "claude" && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen);
 
@@ -1500,7 +1502,7 @@ export default function NotesExplorer() {
         tabIndex={hasMobileOverlayOpen ? 0 : -1}
       />
 
-      <section className={styles.reader} ref={readerRef}>
+      <section className={`${styles.reader} ${isDashboardChatMode ? styles.readerHidden : ""}`} ref={readerRef}>
         <header className={`${styles.readerHeader} ${isScrolled ? styles.readerHeaderScrolled : ""}`}>
           <div className={styles.readerActions}>
             <button
@@ -1528,7 +1530,7 @@ export default function NotesExplorer() {
             </button>
           </div>
           <div className={styles.noteMeta}>
-            <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "未选择文件"}</span>
+            <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "智能仪表盘"}</span>
             {note ? (
               <>
                 <span>{updatedAt}</span>
@@ -1638,8 +1640,8 @@ export default function NotesExplorer() {
         ) : (
           <article
             key={note?.path || "empty"}
-            className={`${styles.document} ${note && /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
-            style={note && /\.html?$/i.test(note.path) ? { width: '100%', maxWidth: '100%', margin: 0, padding: 0, borderRadius: 0, background: 'transparent', border: 'none', boxShadow: 'none' } : undefined}
+            className={`${styles.document} ${!note || /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
+            style={!note || /\.html?$/i.test(note.path) ? { width: '100%', maxWidth: '100%', margin: 0, padding: 0, borderRadius: 0, background: 'transparent', border: 'none', boxShadow: 'none' } : undefined}
           >
             {noteState === "loading" ? (
               <div className={styles.documentState}>正在加载文件...</div>
@@ -1664,6 +1666,33 @@ export default function NotesExplorer() {
 
             {treeState === "ready" && files.length === 0 ? (
               <div className={styles.documentState}>知识库中没有可显示的文件。</div>
+            ) : null}
+
+            {treeState === "ready" && files.length > 0 && !note ? (
+              <NotesDashboard 
+                files={files} 
+                onSelectNote={handleSelect} 
+                onAskAI={(query?: string) => {
+                  setIsDashboardChatActive(true);
+                  if (isMobileViewport) {
+                    setMobileSidebarOpen(false);
+                    setMobileAssistantPanelOpen(true);
+                  } else {
+                    setAssistantPanelVisible(true);
+                  }
+                  setPanelTab("claude");
+                  
+                  if (query) {
+                    setTimeout(() => {
+                      claudeFrameRef.current?.contentWindow?.postMessage(
+                        { type: "note-ask", text: query },
+                        window.location.origin,
+                      );
+                    }, 50);
+                  }
+                }} 
+                onNewNote={openNewNote} 
+              />
             ) : null}
           </article>
         )}
@@ -1757,80 +1786,102 @@ export default function NotesExplorer() {
       ) : null}
 
       <aside
-        className={`${styles.assistantPanel} ${isAssistantPanelOpen ? "" : styles.assistantPanelHidden}`}
+        className={`${styles.assistantPanel} ${isAssistantPanelOpen ? "" : styles.assistantPanelHidden} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
         aria-label="辅助面板"
         aria-hidden={!isAssistantPanelOpen}
         inert={!isAssistantPanelOpen}
       >
-        <button
-          type="button"
-          className={styles.assistantPanelResizer}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setAssistantPanelVisible(true);
-            setIsResizingAssistantPanel(true);
-          }}
-          onDoubleClick={() => setAssistantPanelWidth(DEFAULT_ASSISTANT_PANEL_WIDTH)}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft") {
-              event.preventDefault();
-              setAssistantPanelWidth((width) => clamp(width + 24, MIN_ASSISTANT_PANEL_WIDTH, MAX_ASSISTANT_PANEL_WIDTH));
-            }
-            if (event.key === "ArrowRight") {
-              event.preventDefault();
-              setAssistantPanelWidth((width) => clamp(width - 24, MIN_ASSISTANT_PANEL_WIDTH, MAX_ASSISTANT_PANEL_WIDTH));
-            }
-          }}
-          aria-label="调整辅助面板宽度"
-          title="拖拽调整面板宽度，双击恢复默认"
-          tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
-        />
-        <header className={`${styles.assistantPanelHeader} ${styles.assistantPanelHeaderLight}`}>
-          <div className={styles.assistantPanelTabs}>
+        {!isDashboardChatMode && (
+          <>
             <button
               type="button"
-              className={`${styles.assistantPanelTab} ${panelTab === "toc" ? styles.assistantPanelTabActive : ""}`}
-              onClick={() => setPanelTab("toc")}
-              tabIndex={isAssistantPanelOpen ? 0 : -1}
-            >
-              大纲
-            </button>
-            <button
-              type="button"
-              className={`${styles.assistantPanelTab} ${panelTab === "claude" ? styles.assistantPanelTabActive : ""}`}
-              onClick={() => setPanelTab("claude")}
-              tabIndex={isAssistantPanelOpen ? 0 : -1}
-            >
-              ✦ Claude
-            </button>
-            <button
-              type="button"
-              className={`${styles.assistantPanelTab} ${panelTab === "git" ? styles.assistantPanelTabActive : ""}`}
-              onClick={() => setPanelTab("git")}
-              tabIndex={isAssistantPanelOpen ? 0 : -1}
-            >
-              ↑↓ 同步
-            </button>
-          </div>
-          <div className={styles.assistantPanelControls}>
-            <button
-              type="button"
-              className={styles.assistantPanelClose}
-              onClick={() => {
-                if (isMobileViewport) {
-                  setMobileAssistantPanelOpen(false);
-                } else {
-                  setAssistantPanelVisible(false);
+              className={styles.assistantPanelResizer}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setAssistantPanelVisible(true);
+                setIsResizingAssistantPanel(true);
+              }}
+              onDoubleClick={() => setAssistantPanelWidth(DEFAULT_ASSISTANT_PANEL_WIDTH)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  setAssistantPanelWidth((width) => clamp(width + 24, MIN_ASSISTANT_PANEL_WIDTH, MAX_ASSISTANT_PANEL_WIDTH));
+                }
+                if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  setAssistantPanelWidth((width) => clamp(width - 24, MIN_ASSISTANT_PANEL_WIDTH, MAX_ASSISTANT_PANEL_WIDTH));
                 }
               }}
-              aria-label="隐藏面板"
-              title="隐藏面板"
-              tabIndex={isAssistantPanelOpen ? 0 : -1}
+              aria-label="调整辅助面板宽度"
+              title="拖拽调整面板宽度，双击恢复默认"
+              tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
+            />
+            <header className={`${styles.assistantPanelHeader} ${styles.assistantPanelHeaderLight}`}>
+              <div className={styles.assistantPanelTabs}>
+                <button
+                  type="button"
+                  className={`${styles.assistantPanelTab} ${panelTab === "toc" ? styles.assistantPanelTabActive : ""}`}
+                  onClick={() => setPanelTab("toc")}
+                  tabIndex={isAssistantPanelOpen ? 0 : -1}
+                >
+                  大纲
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.assistantPanelTab} ${panelTab === "claude" ? styles.assistantPanelTabActive : ""}`}
+                  onClick={() => setPanelTab("claude")}
+                  tabIndex={isAssistantPanelOpen ? 0 : -1}
+                >
+                  ✦ Claude
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.assistantPanelTab} ${panelTab === "git" ? styles.assistantPanelTabActive : ""}`}
+                  onClick={() => setPanelTab("git")}
+                  tabIndex={isAssistantPanelOpen ? 0 : -1}
+                >
+                  ↑↓ 同步
+                </button>
+              </div>
+              <div className={styles.assistantPanelControls}>
+                <button
+                  type="button"
+                  className={styles.assistantPanelClose}
+                  onClick={() => {
+                    if (isMobileViewport) {
+                      setMobileAssistantPanelOpen(false);
+                    } else {
+                      setAssistantPanelVisible(false);
+                    }
+                  }}
+                  aria-label="隐藏面板"
+                  title="隐藏面板"
+                  tabIndex={isAssistantPanelOpen ? 0 : -1}
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              </div>
+            </header>
+          </>
+        )}
+
+        {isDashboardChatMode && (
+          <header className={styles.dashboardChatHeader}>
+            <button
+              className={styles.dashboardChatBackBtn}
+              onClick={() => {
+                setAssistantPanelVisible(false);
+                setIsDashboardChatActive(false);
+              }}
             >
-              <span aria-hidden="true">×</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: "18px", height: "18px" }}>
+                <line x1="19" y1="12" x2="5" y2="12" />
+                <polyline points="12 19 5 12 12 5" />
+              </svg>
+              <span>返回仪表盘</span>
             </button>
-          </div>
-        </header>
+          </header>
+        )}
         {panelTab === "toc" ? (
           <ArticleToc headings={articleTocEntries} activeSlug={activeTocSlug} onSelect={handleSelectTocHeading} />
         ) : null}
@@ -1849,7 +1900,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={`${styles.assistantPanelFrame} ${panelTab !== "claude" ? styles.assistantPanelFrameHidden : ""}`}
           title="Claude Chat"
-          src="/notes-claude/"
+          src="/notes-claude/?v=2"
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen && panelTab === "claude" ? 0 : -1}
@@ -1867,8 +1918,8 @@ export default function NotesExplorer() {
         />
       </aside>
 
-      {/* 移动端 AI 助手悬浮按钮 */}
-      <button
+      {/* 移动端 AI 助手悬浮按钮：仅在打开笔记时显示 */}
+      {note ? <button
         type="button"
         className={`${styles.claudeFab} ${mobileAssistantPanelOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""}`}
         onClick={handleClaudeToggle}
@@ -1887,7 +1938,7 @@ export default function NotesExplorer() {
           <path d="M19.5 13.5a.5.5 0 0 1 1 0v1.793a.5.5 0 0 0 .146.353l1.236 1.236a.5.5 0 0 1 0 .707l-1.236 1.235a.5.5 0 0 0-.146.354V21.5a.5.5 0 0 1-1 0v-1.793a.5.5 0 0 0-.146-.354l-1.236-1.235a.5.5 0 0 1 0-.707l1.236-1.236a.5.5 0 0 0 .146-.353V13.5z" fill="url(#ai-grad)"/>
         </svg>
         <span>Ask AI</span>
-      </button>
+      </button> : null}
 
       {/* ── 新建笔记对话框 ─────────────────────────────── */}
       {newNoteOpen ? (

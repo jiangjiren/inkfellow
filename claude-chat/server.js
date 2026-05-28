@@ -309,10 +309,12 @@ console.log(`Loaded ${cachedSkills.length} skills from disk`);
 const activeWechatLogins = new Map();
 let wechatPollingController = null;
 
-// 每个微信 sender 独立的 Claude 会话 ID（多轮对话）
-// 结构：{ sessionId: string, lastAt: number }
+// 每个微信 sender 的对话历史（多轮上下文）
+// 结构：{ turns: [{role, content}], lastAt: number }
+// 注意：不使用 resume/session_id，因为 thinking 块的 signature 在 resume 时会报 400 错误
 const wechatSenderSessions = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
+const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
 
 function randomWechatUin() {
   const uint32 = crypto.randomBytes(4).readUInt32BE(0);
@@ -457,22 +459,27 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       env: buildAgentEnv(profileData, "medium", null),
     };
 
-    // 续接该 sender 的上一轮对话（多轮上下文），超时则开启新对话
+    // 取出该 sender 的对话历史，超时则清除重新开始
     const sessionEntry = wechatSenderSessions.get(sender);
-    const existingSession = sessionEntry && (Date.now() - sessionEntry.lastAt < WECHAT_SESSION_TTL_MS)
-      ? sessionEntry.sessionId
-      : null;
-    if (!existingSession && sessionEntry) {
-      wechatSenderSessions.delete(sender); // 清除已超时的旧 session
+    const isExpired = sessionEntry && (Date.now() - sessionEntry.lastAt >= WECHAT_SESSION_TTL_MS);
+    if (isExpired) wechatSenderSessions.delete(sender);
+    const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
+
+    // 将历史对话拼入 prompt（纯文本注入，完全绕开 thinking signature 问题）
+    let fullPrompt = prompt;
+    if (history.length > 0) {
+      const historyText = history
+        .map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`)
+        .join("\n");
+      fullPrompt = `以下是本次对话的历史记录（请据此理解上下文）：\n${historyText}\n\n用户：${prompt}`;
     }
-    if (existingSession) options.resume = existingSession;
 
     console.log(`[WeChat Agent] CWD resolved to: ${options.cwd}`);
-    console.log(`[WeChat Agent] Starting Claude Agent SDK query (session: ${existingSession || "new"})...`);
+    console.log(`[WeChat Agent] Starting Claude Agent SDK query (history turns: ${history.length})...`);
 
     const userMsg = {
       type: "user",
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
       parent_tool_use_id: null,
     };
 
@@ -489,12 +496,6 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       });
 
       for await (const ev of generator) {
-        // 保存新 session_id，用于下一轮对话
-        if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
-          wechatSenderSessions.set(sender, { sessionId: ev.session_id, lastAt: Date.now() });
-          console.log(`[WeChat Agent] Session saved for ${sender}: ${ev.session_id}`);
-        }
-
         // 1. Handle completed message turn (type: "assistant")
         if (ev.type === "assistant") {
           const content = ev.message?.content || ev.content;
@@ -504,9 +505,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
               turnText += item.text;
             }
           }
-          if (turnText) {
-            finalResponse = turnText;
-          }
+          if (turnText) finalResponse = turnText;
         }
 
         // 2. Handle final query result success (type: "result")
@@ -520,11 +519,6 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         return;
       }
       console.error("[WeChat Agent] SDK Query Error:", err);
-      // 若 resume 失败，清除该 sender 的会话，下次从头开始
-      if (existingSession) {
-        wechatSenderSessions.delete(sender);
-        console.warn(`[WeChat Agent] Cleared stale session for ${sender}`);
-      }
       finalResponse = `⚠️ 助手发生错误: ${err.message}`;
     } finally {
       clearInterval(typingInterval);
@@ -538,9 +532,11 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         console.log(`[WeChat Agent] Sending final message to WeChat via gateway...`);
         await sendWechatMessage(baseUrl, token, sender, finalResponse.trim(), contextToken);
         console.log(`[WeChat Agent] WeChat message sent successfully!`);
-        // 对话成功，刷新 lastAt，滚动续期
-        const entry = wechatSenderSessions.get(sender);
-        if (entry) entry.lastAt = Date.now();
+
+        // 对话成功：将本轮追加到历史，超出上限时丢弃最早一轮
+        const newTurns = [...history, { role: "user", content: prompt }, { role: "assistant", content: finalResponse.trim() }];
+        if (newTurns.length > WECHAT_MAX_HISTORY_TURNS * 2) newTurns.splice(0, 2);
+        wechatSenderSessions.set(sender, { turns: newTurns, lastAt: Date.now() });
       } catch (err) {
         console.error("[WeChat Agent] Failed to send outbound response to WeChat:", err.message);
       }

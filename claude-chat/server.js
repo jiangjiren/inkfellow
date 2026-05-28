@@ -309,6 +309,9 @@ console.log(`Loaded ${cachedSkills.length} skills from disk`);
 const activeWechatLogins = new Map();
 let wechatPollingController = null;
 
+// 每个微信 sender 独立的 Claude 会话 ID（多轮对话）
+const wechatSenderSessions = new Map();
+
 function randomWechatUin() {
   const uint32 = crypto.randomBytes(4).readUInt32BE(0);
   return Buffer.from(String(uint32), "utf-8").toString("base64");
@@ -445,8 +448,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       env: buildAgentEnv(profileData, "medium", null),
     };
 
+    // 续接该 sender 的上一轮对话（多轮上下文）
+    const existingSession = wechatSenderSessions.get(sender);
+    if (existingSession) options.resume = existingSession;
+
     console.log(`[WeChat Agent] CWD resolved to: ${options.cwd}`);
-    console.log(`[WeChat Agent] Starting Claude Agent SDK query...`);
+    console.log(`[WeChat Agent] Starting Claude Agent SDK query (session: ${existingSession || "new"})...`);
 
     const userMsg = {
       type: "user",
@@ -467,11 +474,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       });
 
       for await (const ev of generator) {
-        console.log(`[WeChat Agent] Event received: ${ev.type} ${ev.subtype || ""}`);
-        if (ev.type === "assistant" || ev.type === "result") {
-          console.log(`[WeChat Agent] Event detail: ${JSON.stringify(ev)}`);
+        // 保存新 session_id，用于下一轮对话
+        if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
+          wechatSenderSessions.set(sender, ev.session_id);
+          console.log(`[WeChat Agent] Session saved for ${sender}: ${ev.session_id}`);
         }
-        
+
         // 1. Handle completed message turn (type: "assistant")
         if (ev.type === "assistant") {
           const content = ev.message?.content || ev.content;
@@ -482,27 +490,13 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
             }
           }
           if (turnText) {
-            finalResponse = turnText; // Use the final assembled turn text
-            console.log(`[WeChat Agent] Assembled completed assistant turn text (length: ${turnText.length})`);
-          }
-        }
-        
-        // 2. Handle streaming delta fallback (type: "stream_event")
-        if (ev.type === "stream_event" && ev.event) {
-          const event = ev.event;
-          if (event.type === "content_block_delta" && event.delta) {
-            const delta = event.delta;
-            if (delta.type === "text_delta" && delta.text) {
-              finalResponse += delta.text;
-              console.log(`[WeChat Agent] Accumulated streaming text delta chunk: "${delta.text.slice(0, 30)}..."`);
-            }
+            finalResponse = turnText;
           }
         }
 
-        // 3. Handle final query result success (type: "result")
+        // 2. Handle final query result success (type: "result")
         if (ev.type === "result" && ev.subtype === "success" && ev.result) {
           finalResponse = ev.result;
-          console.log(`[WeChat Agent] Captured final result text (length: ${ev.result.length})`);
         }
       }
     } catch (err) {
@@ -511,6 +505,11 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         return;
       }
       console.error("[WeChat Agent] SDK Query Error:", err);
+      // 若 resume 失败，清除该 sender 的会话，下次从头开始
+      if (existingSession) {
+        wechatSenderSessions.delete(sender);
+        console.warn(`[WeChat Agent] Cleared stale session for ${sender}`);
+      }
       finalResponse = `⚠️ 助手发生错误: ${err.message}`;
     } finally {
       clearInterval(typingInterval);

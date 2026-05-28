@@ -28,5 +28,7 @@
   },
   "overrides": {
     "postcss": "^8.5.10"
-  }
+  },
+  "license": "AGPL-3.0",
+  "author": "Jiang Jiren <jiangjiren@hotmail.com> (WeChat: jiangjiren)"
 }

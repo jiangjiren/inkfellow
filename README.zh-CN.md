@@ -698,3 +698,12 @@ const BASE = "/home/admin/apps/clawapp";
 - `shared-notes.json`（含真实 token 时，已在 `.gitignore` 中）。
 - `claude-chat/auth-profile.json` 和 `claude-chat/session.json` — 这两个文件存有你的 AI 服务商凭据。
 - `.next/`、`node_modules/`、知识库内容或生成的媒体文件。
+
+## 开源协议 (License)
+
+本项目基于 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 协议开源。
+
+## 联系方式 (Contact)
+
+- **邮箱 (Email)**: jiangjiren@hotmail.com
+- **微信 (WeChat)**: jiangjiren

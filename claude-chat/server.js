@@ -22,7 +22,7 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
   : "auto";
 
 const htmlPath   = join(__dirname, "public/index.html");
-const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, "session.json");
+const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, `session-${PORT}.json`);
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
 
 // ── WeChat Bot Configs & Isolated Paths ──────────────────────
@@ -240,7 +240,7 @@ export function buildAgentEnv(profileData, effort, requestedModel) {
 }
 
 // ── Server-side history ────────────────────────────────────
-const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(__dirname, "history.json");
+const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(__dirname, `history-${PORT}.json`);
 const MAX_SERVER_HISTORY = 100;
 
 export function resolveAllowedCwd(requestedCwd) {

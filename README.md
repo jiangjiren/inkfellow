@@ -426,6 +426,219 @@ To update after pulling new code:
 SERVICE_NAME=notes-app bash scripts/update_app.sh
 ```
 
+## Multi-User Setup
+
+Each user gets their own isolated instance: a separate Next.js process, a separate vault directory, and a separate git repository. They share the same compiled build — no code duplication.
+
+### Step 1 — Create the vault and git repo
+
+```bash
+# Working vault
+mkdir -p /home/admin/vault/USERNAME-vault
+
+# Bare git repo (for sync/backup, same pattern as the main vault)
+git init --bare /home/admin/git/USERNAME-vault.git
+
+# Initialize git in the working vault and make the first commit
+cd /home/admin/vault/USERNAME-vault
+git init
+git remote add origin /home/admin/git/USERNAME-vault.git
+git config user.email "USERNAME@inkfellow"
+git config user.name "USERNAME"
+git checkout -b main
+git add .
+git commit -m "init: USERNAME vault"
+git push -u origin main
+```
+
+> Each vault must have its **own** bare repo. Never point two users at the same `.git` remote.
+
+### Step 2 — Add PM2 processes
+
+Edit `ecosystem.config.cjs` and add **two** new entries to the `apps` array — one for the notes app and one for the AI chat backend:
+
+```js
+// Notes app
+{
+  name: "inkfellow-USERNAME",
+  script: "node_modules/.bin/next",
+  args: "start",
+  cwd: "/home/admin/apps/clawapp",   // always use an absolute path, not __dirname
+  env: {
+    PORT: "3001",                     // pick a free port (3001, 3002, …)
+    NODE_ENV: "production",
+    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    NOTES_BASIC_AUTH_USERNAME: "USERNAME",
+    NOTES_BASIC_AUTH_PASSWORD: "STRONG_PASSWORD",
+  },
+  autorestart: true,
+  watch: false,
+  merge_logs: true,
+  out_file: "~/.pm2/logs/inkfellow-USERNAME-out.log",
+  error_file: "~/.pm2/logs/inkfellow-USERNAME-error.log",
+},
+// AI chat backend — must point to this user's own vault
+{
+  name: "claude-chat-USERNAME",
+  script: "server.js",
+  cwd: "/home/admin/apps/clawapp/claude-chat",
+  node_args: "--env-file-if-exists=.env",
+  env: {
+    PORT: "8083",                     // pick a free port different from the main claude-chat (8082)
+    HOST: "127.0.0.1",
+    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    CLAUDE_PERMISSION_MODE: "auto",
+  },
+  autorestart: true,
+  watch: false,
+  merge_logs: true,
+  out_file: "~/.pm2/logs/claude-chat-USERNAME-out.log",
+  error_file: "~/.pm2/logs/claude-chat-USERNAME-error.log",
+},
+```
+
+Then start both:
+
+```bash
+pm2 start ecosystem.config.cjs --only inkfellow-USERNAME,claude-chat-USERNAME
+```
+
+> **Important:** always use absolute paths for `cwd`. Using `__dirname` in `ecosystem.config.cjs`
+> causes PM2 to resolve the path relative to the daemon's working directory, not the config file,
+> which makes the process unable to find the `.next` build and crash on startup.
+
+> **Each user must have their own `claude-chat` instance** pointing to their own `VAULT_PATH`.
+> Sharing one `claude-chat` between users means the AI agent reads the wrong vault.
+
+### Step 3 — Add an Nginx server block
+
+Add a new server block to `/etc/nginx/conf.d/mindflowinsight.conf`:
+
+```nginx
+server {
+    listen 80;
+    server_name USERNAME.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name USERNAME.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    client_max_body_size 50M;
+
+    location = /notes-claude {
+        return 301 /notes-claude/;
+    }
+
+    location /notes-claude/ {
+        proxy_pass http://127.0.0.1:8083/;  # match claude-chat-USERNAME PORT
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_buffering off;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;   # match the inkfellow-USERNAME PORT
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+Test and reload:
+
+```bash
+sudo nginx -t && sudo nginx -s reload
+```
+
+### Step 4 — Add a DNS record and get an SSL certificate
+
+1. Add an `A` record for `USERNAME.yourdomain.com` pointing to your server's IP.
+2. Once DNS propagates (usually 5–10 minutes), expand the existing certificate:
+
+```bash
+sudo certbot --nginx --expand \
+  -d yourdomain.com \
+  -d www.yourdomain.com \
+  -d USERNAME.yourdomain.com \
+  --non-interactive --agree-tos -m you@example.com
+```
+
+The new subdomain is now live at `https://USERNAME.yourdomain.com`.
+
+---
+
+## Troubleshooting
+
+### Page is blank after a code update or `next build`
+
+**Symptom:** The site returns HTTP 200 but an empty body. No `X-Powered-By: Next.js` header. Paths outside the auth middleware (e.g. `/share/…`) return normal 404 pages.
+
+**Cause:** Occasionally a production build produces a broken middleware bundle for `proxy.ts`. The compiled middleware intercepts every request matching `/` and `/api/notes/*` but fails to emit a response body.
+
+**Fix:** Rebuild and restart:
+
+```bash
+cd /home/admin/apps/clawapp
+
+# Stop both instances first to avoid port conflicts
+pm2 stop inkfellow inkfellow-wumin   # adjust names to match yours
+
+npm run build
+
+pm2 start ecosystem.config.cjs --only inkfellow,inkfellow-wumin
+```
+
+If a `next-server` process is still holding the port after stopping PM2, kill it first:
+
+```bash
+# Find and kill any stray next-server on port 3000
+ss -tlnp | grep 3000          # note the PID
+kill <PID>
+pm2 start inkfellow
+```
+
+### PM2 process starts then immediately crashes (EADDRINUSE)
+
+A previous `next start` or `next dev` process is still occupying the port. Find and kill it:
+
+```bash
+ss -tlnp | grep <PORT>
+kill <PID>
+pm2 start inkfellow-USERNAME
+```
+
+### PM2 reports "Could not find a production build in the .next directory"
+
+The `cwd` in `ecosystem.config.cjs` is resolving to the wrong directory. Replace any use of `__dirname` with the absolute path to the app:
+
+```js
+// ❌ unreliable — PM2 daemon resolves __dirname differently
+const BASE = __dirname;
+
+// ✅ always use the absolute path
+const BASE = "/home/admin/apps/clawapp";
+```
+
 ## Security Model
 
 - The root `/` and `/api/notes/*` require Basic Auth — the entire knowledge base is private by default.

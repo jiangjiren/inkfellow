@@ -424,6 +424,217 @@ sudo certbot --nginx -d your-domain.com
 SERVICE_NAME=notes-app bash scripts/update_app.sh
 ```
 
+## 多用户部署
+
+每个用户拥有独立的 Next.js 进程、独立的 vault 目录和独立的 git 仓库，共用同一份编译好的代码，无需重复部署。
+
+### 第一步 — 创建 vault 和 git 仓库
+
+```bash
+# 工作目录
+mkdir -p /home/admin/vault/USERNAME-vault
+
+# 裸仓库（用于同步/备份，与主 vault 保持一致的结构）
+git init --bare /home/admin/git/USERNAME-vault.git
+
+# 在工作目录初始化 git 并推送初始提交
+cd /home/admin/vault/USERNAME-vault
+git init
+git remote add origin /home/admin/git/USERNAME-vault.git
+git config user.email "USERNAME@inkfellow"
+git config user.name "USERNAME"
+git checkout -b main
+git add .
+git commit -m "init: USERNAME vault"
+git push -u origin main
+```
+
+> 每个用户必须有**独立**的裸仓库，禁止多个用户共用同一个 `.git` remote。
+
+### 第二步 — 添加 PM2 进程
+
+编辑 `ecosystem.config.cjs`，在 `apps` 数组中追加**两个**条目——笔记应用和 AI 对话后端各一个：
+
+```js
+// 笔记应用
+{
+  name: "inkfellow-USERNAME",
+  script: "node_modules/.bin/next",
+  args: "start",
+  cwd: "/home/admin/apps/clawapp",   // 必须用绝对路径，不能用 __dirname
+  env: {
+    PORT: "3001",                     // 选一个空闲端口（3001、3002……）
+    NODE_ENV: "production",
+    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    NOTES_BASIC_AUTH_USERNAME: "USERNAME",
+    NOTES_BASIC_AUTH_PASSWORD: "强密码",
+  },
+  autorestart: true,
+  watch: false,
+  merge_logs: true,
+  out_file: "~/.pm2/logs/inkfellow-USERNAME-out.log",
+  error_file: "~/.pm2/logs/inkfellow-USERNAME-error.log",
+},
+// AI 对话后端——必须指向该用户自己的 vault
+{
+  name: "claude-chat-USERNAME",
+  script: "server.js",
+  cwd: "/home/admin/apps/clawapp/claude-chat",
+  node_args: "--env-file-if-exists=.env",
+  env: {
+    PORT: "8083",                     // 选一个与主 claude-chat (8082) 不同的空闲端口
+    HOST: "127.0.0.1",
+    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    CLAUDE_PERMISSION_MODE: "auto",
+  },
+  autorestart: true,
+  watch: false,
+  merge_logs: true,
+  out_file: "~/.pm2/logs/claude-chat-USERNAME-out.log",
+  error_file: "~/.pm2/logs/claude-chat-USERNAME-error.log",
+},
+```
+
+同时启动两个进程：
+
+```bash
+pm2 start ecosystem.config.cjs --only inkfellow-USERNAME,claude-chat-USERNAME
+```
+
+> **注意：** `cwd` 必须使用绝对路径。用 `__dirname` 会导致 PM2 守护进程以自身工作目录解析路径，
+> 找不到 `.next` 构建产物，进程启动后立即崩溃。
+
+> **每个用户必须有独立的 `claude-chat` 实例**，且 `VAULT_PATH` 指向各自的 vault。
+> 如果多个用户共用同一个 `claude-chat`，AI Agent 会读取错误的 vault 内容。
+
+### 第三步 — 添加 Nginx server block
+
+在 `/etc/nginx/conf.d/mindflowinsight.conf` 中追加：
+
+```nginx
+server {
+    listen 80;
+    server_name USERNAME.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name USERNAME.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    client_max_body_size 50M;
+
+    location = /notes-claude {
+        return 301 /notes-claude/;
+    }
+
+    location /notes-claude/ {
+        proxy_pass http://127.0.0.1:8083/;  # 对应 claude-chat-USERNAME 的 PORT
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_buffering off;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;   # 对应 inkfellow-USERNAME 的 PORT
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+测试并重载：
+
+```bash
+sudo nginx -t && sudo nginx -s reload
+```
+
+### 第四步 — DNS 解析 + SSL 证书
+
+1. 在域名服务商处添加 A 记录，将 `USERNAME.yourdomain.com` 指向服务器 IP。
+2. DNS 生效后（通常 5–10 分钟），将新子域名扩进现有证书：
+
+```bash
+sudo certbot --nginx --expand \
+  -d yourdomain.com \
+  -d www.yourdomain.com \
+  -d USERNAME.yourdomain.com \
+  --non-interactive --agree-tos -m you@example.com
+```
+
+新用户即可通过 `https://USERNAME.yourdomain.com` 访问。
+
+---
+
+## 常见问题排查
+
+### 页面空白（代码更新或 `next build` 之后）
+
+**现象：** 站点返回 HTTP 200 但响应体为空，响应头中没有 `X-Powered-By: Next.js`；不在 auth 匹配规则内的路径（如 `/share/…`）能正常返回 404。
+
+**原因：** 偶发性构建问题——`proxy.ts` 的 middleware 编译产物损坏，拦截了 `/` 和 `/api/notes/*` 的所有请求但没有正确输出响应体。
+
+**修复：** 重新构建并重启：
+
+```bash
+cd /home/admin/apps/clawapp
+
+# 先停止所有实例，避免端口冲突
+pm2 stop inkfellow inkfellow-USERNAME   # 按实际名称调整
+
+npm run build
+
+pm2 start ecosystem.config.cjs --only inkfellow,inkfellow-USERNAME
+```
+
+如果 PM2 停止后端口仍被占用，先手动 kill 残留进程：
+
+```bash
+ss -tlnp | grep 3000   # 记下 PID
+kill <PID>
+pm2 start inkfellow
+```
+
+### PM2 进程启动后立即崩溃（EADDRINUSE）
+
+有残留的 `next start` 或 `next dev` 进程仍占用该端口：
+
+```bash
+ss -tlnp | grep <PORT>
+kill <PID>
+pm2 start inkfellow-USERNAME
+```
+
+### PM2 报错"Could not find a production build in the .next directory"
+
+`ecosystem.config.cjs` 中的 `cwd` 路径解析有误，将 `__dirname` 替换为绝对路径：
+
+```js
+// ❌ 不可靠——PM2 守护进程对 __dirname 的解析与预期不同
+const BASE = __dirname;
+
+// ✅ 始终使用绝对路径
+const BASE = "/home/admin/apps/clawapp";
+```
+
 ## 安全说明
 
 - 根路径 `/` 和 `/api/notes/*` 均需通过 Basic Auth 验证，整个知识库默认私有。

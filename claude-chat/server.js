@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import Anthropic from "@anthropic-ai/sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -310,11 +311,60 @@ const activeWechatLogins = new Map();
 let wechatPollingController = null;
 
 // 每个微信 sender 的对话历史（多轮上下文）
-// 结构：{ turns: [{role, content}], lastAt: number }
-// 注意：不使用 resume/session_id，因为 thinking 块的 signature 在 resume 时会报 400 错误
+// 结构 Map<sender, { turns: [{role, content}], lastAt: number }>
+// 使用 Anthropic SDK messages.create() 直接传结构化消息，彻底绕开 thinking signature 问题
 const wechatSenderSessions = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
+const WECHAT_HISTORY_FILE = join(__dirname, `wechat-history-${PORT}.json`);
+
+// 启动时从文件恢复历史
+try {
+  if (existsSync(WECHAT_HISTORY_FILE)) {
+    const raw = JSON.parse(readFileSync(WECHAT_HISTORY_FILE, "utf8"));
+    for (const [sender, entry] of Object.entries(raw)) {
+      wechatSenderSessions.set(sender, entry);
+    }
+    console.log(`[WeChat] Restored history for ${wechatSenderSessions.size} senders.`);
+  }
+} catch { }
+
+function saveWechatHistory() {
+  try {
+    const obj = Object.fromEntries(wechatSenderSessions);
+    writeFileSync(WECHAT_HISTORY_FILE, JSON.stringify(obj), "utf8");
+  } catch { }
+}
+
+// 根据当前激活的账号配置构建 Anthropic SDK 客户端
+function buildAnthropicClientForWechat(profileData) {
+  const active = getActiveProfile(profileData);
+  const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+  // claude 会员：读取 CLI 的 OAuth token
+  if (!active || active.provider === "claude") {
+    try {
+      const creds = JSON.parse(readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf8"));
+      const token = creds?.claudeAiOauth?.accessToken;
+      if (token) return { client: new Anthropic({ authToken: token }), model: DEFAULT_MODEL };
+    } catch { }
+    return { client: new Anthropic(), model: DEFAULT_MODEL };
+  }
+
+  // 直接 Anthropic API Key
+  if (active.provider === "anthropic") {
+    const model = active.sonnetModel || active.opusModel || DEFAULT_MODEL;
+    return { client: new Anthropic({ apiKey: active.apiKey }), model };
+  }
+
+  // 第三方兼容接口（DeepSeek / OpenRouter / custom）：Bearer token + 自定义 baseURL
+  // 模型名去掉 Claude Code 内部的 ~ 前缀
+  const model = (active.sonnetModel || active.opusModel || DEFAULT_MODEL).replace(/^~/, "");
+  return {
+    client: new Anthropic({ authToken: active.apiKey, baseURL: active.baseUrl }),
+    model,
+  };
+}
 
 function randomWechatUin() {
   const uint32 = crypto.randomBytes(4).readUInt32BE(0);
@@ -447,17 +497,10 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
   console.log(`[WeChat Agent] processWechatQuery starting for ${sender}...`);
   try {
     await sendWechatTyping(baseUrl, token, sender, 1, contextToken);
+
     const profileData = readProfiles();
     const active = getActiveProfile(profileData);
     console.log(`[WeChat Agent] Active profile: ${active ? active.name : "none"} (provider: ${active ? active.provider : "none"})`);
-
-    const options = {
-      cwd: resolveAllowedCwd(""),
-      permissionMode: "auto",
-      allowDangerouslySkipPermissions: true,
-      includePartialMessages: false,
-      env: buildAgentEnv(profileData, "medium", null),
-    };
 
     // 取出该 sender 的对话历史，超时则清除重新开始
     const sessionEntry = wechatSenderSessions.get(sender);
@@ -465,80 +508,61 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     if (isExpired) wechatSenderSessions.delete(sender);
     const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
 
-    // 将历史对话拼入 prompt（纯文本注入，完全绕开 thinking signature 问题）
-    let fullPrompt = prompt;
-    if (history.length > 0) {
-      const historyText = history
-        .map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`)
-        .join("\n");
-      fullPrompt = `以下是本次对话的历史记录（请据此理解上下文）：\n${historyText}\n\n用户：${prompt}`;
-    }
+    // 构建结构化消息数组（历史 + 本轮新消息）
+    // history 中只存纯文本，从不包含 thinking 块，彻底规避 signature 问题
+    const messages = [
+      ...history.map(t => ({ role: t.role, content: t.content })),
+      { role: "user", content: prompt },
+    ];
 
-    console.log(`[WeChat Agent] CWD resolved to: ${options.cwd}`);
-    console.log(`[WeChat Agent] Starting Claude Agent SDK query (history turns: ${history.length})...`);
+    const { client, model } = buildAnthropicClientForWechat(profileData);
+    console.log(`[WeChat Agent] Calling messages.create (model: ${model}, history: ${history.length} turns)...`);
 
-    const userMsg = {
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
-      parent_tool_use_id: null,
-    };
-
-    let finalResponse = "";
     const typingInterval = setInterval(() => {
-      console.log(`[WeChat Agent] Sending keep-alive typing status to ${sender}`);
       sendWechatTyping(baseUrl, token, sender, 1, contextToken);
     }, 6000);
 
+    let finalResponse = "";
     try {
-      const generator = query({
-        prompt: (async function* () { yield userMsg; })(),
-        options: { ...options, abortController: { signal: abortSignal } },
+      const response = await client.messages.create({
+        model,
+        max_tokens: 4096,
+        messages,
       });
-
-      for await (const ev of generator) {
-        // 1. Handle completed message turn (type: "assistant")
-        if (ev.type === "assistant") {
-          const content = ev.message?.content || ev.content;
-          let turnText = "";
-          for (const item of content || []) {
-            if (item.type === "text" && item.text) {
-              turnText += item.text;
-            }
-          }
-          if (turnText) finalResponse = turnText;
-        }
-
-        // 2. Handle final query result success (type: "result")
-        if (ev.type === "result" && ev.subtype === "success" && ev.result) {
-          finalResponse = ev.result;
-        }
-      }
+      // 只取 text 块，过滤掉 thinking / redacted_thinking 块
+      finalResponse = response.content
+        .filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("");
     } catch (err) {
       if (abortSignal.aborted) {
-        console.warn(`[WeChat Agent] SDK Query aborted by signal.`);
+        console.warn(`[WeChat Agent] Request aborted.`);
         return;
       }
-      console.error("[WeChat Agent] SDK Query Error:", err);
+      console.error("[WeChat Agent] messages.create error:", err);
       finalResponse = `⚠️ 助手发生错误: ${err.message}`;
     } finally {
       clearInterval(typingInterval);
       await sendWechatTyping(baseUrl, token, sender, 2, contextToken);
     }
 
-    console.log(`[WeChat Agent] Final response gathered (length: ${finalResponse.length}): "${finalResponse.slice(0, 60)}..."`);
+    console.log(`[WeChat Agent] Response (length: ${finalResponse.length}): "${finalResponse.slice(0, 60)}..."`);
 
     if (!abortSignal.aborted && finalResponse.trim()) {
       try {
-        console.log(`[WeChat Agent] Sending final message to WeChat via gateway...`);
         await sendWechatMessage(baseUrl, token, sender, finalResponse.trim(), contextToken);
-        console.log(`[WeChat Agent] WeChat message sent successfully!`);
+        console.log(`[WeChat Agent] Message sent to ${sender}.`);
 
-        // 对话成功：将本轮追加到历史，超出上限时丢弃最早一轮
-        const newTurns = [...history, { role: "user", content: prompt }, { role: "assistant", content: finalResponse.trim() }];
+        // 追加本轮到历史，只存文本，超限时丢弃最早一轮
+        const newTurns = [...history,
+          { role: "user", content: prompt },
+          { role: "assistant", content: finalResponse.trim() },
+        ];
         if (newTurns.length > WECHAT_MAX_HISTORY_TURNS * 2) newTurns.splice(0, 2);
         wechatSenderSessions.set(sender, { turns: newTurns, lastAt: Date.now() });
+        saveWechatHistory();
       } catch (err) {
-        console.error("[WeChat Agent] Failed to send outbound response to WeChat:", err.message);
+        console.error("[WeChat Agent] Failed to send message to WeChat:", err.message);
       }
     }
   } catch (outerErr) {

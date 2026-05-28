@@ -705,15 +705,17 @@
   will-change: transform, opacity;
 }
 
-.documentHtml {
+.document.documentHtml {
   width: 100%;
   max-width: 100%;
   margin: 0;
   padding: 0;
+  border: none;
   border-radius: 0;
   box-shadow: none;
   background: transparent;
   animation: none;
+  will-change: auto;
 }
 
 .documentState {
@@ -2607,6 +2609,14 @@
     padding: 28px 22px 60px;
     border-radius: 10px;
     background: var(--notes-bg-document);
+  }
+  .document.documentHtml {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .markdown {

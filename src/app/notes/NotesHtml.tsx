@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import styles from "./notes.module.css";
 
 // Inject a script that reports the document height to the parent frame via postMessage.
@@ -27,6 +27,7 @@ type NotesHtmlProps = {
 
 export default function NotesHtml({ html }: NotesHtmlProps) {
   const [height, setHeight] = useState(600);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     const handle = (ev: MessageEvent) => {
@@ -38,13 +39,30 @@ export default function NotesHtml({ html }: NotesHtmlProps) {
     return () => window.removeEventListener("message", handle);
   }, []);
 
+  // Re-query height after iframe width settles, in case the initial render
+  // happened at a narrower width (before CSS applied) and locked in a stale height.
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const ro = new ResizeObserver(() => {
+      try {
+        const doc = iframe.contentDocument;
+        if (doc) setHeight(doc.documentElement.scrollHeight + 32);
+      } catch { /* cross-origin; ignore */ }
+    });
+    ro.observe(iframe);
+    return () => ro.disconnect();
+  }, []);
+
   return (
     <iframe
+      ref={iframeRef}
       className={styles.htmlFrame}
       srcDoc={injectHeightScript(html)}
       sandbox="allow-scripts allow-same-origin"
       allow="clipboard-write"
-      style={{ height }}
+      width="100%"
+      style={{ height, width: "100%" }}
       title="HTML 文件内容"
     />
   );

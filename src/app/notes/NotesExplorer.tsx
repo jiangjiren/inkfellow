@@ -1593,6 +1593,7 @@ export default function NotesExplorer() {
           <article
             key={note?.path || "empty"}
             className={`${styles.document} ${note && /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
+            style={note && /\.html?$/i.test(note.path) ? { width: '100%', maxWidth: '100%', margin: 0, padding: 0, borderRadius: 0, background: 'transparent', border: 'none', boxShadow: 'none' } : undefined}
           >
             {noteState === "loading" ? (
               <div className={styles.documentState}>正在加载文件...</div>

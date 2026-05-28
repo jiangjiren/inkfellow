@@ -2391,6 +2391,11 @@ window.addEventListener("message", (e) => {
     quotedText = null;
     quoteChip.classList.remove("visible");
   }
+  if (e.data?.type === "note-ask" && e.data.text) {
+    promptEl.value = e.data.text;
+    promptEl.dispatchEvent(new Event("input"));
+    sendBtn.click();
+  }
 });
 
 ctxToggle.addEventListener("click", () => {

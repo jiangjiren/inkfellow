@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_VAULT_PATH = path.join(process.cwd(), "vault");
 const VAULT = path.resolve(process.env.VAULT_PATH?.trim() || DEFAULT_VAULT_PATH);
 const GIT_PUSH_TARGET = process.env.NOTES_GIT_PUSH_TARGET?.trim() || "HEAD:main";
+const GIT_COMMIT_USER_NAME = process.env.GIT_COMMIT_USER_NAME?.trim() || "Inkfellow Web";
+const GIT_COMMIT_USER_EMAIL = process.env.GIT_COMMIT_USER_EMAIL?.trim() || "web-editor@inkfellow.local";
 
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
@@ -18,7 +20,13 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 async function git(args: string[], options: { trimStdout?: boolean } = {}) {
-  const { stdout, stderr } = await execFileAsync("git", ["-C", VAULT, "-c", "core.quotepath=false", ...args], {
+  const { stdout, stderr } = await execFileAsync("git", [
+    "-C", VAULT,
+    "-c", "core.quotepath=false",
+    "-c", `user.name=${GIT_COMMIT_USER_NAME}`,
+    "-c", `user.email=${GIT_COMMIT_USER_EMAIL}`,
+    ...args,
+  ], {
     timeout: 30_000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     maxBuffer: 20 * 1024 * 1024,

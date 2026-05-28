@@ -359,6 +359,8 @@ sudo ufw allow 3000/tcp
 | `SHARED_NOTES_PATH` | 否 | `./shared-notes.json` | 存储分享 token 的 JSON 文件路径。 |
 | `SITE_URL` | 否 | `http://localhost:3000` | 生成分享链接时使用的公开地址（域名或 IP）。 |
 | `NOTES_GIT_PUSH_TARGET` | 否 | `HEAD:main` | Git push 操作的目标 refspec。 |
+| `GIT_COMMIT_USER_NAME` | 否 | `Inkfellow Web` | 网页端"同步到云端"功能的 Git 提交者名称。服务器无需配置全局 git 身份。 |
+| `GIT_COMMIT_USER_EMAIL` | 否 | `web-editor@inkfellow.local` | 网页端"同步到云端"功能的 Git 提交者邮箱。 |
 | `NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN` | 否 | *(空)* | 填写后启用 Cloudflare Web Analytics。 |
 
 ### AI 服务（`claude-chat/`）

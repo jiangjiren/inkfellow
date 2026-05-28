@@ -337,19 +337,14 @@ function saveWechatHistory() {
 }
 
 // 根据当前激活的账号配置构建 Anthropic SDK 客户端
+// claude 会员返回 null —— OAuth token 不能直接调 API，需走 query()
 function buildAnthropicClientForWechat(profileData) {
   const active = getActiveProfile(profileData);
   const DEFAULT_MODEL = "claude-sonnet-4-6";
 
-  // claude 会员：读取 CLI 的 OAuth token
-  if (!active || active.provider === "claude") {
-    try {
-      const creds = JSON.parse(readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf8"));
-      const token = creds?.claudeAiOauth?.accessToken;
-      if (token) return { client: new Anthropic({ authToken: token }), model: DEFAULT_MODEL };
-    } catch { }
-    return { client: new Anthropic(), model: DEFAULT_MODEL };
-  }
+  // claude 会员：OAuth token 仅供网页端使用，直接调 API 会触发 429
+  // 返回 null，调用方改走 query() 路径
+  if (!active || active.provider === "claude") return null;
 
   // 直接 Anthropic API Key
   if (active.provider === "anthropic") {
@@ -508,15 +503,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     if (isExpired) wechatSenderSessions.delete(sender);
     const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
 
-    // 构建结构化消息数组（历史 + 本轮新消息）
-    // history 中只存纯文本，从不包含 thinking 块，彻底规避 signature 问题
-    const messages = [
-      ...history.map(t => ({ role: t.role, content: t.content })),
-      { role: "user", content: prompt },
-    ];
-
-    const { client, model } = buildAnthropicClientForWechat(profileData);
-    console.log(`[WeChat Agent] Calling messages.create (model: ${model}, history: ${history.length} turns)...`);
+    const sdkClient = buildAnthropicClientForWechat(profileData);
 
     const typingInterval = setInterval(() => {
       sendWechatTyping(baseUrl, token, sender, 1, contextToken);
@@ -524,22 +511,48 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
 
     let finalResponse = "";
     try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 4096,
-        messages,
-      });
-      // 只取 text 块，过滤掉 thinking / redacted_thinking 块
-      finalResponse = response.content
-        .filter(b => b.type === "text")
-        .map(b => b.text)
-        .join("");
-    } catch (err) {
-      if (abortSignal.aborted) {
-        console.warn(`[WeChat Agent] Request aborted.`);
-        return;
+      if (sdkClient) {
+        // ── 有独立 API Key 的 provider（anthropic / deepseek / openrouter）──
+        // 用 Anthropic SDK messages.create()，传结构化消息数组
+        const { client, model } = sdkClient;
+        const messages = [
+          ...history.map(t => ({ role: t.role, content: t.content })),
+          { role: "user", content: prompt },
+        ];
+        console.log(`[WeChat Agent] messages.create (model: ${model}, history: ${history.length} turns)`);
+        const response = await client.messages.create({ model, max_tokens: 4096, messages });
+        // 只取 text 块，过滤掉 thinking / redacted_thinking（不存 signature，不会报错）
+        finalResponse = response.content.filter(b => b.type === "text").map(b => b.text).join("");
+      } else {
+        // ── claude 会员：OAuth token 不能直接调 API，走 Agent SDK query() ──
+        // 不使用 resume（thinking signature 问题），改用文本注入历史
+        const agentEnv = buildAgentEnv(profileData, "medium", null);
+        let fullPrompt = prompt;
+        if (history.length > 0) {
+          const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
+          fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
+        }
+        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns)`);
+        const userMsg = {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
+          parent_tool_use_id: null,
+        };
+        const generator = query({
+          prompt: (async function* () { yield userMsg; })(),
+          options: { cwd: resolveAllowedCwd(""), permissionMode: "auto", allowDangerouslySkipPermissions: true, includePartialMessages: false, env: agentEnv, abortController: { signal: abortSignal } },
+        });
+        for await (const ev of generator) {
+          if (ev.type === "assistant") {
+            const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+            if (text) finalResponse = text;
+          }
+          if (ev.type === "result" && ev.subtype === "success" && ev.result) finalResponse = ev.result;
+        }
       }
-      console.error("[WeChat Agent] messages.create error:", err);
+    } catch (err) {
+      if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
+      console.error("[WeChat Agent] Error:", err);
       finalResponse = `⚠️ 助手发生错误: ${err.message}`;
     } finally {
       clearInterval(typingInterval);

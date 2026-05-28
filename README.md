@@ -361,6 +361,8 @@ The app works identically over IP — share links will include the IP in the URL
 | `SHARED_NOTES_PATH` | No | `./shared-notes.json` | JSON file for share tokens. |
 | `SITE_URL` | No | `http://localhost:3000` | Public base URL for share links (domain or IP). |
 | `NOTES_GIT_PUSH_TARGET` | No | `HEAD:main` | Git refspec used by the push action. |
+| `GIT_COMMIT_USER_NAME` | No | `Inkfellow Web` | Git commit author name for the web "Push to cloud" feature. No global git identity required on the server. |
+| `GIT_COMMIT_USER_EMAIL` | No | `web-editor@inkfellow.local` | Git commit author email for the web "Push to cloud" feature. |
 | `NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN` | No | *(empty)* | Enables Cloudflare Web Analytics. |
 
 ### AI Service (`claude-chat/`)

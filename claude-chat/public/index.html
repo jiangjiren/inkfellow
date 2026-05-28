@@ -1057,6 +1057,33 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .auth-profile-edit:hover { background: rgba(0,0,0,0.05); color: var(--text); }
 .auth-profile-del:hover  { background: rgba(192,57,43,0.1); color: var(--red); }
 
+/* ── Section labels in auth dialog ── */
+.auth-section-label {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 12px 14px 6px;
+  flex-shrink: 0;
+}
+.auth-section-label + #auth-profile-list { padding-top: 4px; }
+#auth-wechat-section {
+  border-top: 1px solid rgba(0,0,0,0.06);
+  padding: 0 12px 14px;
+  flex-shrink: 0;
+}
+#wechat-card {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.015);
+  border: 1px solid rgba(0,0,0,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
 /* ── Add account 区域 ── */
 #auth-add-section {
   padding: 10px 12px 14px;
@@ -1361,9 +1388,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <button class="auth-back" id="auth-close" title="关闭" aria-label="关闭账号设置">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 13L3 7L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <span class="auth-title" id="auth-dialog-title">账号</span>
+        <span class="auth-title" id="auth-dialog-title">账号 & 渠道</span>
         <span id="auth-status" aria-live="polite"></span>
       </header>
+
+      <!-- AI 账号分组标签 -->
+      <div class="auth-section-label" aria-hidden="true">AI 账号</div>
 
       <!-- 账号列表 -->
       <div id="auth-profile-list" role="listbox" aria-label="账号列表"></div>
@@ -1378,10 +1408,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         </button>
       </div>
       
-      <!-- ── WeChat settings (微信扫码连接模块) ── -->
-      <div id="auth-wechat-section" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 16px; padding-bottom: 8px;">
-        <div class="form-group-title" style="margin-bottom: 8px; font-weight: 600; font-size: 13px; color: var(--fg-color-secondary);">微信连接</div>
-        <div id="wechat-card" style="padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.015); border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px; align-items: center;">
+      <!-- ── 接入渠道分组（微信等） ── -->
+      <div id="auth-wechat-section">
+        <div class="auth-section-label" aria-hidden="true">接入渠道</div>
+        <div id="wechat-card">
           <div id="wechat-status-text" style="font-size: 13px; color: var(--fg-color-secondary); width: 100%; text-align: left;">
             正在检查微信机器人连接状态...
           </div>

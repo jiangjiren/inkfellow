@@ -53,7 +53,8 @@ The AI backend is a lightweight Node.js service that runs alongside the notes ap
 - Browse `.md`, `.html`, and `.htm` files from a local vault.
 - Render Markdown with GFM, table of contents, and Obsidian-style local images.
 - Protect the private notes UI and APIs with Basic Auth.
-- View Git status, diffs, commit history, and run pull / push / discard actions.
+- **Git sync panel**: view status, diffs, commit history, pull / push / discard. An ambient status bar at the bottom of the sidebar shows pending-change count at a glance; on mobile an orange badge appears on the sidebar toggle when the sidebar is closed.
+- **Nightly auto-sync**: `scripts/nightly-sync.js` runs at midnight via cron — pulls, commits with an AI-generated message, and pushes silently. No changes = no commit.
 - Create tokenized public share links under `/share/:token`.
 
 ## Live Demo (Vercel)
@@ -323,7 +324,48 @@ After each push, open the Git panel in inkfellow and click **Pull**.
 |--------|-----------|
 | Wrote notes locally | Obsidian Git auto-pushes → click **Pull** in inkfellow |
 | Edited notes on the web | Click **Push** in inkfellow → Obsidian Git auto-pulls |
-| Want automatic server pull | Add a cron job: `*/10 * * * * cd ~/vault && git pull` |
+| Want automatic nightly backup | Set up `scripts/nightly-sync.js` via cron (see below) |
+
+---
+
+### Nightly Auto-Sync
+
+`scripts/nightly-sync.js` mirrors the manual Sync button — pull → detect changes → AI commit message → push — but runs automatically at midnight with zero user interaction.
+
+**What it does:**
+
+1. `git pull --rebase --autostash` — fetch the latest from remote first
+2. Stage all local changes and check whether anything is new
+3. If nothing changed → exit cleanly (no empty commit, no noise)
+4. Call the AI to generate a commit message describing what changed today (same model and prompt as the manual sync panel); falls back to a date-stamped template if the AI is unreachable
+5. `git commit` + `git push`
+
+> The commit message intentionally describes **what changed**, not whether writing is "finished" — incomplete notes are backed up just like complete ones.
+
+**Setup:**
+
+Find your node binary path first:
+
+```bash
+which node   # e.g. /home/admin/.nvm/versions/node/v25.5.0/bin/node
+```
+
+Open your crontab and add one line per vault:
+
+```bash
+crontab -e
+```
+
+```
+# inkfellow nightly sync — adjust paths to match your installation
+0 0 * * * /home/admin/.nvm/versions/node/v25.5.0/bin/node /home/admin/apps/clawapp/scripts/nightly-sync.js /home/admin/vault/jiang-vault >> ~/.pm2/logs/nightly-sync-jiang.log 2>&1
+```
+
+Logs land in `~/.pm2/logs/nightly-sync-<vault>.log`. Run the script manually to verify it works before the first midnight trigger:
+
+```bash
+node scripts/nightly-sync.js /path/to/your/vault
+```
 
 ## Access Without a Domain (Public IP)
 
@@ -385,6 +427,9 @@ npm start        # run the built app
 
 # Share link CLI
 node scripts/create-share-link.mjs "path/in/vault/note.md"
+
+# Nightly auto-sync (also runs via cron at midnight)
+node scripts/nightly-sync.js /path/to/vault
 ```
 
 ## Production Deployment

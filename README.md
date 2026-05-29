@@ -53,9 +53,38 @@ The AI backend is a lightweight Node.js service that runs alongside the notes ap
 - Browse `.md`, `.html`, and `.htm` files from a local vault.
 - Render Markdown with GFM, table of contents, and Obsidian-style local images.
 - Protect the private notes UI and APIs with Basic Auth.
+- **Create folders**: Add new folders directly from the sidebar toolbar, or inline inside the "New Note" dialog without leaving the flow.
 - **Git sync panel**: view status, diffs, commit history, pull / push / discard. An ambient status bar at the bottom of the sidebar shows pending-change count at a glance; on mobile an orange badge appears on the sidebar toggle when the sidebar is closed.
 - **Nightly auto-sync**: `scripts/nightly-sync.js` runs at midnight via cron — pulls, commits with an AI-generated message, and pushes silently. No changes = no commit.
 - Create tokenized public share links under `/share/:token`.
+- **Progressive Web App (PWA)**: Install inkfellow to your device home screen for a native-app feel — full-screen, no browser chrome, offline-capable for the UI shell.
+
+## Install as App (PWA)
+
+inkfellow is a full PWA. Once installed it launches like a native app — no browser address bar, no tab switching.
+
+### Desktop (Chrome / Edge)
+
+1. Open the site in Chrome or Edge.
+2. Click the **install icon** that appears in the address bar (a monitor with a download arrow).
+3. Click **Install** → the app appears in your OS app launcher and opens in its own window.
+
+### Mobile
+
+**iOS (Safari)**
+
+1. Open the site in Safari (other browsers on iOS don't support PWA install).
+2. Tap the **Share** button (box with an arrow) at the bottom of the screen.
+3. Scroll down and tap **Add to Home Screen** → **Add**.
+4. The inkfellow icon appears on your home screen and opens full-screen.
+
+**Android (Chrome)**
+
+1. Open the site in Chrome.
+2. Chrome shows an **"Add to Home Screen"** banner automatically, or tap the menu (⋮) → **Install app**.
+3. The icon appears on your home screen; the app runs full-screen without browser controls.
+
+> **Other Android browsers** (Via, Firefox, etc.) do not support PWA installation. Use Chrome or Edge to install; afterwards you can ignore those browsers entirely.
 
 ## Live Demo (Vercel)
 

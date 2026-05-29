@@ -741,7 +741,7 @@
   background: none;
   cursor: pointer;
   font-size: 11px;
-  color: var(--notes-accent);
+  color: #f59e0b;
   line-height: 1.4;
   transition: opacity 0.15s;
 }
@@ -752,9 +752,10 @@
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: var(--notes-accent);
+  background: #f59e0b;
   flex-shrink: 0;
 }
+
 
 @keyframes paperSlideIn {
   from {
@@ -3283,7 +3284,6 @@
   cursor: pointer;
   flex: 0 0 auto;
   transition: background 120ms ease, color 120ms ease;
-  margin-left: auto;
 }
 
 .newNoteButton svg {
@@ -3434,6 +3434,99 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── 侧边栏操作按钮组 ─────────────────────────────── */
+.sidebarActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ── 对话框内 label 行（label + 新建文件夹按钮） ─── */
+.newNoteLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.newNoteLabelRow .newNoteLabel {
+  margin-bottom: 0;
+}
+
+.inlineFolderToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--notes-accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+
+.inlineFolderToggle:hover {
+  background: var(--notes-accent-bg);
+}
+
+/* ── inline 新建文件夹输入行 ─────────────────────── */
+.inlineFolderForm {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  animation: inlineFolderIn 140ms cubic-bezier(0.34, 1.36, 0.64, 1);
+}
+
+@keyframes inlineFolderIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.inlineFolderInput {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1.5px solid var(--notes-accent);
+  border-radius: 8px;
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.inlineFolderConfirm {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--notes-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 120ms ease;
+}
+
+.inlineFolderConfirm:hover {
+  opacity: 0.88;
+}
+
+.inlineFolderConfirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
 
 /* ── Dashboard ─────────────────────────────────── */
 .dashboardContainer {

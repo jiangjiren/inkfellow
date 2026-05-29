@@ -8,12 +8,19 @@ import { getLocaleFromAcceptLanguage, normalizeLocale } from "@/i18n/locale";
 export const metadata: Metadata = {
   title: "inkfellow",
   description: "inkfellow — Personal knowledge base powered by LLM Wiki",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "inkfellow",
+  },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  themeColor: "#000000",
 };
 
 const resolveLocale = async () => {

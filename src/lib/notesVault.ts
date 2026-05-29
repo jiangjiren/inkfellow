@@ -180,9 +180,8 @@ const walkDirectory = async (absolutePath: string, relativePath: string): Promis
 
     if (entry.isDirectory()) {
       const directory = await walkDirectory(childAbsolutePath, childRelativePath);
-      if (directory.children.length > 0) {
-        children.push(directory);
-      }
+      // Include all non-excluded directories, even empty ones (user may have just created them)
+      children.push(directory);
       continue;
     }
 
@@ -451,6 +450,31 @@ export const createMarkdownNote = async (relativePath: string, content = "") => 
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
   };
+};
+
+export const createFolder = async (relativePath: string) => {
+  const sanitized = sanitizeRelativePath(relativePath);
+
+  const vaultRoot = await getVaultRoot();
+  const absolutePath = path.resolve(vaultRoot, sanitized);
+  assertInsideVault(absolutePath, vaultRoot);
+
+  // Refuse to create if path already exists
+  try {
+    await fs.access(absolutePath);
+    throw new VaultAccessError("A folder with this name already exists.", 409);
+  } catch (err) {
+    if (err instanceof VaultAccessError) throw err;
+    // ENOENT → doesn't exist yet, which is what we want
+  }
+
+  await fs.mkdir(absolutePath, { recursive: true });
+
+  // Write a .gitkeep so the folder appears in the file tree
+  const keepFile = path.join(absolutePath, ".gitkeep");
+  await fs.writeFile(keepFile, "", "utf8");
+
+  return { path: sanitized, name: path.posix.basename(sanitized) };
 };
 
 export const mapVaultError = (error: unknown) => {

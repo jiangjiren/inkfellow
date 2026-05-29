@@ -332,6 +332,20 @@ export default function NotesExplorer() {
   const [newNoteError, setNewNoteError] = useState<string | null>(null);
   const [newNoteLoading, setNewNoteLoading] = useState(false);
   const newNoteTitleRef = useRef<HTMLInputElement>(null);
+  // ── 新建文件夹 ────────────────────────────────────────
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderParent, setNewFolderParent] = useState("");
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
+  const [newFolderLoading, setNewFolderLoading] = useState(false);
+  const newFolderNameRef = useRef<HTMLInputElement>(null);
+  // inline new-folder sub-form inside new-note dialog
+  const [inlineFolderOpen, setInlineFolderOpen] = useState(false);
+  const [inlineFolderName, setInlineFolderName] = useState("");
+  const [inlineFolderError, setInlineFolderError] = useState<string | null>(null);
+  const [inlineFolderLoading, setInlineFolderLoading] = useState(false);
+  const inlineFolderInputRef = useRef<HTMLInputElement>(null);
+
   // ── 编辑模式 ──────────────────────────────────────────
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -1141,10 +1155,109 @@ export default function NotesExplorer() {
     setNewNoteFolder(defaultFolder);
     setNewNoteTitle("");
     setNewNoteError(null);
+    setInlineFolderOpen(false);
+    setInlineFolderName("");
+    setInlineFolderError(null);
     setNewNoteOpen(true);
     // 等 DOM 渲染后聚焦输入框
     setTimeout(() => newNoteTitleRef.current?.focus(), 30);
   }, [activePath]);
+
+  /** 打开新建文件夹对话框 */
+  const openNewFolder = useCallback(() => {
+    const defaultParent = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
+    setNewFolderParent(defaultParent);
+    setNewFolderName("");
+    setNewFolderError(null);
+    setNewFolderOpen(true);
+    setTimeout(() => newFolderNameRef.current?.focus(), 30);
+  }, [activePath]);
+
+  /** 执行新建文件夹（独立对话框） */
+  const handleCreateFolder = useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name) {
+      setNewFolderError("请输入文件夹名称");
+      newFolderNameRef.current?.focus();
+      return;
+    }
+    const safeName = name.replace(/[/\\:*?"<>|]/g, "-");
+    const folderPath = newFolderParent ? `${newFolderParent}/${safeName}` : safeName;
+    setNewFolderLoading(true);
+    setNewFolderError(null);
+    try {
+      const res = await fetch("/api/notes/folder", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: folderPath }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "创建失败");
+      }
+      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+      if (treeRes.ok) {
+        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
+        setTree(payload.root);
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          const parts = folderPath.split("/");
+          let accumulated = "";
+          for (const part of parts) {
+            accumulated = accumulated ? `${accumulated}/${part}` : part;
+            next.add(accumulated);
+          }
+          return next;
+        });
+      }
+      setNewFolderOpen(false);
+    } catch (err) {
+      setNewFolderError(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setNewFolderLoading(false);
+    }
+  }, [newFolderName, newFolderParent]);
+
+  /** 新建笔记对话框内 inline 新建文件夹 */
+  const handleInlineCreateFolder = useCallback(async () => {
+    const name = inlineFolderName.trim();
+    if (!name) {
+      setInlineFolderError("请输入文件夹名称");
+      inlineFolderInputRef.current?.focus();
+      return;
+    }
+    const safeName = name.replace(/[/\\:*?"<>|]/g, "-");
+    const parentFolder = newNoteFolder;
+    const folderPath = parentFolder ? `${parentFolder}/${safeName}` : safeName;
+    setInlineFolderLoading(true);
+    setInlineFolderError(null);
+    try {
+      const res = await fetch("/api/notes/folder", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: folderPath }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "创建失败");
+      }
+      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+      if (treeRes.ok) {
+        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
+        setTree(payload.root);
+      }
+      setNewNoteFolder(folderPath);
+      setInlineFolderOpen(false);
+      setInlineFolderName("");
+      setInlineFolderError(null);
+    } catch (err) {
+      setInlineFolderError(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setInlineFolderLoading(false);
+    }
+  }, [inlineFolderName, newNoteFolder]);
+
+
 
   const handleCreateNote = useCallback(async () => {
     const title = newNoteTitle.trim();
@@ -1215,10 +1328,13 @@ export default function NotesExplorer() {
       if (e.key === "Escape" && newNoteOpen) {
         setNewNoteOpen(false);
       }
+      if (e.key === "Escape" && newFolderOpen) {
+        setNewFolderOpen(false);
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [newNoteOpen, openNewNote]);
+  }, [newNoteOpen, newFolderOpen, openNewNote]);
 
   const handleToggle = useCallback((path: string) => {
     setExpandedFolders((current) => {
@@ -1480,18 +1596,33 @@ export default function NotesExplorer() {
             <h1 className={styles.title}>知识库</h1>
           </div>
           <span className={styles.counter}>{files.length} 篇</span>
-          <button
-            type="button"
-            className={styles.newNoteButton}
-            onClick={openNewNote}
-            aria-label="新建笔记 (⌘N)"
-            title="新建笔记 (⌘N)"
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-              <line x1="8" y1="2.5" x2="8" y2="13.5" />
-              <line x1="2.5" y1="8" x2="13.5" y2="8" />
-            </svg>
-          </button>
+          <div className={styles.sidebarActions}>
+            <button
+              type="button"
+              className={styles.newNoteButton}
+              onClick={openNewFolder}
+              aria-label="新建文件夹"
+              title="新建文件夹"
+            >
+              <svg viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor">
+                <path d="M703.8 547.8h-167v-167c0-13.8-11.2-25-25-25s-25 11.2-25 25v167h-167c-13.8 0-25 11.2-25 25s11.2 25 25 25h167v167c0 13.8 11.2 25 25 25s25-11.2 25-25v-167h167c13.8 0 25-11.2 25-25s-11.2-25-25-25z" />
+                <path d="M833.3 234.1H530.8l-29.6-58.5c-10.4-20.6-26.4-37.9-46.1-50.1-19.7-12.1-42.3-18.5-65.5-18.5H188.7c-68.9 0-125 56.1-125 125v513.5c0 96.5 78.5 175 175 175h544.7c96.5 0 175-78.5 175-175V359.1c-0.1-68.9-56.1-125-125.1-125z m75 511.5c0 68.9-56.1 125-125 125H238.7c-68.9 0-125-56.1-125-125V232c0-41.4 33.6-75 75-75h200.9c28.4 0 54.1 15.8 66.9 41.1l36.6 72.2c4.3 8.4 12.9 13.7 22.3 13.7h317.9c41.4 0 75 33.6 75 75v386.6z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={styles.newNoteButton}
+              onClick={openNewNote}
+              aria-label="新建笔记 (⌘N)"
+              title="新建笔记 (⌘N)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+              </svg>
+            </button>
+          </div>
+
           <button
             type="button"
             className={styles.mobileSidebarClose}
@@ -2042,7 +2173,26 @@ export default function NotesExplorer() {
               spellCheck={false}
             />
 
-            <label className={styles.newNoteLabel} htmlFor="new-note-folder">位置</label>
+            <div className={styles.newNoteLabelRow}>
+              <label className={styles.newNoteLabel} htmlFor="new-note-folder">位置</label>
+              <button
+                type="button"
+                className={styles.inlineFolderToggle}
+                onClick={() => {
+                  setInlineFolderOpen((prev) => !prev);
+                  setInlineFolderName("");
+                  setInlineFolderError(null);
+                  setTimeout(() => inlineFolderInputRef.current?.focus(), 30);
+                }}
+                title="新建文件夹"
+              >
+                <svg viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor" style={{ width: "12px", height: "12px" }}>
+                  <path d="M703.8 547.8h-167v-167c0-13.8-11.2-25-25-25s-25 11.2-25 25v167h-167c-13.8 0-25 11.2-25 25s11.2 25 25 25h167v167c0 13.8 11.2 25 25 25s25-11.2 25-25v-167h167c13.8 0 25-11.2 25-25s-11.2-25-25-25z" />
+                  <path d="M833.3 234.1H530.8l-29.6-58.5c-10.4-20.6-26.4-37.9-46.1-50.1-19.7-12.1-42.3-18.5-65.5-18.5H188.7c-68.9 0-125 56.1-125 125v513.5c0 96.5 78.5 175 175 175h544.7c96.5 0 175-78.5 175-175V359.1c-0.1-68.9-56.1-125-125.1-125z m75 511.5c0 68.9-56.1 125-125 125H238.7c-68.9 0-125-56.1-125-125V232c0-41.4 33.6-75 75-75h200.9c28.4 0 54.1 15.8 66.9 41.1l36.6 72.2c4.3 8.4 12.9 13.7 22.3 13.7h317.9c41.4 0 75 33.6 75 75v386.6z" />
+                </svg>
+                新建文件夹
+              </button>
+            </div>
             <select
               id="new-note-folder"
               className={styles.newNoteSelect}
@@ -2053,6 +2203,33 @@ export default function NotesExplorer() {
                 <option key={f} value={f}>{f || "/ 根目录"}</option>
               )) : null}
             </select>
+            {inlineFolderOpen ? (
+              <div className={styles.inlineFolderForm}>
+                <input
+                  ref={inlineFolderInputRef}
+                  className={styles.inlineFolderInput}
+                  type="text"
+                  placeholder={newNoteFolder ? `在 "${newNoteFolder}" 内新建` : "文件夹名称"}
+                  value={inlineFolderName}
+                  onChange={(e) => { setInlineFolderName(e.target.value); setInlineFolderError(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleInlineCreateFolder();
+                    if (e.key === "Escape") { setInlineFolderOpen(false); setInlineFolderName(""); }
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  className={styles.inlineFolderConfirm}
+                  onClick={() => void handleInlineCreateFolder()}
+                  disabled={inlineFolderLoading}
+                >
+                  {inlineFolderLoading ? "创建中…" : "创建"}
+                </button>
+              </div>
+            ) : null}
+            {inlineFolderError ? <p className={styles.newNoteError}>{inlineFolderError}</p> : null}
 
             {newNoteError ? <p className={styles.newNoteError}>{newNoteError}</p> : null}
 
@@ -2072,6 +2249,71 @@ export default function NotesExplorer() {
                 disabled={newNoteLoading}
               >
                 {newNoteLoading ? "创建中…" : "创建"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── 新建文件夹对话框 ─────────────────────────────── */}
+      {newFolderOpen ? (
+        <div
+          className={styles.newNoteBackdrop}
+          onClick={(e) => { if (e.target === e.currentTarget) setNewFolderOpen(false); }}
+          role="presentation"
+        >
+          <div
+            className={styles.newNoteDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-folder-heading"
+          >
+            <h2 id="new-folder-heading" className={styles.newNoteHeading}>新建文件夹</h2>
+
+            <label className={styles.newNoteLabel} htmlFor="new-folder-name">文件夹名称</label>
+            <input
+              id="new-folder-name"
+              ref={newFolderNameRef}
+              className={styles.newNoteInput}
+              type="text"
+              placeholder="文件夹名称"
+              value={newFolderName}
+              onChange={(e) => { setNewFolderName(e.target.value); setNewFolderError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleCreateFolder(); }}
+              autoComplete="off"
+              spellCheck={false}
+            />
+
+            <label className={styles.newNoteLabel} htmlFor="new-folder-parent">位置</label>
+            <select
+              id="new-folder-parent"
+              className={styles.newNoteSelect}
+              value={newFolderParent}
+              onChange={(e) => setNewFolderParent(e.target.value)}
+            >
+              {tree ? collectFolders(tree).map((f) => (
+                <option key={f} value={f}>{f || "/ 根目录"}</option>
+              )) : null}
+            </select>
+
+            {newFolderError ? <p className={styles.newNoteError}>{newFolderError}</p> : null}
+
+            <div className={styles.newNoteActions}>
+              <button
+                type="button"
+                className={styles.newNoteCancelBtn}
+                onClick={() => setNewFolderOpen(false)}
+                disabled={newFolderLoading}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={styles.newNoteConfirmBtn}
+                onClick={() => void handleCreateFolder()}
+                disabled={newFolderLoading}
+              >
+                {newFolderLoading ? "创建中…" : "创建文件夹"}
               </button>
             </div>
           </div>

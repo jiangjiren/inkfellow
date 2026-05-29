@@ -231,38 +231,75 @@ claude auth status
 
 在设置面板添加账号并选择对应厂商，API Key 请前往各厂商官网申请。
 
-## 本地 Obsidian Vault 同步到服务器
+## 将本地笔记同步到云端
 
-应用内置了 Git 面板，支持 pull / push / 撤销 / 历史查看。要让本地 Obsidian 和服务器保持同步，有以下两种方式，按需选择。
+应用内置了 Git 面板，支持 pull / push / 撤销 / 历史查看。要让本地笔记和云端服务器保持同步，共分两步：**先在云端建立 Git 仓库**，**再配置本地电脑向该仓库推送**。
 
-### 方式一：在服务器自建裸仓库（不依赖外部服务，推荐）
+---
 
-所有数据都留在自己服务器上。用一个**裸仓库**作为中转——本地 Obsidian 推送到裸仓库，服务器从裸仓库拉取。
+### 第一步：建立云端 Git 仓库
+
+选择以下任一方案——两种方案均可与第二步配合使用。
+
+#### 方案 A：在服务器自建裸仓库（推荐，数据完全自控）
+
+所有数据都留在自己服务器上。用一个**裸仓库**作为中转——本地笔记推送到裸仓库，inkfellow 从裸仓库拉取。
 
 ```
-本地 Obsidian ──push──▶ 服务器上的裸仓库 ◀──pull── inkfellow（工作目录）
-                         ~/git/notes-vault.git
+本地笔记 ──push──▶ 服务器上的裸仓库 ◀──pull── inkfellow（工作目录）
+                   ~/git/notes-vault.git
 ```
 
-> **✅ 如果你已运行过 `bash scripts/setup-vault.sh`**，服务器端的裸仓库和工作目录都已自动创建完毕，脚本末尾也打印了 SSH remote 地址。跳过下方第一步和第二步，**直接从第三步开始**配置本地电脑即可。
+> **✅ 如果你已运行过 `bash scripts/setup-vault.sh`**，裸仓库和工作目录均已自动创建完毕，脚本末尾也打印了 SSH remote 地址。**直接跳到第二步**。
 
-**第一步：在服务器上创建裸仓库**（已运行 setup-vault.sh 则跳过）
+在服务器上执行：
 
 ```bash
+# 创建裸仓库
 mkdir -p ~/git
 git init --bare ~/git/notes-vault.git
+
+# 克隆为工作目录（inkfellow 读这里）
+git clone ~/git/notes-vault.git ~/vault
+# 在 .env.local 里设置 VAULT_PATH=~/vault
 ```
 
-**第二步：克隆为工作目录（inkfellow 读这里）**（已运行 setup-vault.sh 则跳过）
+#### 方案 B：使用 GitHub 私有仓库（最简单，多设备通用）
+
+```
+本地笔记 ──push──▶ GitHub 私有仓库 ◀──pull── 服务器上的 inkfellow
+```
+
+在 GitHub 新建一个私有仓库，然后在**服务器上** clone 并配置认证：
 
 ```bash
-git clone ~/git/notes-vault.git ~/vault
-# 然后在 .env.local 里设置 VAULT_PATH=~/vault
+git clone https://github.com/yourname/my-vault.git ~/vault
+# 在 .env.local 里设置 VAULT_PATH=~/vault
 ```
 
-**第三步：把本地电脑的 SSH 公钥加到服务器**
+在 GitHub → Settings → Developer settings → Personal access tokens 生成 Token（权限选 `repo`），让服务器记住凭据：
 
-本地电脑如果没有 SSH 密钥，先生成一个：
+```bash
+git config --global credential.helper store
+cd ~/vault
+git pull   # 提示输入用户名和 token，输一次后自动记住
+```
+
+或者直接把 token 写进 remote URL：
+
+```bash
+git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vault.git
+```
+
+---
+
+### 第二步：把本地笔记同步到云端
+
+#### 对应方案 A — SSH 认证 + Obsidian Git
+
+**1. 把本地电脑的 SSH 公钥加到服务器**
+
+本地如果没有 SSH 密钥，先生成一个：
 
 ```bash
 ssh-keygen -t ed25519 -C "obsidian-local"
@@ -274,40 +311,32 @@ ssh-keygen -t ed25519 -C "obsidian-local"
 ssh-copy-id user@your-server.com
 ```
 
-验证是否配置成功（不需要密码直接登录）：
+验证是否配置成功（不需要密码直接登录即为成功）：
 
 ```bash
 ssh user@your-server.com
 ```
 
-**第四步：本地 vault 添加服务器为 remote**
+**2. 本地 vault 添加服务器裸仓库为 remote**
 
 ```bash
-cd /path/to/local/obsidian-vault
+cd /path/to/local/notes
 git init                   # 已是 git 仓库则跳过
-git remote add origin ssh://user@your-server.com/home/you/git/my-vault.git
+git remote add origin ssh://user@your-server.com/home/you/git/notes-vault.git
 git pull origin main
 ```
 
-**第五步：安装 Obsidian Git 插件**
+**3. 安装 Obsidian Git 插件**
 
 Obsidian → 设置 → 第三方插件 → 社区插件 → 搜索 **Obsidian Git**，安装并启用。建议设置：
 - *Auto pull interval*：`10`（分钟，自动拉取）
 - *Auto push interval*：`5`（分钟，自动提交并推送）
 
-每次本地 push 后，在 inkfellow 网页端点 Git 面板的 **Pull** 即可同步到服务器工作目录。
+每次本地 push 后，在 inkfellow 网页端点 Git 面板的 **Pull** 即可将最新内容同步到服务器工作目录。
 
----
+#### 对应方案 B — GitHub HTTPS + Obsidian Git
 
-### 方式二：使用 GitHub 私有仓库（最简单，多设备通用）
-
-```
-本地 Obsidian ──push──▶ GitHub 私有仓库 ◀──pull── 服务器上的 inkfellow
-```
-
-**第一步：把本地 vault 推送到 GitHub**
-
-在 GitHub 新建一个私有仓库，然后在本地 vault 目录：
+在本地 vault 目录执行：
 
 ```bash
 git init
@@ -316,32 +345,7 @@ git add . && git commit -m "init"
 git push -u origin main
 ```
 
-**第二步：在服务器上 clone 该仓库**
-
-```bash
-git clone https://github.com/yourname/my-vault.git ~/vault
-# 在 .env.local 里设置 VAULT_PATH=~/vault
-```
-
-**第三步：在服务器上配置 GitHub Token**
-
-在 GitHub → Settings → Developer settings → Personal access tokens 生成一个 Token（权限选 `repo`）。
-
-```bash
-# 让 git 永久记住 token
-git config --global credential.helper store
-
-cd ~/vault
-git pull   # 提示输入用户名和 token，输一次后自动记住
-```
-
-或者直接把 token 写进 remote URL：
-
-```bash
-git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vault.git
-```
-
-**第四步：安装 Obsidian Git 插件**（同方式一第五步）
+安装 Obsidian Git 插件（同方案 A 第 3 步），在插件设置中填入 GitHub 用户名和 Personal Access Token 完成认证。每次本地 push 后，inkfellow 网页端点 Git 面板的 **Pull** 即可同步。
 
 ---
 

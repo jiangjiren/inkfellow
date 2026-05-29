@@ -1287,8 +1287,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
             <span class="picker-option-name">Sonnet 4.6</span>
             <span class="picker-option-desc">快速均衡</span>
           </button>
-          <button class="picker-option model-option" data-model="claude-opus-4-7" data-label="Opus 4.7" role="option" aria-selected="false">
-            <span class="picker-option-name">Opus 4.7</span>
+          <button class="picker-option model-option" data-model="claude-opus-4-8" data-label="Opus 4.8" role="option" aria-selected="false">
+            <span class="picker-option-name">Opus 4.8</span>
             <span class="picker-option-desc">最强推理</span>
           </button>
           <button class="picker-option model-option" data-model="claude-haiku-4-5-20251001" data-label="Haiku 4.5" role="option" aria-selected="false">
@@ -1572,6 +1572,9 @@ function showInlineError(text) {
 
 let isGenerating = false;
 let quotedText = null;
+let quotedSection = null;
+let quotedPrefix = null;
+let quotedSuffix = null;
 
 // ── Image attachment ──────────────────────────────────────
 const MAX_IMAGES = 20;
@@ -1666,7 +1669,7 @@ async function fetchHistory() {
 // ── Auth: 账号配置列表 ────────────────────────────────────────
 const CLAUDE_MODELS = [
   { model: "claude-sonnet-4-6",          label: "Sonnet 4.6", name: "Sonnet 4.6", desc: "快速均衡" },
-  { model: "claude-opus-4-7",            label: "Opus 4.7",   name: "Opus 4.7",   desc: "最强推理" },
+  { model: "claude-opus-4-8",            label: "Opus 4.8",   name: "Opus 4.8",   desc: "最强推理" },
   { model: "claude-haiku-4-5-20251001",  label: "Haiku 4.5",  name: "Haiku 4.5",  desc: "极速轻量" },
 ];
 
@@ -1852,7 +1855,7 @@ const addErrorEl      = document.getElementById("add-error");
 const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-7",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "sk-ant-...", namePlaceholder: "Anthropic API" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "sk-ant-...", namePlaceholder: "Anthropic API" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "sk-...",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "sk-or-...", namePlaceholder: "OpenRouter" },
   custom:     { baseUrl: "",                                    opusModel: "",                                sonnetModel: "",                                 haikuModel: "",                              keyPlaceholder: "sk-...",    namePlaceholder: "自定义账号" },
@@ -2346,13 +2349,16 @@ function renderAssistantBlocks(body, blocks) {
   for (const block of blocks || []) appendAssistantBlock(body, block);
 }
 
-function setGenerating(v) {
+function setGenerating(v, notifyParent = true) {
   isGenerating = v;
   sendBtn.disabled = false;
   sendBtn.classList.toggle("stopping", v);
   sendBtn.setAttribute("aria-label", v ? "停止" : "发送");
   iconSend.style.display = v ? "none" : "";
   iconStop.style.display = v ? "" : "none";
+  if (notifyParent && window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: "ai-generating-state", isGenerating: v }, "*");
+  }
 }
 
 // ── Note context (injected by parent via postMessage) ─────
@@ -2381,6 +2387,9 @@ window.addEventListener("message", (e) => {
   }
   if (e.data?.type === "note-selection" && e.data.text) {
     quotedText = e.data.text;
+    quotedSection = e.data.section ?? null;
+    quotedPrefix = e.data.prefix ?? null;
+    quotedSuffix = e.data.suffix ?? null;
     const lines = quotedText.split("\n").filter(l => l.trim()).length;
     const preview = quotedText.length > 55 ? quotedText.slice(0, 55) + "…" : quotedText;
     quoteTextEl.textContent = preview;
@@ -2389,6 +2398,9 @@ window.addEventListener("message", (e) => {
   }
   if (e.data?.type === "note-selection-clear") {
     quotedText = null;
+    quotedSection = null;
+    quotedPrefix = null;
+    quotedSuffix = null;
     quoteChip.classList.remove("visible");
   }
   if (e.data?.type === "note-ask" && e.data.text) {
@@ -2411,6 +2423,9 @@ contextChip.addEventListener("click", (e) => {
 
 document.getElementById("quote-dismiss").addEventListener("click", () => {
   quotedText = null;
+  quotedSection = null;
+  quotedPrefix = null;
+  quotedSuffix = null;
   quoteChip.classList.remove("visible");
 });
 
@@ -2420,10 +2435,10 @@ let ws = null;
 
 function connect() {
   ws = new WebSocket(wsUrl);
-  ws.onopen = () => { setGenerating(false); };
+  ws.onopen = () => { setGenerating(false, false); };
   ws.onclose = () => {
     sendBtn.disabled = true;
-    setGenerating(false);
+    setGenerating(false, false);
     setTimeout(connect, 3000);
   };
   ws.onerror = () => { };
@@ -2772,7 +2787,6 @@ function handleEvent(ev) {
       messageLog.push({ role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost });
       saveCurrentConversation();
     }
-    setGenerating(false); removeTyping();
     return;
   }
 
@@ -3086,8 +3100,18 @@ function send() {
   const parts = [];
   if (currentNoteFile && noteContextEnabled) parts.push(`当前查看的文件：${currentNoteFile}`);
   if (quotedText) {
-    parts.push(`用户引用了以下文段：\n"${quotedText}"`);
+    const sectionHint = quotedSection ? `（「${quotedSection}」章节）` : "";
+    let anchor = "";
+    if (quotedPrefix || quotedSuffix) {
+      const pre = quotedPrefix ? `…${quotedPrefix}` : "";
+      const suf = quotedSuffix ? `${quotedSuffix}…` : "";
+      anchor = `\n位置锚点：${pre}【${quotedText}】${suf}`;
+    }
+    parts.push(`用户引用了以下文段${sectionHint}：\n"${quotedText}"${anchor}`);
     quotedText = null;
+    quotedSection = null;
+    quotedPrefix = null;
+    quotedSuffix = null;
     quoteChip.classList.remove("visible");
   }
   parts.push(text);

@@ -28,6 +28,7 @@ const PANEL_TAB_KEY = "inkfellow-notes-panel-tab-v1";
 const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
 const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
+const LAST_FILE_KEY = "inkfellow-notes-last-file-v1";
 
 type PanelTab = "claude" | "toc" | "git";
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
@@ -97,6 +98,10 @@ const getAncestorFolders = (filePath: string) => {
 };
 
 const findPreferredInitialFile = (files: NotesFileNode[]) => {
+  try {
+    const last = window.localStorage.getItem(LAST_FILE_KEY);
+    if (last && files.some((f) => f.path === last)) return last;
+  } catch { /* ignore */ }
   return null;
 };
 
@@ -296,6 +301,10 @@ function ArticleToc({
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
+  // suppress dashboard flash when restoring last opened file
+  const [restoringLastFile, setRestoringLastFile] = useState(() => {
+    try { return !!window.localStorage.getItem(LAST_FILE_KEY); } catch { return false; }
+  });
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -341,9 +350,43 @@ export default function NotesExplorer() {
   const syncTocRef = useRef<(() => void) | null>(null);
   const [activeTocSlug, setActiveTocSlug] = useState("");
   const [isScrolled, setIsScrolled] = useState(false);
+  const [aiStatus, setAiStatus] = useState<"idle" | "thinking" | "done">("idle");
+  const aiStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === "ai-generating-state") {
+        const isGenerating = event.data.isGenerating;
+        if (isGenerating) {
+           setAiStatus("thinking");
+           if (aiStatusTimerRef.current) clearTimeout(aiStatusTimerRef.current);
+        } else {
+           setAiStatus((prev) => {
+             if (prev === "thinking") {
+               if (navigator.vibrate) navigator.vibrate(50);
+               if (aiStatusTimerRef.current) clearTimeout(aiStatusTimerRef.current);
+               aiStatusTimerRef.current = setTimeout(() => {
+                 setAiStatus((current) => current === "done" ? "idle" : current);
+               }, 6000); // Wait 6 seconds before idle
+               return "done";
+             }
+             return "idle";
+           });
+        }
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      if (aiStatusTimerRef.current) clearTimeout(aiStatusTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     activePathRef.current = activePath;
+    if (activePath) {
+      try { window.localStorage.setItem(LAST_FILE_KEY, activePath); } catch { /* ignore */ }
+    }
   }, [activePath]);
 
   useEffect(() => {
@@ -765,9 +808,34 @@ export default function NotesExplorer() {
         try {
           const range = sel.getRangeAt(0);
           if (!reader.contains(range.commonAncestorContainer)) return;
+
+          // Nearest heading before selection for semantic location
+          const headings = Array.from(reader.querySelectorAll("h1,h2,h3,h4,h5,h6"));
+          let section: string | null = null;
+          for (const h of headings) {
+            if (h.compareDocumentPosition(range.startContainer) & Node.DOCUMENT_POSITION_FOLLOWING) {
+              section = h.textContent?.trim() ?? null;
+            }
+          }
+
+          // W3C TextQuoteSelector: short prefix/suffix to unambiguously anchor the selection
+          let prefix = "";
+          let suffix = "";
+          try {
+            const preRange = document.createRange();
+            preRange.setStart(reader, 0);
+            preRange.setEnd(range.startContainer, range.startOffset);
+            prefix = preRange.toString().replace(/\s+/g, " ").slice(-30).trimStart();
+
+            const postRange = document.createRange();
+            postRange.setStart(range.endContainer, range.endOffset);
+            postRange.setEnd(reader, reader.childNodes.length);
+            suffix = postRange.toString().replace(/\s+/g, " ").slice(0, 30).trimEnd();
+          } catch { /* ignore */ }
+
           hasReaderSelectionRef.current = true;
           claudeFrameRef.current?.contentWindow?.postMessage(
-            { type: "note-selection", text },
+            { type: "note-selection", text, section, prefix, suffix },
             window.location.origin,
           );
         } catch { /* ignore */ }
@@ -861,8 +929,10 @@ export default function NotesExplorer() {
         setTree(payload.root);
         setExpandedFolders(new Set(initialFile ? getAncestorFolders(initialFile) : []));
         setTreeState("ready");
-
+        // 如果有要恢复的文件，提前把 noteState 设为 "loading"，
+        // 确保 React 在 await loadNote 之前的那帧渲染里不会显示 Dashboard。
         if (initialFile) {
+          setNoteState("loading");
           await loadNote(initialFile, url.hash || null, { restoreStoredScroll: !url.hash });
         }
       } catch (loadError) {
@@ -1193,6 +1263,8 @@ export default function NotesExplorer() {
   );
 
   const handleClaudeToggle = useCallback(() => {
+    setAiStatus((prev) => (prev === "done" ? "idle" : prev));
+
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
       if (panelTab === "claude" && mobileAssistantPanelOpen) {
@@ -1668,7 +1740,7 @@ export default function NotesExplorer() {
               <div className={styles.documentState}>知识库中没有可显示的文件。</div>
             ) : null}
 
-            {treeState === "ready" && files.length > 0 && !note ? (
+            {treeState === "ready" && files.length > 0 && !note && noteState !== "loading" ? (
               <NotesDashboard 
                 files={files} 
                 onSelectNote={handleSelect} 
@@ -1921,7 +1993,7 @@ export default function NotesExplorer() {
       {/* 移动端 AI 助手悬浮按钮：仅在打开笔记时显示 */}
       {note ? <button
         type="button"
-        className={`${styles.claudeFab} ${mobileAssistantPanelOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""}`}
+        className={`${styles.claudeFab} ${mobileAssistantPanelOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
         onClick={handleClaudeToggle}
         aria-label="AI 助手"
         title="AI 助手"
@@ -1938,6 +2010,7 @@ export default function NotesExplorer() {
           <path d="M19.5 13.5a.5.5 0 0 1 1 0v1.793a.5.5 0 0 0 .146.353l1.236 1.236a.5.5 0 0 1 0 .707l-1.236 1.235a.5.5 0 0 0-.146.354V21.5a.5.5 0 0 1-1 0v-1.793a.5.5 0 0 0-.146-.354l-1.236-1.235a.5.5 0 0 1 0-.707l1.236-1.236a.5.5 0 0 0 .146-.353V13.5z" fill="url(#ai-grad)"/>
         </svg>
         <span>Ask AI</span>
+        {aiStatus === "done" && <span className={styles.claudeFabBadge} />}
       </button> : null}
 
       {/* ── 新建笔记对话框 ─────────────────────────────── */}

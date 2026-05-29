@@ -301,9 +301,13 @@ function ArticleToc({
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
-  // suppress dashboard flash when restoring last opened file
+  // suppress dashboard flash when restoring last opened file (only on reload/back-forward)
   const [restoringLastFile, setRestoringLastFile] = useState(() => {
-    try { return !!window.localStorage.getItem(LAST_FILE_KEY); } catch { return false; }
+    try {
+      const navType = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+      const isRestore = !navType || navType.type === "reload" || navType.type === "back_forward";
+      return isRestore && !!window.localStorage.getItem(LAST_FILE_KEY);
+    } catch { return false; }
   });
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -936,9 +940,13 @@ export default function NotesExplorer() {
         const allFiles = collectFiles(payload.root);
         const url = new URL(window.location.href);
         const requestedFile = url.searchParams.get("file");
+        // Only restore the last-opened note on reload/back-forward.
+        // When the user explicitly navigates to the root URL, show the dashboard.
+        const navType = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+        const isRestore = !navType || navType.type === "reload" || navType.type === "back_forward";
         const initialFile = requestedFile && allFiles.some((file) => file.path === requestedFile)
           ? requestedFile
-          : findPreferredInitialFile(allFiles);
+          : isRestore ? findPreferredInitialFile(allFiles) : null;
 
         setTree(payload.root);
         setExpandedFolders(new Set(initialFile ? getAncestorFolders(initialFile) : []));

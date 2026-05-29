@@ -470,7 +470,10 @@ export const createFolder = async (relativePath: string) => {
 
   await fs.mkdir(absolutePath, { recursive: true });
 
-  // Write a .gitkeep so the folder appears in the file tree
+  // Write a .gitkeep so the empty folder can be tracked by git and therefore
+  // shows up in the sync tab. git cannot track empty directories on its own.
+  // The git status API collapses a lone .gitkeep back into a folder entry, and
+  // drops it once the folder holds a real note. (see GET handler in api/notes/git)
   const keepFile = path.join(absolutePath, ".gitkeep");
   await fs.writeFile(keepFile, "", "utf8");
 

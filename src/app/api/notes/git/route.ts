@@ -77,6 +77,7 @@ type FileStatus = {
   name: string;
   path: string;
   state: "modified" | "added" | "deleted" | "renamed";
+  kind?: "file" | "folder";
 };
 
 export type DiffLine = {
@@ -263,7 +264,7 @@ export async function GET(req: Request) {
 
     // -uall：展开所有未追踪目录，逐一列出文件（默认只显示目录名）
     const { stdout: statusOut } = await git(["status", "--porcelain", "-uall"], { trimStdout: false });
-    const files: FileStatus[] = statusOut
+    const rawEntries = statusOut
       .split("\n")
       .filter(Boolean)
       .map((line) => {
@@ -281,6 +282,31 @@ export async function GET(req: Request) {
 
         return { name, path: cleanPath, state };
       });
+
+    // 新建的空文件夹靠 .gitkeep 占位才能被 git 跟踪。展示时把「仅含 .gitkeep」
+    // 的文件夹折叠成一个文件夹条目（显示文件夹名而非 .gitkeep）；若该文件夹下
+    // 已有真实笔记，则丢弃 .gitkeep 条目，由真实笔记代表该文件夹，避免冗余。
+    const foldersWithRealFiles = new Set(
+      rawEntries
+        .filter((e) => e.name !== ".gitkeep" && e.path.includes("/"))
+        .map((e) => e.path.slice(0, e.path.lastIndexOf("/"))),
+    );
+
+    const files: FileStatus[] = [];
+    for (const e of rawEntries) {
+      if (e.name === ".gitkeep" && e.path.includes("/")) {
+        const folderPath = e.path.slice(0, e.path.lastIndexOf("/"));
+        if (foldersWithRealFiles.has(folderPath)) continue; // 文件夹已有真实笔记，隐藏占位
+        files.push({
+          name: folderPath.split("/").pop() || folderPath,
+          path: folderPath,
+          state: e.state,
+          kind: "folder",
+        });
+        continue;
+      }
+      files.push({ ...e, kind: "file" });
+    }
 
     let ahead = 0;
     let behind = 0;

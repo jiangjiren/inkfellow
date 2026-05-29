@@ -2838,6 +2838,63 @@
     transform: scale(0.78);
     pointer-events: none;
   }
+
+  .claudeFabThinking {
+    /* remove solid border for glow */
+    border-color: transparent;
+  }
+
+  .claudeFabThinking::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 26px;
+    background: linear-gradient(45deg, rgba(79, 70, 229, 0.8), rgba(147, 51, 234, 0.8), rgba(225, 29, 72, 0.8));
+    background-size: 200% 200%;
+    z-index: -1;
+    filter: blur(4px);
+    animation: fabAura 4s ease infinite, fabBreathe 4s ease-in-out infinite;
+  }
+
+  .claudeFabDone {
+    animation: fabBounce 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  .claudeFabBadge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 12px;
+    height: 12px;
+    background: #9333EA;
+    border: 2px solid #ffffff;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.05);
+    animation: fabBadgePop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+}
+
+@keyframes fabAura {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes fabBreathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes fabBounce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+
+@keyframes fabBadgePop {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 /* ── macOS Xcode-style Code Blocks ── */

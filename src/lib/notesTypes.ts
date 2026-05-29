@@ -18,6 +18,8 @@ export type NotesTreeNode = NotesDirectoryNode | NotesFileNode;
 export type NotesTreeResponse = {
   root: NotesDirectoryNode;
   generatedAt: string;
+  /** 结构指纹：所有节点路径的哈希，仅在增/删/改名时变化，用于客户端轮询比对 */
+  rev: string;
 };
 
 export type NotesFileResponse = {

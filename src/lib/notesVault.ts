@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { createHash } from "crypto";
 import path from "path";
 import type {
   NotesDirectoryNode,
@@ -212,6 +213,22 @@ const walkDirectory = async (absolutePath: string, relativePath: string): Promis
 export const getNotesTree = async () => {
   const vaultRoot = await getVaultRoot();
   return walkDirectory(vaultRoot, "");
+};
+
+// 结构指纹：收集所有节点路径并哈希。只反映「有哪些文件/文件夹」，
+// 不含 size/mtime，因此纯内容编辑不会改变它——客户端据此轮询，仅在
+// 增/删/改名时才刷新文件树。
+export const computeTreeRev = (root: NotesDirectoryNode): string => {
+  const paths: string[] = [];
+  const walk = (node: NotesTreeNode) => {
+    paths.push(`${node.type === "directory" ? "d" : "f"}:${node.path}`);
+    if (node.type === "directory") {
+      for (const child of node.children) walk(child);
+    }
+  };
+  walk(root);
+  paths.sort();
+  return createHash("sha1").update(paths.join("\n")).digest("hex");
 };
 
 // 只读取文件元数据（修改时间），不加载内容，供轮询检测变化用

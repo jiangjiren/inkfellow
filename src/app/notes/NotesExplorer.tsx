@@ -300,6 +300,8 @@ function ArticleToc({
 
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
+  // 当前文件树的结构指纹，用于轮询比对，只在增/删/改名时才刷新
+  const treeRevRef = useRef<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   // suppress dashboard flash when restoring last opened file (only on reload/back-forward)
   const [restoringLastFile, setRestoringLastFile] = useState(() => {
@@ -951,6 +953,7 @@ export default function NotesExplorer() {
           : isRestore ? findPreferredInitialFile(allFiles) : null;
 
         setTree(payload.root);
+        treeRevRef.current = payload.rev;
         setExpandedFolders(new Set(initialFile ? getAncestorFolders(initialFile) : []));
         setTreeState("ready");
         // 如果有要恢复的文件，提前把 noteState 设为 "loading"，
@@ -999,6 +1002,39 @@ export default function NotesExplorer() {
       cancelled = true;
     };
   }, [loadNote]);
+
+  // 轻量轮询：覆盖「非 UI 发起」的文件变更（Agent 写盘、手动改、git pull、
+  // 其他标签页/设备）。比对结构指纹 rev，仅在增/删/改名时才 setTree，不打断
+  // 展开/选中状态；标签页隐藏时暂停，切回/聚焦时立即刷新一次。
+  useEffect(() => {
+    let stopped = false;
+
+    const refreshTree = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch("/api/notes/tree", { cache: "no-store" });
+        if (!res.ok || stopped) return;
+        const payload = (await res.json()) as NotesTreeResponse;
+        if (stopped) return;
+        // 指纹未变（无增删改名）→ 跳过，避免无谓的重渲染
+        if (payload.rev === treeRevRef.current) return;
+        treeRevRef.current = payload.rev;
+        setTree(payload.root);
+      } catch { /* 网络抖动 — 静默忽略，下次轮询再试 */ }
+    };
+
+    const interval = setInterval(() => { void refreshTree(); }, 5_000);
+    const onVisible = () => { if (document.visibilityState === "visible") void refreshTree(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     if (noteState !== "ready") {

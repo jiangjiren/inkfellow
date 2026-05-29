@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getNotesTree, mapVaultError } from "@/lib/notesVault";
+import { computeTreeRev, getNotesTree, mapVaultError } from "@/lib/notesVault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,6 +10,7 @@ export async function GET() {
     return NextResponse.json(
       {
         root,
+        rev: computeTreeRev(root),
         generatedAt: new Date().toISOString(),
       },
       {

@@ -509,7 +509,9 @@ export default function NotesExplorer() {
   }, [articleTocEntries]);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia("(max-width: 900px)");
+    // 底部抽屉（手机式）适用条件：窄屏，或任意竖屏（平板/桌面竖屏都跟手机一致）。
+    // 横屏且足够宽时才走桌面右侧栏布局。
+    const mediaQuery = window.matchMedia("(max-width: 900px), (orientation: portrait)");
     const syncViewport = () => {
       const isMobile = mediaQuery.matches;
       setIsMobileViewport(isMobile);

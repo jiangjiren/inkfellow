@@ -808,7 +808,8 @@
   position: sticky;
   top: 0;
   height: 100vh;
-  width: var(--assistant-panel-width, 520px);
+  /* 流式上限：永远不超过视口 42%，窗口变窄也只占右侧一部分，绝不铺满 */
+  width: min(var(--assistant-panel-width, 520px), 42vw);
   flex: 0 0 auto;
   min-width: 0;
   display: flex;
@@ -2533,7 +2534,7 @@
 }
 
 /* ── Mobile ────────────────────────────────────── */
-@media (max-width: 900px) {
+@media (max-width: 900px), (orientation: portrait) {
   .shell {
     display: block;
   }
@@ -2615,8 +2616,9 @@
     top: auto;
     z-index: 40;
     width: 100% !important;
-    height: min(86dvh, 760px);
-    min-height: min(520px, 86dvh);
+    /* 始终留出顶部空间：最高 85dvh，且在高屏（平板竖屏）上封顶 720px，不会铺满 */
+    height: min(85dvh, 720px);
+    min-height: min(480px, 85dvh);
     border-left: 0;
     border-top: 1px solid var(--notes-border);
     box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.15);
@@ -2707,36 +2709,13 @@
   }
 }
 
-/* ── Tablet ────────────────────────────────────── */
-@media (min-width: 901px) and (max-width: 1260px) {
-  .shell {
-    flex-flow: row wrap;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-  }
-
-  .sidebar,
-  .reader {
-    height: 100vh !important;
-    transition: height 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .shell:not(.shellAssistantPanelHidden) .sidebar,
-  .shell:not(.shellAssistantPanelHidden) .reader {
-    height: 46vh !important;
-  }
-
+/* ── 平板横屏 ───────────────────────────────────────
+   横屏且中等宽度（如平板横屏、缩小的桌面窗口）：保持桌面式右侧栏，
+   但把宽度收紧一点，给正文留足空间，绝不铺满整屏。
+   竖屏平板不会命中这里，会落到上面的底部抽屉规则。 */
+@media (orientation: landscape) and (min-width: 901px) and (max-width: 1260px) {
   .assistantPanel {
-    width: 100% !important;
-    height: 54vh !important;
-    border-left: 0 !important;
-    border-top: 1px solid var(--notes-border) !important;
-    position: relative !important;
-  }
-
-  .assistantPanelResizer {
-    display: none;
+    width: min(var(--assistant-panel-width, 460px), 40vw);
   }
 }
 
@@ -2783,7 +2762,7 @@
   display: none; /* hidden on desktop */
 }
 
-@media (max-width: 900px) {
+@media (max-width: 900px), (orientation: portrait) {
   .claudeHeaderBtn {
     display: none; /* hide header button on mobile, FAB takes over */
   }
@@ -3261,7 +3240,7 @@
 }
 
 /* 移动端 */
-@media (max-width: 900px) {
+@media (max-width: 900px), (orientation: portrait) {
   .cmContainer {
     padding: 24px 18px 60px;
   }
@@ -3739,7 +3718,7 @@
   margin: 0;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 900px), (orientation: portrait) {
   .dashboardContainer {
     padding: 6vh 20px 10vh;
   }

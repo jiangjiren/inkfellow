@@ -7,6 +7,7 @@ type FileStatus = {
   name: string;
   path: string;
   state: "modified" | "added" | "deleted" | "renamed";
+  kind?: "file" | "folder";
 };
 
 type GitStatus = {
@@ -346,7 +347,8 @@ export default function NotesGit({ onOpenFile }: Props) {
                   {status.files.map((f) => {
                     const parentPath = formatParentPath(f.path);
                     const isConfirming = discardingPath === f.path;
-                    
+                    const isFolder = f.kind === "folder";
+
                     return (
                       <li
                         key={f.path}
@@ -358,7 +360,11 @@ export default function NotesGit({ onOpenFile }: Props) {
                           
                           {/* File Path info */}
                           <div className={styles.gitFileInfo}>
-                            {f.state !== "deleted" && onOpenFile ? (
+                            {isFolder ? (
+                              <span className={styles.gitFileName} title={f.path}>
+                                📁 {f.name}
+                              </span>
+                            ) : f.state !== "deleted" && onOpenFile ? (
                               <button
                                 type="button"
                                 className={styles.gitFileNameBtn}
@@ -379,14 +385,16 @@ export default function NotesGit({ onOpenFile }: Props) {
 
                           {/* Hover Actions Panel */}
                           <div className={styles.gitHoverActions}>
-                            <button
-                              type="button"
-                              className={styles.gitCircleBtn}
-                              title="查看差异"
-                              onClick={() => void openDiff(f)}
-                            >
-                              🔍
-                            </button>
+                            {!isFolder && (
+                              <button
+                                type="button"
+                                className={styles.gitCircleBtn}
+                                title="查看差异"
+                                onClick={() => void openDiff(f)}
+                              >
+                                🔍
+                              </button>
+                            )}
                             <button
                               type="button"
                               className={`${styles.gitCircleBtn} ${styles.gitCircleBtnDanger}`}
@@ -403,7 +411,7 @@ export default function NotesGit({ onOpenFile }: Props) {
                           <div className={styles.gitPopover}>
                             <div className={styles.gitPopoverHeader}>警告</div>
                             <div className={styles.gitPopoverText}>
-                              {DISCARD_WARN[f.state]}
+                              {isFolder ? "确定删除这个新建文件夹吗？删除后不可撤销。" : DISCARD_WARN[f.state]}
                             </div>
                             <div className={styles.gitPopoverBtns}>
                               <button

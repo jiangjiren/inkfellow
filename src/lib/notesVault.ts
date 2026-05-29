@@ -152,9 +152,12 @@ const isMarkdownPath = (relativePath: string) => path.extname(relativePath).toLo
 const HTML_EXTENSIONS = new Set([".html", ".htm"]);
 const isHtmlPath = (relativePath: string) => HTML_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
 
-const isNoteFile = (name: string) => isMarkdownPath(name) || isHtmlPath(name);
+// PDF 仅用于只读预览（前端 <iframe> 原生渲染），不可编辑；其余仍是 md/html。
+const isNoteFile = (name: string) => isMarkdownPath(name) || isHtmlPath(name) || isPdfPath(name);
 
 const isImagePath = (relativePath: string) => IMAGE_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+
+const isPdfPath = (relativePath: string) => path.extname(relativePath).toLowerCase() === ".pdf";
 
 const compareNodes = (left: NotesTreeNode, right: NotesTreeNode) => {
   if (left.type !== right.type) {
@@ -207,6 +210,26 @@ const walkDirectory = async (absolutePath: string, relativePath: string): Promis
     name: relativePath ? path.posix.basename(relativePath) : path.basename(await getVaultRoot()),
     path: relativePath,
     children,
+  };
+};
+
+// 只读返回二进制文档字节（目前仅 PDF），供前端用 <iframe> 原生预览。
+// 服务端不做任何渲染/转换，仅按精确路径读取文件并流回字节。
+export const readVaultDocument = async (relativePath: string) => {
+  const resolved = await resolveExistingVaultPath(relativePath);
+  if (!isPdfPath(resolved.relativePath)) {
+    throw new VaultAccessError("Only PDF documents can be previewed.", 415);
+  }
+  const stat = await fs.stat(resolved.absolutePath);
+  if (!stat.isFile()) {
+    throw new VaultAccessError("File not found.", 404);
+  }
+  return {
+    body: await fs.readFile(resolved.absolutePath),
+    contentType: "application/pdf",
+    size: stat.size,
+    updatedAt: stat.mtime.toUTCString(),
+    fileName: path.basename(resolved.relativePath),
   };
 };
 

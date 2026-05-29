@@ -46,6 +46,10 @@ const CLAUDE_COMPAT_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "CLAUDE_CODE_SUBAGENT_MODEL",
   "CLAUDE_CODE_EFFORT_LEVEL",
+  // 剥离从父进程继承来的陈旧 PWD：本服务可能从 clawapp/claude-chat 目录启动，
+  // 若把该 PWD 透传给 agent，Claude 会误报工作目录（实际 cwd 已由 SDK 设为 vault）。
+  "PWD",
+  "OLDPWD",
 ];
 
 // ── Session persistence ───────────────────────────────────
@@ -527,6 +531,8 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         // ── claude 会员：OAuth token 不能直接调 API，走 Agent SDK query() ──
         // 不使用 resume（thinking signature 问题），改用文本注入历史
         const agentEnv = buildAgentEnv(profileData, "medium", null);
+        const wechatCwd = resolveAllowedCwd("");
+        agentEnv.PWD = wechatCwd; // 工作目录与实际 cwd 一致，避免误报为启动目录
         let fullPrompt = prompt;
         if (history.length > 0) {
           const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
@@ -540,7 +546,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         };
         const generator = query({
           prompt: (async function* () { yield userMsg; })(),
-          options: { cwd: resolveAllowedCwd(""), permissionMode: "auto", allowDangerouslySkipPermissions: true, includePartialMessages: false, env: agentEnv, abortController: { signal: abortSignal } },
+          options: { cwd: wechatCwd, permissionMode: "auto", allowDangerouslySkipPermissions: true, includePartialMessages: false, env: agentEnv, abortController: { signal: abortSignal } },
         });
         for await (const ev of generator) {
           if (ev.type === "assistant") {
@@ -964,14 +970,17 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    const resolvedCwd = resolveAllowedCwd(msg.cwd);
+    const webEnv = buildAgentEnv(profileData, effort, msg.model);
+    webEnv.PWD = resolvedCwd; // 让 agent 报告的工作目录与实际 cwd 一致
     const options = {
-      cwd: resolveAllowedCwd(msg.cwd),
+      cwd: resolvedCwd,
       permissionMode,
       allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
       abortController: ac,
       includePartialMessages: true,
       effort,
-      env: buildAgentEnv(profileData, effort, msg.model),
+      env: webEnv,
     };
     if (sessionId) options.resume = sessionId;
     if (!activeProfile || activeProfile.provider === "claude") {

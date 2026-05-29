@@ -808,6 +808,7 @@
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   /* 流式上限：永远不超过视口 42%，窗口变窄也只占右侧一部分，绝不铺满 */
   width: min(var(--assistant-panel-width, 520px), 42vw);
   flex: 0 0 auto;

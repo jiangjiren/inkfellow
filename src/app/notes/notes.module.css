@@ -1,5 +1,6 @@
 /* ── Layout ────────────────────────────────────── */
 .shell {
+  position: relative;
   min-height: 100vh;
   min-height: 100dvh;
   width: 100%;
@@ -414,9 +415,10 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 48px;
-  border-bottom: 1px solid var(--notes-border);
-  background: rgba(245, 244, 239, 0.82);
-  backdrop-filter: blur(20px) saturate(190%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
   padding: 0 22px;
   box-sizing: border-box;
   transition: min-height 0.3s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s ease, border-color 0.3s ease;
@@ -424,20 +426,22 @@
 
 @media (prefers-color-scheme: dark) {
   .readerHeader {
-    background: rgba(9, 9, 11, 0.82);
+    background: rgba(20, 20, 22, 0.85);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
 }
 
 .readerHeaderScrolled {
-  min-height: 38px !important;
-  background: rgba(245, 244, 239, 0.92) !important;
-  border-bottom-color: var(--notes-border-strong) !important;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
+  min-height: 44px !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
 }
 
 @media (prefers-color-scheme: dark) {
   .readerHeaderScrolled {
-    background: rgba(9, 9, 11, 0.92) !important;
+    background: rgba(20, 20, 22, 0.95) !important;
+    border-bottom-color: rgba(255, 255, 255, 0.08) !important;
   }
 }
 
@@ -707,11 +711,13 @@
 
 .noteMeta {
   display: flex;
+  align-items: center;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 0 10px;
-  color: #7e887a;
-  font-size: 11px;
-  line-height: 1.4;
+  gap: 0 8px;
+  color: #86868b;
+  font-size: 12px;
+  font-weight: 400;
   min-width: 0;
 }
 
@@ -720,15 +726,17 @@
   overflow-wrap: anywhere;
 }
 
-.noteMeta span:not(:last-child)::after {
-  content: "";
-  display: inline-block;
-  width: 3px;
-  height: 3px;
-  margin-left: 10px;
-  border-radius: 999px;
-  background: #b4bcac;
-  vertical-align: middle;
+.noteMeta span:first-child {
+  color: #1d1d1f;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .noteMeta span:first-child {
+    color: #f5f5f7;
+  }
 }
 
 /* ── Git 未同步指示点 ─────────────────────────────── */
@@ -2537,7 +2545,10 @@
 /* ── Mobile ────────────────────────────────────── */
 @media (max-width: 900px), (orientation: portrait) {
   .shell {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
   }
 
   .sidebar {
@@ -2604,9 +2615,11 @@
   }
 
   .reader {
-    height: auto;
-    min-height: 58vh;
-    overflow: visible;
+    flex: 1 1 0%;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .assistantPanel {
@@ -2618,7 +2631,9 @@
     z-index: 40;
     width: 100% !important;
     /* 始终留出顶部空间：最高 85dvh，且在高屏（平板竖屏）上封顶 720px，不会铺满 */
+    height: min(85vh, 720px);
     height: min(85dvh, 720px);
+    min-height: min(480px, 85vh);
     min-height: min(480px, 85dvh);
     border-left: 0;
     border-top: 1px solid var(--notes-border);
@@ -2772,46 +2787,40 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
     position: fixed;
     right: calc(20px + env(safe-area-inset-right, 0px));
     bottom: calc(24px + env(safe-area-inset-bottom, 0px));
     z-index: 50;
-    height: 48px;
-    padding: 0 20px;
-    border-radius: 24px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
-    color: #111;
-    font-size: 14.5px;
-    font-family: var(--notes-font-sans);
-    font-weight: 600;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 0.5px solid rgba(255, 255, 255, 0.15);
+    color: #ffffff;
     cursor: pointer;
-    box-shadow:
-      0 4px 16px rgba(0, 0, 0, 0.06),
-      0 8px 32px rgba(0, 0, 0, 0.04);
+    box-shadow: 
+      inset 0 1px 3px rgba(255, 255, 255, 0.3),
+      inset 0 -1px 4px rgba(255, 255, 255, 0.05),
+      0 12px 32px rgba(0, 0, 0, 0.25);
     transition:
-      background 150ms ease,
-      transform 150ms ease,
-      box-shadow 150ms ease,
-      opacity 200ms ease;
+      transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1),
+      opacity 200ms ease,
+      box-shadow 200ms ease;
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
 
   .claudeFab:active {
     transform: scale(0.96);
-    box-shadow:
-      0 2px 8px rgba(0, 0, 0, 0.05);
   }
 
   .claudeFabActive {
-    background: rgba(240, 240, 245, 0.95);
-    border-color: rgba(0, 0, 0, 0.12);
-    box-shadow:
-      0 2px 12px rgba(0, 0, 0, 0.08);
+    opacity: 0;
+    transform: scale(0.8);
+    pointer-events: none;
   }
 
   .claudeFabHidden {
@@ -2820,21 +2829,18 @@
     pointer-events: none;
   }
 
-  .claudeFabThinking {
-    /* remove solid border for glow */
-    border-color: transparent;
-  }
-
   .claudeFabThinking::before {
     content: '';
     position: absolute;
-    inset: -2px;
-    border-radius: 26px;
-    background: linear-gradient(45deg, rgba(79, 70, 229, 0.8), rgba(147, 51, 234, 0.8), rgba(225, 29, 72, 0.8));
-    background-size: 200% 200%;
+    inset: -1.5px;
+    border-radius: 50%;
+    padding: 1.5px; /* defines the thickness of the glowing border */
+    background: conic-gradient(from 0deg, transparent 0%, transparent 40%, rgba(0, 240, 255, 0.8) 60%, rgba(138, 43, 226, 0.9) 80%, rgba(255, 191, 0, 1) 100%);
     z-index: -1;
-    filter: blur(4px);
-    animation: fabAura 4s ease infinite, fabBreathe 4s ease-in-out infinite;
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: borderSpin 1.5s linear infinite;
   }
 
   .claudeFabDone {
@@ -2842,28 +2848,18 @@
   }
 
   .claudeFabBadge {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 12px;
-    height: 12px;
-    background: #9333EA;
-    border: 2px solid #ffffff;
-    border-radius: 50%;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.05);
-    animation: fabBadgePop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    display: none;
   }
 }
 
-@keyframes fabAura {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+@keyframes borderSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
-@keyframes fabBreathe {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.8; }
+@keyframes orbPulse {
+  0% { transform: scale(0.92); opacity: 0.7; }
+  100% { transform: scale(1.08); opacity: 1; }
 }
 
 @keyframes fabBounce {
@@ -3006,8 +3002,8 @@
 }
 
 .editBtn svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .editBtn:hover:not(:disabled) {
@@ -3514,7 +3510,7 @@
   flex-direction: column;
   padding: 8vh 12% 10vh;
   box-sizing: border-box;
-  min-height: 100%;
+  /* min-height: 100%; removed for iOS Safari bug */
   animation: fadeIn 0.4s ease-out;
 }
 

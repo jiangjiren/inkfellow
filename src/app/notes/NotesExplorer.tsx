@@ -41,6 +41,7 @@ const MAX_SIDEBAR_WIDTH = 400;
 type NotesShellStyle = CSSProperties & {
   "--assistant-panel-width": string;
   "--sidebar-width": string;
+  "--keyboard-height": string;
 };
 
 type ShareInfo = {
@@ -326,6 +327,7 @@ export default function NotesExplorer() {
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileAssistantPanelOpen, setMobileAssistantPanelOpen] = useState(false);
+  const mobileOverlayOpenTime = useRef(0);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("claude");
   const [assistantPanelWidth, setAssistantPanelWidth] = useState(DEFAULT_ASSISTANT_PANEL_WIDTH);
@@ -377,6 +379,7 @@ export default function NotesExplorer() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [aiStatus, setAiStatus] = useState<"idle" | "thinking" | "done">("idle");
   const aiStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -404,6 +407,22 @@ export default function NotesExplorer() {
     return () => {
       window.removeEventListener("message", handleMessage);
       if (aiStatusTimerRef.current) clearTimeout(aiStatusTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const handler = () => {
+      const kh = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKeyboardHeight(kh);
+    };
+    vv.addEventListener("resize", handler, { passive: true });
+    vv.addEventListener("scroll", handler, { passive: true });
+    handler();
+    return () => {
+      vv.removeEventListener("resize", handler);
+      vv.removeEventListener("scroll", handler);
     };
   }, []);
 
@@ -1616,6 +1635,7 @@ export default function NotesExplorer() {
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
     "--sidebar-width": `${sidebarWidth}px`,
+    "--keyboard-height": `${keyboardHeight}px`,
   };
   const isDesktopSidebarHidden = !isMobileViewport && !sidebarVisible;
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
@@ -1624,6 +1644,9 @@ export default function NotesExplorer() {
   const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && panelTab === "claude" && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen);
+  // track when overlay opens to prevent ghost-click closing it immediately (Android touch issue)
+  if (hasMobileOverlayOpen) mobileOverlayOpenTime.current = mobileOverlayOpenTime.current || Date.now();
+  if (!hasMobileOverlayOpen) mobileOverlayOpenTime.current = 0;
 
   return (
     <main
@@ -1766,6 +1789,7 @@ export default function NotesExplorer() {
         type="button"
         className={`${styles.mobileScrim} ${hasMobileOverlayOpen ? styles.mobileScrimOpen : ""}`}
         onClick={() => {
+          if (Date.now() - mobileOverlayOpenTime.current < 350) return;
           setMobileSidebarOpen(false);
           setMobileAssistantPanelOpen(false);
         }}
@@ -1803,11 +1827,6 @@ export default function NotesExplorer() {
           </div>
           <div className={styles.noteMeta}>
             <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "智能仪表盘"}</span>
-            {note ? (
-              <>
-                <span>{updatedAt}</span>
-              </>
-            ) : null}
             {!isEditing && hasGitChanges && note ? (
               <button
                 type="button"
@@ -1821,7 +1840,6 @@ export default function NotesExplorer() {
                 aria-label="有未提交的改动，点击查看"
               >
                 <span className={styles.gitChangeDotIndicator} aria-hidden="true" />
-                未同步
               </button>
             ) : null}
           </div>
@@ -1875,9 +1893,8 @@ export default function NotesExplorer() {
                 </svg>
               ) : (
                 /* 铅笔图标 — 进入编辑模式 */
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+                <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" style={{ transform: "scale(1.3)" }}>
+                  <path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z" />
                 </svg>
               )}
             </button>
@@ -2140,7 +2157,13 @@ export default function NotesExplorer() {
                   title="隐藏面板"
                   tabIndex={isAssistantPanelOpen ? 0 : -1}
                 >
-                  <span aria-hidden="true">×</span>
+                  {isMobileViewport ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  ) : (
+                    <span aria-hidden="true">×</span>
+                  )}
                 </button>
               </div>
             </header>
@@ -2182,7 +2205,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={`${styles.assistantPanelFrame} ${panelTab !== "claude" ? styles.assistantPanelFrameHidden : ""}`}
           title="Claude Chat"
-          src="/notes-claude/?v=2"
+          src="/notes-claude/?v=6"
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen && panelTab === "claude" ? 0 : -1}
@@ -2208,18 +2231,39 @@ export default function NotesExplorer() {
         aria-label="AI 助手"
         title="AI 助手"
       >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <defs>
-            <linearGradient id="ai-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#4F46E5" />
-              <stop offset="50%" stopColor="#9333EA" />
-              <stop offset="100%" stopColor="#E11D48" />
+            <linearGradient id="mobiusGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#00F0FF" />
+              <stop offset="50%" stop-color="#8A2BE2" />
+              <stop offset="100%" stop-color="#FFBF00" />
             </linearGradient>
+            <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="1.5" result="blur1" />
+              <feGaussianBlur stdDeviation="3" result="blur2" />
+              <feMerge>
+                <feMergeNode in="blur2" />
+                <feMergeNode in="blur1" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
           </defs>
-          <path d="M11.5 2.5a.5.5 0 0 1 1 0v4.293a.5.5 0 0 0 .146.353l3.036 3.036a.5.5 0 0 1 0 .707l-3.036 3.035a.5.5 0 0 0-.146.354V18.5a.5.5 0 0 1-1 0v-4.293a.5.5 0 0 0-.146-.354l-3.036-3.035a.5.5 0 0 1 0-.707l3.036-3.036a.5.5 0 0 0 .146-.353V2.5z" fill="url(#ai-grad)"/>
-          <path d="M19.5 13.5a.5.5 0 0 1 1 0v1.793a.5.5 0 0 0 .146.353l1.236 1.236a.5.5 0 0 1 0 .707l-1.236 1.235a.5.5 0 0 0-.146.354V21.5a.5.5 0 0 1-1 0v-1.793a.5.5 0 0 0-.146-.354l-1.236-1.235a.5.5 0 0 1 0-.707l1.236-1.236a.5.5 0 0 0 .146-.353V13.5z" fill="url(#ai-grad)"/>
+          <g filter="url(#neonGlow)">
+            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(-26 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
+            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(0 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
+            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(26 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
+          </g>
+          <text x="28" y="29.5" 
+                fontFamily="-apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Text', sans-serif" 
+                fontSize="15" 
+                fontWeight="400" 
+                fill="#FFFFFF" 
+                textAnchor="middle" 
+                dominantBaseline="middle"
+                letterSpacing="0.5">
+            AI
+          </text>
         </svg>
-        <span>Ask AI</span>
         {aiStatus === "done" && <span className={styles.claudeFabBadge} />}
       </button> : null}
 

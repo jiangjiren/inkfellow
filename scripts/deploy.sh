@@ -7,8 +7,8 @@ PM2="node /home/admin/.npm/_npx/5f7878ce38f1eb13/node_modules/pm2/bin/pm2"
 
 cd "$APP_DIR"
 
-echo "==> Stopping inkfellow instances..."
-$PM2 stop inkfellow inkfellow-wumin 2>/dev/null || true
+echo "==> Stopping all PM2 instances..."
+$PM2 stop all 2>/dev/null || true
 
 echo "==> Killing any stale next-server processes on ports 3000/3001..."
 for PORT in 3000 3001; do
@@ -24,13 +24,13 @@ echo "==> Enabling swap for build..."
 sudo sysctl vm.swappiness=60 2>/dev/null || true
 
 echo "==> Building..."
-NEXT_TELEMETRY_DISABLED=1 npm run build
+NODE_OPTIONS="--max-old-space-size=1024" NEXT_TELEMETRY_DISABLED=1 npm run build
 
 echo "==> Restoring swap setting..."
 sudo sysctl vm.swappiness=0 2>/dev/null || true
 
-echo "==> Starting inkfellow instances..."
-$PM2 start ecosystem.config.cjs --only inkfellow,inkfellow-wumin
+echo "==> Starting all PM2 instances..."
+$PM2 start ecosystem.config.cjs
 
 sleep 5
 

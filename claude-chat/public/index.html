@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 <title>inkfellow</title>
 <script src="marked.min.js"></script>
 <style>
@@ -27,7 +27,11 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 #app {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* --kb-inset is set from the VirtualKeyboard API on Android (keyboard overlays
+     the viewport without resizing it, so we shrink #app manually to lift the input
+     above the keyboard). Falls back to env(keyboard-inset-height) where supported. */
+  height: calc(100% - var(--kb-inset, env(keyboard-inset-height, 0px)));
+  transition: height 0.18s ease;
 }
 
 /* ── Messages ── */
@@ -3128,19 +3132,45 @@ function send() {
   ws.send(JSON.stringify(wsPayload));
 }
 
-// ── Visual viewport fix (mobile browser chrome) ───────────
-// visualViewport.height = actual visible area, excludes browser toolbars
+// ── Visual viewport fix (mobile keyboard avoidance) ───────────
+// On iOS Safari the layout viewport does NOT shrink when the virtual keyboard
+// appears — the keyboard just overlays the page. But visualViewport.height DOES
+// shrink. We track it and resize #app accordingly so that #messages (flex:1)
+// auto-shrinks and #input-wrap stays pinned above the keyboard.
+const _appEl = document.getElementById("app");
+// When embedded inside the inkfellow notes drawer (an <iframe>), the parent page
+// already lifts the whole drawer above the keyboard via --keyboard-height. Here in
+// the iframe, window.visualViewport.height reports the *full-screen* visible height,
+// not this drawer's height — so self-managing #app height would double-compensate in
+// the wrong reference frame and leave the input mispositioned. Only own keyboard
+// avoidance when we are the top-level page; otherwise let #app fill the iframe
+// (CSS height:100%) so #input-wrap pins to the drawer's bottom edge.
+const _embedded = window.self !== window.top;
+let _lastVVHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+
 function syncHeight() {
-  // Sizing is handled purely by CSS (html/body/#app all use height:100%), which is the
-  // most reliable full-height approach inside an iframe. Just clear any stale inline
-  // height left over from older builds so the CSS value takes effect.
-  document.getElementById("app").style.height = "";
+  const vv = window.visualViewport;
+  if (!vv) { _appEl.style.height = ""; return; }
+  const h = vv.height;
+  _appEl.style.height = h + "px";
+  if (h < _lastVVHeight) scrollBottom();
+  _lastVVHeight = h;
 }
+
+function onKeyboardScroll() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  if (vv.height < _lastVVHeight) scrollBottom();
+  _lastVVHeight = vv.height;
+}
+
 if (window.visualViewport) {
-  window.visualViewport.addEventListener("resize", syncHeight);
-  window.visualViewport.addEventListener("scroll", syncHeight);
+  const handler = _embedded ? onKeyboardScroll : syncHeight;
+  window.visualViewport.addEventListener("resize", handler, { passive: true });
+  window.visualViewport.addEventListener("scroll", handler, { passive: true });
 }
-syncHeight();
+if (!_embedded) syncHeight();
+else _appEl.style.height = "";
 
 sendBtn.addEventListener("click", () => {
   if (isGenerating) {
@@ -3427,6 +3457,26 @@ document.getElementById("btn-history").addEventListener("click", (e) => {
 document.getElementById("btn-new").addEventListener("click", startNewConversation);
 document.getElementById("history-close").addEventListener("click", closeHistoryPanel);
 historyBackdrop.addEventListener("click", closeHistoryPanel);
+
+// Rotating placeholder logic
+(function initRotatingPlaceholder() {
+  const promptEl = document.getElementById("prompt");
+  if (!promptEl) return;
+  const placeholders = [
+    "Message inkfellow...",
+    "试试输入：帮我修改这份文件...",
+    "试试输入：根据这些资料写一篇文章...",
+    "试试输入：帮我梳理一下当前的知识库..."
+  ];
+  let idx = 0;
+  setInterval(() => {
+    // Only update if input is not focused and empty
+    if (document.activeElement !== promptEl && promptEl.value.trim() === "") {
+      idx = (idx + 1) % placeholders.length;
+      promptEl.setAttribute("placeholder", placeholders[idx]);
+    }
+  }, 4000);
+})();
 </script>
 </body>
 </html>

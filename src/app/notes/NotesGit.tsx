@@ -118,6 +118,23 @@ export default function NotesGit({ onOpenFile }: Props) {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const diffRequestRef = useRef(0);
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const listItemRefs = useRef<Map<string, HTMLLIElement>>(new Map());
+
+  // 弹窗打开时，确保列表项往上滚动，让弹窗完整显示在容器内
+  useEffect(() => {
+    if (!discardingPath) return;
+    const container = listContainerRef.current;
+    const item = listItemRefs.current.get(discardingPath);
+    if (!container || !item) return;
+    const POPOVER_HEIGHT = 130;
+    const containerRect = container.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const spaceBelow = containerRect.bottom - itemRect.bottom;
+    if (spaceBelow < POPOVER_HEIGHT) {
+      container.scrollBy({ top: POPOVER_HEIGHT - spaceBelow + 8, behavior: "smooth" });
+    }
+  }, [discardingPath]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -340,7 +357,7 @@ export default function NotesGit({ onOpenFile }: Props) {
           </div>
 
           {/* ── File Change List ── */}
-          <div className={styles.gitFileListContainer}>
+          <div className={styles.gitFileListContainer} ref={listContainerRef}>
             {hasChanges && status && (
               <div className={styles.gitFileList}>
                 <ul>
@@ -352,7 +369,8 @@ export default function NotesGit({ onOpenFile }: Props) {
                     return (
                       <li
                         key={f.path}
-                        className={styles.gitFileItem}
+                        ref={(el) => { if (el) listItemRefs.current.set(f.path, el); else listItemRefs.current.delete(f.path); }}
+                        className={`${styles.gitFileItem} ${isConfirming ? styles.gitFileItemConfirming : ""}`}
                       >
                         <div className={styles.gitFileRowContent}>
                           {/* Status Dot */}

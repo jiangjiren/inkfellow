@@ -364,12 +364,12 @@ export default function NotesGit({ onOpenFile }: Props) {
                               <span className={styles.gitFileName} title={f.path}>
                                 📁 {f.name}
                               </span>
-                            ) : f.state !== "deleted" && onOpenFile ? (
+                            ) : !isFolder ? (
                               <button
                                 type="button"
                                 className={styles.gitFileNameBtn}
-                                title={`打开 ${f.path}`}
-                                onClick={() => onOpenFile(f.path)}
+                                title="查看改动详情"
+                                onClick={() => void openDiff(f)}
                               >
                                 {stripNoteExtension(f.name)}
                               </button>
@@ -385,14 +385,17 @@ export default function NotesGit({ onOpenFile }: Props) {
 
                           {/* Hover Actions Panel */}
                           <div className={styles.gitHoverActions}>
-                            {!isFolder && (
+                            {!isFolder && f.state !== "deleted" && onOpenFile && (
                               <button
                                 type="button"
                                 className={styles.gitCircleBtn}
-                                title="查看差异"
-                                onClick={() => void openDiff(f)}
+                                title="打开文件"
+                                onClick={() => onOpenFile(f.path)}
                               >
-                                🔍
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                  <polyline points="14 2 14 8 20 8"/>
+                                </svg>
                               </button>
                             )}
                             <button

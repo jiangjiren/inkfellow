@@ -590,6 +590,67 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   background: var(--bg);
 }
 #chat-title { display: none; }
+#git-banner {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  height: 32px;
+  flex-shrink: 0;
+  background: rgba(146,96,10,0.07);
+  border-bottom: 1px solid rgba(146,96,10,0.18);
+}
+#git-banner.visible { display: flex; }
+#git-banner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--yellow);
+  flex-shrink: 0;
+  animation: gitBannerPulse 2.2s ease-in-out infinite;
+}
+#git-banner.syncing #git-banner-dot {
+  animation: none;
+  opacity: 0.4;
+}
+@keyframes gitBannerPulse {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+#git-banner-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--yellow);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+#git-banner-label:hover { opacity: 0.75; }
+#git-banner-sync {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--yellow);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+#git-banner-sync:hover { opacity: 0.82; }
+#git-banner-sync:disabled { opacity: 0.45; cursor: not-allowed; }
 #header-controls {
   display: flex;
   align-items: center;
@@ -1383,6 +1444,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </button>
     </div>
   </header>
+  <div id="git-banner">
+    <span id="git-banner-dot"></span>
+    <button id="git-banner-label" type="button" title="查看改动详情"></button>
+    <button id="git-banner-sync" type="button" title="立即同步到云端">
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M5 8V2M5 2L2.5 4.5M5 2L7.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      同步
+    </button>
+  </div>
   <div id="messages"></div>
   <div id="history-backdrop"></div>
   <div id="history-dropdown" role="dialog" aria-label="历史对话">
@@ -3141,6 +3210,83 @@ function send() {
   }
   ws.send(JSON.stringify(wsPayload));
 }
+
+// ── Git Change Banner ─────────────────────────────────────────
+(function() {
+  const banner   = document.getElementById("git-banner");
+  const labelBtn = document.getElementById("git-banner-label");
+  const syncBtn  = document.getElementById("git-banner-sync");
+  let pendingFiles = [];
+  let syncTimer = null;
+
+  function stripExt(name) { return name.replace(/\.(md|html?)$/i, ""); }
+
+  function renderBanner(files) {
+    pendingFiles = files;
+    if (!files.length) { banner.classList.remove("visible"); return; }
+    banner.classList.add("visible");
+    const label = files.length === 1
+      ? stripExt(files[0].name)
+      : stripExt(files[0].name) + " 等 " + files.length + " 篇待同步";
+    labelBtn.textContent = label;
+  }
+
+  function setFeedback(text, duration) {
+    labelBtn.textContent = text;
+    if (syncTimer) clearTimeout(syncTimer);
+    if (duration) syncTimer = setTimeout(() => renderBanner(pendingFiles), duration);
+  }
+
+  async function fetchStatus() {
+    try {
+      const res = await fetch("/api/notes/git", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.error) renderBanner(data.files || []);
+    } catch {}
+  }
+
+  async function handleSync() {
+    banner.classList.add("syncing");
+    syncBtn.disabled = true;
+    setFeedback("检查云端版本…");
+    try {
+      await fetch("/api/notes/git", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "pull" }),
+      });
+      setFeedback("AI 提炼同步摘要…");
+      let message = "";
+      try {
+        const ai = await fetch("/api/notes/git/ai-log", { method: "POST" });
+        const d = await ai.json();
+        message = d.message || d.fallback || "";
+      } catch {}
+      if (!message) message = "同步笔记于 " + new Date().toLocaleDateString("zh-CN");
+      setFeedback("保存「" + message + "」…");
+      const res = await fetch("/api/notes/git", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "push", message }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      setFeedback("云端同步成功 ✓", 3000);
+      await fetchStatus();
+    } catch (err) {
+      setFeedback(err.message || "同步失败", 4000);
+    } finally {
+      banner.classList.remove("syncing");
+      syncBtn.disabled = false;
+    }
+  }
+
+  labelBtn.addEventListener("click", () => {
+    window.parent.postMessage({ type: "open-git-tab" }, "*");
+  });
+  syncBtn.addEventListener("click", () => void handleSync());
+
+  fetchStatus();
+  setInterval(fetchStatus, 30000);
+})();
 
 // ── Visual viewport fix (mobile keyboard avoidance) ───────────
 // On iOS Safari the layout viewport does NOT shrink when the virtual keyboard

@@ -30,7 +30,7 @@ const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 const LAST_FILE_KEY = "inkfellow-notes-last-file-v1";
 
-type PanelTab = "claude" | "toc" | "git";
+type PanelTab = "claude" | "toc";
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
 const MIN_ASSISTANT_PANEL_WIDTH = 340;
 const MAX_ASSISTANT_PANEL_WIDTH = 900;
@@ -330,6 +330,7 @@ export default function NotesExplorer() {
   const mobileOverlayOpenTime = useRef(0);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("claude");
+  const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [assistantPanelWidth, setAssistantPanelWidth] = useState(DEFAULT_ASSISTANT_PANEL_WIDTH);
   const [isResizingAssistantPanel, setIsResizingAssistantPanel] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -383,6 +384,10 @@ export default function NotesExplorer() {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "open-git-tab") {
+        setGitPanelOpen(true);
+        return;
+      }
       if (event.data && event.data.type === "ai-generating-state") {
         const isGenerating = event.data.isGenerating;
         if (isGenerating) {
@@ -569,7 +574,7 @@ export default function NotesExplorer() {
     }
 
     const savedTab = window.localStorage.getItem(PANEL_TAB_KEY);
-    if (savedTab === "claude" || savedTab === "toc" || savedTab === "git") {
+    if (savedTab === "claude" || savedTab === "toc") {
       setPanelTab(savedTab);
     }
 
@@ -1643,7 +1648,8 @@ export default function NotesExplorer() {
   const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
   const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && panelTab === "claude" && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
-  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen);
+  const isDesktopGitView = !isMobileViewport && gitPanelOpen;
+  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen);
   // track when overlay opens to prevent ghost-click closing it immediately (Android touch issue)
   if (hasMobileOverlayOpen) mobileOverlayOpenTime.current = mobileOverlayOpenTime.current || Date.now();
   if (!hasMobileOverlayOpen) mobileOverlayOpenTime.current = 0;
@@ -1762,13 +1768,8 @@ export default function NotesExplorer() {
               type="button"
               className={styles.sidebarGitStatus}
               onClick={() => {
-                if (isMobileViewport) {
-                  setMobileSidebarOpen(false);
-                  setMobileAssistantPanelOpen(true);
-                } else {
-                  setAssistantPanelVisible(true);
-                }
-                setPanelTab("git");
+                if (isMobileViewport) setMobileSidebarOpen(false);
+                setGitPanelOpen(true);
               }}
               tabIndex={isSidebarOpen ? 0 : -1}
               title={globalGitPending === 0 ? "已同步到云端" : `${globalGitPending} 篇笔记有未同步的改动`}
@@ -1787,16 +1788,50 @@ export default function NotesExplorer() {
 
       <button
         type="button"
-        className={`${styles.mobileScrim} ${hasMobileOverlayOpen ? styles.mobileScrimOpen : ""}`}
+        className={`${styles.mobileScrim} ${hasMobileOverlayOpen ? styles.mobileScrimOpen : ""} ${gitPanelOpen && isMobileViewport ? styles.mobileScrimOverPanel : ""}`}
         onClick={() => {
           if (Date.now() - mobileOverlayOpenTime.current < 350) return;
           setMobileSidebarOpen(false);
           setMobileAssistantPanelOpen(false);
+          setGitPanelOpen(false);
         }}
         aria-label={mobileSidebarOpen ? "关闭目录" : "关闭辅助面板"}
         aria-hidden={!hasMobileOverlayOpen}
         tabIndex={hasMobileOverlayOpen ? 0 : -1}
       />
+
+      {/* 移动端 git 底部 sheet */}
+      <div
+        className={`${styles.gitMobileSheet} ${gitPanelOpen && isMobileViewport ? styles.gitMobileSheetOpen : ""}`}
+        aria-hidden={!(gitPanelOpen && isMobileViewport)}
+        inert={!(gitPanelOpen && isMobileViewport)}
+      >
+        <header className={styles.gitMobileSheetHeader}>
+          <span className={styles.gitMobileSheetTitle}>云端同步</span>
+          <button
+            type="button"
+            className={styles.gitMobileSheetClose}
+            onClick={() => setGitPanelOpen(false)}
+            aria-label="关闭"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+        </header>
+        <div className={styles.gitMobileSheetBody}>
+          {gitPanelOpen && isMobileViewport && (
+            <NotesGit onOpenFile={(path) => {
+              const exactMatch = files.find((f) => f.path === path);
+              const resolvedPath = exactMatch
+                ? path
+                : (files.find((f) => f.path.toLowerCase() === path.toLowerCase())?.path ?? path);
+              setGitPanelOpen(false);
+              void loadNote(resolvedPath);
+            }} />
+          )}
+        </div>
+      </div>
 
       <section className={`${styles.reader} ${isDashboardChatMode ? styles.readerHidden : ""}`} ref={readerRef}>
         <header className={`${styles.readerHeader} ${isScrolled ? styles.readerHeaderScrolled : ""}`}>
@@ -1825,94 +1860,123 @@ export default function NotesExplorer() {
               )}
             </button>
           </div>
-          <div className={styles.noteMeta}>
-            <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "智能仪表盘"}</span>
-            {!isEditing && hasGitChanges && note ? (
-              <button
-                type="button"
-                className={styles.gitChangeDot}
-                onClick={() => {
-                  if (isMobileViewport) setMobileAssistantPanelOpen(true);
-                  else setAssistantPanelVisible(true);
-                  setPanelTab("git");
-                }}
-                title="有未提交的改动，点击查看"
-                aria-label="有未提交的改动，点击查看"
-              >
-                <span className={styles.gitChangeDotIndicator} aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
+          {isDesktopGitView ? (
+            <div className={styles.noteMeta}>
+              <span>云端同步</span>
+            </div>
+          ) : (
+            <div className={styles.noteMeta}>
+              <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "智能仪表盘"}</span>
+              {!isEditing && hasGitChanges && note ? (
+                <button
+                  type="button"
+                  className={styles.gitChangeDot}
+                  onClick={() => setGitPanelOpen(true)}
+                  title="有未提交的改动，点击查看"
+                  aria-label="有未提交的改动，点击查看"
+                >
+                  <span className={styles.gitChangeDotIndicator} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          )}
           <div className={styles.readerActions}>
-            {savedFlash ? (
-              <span className={styles.savedHint}>已保存</span>
-            ) : null}
-            {!isEditing ? (
+            {isDesktopGitView ? (
               <button
                 type="button"
-                className={styles.shareButton}
-                onClick={handleOpenShareDialog}
-                disabled={!note}
-                aria-label="分享当前文章"
-                title="分享当前文章"
+                className={styles.iconButton}
+                onClick={() => setGitPanelOpen(false)}
+                aria-label="关闭同步面板"
+                title="关闭"
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M7.2 11.2 12 6.4l4.8 4.8" />
-                  <path d="M12 6.4v11.2" />
-                  <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
-            ) : null}
-            {/* 大纲按钮 */}
-            <button
-              type="button"
-              className={`${styles.editBtn} ${isAssistantPanelOpen && panelTab === "toc" ? styles.editBtnActive : ""}`}
-              onClick={handleTocToggle}
-              disabled={!note || /\.html?$/i.test(note.path ?? "")}
-              aria-label="大纲"
-              title="大纲"
-            >
-              <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
-                <path fill="currentColor" d="M141.019429 7.606857c21.869714 0 40.374857 7.387429 55.588571 22.235429 15.213714 14.848 22.820571 33.133714 22.820571 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428A75.337143 75.337143 0 0 1 78.994286 7.606857h62.025143z m802.816 0c21.065143 0 39.204571 7.387429 54.418285 22.235429 15.213714 14.848 22.820571 33.133714 22.820572 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A75.629714 75.629714 0 0 1 365.714286 144.530286V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428 15.213714-14.848 33.718857-22.235429 55.588572-22.235429h499.712zM141.019429 371.565714c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.718857 22.820571 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820571 54.418285a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a74.313143 74.313143 0 0 1-22.820571-54.418285v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.718857 22.820572 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820572 54.418285a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A74.313143 74.313143 0 0 1 365.714286 509.659429v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712zM141.019429 736.694857c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.353143 22.820571 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.353143 22.820572 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712z" />
-              </svg>
-            </button>
-            {/* 阅读 / 编辑 切换按钮 */}
-            <button
-              type="button"
-              className={`${styles.editBtn} ${isEditing ? styles.editBtnActive : ""}`}
-              onClick={() => void handleEditToggle()}
-              disabled={!note || /\.html?$/i.test(note.path ?? "")}
-              aria-label={isEditing ? "退出编辑" : "编辑笔记"}
-              title={isEditing ? "退出编辑模式" : "编辑笔记"}
-            >
-              {isEditing ? (
-                /* 翻开的书 — 回到阅读模式 */
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
-                </svg>
-              ) : (
-                /* 铅笔图标 — 进入编辑模式 */
-                <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" style={{ transform: "scale(1.3)" }}>
-                  <path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z" />
-                </svg>
-              )}
-            </button>
-            <button
-              type="button"
-              className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
-              onClick={handleClaudeToggle}
-              aria-pressed={isAssistantPanelOpen}
-              aria-label="AI 助手"
-              title="AI 助手"
-            >
-              <span aria-hidden="true">✦</span>
-            </button>
+            ) : (
+              <>
+                {savedFlash ? (
+                  <span className={styles.savedHint}>已保存</span>
+                ) : null}
+                {!isEditing ? (
+                  <button
+                    type="button"
+                    className={styles.shareButton}
+                    onClick={handleOpenShareDialog}
+                    disabled={!note}
+                    aria-label="分享当前文章"
+                    title="分享当前文章"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M7.2 11.2 12 6.4l4.8 4.8" />
+                      <path d="M12 6.4v11.2" />
+                      <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
+                    </svg>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={`${styles.editBtn} ${isAssistantPanelOpen && panelTab === "toc" ? styles.editBtnActive : ""}`}
+                  onClick={handleTocToggle}
+                  disabled={!note || /\.html?$/i.test(note.path ?? "")}
+                  aria-label="大纲"
+                  title="大纲"
+                >
+                  <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M141.019429 7.606857c21.869714 0 40.374857 7.387429 55.588571 22.235429 15.213714 14.848 22.820571 33.133714 22.820571 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428A75.337143 75.337143 0 0 1 78.994286 7.606857h62.025143z m802.816 0c21.065143 0 39.204571 7.387429 54.418285 22.235429 15.213714 14.848 22.820571 33.133714 22.820572 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A75.629714 75.629714 0 0 1 365.714286 144.530286V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428 15.213714-14.848 33.718857-22.235429 55.588572-22.235429h499.712zM141.019429 371.565714c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.718857 22.820571 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820571 54.418285a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a74.313143 74.313143 0 0 1-22.820571-54.418285v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.718857 22.820572 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820572 54.418285a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A74.313143 74.313143 0 0 1 365.714286 509.659429v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712zM141.019429 736.694857c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.353143 22.820571 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.353143 22.820572 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.editBtn} ${isEditing ? styles.editBtnActive : ""}`}
+                  onClick={() => void handleEditToggle()}
+                  disabled={!note || /\.html?$/i.test(note.path ?? "")}
+                  aria-label={isEditing ? "退出编辑" : "编辑笔记"}
+                  title={isEditing ? "退出编辑模式" : "编辑笔记"}
+                >
+                  {isEditing ? (
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" style={{ transform: "scale(1.3)" }}>
+                      <path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
+                  onClick={handleClaudeToggle}
+                  aria-pressed={isAssistantPanelOpen}
+                  aria-label="AI 助手"
+                  title="AI 助手"
+                >
+                  <span aria-hidden="true">✦</span>
+                </button>
+              </>
+            )}
           </div>
         </header>
 
+        {/* 桌面端 git 详情内联视图 */}
+        {isDesktopGitView ? (
+          <div className={styles.gitDesktopPanel}>
+            <NotesGit onOpenFile={(path) => {
+              const exactMatch = files.find((f) => f.path === path);
+              const resolvedPath = exactMatch
+                ? path
+                : (files.find((f) => f.path.toLowerCase() === path.toLowerCase())?.path ?? path);
+              setGitPanelOpen(false);
+              void loadNote(resolvedPath);
+            }} />
+          </div>
+        ) : null}
+
         {/* 编辑模式 — CodeMirror inline markdown 编辑 */}
-        {isEditing ? (
+        {!isDesktopGitView && isEditing ? (
           <div
             className={styles.editorPane}
             style={editorMinHeight ? { minHeight: editorMinHeight } : undefined}
@@ -1926,7 +1990,7 @@ export default function NotesExplorer() {
               }}
             />
           </div>
-        ) : (
+        ) : !isDesktopGitView ? (
           <article
             key={note?.path || "empty"}
             className={`${styles.document} ${!note || /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
@@ -1994,7 +2058,7 @@ export default function NotesExplorer() {
               />
             ) : null}
           </article>
-        )}
+        ) : null}
       </section>
 
       {shareModalOpen ? (
@@ -2133,14 +2197,6 @@ export default function NotesExplorer() {
                 >
                   ✦ Claude
                 </button>
-                <button
-                  type="button"
-                  className={`${styles.assistantPanelTab} ${panelTab === "git" ? styles.assistantPanelTabActive : ""}`}
-                  onClick={() => setPanelTab("git")}
-                  tabIndex={isAssistantPanelOpen ? 0 : -1}
-                >
-                  ↑↓ 同步
-                </button>
               </div>
               <div className={styles.assistantPanelControls}>
                 <button
@@ -2189,16 +2245,6 @@ export default function NotesExplorer() {
         )}
         {panelTab === "toc" ? (
           <ArticleToc headings={articleTocEntries} activeSlug={activeTocSlug} onSelect={handleSelectTocHeading} />
-        ) : null}
-        {panelTab === "git" ? (
-          <NotesGit onOpenFile={(path) => {
-            // 优先精确匹配文件树，再大小写不敏感匹配，确保路径有效
-            const exactMatch = files.find((f) => f.path === path);
-            const resolvedPath = exactMatch
-              ? path
-              : (files.find((f) => f.path.toLowerCase() === path.toLowerCase())?.path ?? path);
-            void loadNote(resolvedPath);
-          }} />
         ) : null}
         <iframe
           key="claude-frame"
@@ -2442,6 +2488,7 @@ export default function NotesExplorer() {
           </div>
         </div>
       ) : null}
+
 
     </main>
   );

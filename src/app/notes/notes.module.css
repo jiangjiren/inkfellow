@@ -1073,6 +1073,107 @@
   transition: none;
 }
 
+/* ── Git Desktop Inline Panel ───────────────────── */
+.gitDesktopPanel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Git Mobile Bottom Sheet ────────────────────── */
+.gitMobileSheet {
+  display: none;
+}
+
+/* ── Git Change Banner (above Claude input) ─────── */
+.gitBanner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 36px;
+  border-top: 1px solid var(--notes-border);
+  background: var(--notes-bg-sidebar);
+}
+
+.gitBannerDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--notes-accent);
+  flex: 0 0 auto;
+  animation: gitDotPulse 2.4s ease-in-out infinite;
+}
+
+.gitBannerDotSyncing {
+  background: var(--notes-text-secondary);
+  animation: none;
+  opacity: 0.6;
+}
+
+.gitBannerLabel {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--notes-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.gitBannerLabel:hover {
+  color: var(--notes-text-primary);
+}
+
+.gitBannerLabelError {
+  color: #e05c5c;
+}
+
+.gitBannerSync {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  background: var(--notes-accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+  height: 24px;
+}
+
+.gitBannerSync:hover:not(:disabled) {
+  opacity: 0.82;
+}
+
+.gitBannerSync:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gitBannerSpinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: gitSpin 0.7s linear infinite;
+}
+
 /* ── Buttons ───────────────────────────────────── */
 .assistantPanelClose,
 .iconButton {
@@ -2611,6 +2712,10 @@
     pointer-events: auto;
   }
 
+  .mobileScrimOverPanel {
+    z-index: 48;
+  }
+
   .reader {
     height: auto;
     min-height: 58vh;
@@ -2717,6 +2822,70 @@
 
   .markdown h2 {
     font-size: 22px;
+  }
+
+  /* git mobile bottom sheet — same metrics as assistantPanel, higher z-index to sit above it */
+  .gitMobileSheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: env(safe-area-inset-bottom, 0px);
+    top: auto;
+    z-index: 50;
+    width: 100%;
+    height: min(85dvh, 720px);
+    min-height: min(480px, 85dvh);
+    background: var(--notes-bg-sidebar);
+    border-top: 1px solid var(--notes-border);
+    box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.15);
+    transform: translateY(104%);
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+  }
+
+  .gitMobileSheetOpen {
+    transform: translateY(0);
+  }
+
+  .gitMobileSheetHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    height: 48px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--notes-border);
+  }
+
+  .gitMobileSheetTitle {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--notes-text-primary);
+  }
+
+  .gitMobileSheetClose {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--notes-border);
+    border: none;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    color: var(--notes-text-secondary);
+    transition: background 0.12s;
+  }
+
+  .gitMobileSheetClose:hover {
+    background: var(--notes-border-strong, #c8c6c2);
+  }
+
+  .gitMobileSheetBody {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
 }
 

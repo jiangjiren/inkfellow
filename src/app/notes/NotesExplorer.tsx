@@ -24,13 +24,12 @@ type LoadState = "idle" | "loading" | "ready" | "error";
 
 const PANEL_WIDTH_KEY = "inkfellow-notes-panel-width-v1";
 const PANEL_VISIBLE_KEY = "inkfellow-notes-panel-visible-v1";
-const PANEL_TAB_KEY = "inkfellow-notes-panel-tab-v1";
+const TOC_SECTION_KEY = "inkfellow-notes-toc-section-open-v1";
 const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
 const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 const LAST_FILE_KEY = "inkfellow-notes-last-file-v1";
 
-type PanelTab = "claude" | "toc";
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
 const MIN_ASSISTANT_PANEL_WIDTH = 340;
 const MAX_ASSISTANT_PANEL_WIDTH = 900;
@@ -270,12 +269,67 @@ function ArticleToc({
   headings,
   activeSlug,
   onSelect,
+  variant = "panel",
+  collapsed = false,
+  onToggleCollapsed,
 }: {
   headings: TocEntry[];
   activeSlug: string;
   onSelect: (slug: string) => void;
+  // "panel"：移动端 sheet / 通用；"section"：桌面左栏可折叠手风琴段
+  variant?: "panel" | "section";
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   const minLevel = headings.length > 0 ? Math.min(...headings.map((h) => h.level)) : 0;
+  const isSection = variant === "section";
+
+  const list =
+    headings.length > 0 ? (
+      <ul className={styles.articleTocList}>
+        {headings.map((heading, index) => (
+          <li key={`${heading.slug}-${index}`}>
+            <button
+              type="button"
+              className={`${styles.articleTocLink} ${heading.level > minLevel ? styles.articleTocLinkSub : ""} ${activeSlug === heading.slug ? styles.articleTocLinkActive : ""}`}
+              onClick={() => onSelect(heading.slug)}
+            >
+              {heading.text}
+            </button>
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <p className={styles.articleTocEmpty}>当前文章没有可显示的目录。</p>
+    );
+
+  if (isSection) {
+    return (
+      <nav className={styles.tocSection} aria-label="当前文章目录">
+        <button
+          type="button"
+          className={styles.tocSectionHeader}
+          onClick={onToggleCollapsed}
+          aria-expanded={!collapsed}
+        >
+          <svg
+            className={`${styles.tocSectionChevron} ${collapsed ? styles.tocSectionChevronCollapsed : ""}`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+          <span>大纲</span>
+        </button>
+        {!collapsed ? <div className={styles.tocSectionBody}>{list}</div> : null}
+      </nav>
+    );
+  }
 
   return (
     <nav className={styles.articleToc} aria-label="当前文章目录">
@@ -283,23 +337,7 @@ function ArticleToc({
         <span>当前文章</span>
         <strong>目录</strong>
       </div>
-      {headings.length > 0 ? (
-        <ul className={styles.articleTocList}>
-          {headings.map((heading, index) => (
-            <li key={`${heading.slug}-${index}`}>
-              <button
-                type="button"
-                className={`${styles.articleTocLink} ${heading.level > minLevel ? styles.articleTocLinkSub : ""} ${activeSlug === heading.slug ? styles.articleTocLinkActive : ""}`}
-                onClick={() => onSelect(heading.slug)}
-              >
-                {heading.text}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className={styles.articleTocEmpty}>当前文章没有可显示的目录。</p>
-      )}
+      {list}
     </nav>
   );
 }
@@ -329,7 +367,9 @@ export default function NotesExplorer() {
   const [mobileAssistantPanelOpen, setMobileAssistantPanelOpen] = useState(false);
   const mobileOverlayOpenTime = useRef(0);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
-  const [panelTab, setPanelTab] = useState<PanelTab>("claude");
+  // 大纲已从右侧面板迁出：桌面端常驻左栏（可折叠），移动端用底部 sheet 唤出
+  const [tocSectionOpen, setTocSectionOpen] = useState(true);
+  const [mobileTocOpen, setMobileTocOpen] = useState(false);
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [assistantPanelWidth, setAssistantPanelWidth] = useState(DEFAULT_ASSISTANT_PANEL_WIDTH);
   const [isResizingAssistantPanel, setIsResizingAssistantPanel] = useState(false);
@@ -573,9 +613,9 @@ export default function NotesExplorer() {
       setAssistantPanelVisible(false);
     }
 
-    const savedTab = window.localStorage.getItem(PANEL_TAB_KEY);
-    if (savedTab === "claude" || savedTab === "toc") {
-      setPanelTab(savedTab);
+    const savedTocSection = window.localStorage.getItem(TOC_SECTION_KEY);
+    if (savedTocSection === "false") {
+      setTocSectionOpen(false);
     }
 
     const savedSidebarVisibility = window.localStorage.getItem(SIDEBAR_VISIBLE_KEY);
@@ -602,8 +642,8 @@ export default function NotesExplorer() {
   }, [assistantPanelVisible]);
 
   useEffect(() => {
-    window.localStorage.setItem(PANEL_TAB_KEY, panelTab);
-  }, [panelTab]);
+    window.localStorage.setItem(TOC_SECTION_KEY, String(tocSectionOpen));
+  }, [tocSectionOpen]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
@@ -1465,7 +1505,7 @@ export default function NotesExplorer() {
       setActiveTocSlug(slug);
 
       if (isMobileViewport) {
-        setMobileAssistantPanelOpen(false);
+        setMobileTocOpen(false);
       }
     },
     [isMobileViewport],
@@ -1476,40 +1516,29 @@ export default function NotesExplorer() {
 
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
-      if (panelTab === "claude" && mobileAssistantPanelOpen) {
-        setMobileAssistantPanelOpen(false);
-      } else {
-        setPanelTab("claude");
-        setMobileAssistantPanelOpen(true);
-      }
+      setMobileAssistantPanelOpen((open) => !open);
     } else {
-      if (panelTab === "claude" && assistantPanelVisible) {
-        setAssistantPanelVisible(false);
-      } else {
-        setPanelTab("claude");
-        setAssistantPanelVisible(true);
-      }
+      setAssistantPanelVisible((visible) => !visible);
     }
-  }, [isMobileViewport, panelTab, mobileAssistantPanelOpen, assistantPanelVisible]);
+  }, [isMobileViewport]);
 
   const handleTocToggle = useCallback(() => {
     if (isMobileViewport) {
+      // 移动端：大纲降级为「用完即走」的底部 sheet
       setMobileSidebarOpen(false);
-      if (panelTab === "toc" && mobileAssistantPanelOpen) {
-        setMobileAssistantPanelOpen(false);
-      } else {
-        setPanelTab("toc");
-        setMobileAssistantPanelOpen(true);
-      }
+      setMobileTocOpen((open) => !open);
     } else {
-      if (panelTab === "toc" && assistantPanelVisible) {
-        setAssistantPanelVisible(false);
+      // 桌面端：大纲常驻左栏。reveal-first —— 若左栏被隐藏或大纲已折叠，
+      // 一次点击先把它们露出来；只有当大纲已经完整可见时，再点击才收起。
+      const fullyVisible = sidebarVisible && tocSectionOpen;
+      if (fullyVisible) {
+        setTocSectionOpen(false);
       } else {
-        setPanelTab("toc");
-        setAssistantPanelVisible(true);
+        setSidebarVisible(true);
+        setTocSectionOpen(true);
       }
     }
-  }, [isMobileViewport, panelTab, mobileAssistantPanelOpen, assistantPanelVisible]);
+  }, [isMobileViewport, sidebarVisible, tocSectionOpen]);
 
   const loadShareInfo = useCallback(async () => {
     if (!note) {
@@ -1646,10 +1675,10 @@ export default function NotesExplorer() {
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
   const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
-  const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && panelTab === "claude" && isDashboardChatActive;
+  const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
-  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen);
+  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen || mobileTocOpen);
   // track when overlay opens to prevent ghost-click closing it immediately (Android touch issue)
   if (hasMobileOverlayOpen) mobileOverlayOpenTime.current = mobileOverlayOpenTime.current || Date.now();
   if (!hasMobileOverlayOpen) mobileOverlayOpenTime.current = 0;
@@ -1721,15 +1750,6 @@ export default function NotesExplorer() {
             </button>
           </div>
 
-          <button
-            type="button"
-            className={styles.mobileSidebarClose}
-            onClick={() => setMobileSidebarOpen(false)}
-            aria-label="关闭目录"
-            title="关闭目录"
-          >
-            <span aria-hidden="true">×</span>
-          </button>
         </div>
 
         <label className={styles.search}>
@@ -1761,6 +1781,18 @@ export default function NotesExplorer() {
             />
           ) : null}
         </div>
+
+        {/* 大纲：桌面端常驻左栏的可折叠段，仅在打开笔记且有目录时出现 */}
+        {!isMobileViewport && note && articleTocEntries.length > 0 ? (
+          <ArticleToc
+            headings={articleTocEntries}
+            activeSlug={activeTocSlug}
+            onSelect={handleSelectTocHeading}
+            variant="section"
+            collapsed={!tocSectionOpen}
+            onToggleCollapsed={() => setTocSectionOpen((open) => !open)}
+          />
+        ) : null}
 
         {globalGitPending !== null && (
           <div className={styles.sidebarFooter}>
@@ -1794,6 +1826,7 @@ export default function NotesExplorer() {
           setMobileSidebarOpen(false);
           setMobileAssistantPanelOpen(false);
           setGitPanelOpen(false);
+          setMobileTocOpen(false);
         }}
         aria-label={mobileSidebarOpen ? "关闭目录" : "关闭辅助面板"}
         aria-hidden={!hasMobileOverlayOpen}
@@ -1917,7 +1950,7 @@ export default function NotesExplorer() {
                 ) : null}
                 <button
                   type="button"
-                  className={`${styles.editBtn} ${isAssistantPanelOpen && panelTab === "toc" ? styles.editBtnActive : ""}`}
+                  className={`${styles.editBtn} ${(isMobileViewport ? mobileTocOpen : tocSectionOpen && sidebarVisible) ? styles.editBtnActive : ""}`}
                   onClick={handleTocToggle}
                   disabled={!note || /\.html?$/i.test(note.path ?? "")}
                   aria-label="大纲"
@@ -2043,8 +2076,6 @@ export default function NotesExplorer() {
                   } else {
                     setAssistantPanelVisible(true);
                   }
-                  setPanelTab("claude");
-                  
                   if (query) {
                     setTimeout(() => {
                       claudeFrameRef.current?.contentWindow?.postMessage(
@@ -2180,23 +2211,11 @@ export default function NotesExplorer() {
               tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
             />
             <header className={`${styles.assistantPanelHeader} ${styles.assistantPanelHeaderLight}`}>
+              {/* 右侧面板专供 Claude；后续多会话切换的 tab 将渲染在此容器内 */}
               <div className={styles.assistantPanelTabs}>
-                <button
-                  type="button"
-                  className={`${styles.assistantPanelTab} ${panelTab === "toc" ? styles.assistantPanelTabActive : ""}`}
-                  onClick={() => setPanelTab("toc")}
-                  tabIndex={isAssistantPanelOpen ? 0 : -1}
-                >
-                  大纲
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.assistantPanelTab} ${panelTab === "claude" ? styles.assistantPanelTabActive : ""}`}
-                  onClick={() => setPanelTab("claude")}
-                  tabIndex={isAssistantPanelOpen ? 0 : -1}
-                >
+                <span className={`${styles.assistantPanelTab} ${styles.assistantPanelTabActive}`}>
                   ✦ Claude
-                </button>
+                </span>
               </div>
               <div className={styles.assistantPanelControls}>
                 <button
@@ -2243,18 +2262,15 @@ export default function NotesExplorer() {
             </button>
           </header>
         )}
-        {panelTab === "toc" ? (
-          <ArticleToc headings={articleTocEntries} activeSlug={activeTocSlug} onSelect={handleSelectTocHeading} />
-        ) : null}
         <iframe
           key="claude-frame"
           ref={claudeFrameRef}
-          className={`${styles.assistantPanelFrame} ${panelTab !== "claude" ? styles.assistantPanelFrameHidden : ""}`}
+          className={styles.assistantPanelFrame}
           title="Claude Chat"
           src="/notes-claude/?v=6"
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
-          tabIndex={isAssistantPanelOpen && panelTab === "claude" ? 0 : -1}
+          tabIndex={isAssistantPanelOpen ? 0 : -1}
           onLoad={() => {
             // Re-send the current note context once the iframe is ready.
             // The useEffect fires when activePath changes, but the iframe may
@@ -2312,6 +2328,36 @@ export default function NotesExplorer() {
         </svg>
         {aiStatus === "done" && <span className={styles.claudeFabBadge} />}
       </button> : null}
+
+      {/* 移动端大纲底部 sheet */}
+      {isMobileViewport ? (
+        <aside
+          className={`${styles.mobileTocSheet} ${mobileTocOpen ? styles.mobileTocSheetOpen : ""}`}
+          aria-label="文章大纲"
+          aria-hidden={!mobileTocOpen}
+          inert={!mobileTocOpen}
+        >
+          <header className={styles.mobileTocSheetHeader}>
+            <span className={styles.mobileTocSheetTitle}>大纲</span>
+            <button
+              type="button"
+              className={styles.mobileTocSheetClose}
+              onClick={() => setMobileTocOpen(false)}
+              aria-label="关闭大纲"
+              tabIndex={mobileTocOpen ? 0 : -1}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+          </header>
+          <ArticleToc
+            headings={articleTocEntries}
+            activeSlug={activeTocSlug}
+            onSelect={handleSelectTocHeading}
+          />
+        </aside>
+      ) : null}
 
       {/* ── 新建笔记对话框 ─────────────────────────────── */}
       {newNoteOpen ? (

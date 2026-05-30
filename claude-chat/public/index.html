@@ -831,7 +831,17 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .history-item {
   display: flex; align-items: center;
   padding: 9px 14px; border-bottom: 1px solid var(--border);
-  cursor: pointer; gap: 8px; transition: background 0.1s;
+  cursor: pointer; gap: 8px;
+  transition: background 0.1s, opacity 0.3s cubic-bezier(0.25, 1, 0.5, 1), transform 0.3s cubic-bezier(0.25, 1, 0.5, 1), height 0.3s cubic-bezier(0.25, 1, 0.5, 1), padding 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+  overflow: hidden;
+}
+.history-item.deleting {
+  opacity: 0;
+  transform: translateX(-15px);
+  padding-top: 0;
+  padding-bottom: 0;
+  border-color: transparent;
+  pointer-events: none;
 }
 .history-item:last-child { border-bottom: none; }
 .history-item:hover { background: var(--bg2); }
@@ -3435,7 +3445,18 @@ function renderHistoryFromData(history) {
   listEl.querySelectorAll(".history-item-del").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      deleteConversation(btn.dataset.del);
+      const item = btn.closest(".history-item");
+      if (item && !item.classList.contains("deleting")) {
+        item.style.height = item.offsetHeight + "px";
+        void item.offsetHeight; // force reflow
+        item.classList.add("deleting");
+        item.style.height = "0px";
+        setTimeout(() => {
+          deleteConversation(btn.dataset.del);
+        }, 300);
+      } else if (!item) {
+        deleteConversation(btn.dataset.del);
+      }
     });
   });
 }

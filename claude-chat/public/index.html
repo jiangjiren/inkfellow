@@ -3536,7 +3536,8 @@ modelDropdown.addEventListener("mousedown", (e) => {
   if (!opt) return;
   e.preventDefault();
   selectedModel = setPickerValue(modelDropdown, ".model-option", opt, "model", modelLabel);
-  localStorage.setItem(getModelStorageKey(authProfile.provider), selectedModel);
+  const _modelKey = `model:${authProfile.provider === "claude" ? "claude" : authProfile.id}`;
+  localStorage.setItem(_modelKey, selectedModel);
   closeHeaderPickers();
 });
 

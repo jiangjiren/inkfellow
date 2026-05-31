@@ -3181,6 +3181,15 @@
     pointer-events: none;
   }
 
+  .claudeFabIcon {
+    font-size: 26px;
+    line-height: 1;
+    background: linear-gradient(135deg, #00F0FF 0%, #8A2BE2 55%, #FFBF00 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    transition: transform 0.3s ease;
+  }
+
   .claudeFabThinking::before {
     content: '';
     position: absolute;
@@ -3193,6 +3202,10 @@
     -webkit-mask-composite: xor;
     mask-composite: exclude;
     animation: borderSpin 1.5s linear infinite;
+  }
+
+  .claudeFabThinking .claudeFabIcon {
+    animation: starPulse 1.5s ease-in-out infinite;
   }
 
   .claudeFabDone {

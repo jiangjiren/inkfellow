@@ -2669,47 +2669,15 @@ export default function NotesExplorer() {
         />
       </aside>
 
-      {/* 移动端 AI 助手悬浮按钮：仅在打开笔记时显示 */}
+      {/* 移动端 Fellow 悬浮按钮：仅在打开笔记时显示 */}
       {note ? <button
         type="button"
         className={`${styles.claudeFab} ${mobileAssistantPanelOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
         onClick={handleClaudeToggle}
-        aria-label="AI 助手"
-        title="AI 助手"
+        aria-label="Fellow AI 助手"
+        title="Fellow"
       >
-        <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <defs>
-            <linearGradient id="mobiusGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#00F0FF" />
-              <stop offset="50%" stop-color="#8A2BE2" />
-              <stop offset="100%" stop-color="#FFBF00" />
-            </linearGradient>
-            <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="1.5" result="blur1" />
-              <feGaussianBlur stdDeviation="3" result="blur2" />
-              <feMerge>
-                <feMergeNode in="blur2" />
-                <feMergeNode in="blur1" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
-          <g filter="url(#neonGlow)">
-            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(-26 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
-            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(0 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
-            <ellipse cx="28" cy="28" rx="19" ry="6.5" transform="rotate(26 28 28)" fill="none" stroke="url(#mobiusGrad)" strokeWidth="1.2" />
-          </g>
-          <text x="28" y="29.5" 
-                fontFamily="-apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Text', sans-serif" 
-                fontSize="15" 
-                fontWeight="400" 
-                fill="#FFFFFF" 
-                textAnchor="middle" 
-                dominantBaseline="middle"
-                letterSpacing="0.5">
-            AI
-          </text>
-        </svg>
+        <span className={styles.claudeFabIcon} aria-hidden="true">✦</span>
         {aiStatus === "done" && <span className={styles.claudeFabBadge} />}
       </button> : null}
 

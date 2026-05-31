@@ -64,8 +64,9 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(val
 
 const stripNoteExtension = (value: string) => value.replace(/\.(md|html?)$/i, "");
 
-// PDF 走只读 <iframe> 原生预览，不经文本加载/编辑流程
+// PDF / 图片走只读预览，不经文本加载/编辑流程
 const isPdfPath = (value: string | null | undefined) => /\.pdf$/i.test(value ?? "");
+const isImagePath = (value: string | null | undefined) => /\.(png|jpe?g|gif|webp|svg|avif)$/i.test(value ?? "");
 
 const decodeLoose = (value: string) => {
   try {
@@ -198,6 +199,8 @@ function TreeItem({
     const isActive = node.path === activePath;
     const isHtml = /\.html?$/i.test(node.name);
     const isPdf = /\.pdf$/i.test(node.name);
+    const isImg = isImagePath(node.name);
+    const ext = isImg ? node.name.split(".").pop()?.toLowerCase() : null;
     return (
       <button
         type="button"
@@ -210,9 +213,10 @@ function TreeItem({
           <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
           <polyline points="14 2 14 8 20 8" />
         </svg>
-        <span className={styles.treeLabel}>{isPdf ? node.name.replace(/\.pdf$/i, "") : stripNoteExtension(node.name)}</span>
+        <span className={styles.treeLabel}>{isImg ? node.name.replace(/\.[^.]+$/, "") : isPdf ? node.name.replace(/\.pdf$/i, "") : stripNoteExtension(node.name)}</span>
         {isHtml ? <span className={styles.fileTypeBadge}>html</span> : null}
         {isPdf ? <span className={styles.fileTypeBadge}>pdf</span> : null}
+        {isImg ? <span className={styles.fileTypeBadge}>{ext}</span> : null}
       </button>
     );
   }
@@ -828,8 +832,8 @@ export default function NotesExplorer() {
 
   const loadNote = useCallback(
     async (path: string, hash?: string | null, options: LoadNoteOptions = {}) => {
-      // PDF：不拉文本，直接交给 <iframe> 原生预览（见下方渲染分支）
-      if (isPdfPath(path)) {
+      // PDF / 图片：不拉文本，直接交给原生预览（见下方渲染分支）
+      if (isPdfPath(path) || isImagePath(path)) {
         setError(null);
         pendingHashRef.current = null;
         noteUpdatedAtRef.current = null; // 让 2s 文本轮询对 PDF 直接跳过
@@ -2050,6 +2054,18 @@ export default function NotesExplorer() {
               />
             ) : null}
 
+            {/* 图片：<img> 原生预览 */}
+            {noteState === "ready" && isImagePath(activePath) ? (
+              <div className={styles.imageViewer}>
+                <img
+                  key={activePath ?? "img"}
+                  src={`/api/notes/doc?path=${encodeURIComponent(activePath ?? "")}`}
+                  alt={activePath?.split("/").pop() ?? "图片"}
+                  className={styles.imageViewerImg}
+                />
+              </div>
+            ) : null}
+
             {noteState === "ready" && note ? (
               /\.html?$/i.test(note.path) ? (
                 <NotesHtml html={note.content} />
@@ -2067,7 +2083,7 @@ export default function NotesExplorer() {
               <div className={styles.documentState}>知识库中没有可显示的文件。</div>
             ) : null}
 
-            {treeState === "ready" && files.length > 0 && !note && !isPdfPath(activePath) && noteState !== "loading" ? (
+            {treeState === "ready" && files.length > 0 && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
               <NotesDashboard
                 files={files} 
                 onSelectNote={handleSelect} 

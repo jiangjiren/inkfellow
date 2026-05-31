@@ -32,6 +32,7 @@ const MIME_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
+  ".pdf": "application/pdf",
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
@@ -152,8 +153,8 @@ const isMarkdownPath = (relativePath: string) => path.extname(relativePath).toLo
 const HTML_EXTENSIONS = new Set([".html", ".htm"]);
 const isHtmlPath = (relativePath: string) => HTML_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
 
-// PDF 仅用于只读预览（前端 <iframe> 原生渲染），不可编辑；其余仍是 md/html。
-const isNoteFile = (name: string) => isMarkdownPath(name) || isHtmlPath(name) || isPdfPath(name);
+// PDF/图片仅用于只读预览，不可编辑。
+const isNoteFile = (name: string) => isMarkdownPath(name) || isHtmlPath(name) || isPdfPath(name) || isImagePath(name);
 
 const isImagePath = (relativePath: string) => IMAGE_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
 
@@ -213,12 +214,13 @@ const walkDirectory = async (absolutePath: string, relativePath: string): Promis
   };
 };
 
-// 只读返回二进制文档字节（目前仅 PDF），供前端用 <iframe> 原生预览。
+// 只读返回二进制文档字节（PDF / 图片），供前端预览。
 // 服务端不做任何渲染/转换，仅按精确路径读取文件并流回字节。
 export const readVaultDocument = async (relativePath: string) => {
   const resolved = await resolveExistingVaultPath(relativePath);
-  if (!isPdfPath(resolved.relativePath)) {
-    throw new VaultAccessError("Only PDF documents can be previewed.", 415);
+  const ext = path.extname(resolved.relativePath).toLowerCase();
+  if (!isPdfPath(resolved.relativePath) && !isImagePath(resolved.relativePath)) {
+    throw new VaultAccessError("Only PDF and image files can be previewed.", 415);
   }
   const stat = await fs.stat(resolved.absolutePath);
   if (!stat.isFile()) {
@@ -226,7 +228,7 @@ export const readVaultDocument = async (relativePath: string) => {
   }
   return {
     body: await fs.readFile(resolved.absolutePath),
-    contentType: "application/pdf",
+    contentType: MIME_TYPES[ext] ?? "application/octet-stream",
     size: stat.size,
     updatedAt: stat.mtime.toUTCString(),
     fileName: path.basename(resolved.relativePath),

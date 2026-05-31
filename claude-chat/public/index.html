@@ -913,14 +913,47 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .history-item-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.history-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transform: translateX(3px);
+  transition: opacity 0.15s, transform 0.15s;
+}
+.history-item:hover .history-item-actions,
+.history-item.current .history-item-actions {
+  opacity: 1;
+  transform: translateX(0);
+}
+.history-item-more { display: none; }
+
+.history-item-rename,
 .history-item-del {
   flex-shrink: 0; width: 26px; height: 26px;
   border: none; background: none; border-radius: 5px;
   cursor: pointer; display: grid; place-items: center;
-  color: var(--text-dim); opacity: 0.4;
-  transition: all 0.12s; padding: 0;
+  color: var(--text-dim);
+  transition: background 0.12s, color 0.12s; padding: 0;
 }
-.history-item-del:hover { background: rgba(192,57,43,0.1); color: var(--red); opacity: 1; }
+.history-item-rename:hover { background: rgba(26,108,246,0.1); color: var(--accent); }
+.history-item-del:hover { background: rgba(192,57,43,0.1); color: var(--red); }
+
+/* inline rename input */
+.history-item-title-input {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid var(--accent);
+  outline: none;
+  width: 100%;
+  padding: 0 0 1px;
+  font-family: inherit;
+  line-height: 1.4;
+}
 
 /* ── Auth settings (账号配置列表) ── */
 #auth-backdrop {
@@ -1346,6 +1379,71 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     to { transform: translateX(0); opacity: 1; }
   }
 }
+
+/* 触控设备（手机）：隐藏 hover 按钮，改用 ··· 菜单 */
+@media (hover: none) {
+  .history-item-actions { display: none !important; }
+  .history-item-more {
+    display: grid; place-items: center;
+    flex-shrink: 0; width: 36px; height: 36px;
+    border: none; background: none; border-radius: 8px;
+    color: var(--text-dim); cursor: pointer; padding: 0;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.12s;
+  }
+  .history-item-more:active { background: rgba(0,0,0,0.07); }
+}
+
+/* ── iOS-style Action Sheet ── */
+#action-sheet-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 2000;
+  -webkit-tap-highlight-color: transparent;
+}
+#action-sheet-backdrop.open { display: block; }
+#action-sheet {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: transparent;
+  z-index: 2001;
+  padding: 8px 10px max(16px, env(safe-area-inset-bottom));
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+#action-sheet.open { transform: translateY(0); }
+.action-sheet-group {
+  background: var(--bg);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+}
+.action-sheet-btn {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 16px 18px;
+  border: none; background: none;
+  font-size: 16px; font-family: inherit;
+  color: var(--text); cursor: pointer; text-align: left;
+  border-bottom: 1px solid var(--border);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.1s;
+}
+.action-sheet-btn:last-child { border-bottom: none; }
+.action-sheet-btn:active { background: var(--bg2); }
+.action-sheet-btn svg { flex-shrink: 0; color: var(--text-dim); }
+.action-sheet-btn.danger { color: var(--red); }
+.action-sheet-btn.danger svg { color: var(--red); }
+.action-sheet-cancel {
+  margin-top: 8px;
+  background: var(--bg);
+  border-radius: 14px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+}
+.action-sheet-cancel .action-sheet-btn {
+  justify-content: center; font-weight: 600;
+  color: var(--accent); border-bottom: none;
+}
 </style>
 </head>
 <body>
@@ -1462,6 +1560,22 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       <span class="history-title">历史对话</span>
     </div>
     <div class="history-list" id="history-list"></div>
+  </div>
+  <div id="action-sheet-backdrop"></div>
+  <div id="action-sheet" role="dialog" aria-label="对话操作">
+    <div class="action-sheet-group">
+      <button class="action-sheet-btn" id="action-sheet-rename">
+        <svg width="18" height="18" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M8.5 2L11 4.5L4.5 11H2V8.5L8.5 2Z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        重命名
+      </button>
+      <button class="action-sheet-btn danger" id="action-sheet-delete">
+        <svg width="18" height="18" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        删除
+      </button>
+    </div>
+    <div class="action-sheet-cancel">
+      <button class="action-sheet-btn" id="action-sheet-cancel">取消</button>
+    </div>
   </div>
   <div id="auth-backdrop"></div>
   <section id="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-dialog-title">
@@ -3557,6 +3671,110 @@ function formatRelDate(iso) {
   return d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
+// ── Action Sheet (mobile) ──────────────────────────────────
+const _actionSheet = document.getElementById("action-sheet");
+const _actionSheetBackdrop = document.getElementById("action-sheet-backdrop");
+let _actionSheetConvId = null;
+
+function openActionSheet(convId) {
+  _actionSheetConvId = convId;
+  _actionSheetBackdrop.classList.add("open");
+  _actionSheet.classList.add("open");
+}
+
+function closeActionSheet() {
+  _actionSheetBackdrop.classList.remove("open");
+  _actionSheet.classList.remove("open");
+  _actionSheetConvId = null;
+}
+
+_actionSheetBackdrop.addEventListener("click", closeActionSheet);
+document.getElementById("action-sheet-cancel").addEventListener("click", closeActionSheet);
+
+document.getElementById("action-sheet-delete").addEventListener("click", () => {
+  const convId = _actionSheetConvId;
+  closeActionSheet();
+  if (!convId) return;
+  const item = document.querySelector(`.history-item[data-id="${convId}"]`);
+  if (item && !item.classList.contains("deleting")) {
+    item.style.height = item.offsetHeight + "px";
+    void item.offsetHeight;
+    item.classList.add("deleting");
+    item.style.height = "0px";
+    setTimeout(() => deleteConversation(convId), 300);
+  } else {
+    deleteConversation(convId);
+  }
+});
+
+document.getElementById("action-sheet-rename").addEventListener("click", () => {
+  const convId = _actionSheetConvId;
+  closeActionSheet();
+  if (!convId) return;
+  const item = document.querySelector(`.history-item[data-id="${convId}"]`);
+  if (item) startInlineRename(item, convId);
+});
+
+function startInlineRename(item, convId) {
+  const titleEl = item.querySelector(".history-item-title");
+  if (!titleEl) return;
+  const originalTitle = titleEl.textContent;
+  const actionsEl = item.querySelector(".history-item-actions");
+  const moreBtn = item.querySelector(".history-item-more");
+
+  const input = document.createElement("input");
+  input.className = "history-item-title-input";
+  input.value = originalTitle;
+  input.setAttribute("aria-label", "重命名对话");
+  titleEl.replaceWith(input);
+  if (actionsEl) actionsEl.style.visibility = "hidden";
+  if (moreBtn) moreBtn.style.visibility = "hidden";
+  input.focus();
+  input.select();
+
+  let committed = false;
+
+  const commit = async () => {
+    if (committed) return;
+    committed = true;
+    const newTitle = input.value.trim() || originalTitle;
+    const newTitleEl = document.createElement("div");
+    newTitleEl.className = "history-item-title";
+    newTitleEl.textContent = newTitle;
+    input.replaceWith(newTitleEl);
+    if (actionsEl) actionsEl.style.visibility = "";
+    if (moreBtn) moreBtn.style.visibility = "";
+    if (newTitle !== originalTitle) {
+      const conv = _historyCache?.find(h => h.id === convId);
+      if (conv) {
+        conv.title = newTitle;
+        fetch(`api/history/${convId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(conv),
+        }).catch(() => {});
+      }
+    }
+  };
+
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    const restoredEl = document.createElement("div");
+    restoredEl.className = "history-item-title";
+    restoredEl.textContent = originalTitle;
+    input.replaceWith(restoredEl);
+    if (actionsEl) actionsEl.style.visibility = "";
+    if (moreBtn) moreBtn.style.visibility = "";
+  };
+
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+    if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+  });
+  input.addEventListener("blur", commit);
+}
+
 function renderHistoryFromData(history) {
   const listEl = document.getElementById("history-list");
   if (history.length === 0) {
@@ -3572,9 +3790,21 @@ function renderHistoryFromData(history) {
         <div class="history-item-title">${esc(conv.title || "对话")}</div>
         <div class="history-item-meta">${formatRelDate(conv.date)} · ${msgCount} 条消息</div>
       </div>
-      <button class="history-item-del" data-del="${conv.id}" title="删除此对话" aria-label="删除此对话">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-          <path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <div class="history-item-actions">
+        <button class="history-item-rename" data-rename="${conv.id}" title="重命名此对话" aria-label="重命名此对话">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <path d="M8.5 2L11 4.5L4.5 11H2V8.5L8.5 2Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="history-item-del" data-del="${conv.id}" title="删除此对话" aria-label="删除此对话">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <button class="history-item-more" data-more="${conv.id}" aria-label="更多操作" title="更多操作">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <circle cx="8" cy="3" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="8" cy="13" r="1.3"/>
         </svg>
       </button>
     </div>`;
@@ -3582,7 +3812,7 @@ function renderHistoryFromData(history) {
 
   listEl.querySelectorAll(".history-item").forEach(item => {
     item.addEventListener("click", async (e) => {
-      if (e.target.closest(".history-item-del")) return;
+      if (e.target.closest(".history-item-del") || e.target.closest(".history-item-rename") || e.target.closest(".history-item-more") || e.target.closest(".history-item-title-input")) return;
       const conv = history.find(h => h.id === item.dataset.id);
       if (conv) loadConversation(conv);
     });
@@ -3594,7 +3824,7 @@ function renderHistoryFromData(history) {
       const item = btn.closest(".history-item");
       if (item && !item.classList.contains("deleting")) {
         item.style.height = item.offsetHeight + "px";
-        void item.offsetHeight; // force reflow
+        void item.offsetHeight;
         item.classList.add("deleting");
         item.style.height = "0px";
         setTimeout(() => {
@@ -3603,6 +3833,22 @@ function renderHistoryFromData(history) {
       } else if (!item) {
         deleteConversation(btn.dataset.del);
       }
+    });
+  });
+
+  listEl.querySelectorAll(".history-item-rename").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const item = btn.closest(".history-item");
+      startInlineRename(item, btn.dataset.rename);
+    });
+  });
+
+  listEl.querySelectorAll(".history-item-more").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const item = btn.closest(".history-item");
+      openActionSheet(btn.dataset.more);
     });
   });
 }

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { chmodSync, readFileSync, existsSync, writeFileSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { extname } from "node:path";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,15 +23,28 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
   : "auto";
 
 const htmlPath   = join(__dirname, "public/index.html");
-const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, `session-${PORT}.json`);
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
-// 厂商配置（profiles + apiKey）跨实例共享，但「当前选中哪个厂商」按实例隔离，
-// 否则一个用户切换厂商会同步到另一个实例。activeProfileId 单独存 per-PORT 文件。
-const ACTIVE_PROFILE_FILE = process.env.CLAUDE_CHAT_ACTIVE_PROFILE_FILE || join(__dirname, `active-profile-${PORT}.json`);
 
-// ── WeChat Bot Configs & Isolated Paths ──────────────────────
-const WECHAT_CONFIG_FILE = join(__dirname, `wechat-bot-${PORT}.json`);
-const WECHAT_SYNC_FILE = join(__dirname, `wechat-bot-${PORT}.sync.json`);
+// per-PORT 运行时文件统一放在 data/ 子目录，一条 gitignore 收口，备份运维清晰。
+// activeProfileId 完全由前端 localStorage 管理（与 model/effort/permission 同一机制），
+// 服务端只接受客户端请求里的 profileId 参数，不再持久化「当前选哪个厂商」。
+const DATA_DIR = process.env.CLAUDE_CHAT_DATA_DIR || join(__dirname, "data");
+mkdirSync(DATA_DIR, { recursive: true });
+
+// 启动时自动迁移旧位置的 per-PORT 文件
+for (const name of [`session-${PORT}.json`, `history-${PORT}.json`,
+                     `wechat-bot-${PORT}.json`, `wechat-bot-${PORT}.sync.json`,
+                     `wechat-history-${PORT}.json`, `active-profile-${PORT}.json`]) {
+  const oldPath = join(__dirname, name);
+  const newPath = join(DATA_DIR, name);
+  if (existsSync(oldPath) && !existsSync(newPath)) {
+    try { renameSync(oldPath, newPath); } catch { }
+  }
+}
+
+const SESSION_FILE      = join(DATA_DIR, `session-${PORT}.json`);
+const WECHAT_CONFIG_FILE = join(DATA_DIR, `wechat-bot-${PORT}.json`);
+const WECHAT_SYNC_FILE   = join(DATA_DIR, `wechat-bot-${PORT}.sync.json`);
 const FIXED_BASE_URL = "https://ilinkai.weixin.qq.com";
 
 const PROVIDER_PRESETS = {
@@ -168,46 +181,18 @@ function normalizeProfiles(raw) {
   return { activeProfileId, profiles };
 }
 
-// 读取本实例选中的 activeProfileId（per-PORT，不与其他实例共享）
-function readActiveProfileId() {
-  try {
-    if (existsSync(ACTIVE_PROFILE_FILE)) {
-      const v = JSON.parse(readFileSync(ACTIVE_PROFILE_FILE, "utf8")).activeProfileId;
-      if (typeof v === "string") return v;
-    }
-  } catch { }
-  return null;
-}
-
 function readProfiles() {
-  let data;
   try {
     if (existsSync(AUTH_PROFILE_FILE)) {
-      data = normalizeProfiles(JSON.parse(readFileSync(AUTH_PROFILE_FILE, "utf8")));
-    } else {
-      data = normalizeProfiles(null);
+      return normalizeProfiles(JSON.parse(readFileSync(AUTH_PROFILE_FILE, "utf8")));
     }
-  } catch {
-    data = normalizeProfiles(null);
-  }
-  // activeProfileId 以本实例的 per-PORT 文件为准（仅当指向的厂商仍存在时）
-  const perInstanceActive = readActiveProfileId();
-  if (perInstanceActive && data.profiles.some(p => p.id === perInstanceActive)) {
-    data.activeProfileId = perInstanceActive;
-  }
-  return data;
+  } catch { }
+  return normalizeProfiles(null);
 }
 
 function writeProfiles(data) {
-  // 厂商配置共享；activeProfileId 不写入共享文件，避免污染另一个实例
-  const shared = { profiles: data.profiles };
-  writeFileSync(AUTH_PROFILE_FILE, JSON.stringify(shared, null, 2), "utf8");
+  writeFileSync(AUTH_PROFILE_FILE, JSON.stringify(data, null, 2), "utf8");
   try { chmodSync(AUTH_PROFILE_FILE, 0o600); } catch { }
-  // 当前选中的厂商按实例隔离
-  try {
-    writeFileSync(ACTIVE_PROFILE_FILE, JSON.stringify({ activeProfileId: data.activeProfileId }), "utf8");
-    chmodSync(ACTIVE_PROFILE_FILE, 0o600);
-  } catch { }
 }
 
 function maskSecret(secret) {
@@ -276,7 +261,7 @@ export function buildAgentEnv(profileData, effort, requestedModel) {
 }
 
 // ── Server-side history ────────────────────────────────────
-const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(__dirname, `history-${PORT}.json`);
+const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(DATA_DIR, `history-${PORT}.json`);
 const MAX_SERVER_HISTORY = 100;
 
 export function resolveAllowedCwd(requestedCwd) {
@@ -351,7 +336,7 @@ let wechatPollingController = null;
 const wechatSenderSessions = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
-const WECHAT_HISTORY_FILE = join(__dirname, `wechat-history-${PORT}.json`);
+const WECHAT_HISTORY_FILE = join(DATA_DIR, `wechat-history-${PORT}.json`);
 
 // 启动时从文件恢复历史
 try {
@@ -992,6 +977,10 @@ wss.on("connection", (ws) => {
       : DEFAULT_PERMISSION_MODE;
     const effort = EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium";
     const profileData = readProfiles();
+    // activeProfileId 由客户端 localStorage 管理，随每条消息传入；服务端直接使用，无需持久化
+    if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
+      profileData.activeProfileId = msg.profileId;
+    }
     const activeProfile = getActiveProfile(profileData);
 
     if (activeProfile && activeProfile.provider !== "claude" && !activeProfile.apiKey) {

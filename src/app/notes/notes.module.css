@@ -2650,9 +2650,9 @@
   overflow: auto;
   border: 1px solid var(--notes-border);
   border-radius: 8px;
-  background: #141614; /* macOS dark window background */
+  background: #f5f5f4;
   padding: 16px 18px;
-  color: #f5f5f7;
+  color: #1d1d1f;
   line-height: 1.6;
 }
 

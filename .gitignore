@@ -52,6 +52,13 @@ claude-chat/node_modules
 claude-chat/auth-profile.json
 claude-chat/session.json
 claude-chat/history.json
+# per-PORT 运行时状态（多实例部署），含用户对话历史与当前选择，切勿入库或被 git clean 清除
+claude-chat/session-*.json
+claude-chat/history-*.json
+claude-chat/active-profile-*.json
+claude-chat/wechat-bot-*.json
+claude-chat/wechat-bot-*.sync.json
+claude-chat/wechat-history-*.json
 
 # vercel
 .vercel

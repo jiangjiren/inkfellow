@@ -605,7 +605,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--yellow);
+  background: #f59e0b;
   flex-shrink: 0;
   animation: gitBannerPulse 2.2s ease-in-out infinite;
 }
@@ -621,7 +621,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   flex: 1;
   min-width: 0;
   text-align: left;
-  color: var(--yellow);
+  color: #f59e0b;
   font-size: 11.5px;
   font-weight: 500;
   white-space: nowrap;
@@ -641,7 +641,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   padding: 3px 9px;
   height: 22px;
   border-radius: 5px;
-  background: var(--yellow);
+  background: #f59e0b;
   color: #fff;
   font-size: 11px;
   font-weight: 500;
@@ -651,6 +651,18 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 #git-banner-sync:hover { opacity: 0.82; }
 #git-banner-sync:disabled { opacity: 0.45; cursor: not-allowed; }
+#git-banner-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 6px;
+  border-radius: 4px;
+  background: rgba(245,158,11,0.15);
+  color: #f59e0b;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: middle;
+}
 #header-controls {
   display: flex;
   align-items: center;
@@ -3342,14 +3354,25 @@ function send() {
 
   function stripExt(name) { return name.replace(/\.(md|html?)$/i, ""); }
 
+  const GIT_STATE_LABEL = { modified: "已修改", added: "新增", deleted: "已删除", renamed: "已重命名" };
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  }
+
   function renderBanner(files) {
     pendingFiles = files;
     if (!files.length) { banner.classList.remove("visible"); return; }
     banner.classList.add("visible");
-    const label = files.length === 1
-      ? stripExt(files[0].name)
-      : stripExt(files[0].name) + " 等 " + files.length + " 篇待同步";
-    labelBtn.textContent = label;
+    if (files.length === 1) {
+      const tag = GIT_STATE_LABEL[files[0].state] || "改动";
+      labelBtn.innerHTML = '<span id="git-banner-tag">' + tag + "</span>"
+        + escapeHtml(stripExt(files[0].name));
+    } else {
+      labelBtn.textContent = files.length + " 处改动";
+    }
   }
 
   function setFeedback(text, duration) {

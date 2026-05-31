@@ -16,6 +16,7 @@ import NotesMarkdown from "./NotesMarkdown";
 import NotesGit from "./NotesGit";
 import NotesDashboard from "./NotesDashboard";
 import styles from "./notes.module.css";
+import type { NotesEditorHandle } from "./NotesEditor";
 
 // CodeMirror 不支持 SSR，动态加载
 const NotesEditor = dynamic(() => import("./NotesEditor"), { ssr: false });
@@ -29,6 +30,13 @@ const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
 const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 const LAST_FILE_KEY = "inkfellow-notes-last-file-v1";
+// 快速记录（草稿）默认落盘的文件夹，可在草稿顶部「存到…」切换并记忆
+const CAPTURE_FOLDER_KEY = "inkfellow-capture-folder-v1";
+const DEFAULT_CAPTURE_FOLDER = "灵感箱";
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const captureStamp = (d = new Date()) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
 
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
 const MIN_ASSISTANT_PANEL_WIDTH = 340;
@@ -384,6 +392,13 @@ export default function NotesExplorer() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+  // ── ⋯ 更多菜单 ───────────────────────────────────────
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  // ── 删除确认条 ───────────────────────────────────────
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const [newNoteOpen, setNewNoteOpen] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteFolder, setNewNoteFolder] = useState("");
@@ -406,6 +421,16 @@ export default function NotesExplorer() {
 
   // ── 编辑模式 ──────────────────────────────────────────
   const [isEditing, setIsEditing] = useState(false);
+  // ── 快速记录（草稿态）：进编辑器先写、敲第一个字才落盘 ──
+  const [isDraft, setIsDraft] = useState(false);
+  const [captureFolder, setCaptureFolder] = useState(DEFAULT_CAPTURE_FOLDER);
+  const isDraftRef = useRef(false);
+  const captureFolderRef = useRef(DEFAULT_CAPTURE_FOLDER);
+  const draftCreatedPathRef = useRef<string | null>(null);
+  const draftCreatingRef = useRef(false); // PUT 正在进行中，防止竞态自动保存
+  const skipNextFlushRef = useRef(false); // 删除后 goHome 时跳过 flush（文件已不存在）
+  // 草稿首次落盘会让 note.path 从 null 变为新路径，需跳过「切换笔记退出编辑」那一次
+  const keepEditingOnCommitRef = useRef(false);
   const [editContent, setEditContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
@@ -413,6 +438,7 @@ export default function NotesExplorer() {
   const [hasGitChanges, setHasGitChanges] = useState(false); // 当前文件有未提交改动
   const [globalGitPending, setGlobalGitPending] = useState<number | null>(null); // 全局待同步数
   const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
+  const editorFocusRef = useRef<NotesEditorHandle>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
@@ -520,6 +546,13 @@ export default function NotesExplorer() {
   }, [files]);
 
   const visibleTree = useMemo(() => (tree ? filterTree(tree, searchQuery.trim()) : null), [tree, searchQuery]);
+
+  // fix: 避免草稿态每次按键都重新遍历文件树
+  const captureFolderOptions = useMemo(() => {
+    const folders = tree ? collectFolders(tree) : [""];
+    if (!folders.includes(captureFolder)) folders.unshift(captureFolder);
+    return folders;
+  }, [tree, captureFolder]);
 
   const articleTocEntries = useMemo(() => {
     if (!note || /\.html?$/i.test(note.path)) {
@@ -634,6 +667,24 @@ export default function NotesExplorer() {
   }, []);
 
   useEffect(() => {
+    isDraftRef.current = isDraft;
+  }, [isDraft]);
+
+  useEffect(() => {
+    captureFolderRef.current = captureFolder;
+  }, [captureFolder]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(CAPTURE_FOLDER_KEY);
+      if (saved !== null) {
+        setCaptureFolder(saved);
+        captureFolderRef.current = saved;
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
     window.localStorage.setItem(PANEL_WIDTH_KEY, String(assistantPanelWidth));
   }, [assistantPanelWidth]);
 
@@ -676,19 +727,17 @@ export default function NotesExplorer() {
   }, [isMobileViewport, mobileSidebarOpen, mobileAssistantPanelOpen]);
 
   useEffect(() => {
-    if (!shareModalOpen) {
-      return;
-    }
-
+    if (!shareModalOpen && !deleteConfirmOpen && !moreMenuOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShareModalOpen(false);
+        setDeleteConfirmOpen(false);
+        setMoreMenuOpen(false);
       }
     };
-
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [shareModalOpen]);
+  }, [shareModalOpen, deleteConfirmOpen, moreMenuOpen]);
 
   useEffect(() => {
     if (!isResizingAssistantPanel) {
@@ -1180,10 +1229,61 @@ export default function NotesExplorer() {
     }
   }, [activePath, editContent]);
 
+  /** 草稿首次输入 → 真正落盘到 captureFolder，随后转为普通笔记编辑 */
+  const createDraftFile = useCallback(async (initialContent: string) => {
+    const folder = (captureFolderRef.current ?? DEFAULT_CAPTURE_FOLDER).trim();
+    const path = folder ? `${folder}/${captureStamp()}.md` : `${captureStamp()}.md`;
+    // 同步认领路径，使随后的防抖自动保存（读 activePathRef）打到这个文件
+    draftCreatedPathRef.current = path;
+    activePathRef.current = path;
+    draftCreatingRef.current = true;
+    try {
+      const res = await fetch("/api/notes/file", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        // createMarkdownNote 会递归创建父目录（含「灵感箱」），无需单独建文件夹
+        body: JSON.stringify({ path, content: initialContent }),
+      });
+      if (!res.ok) throw new Error("创建失败");
+      const saved = (await res.json()) as NotesFileResponse;
+      noteUpdatedAtRef.current = saved.updatedAt;
+      keepEditingOnCommitRef.current = true; // 让随后的 note.path 变化保持在编辑态
+      setNote({ ...saved, content: saved.content ?? initialContent });
+      setActivePath(path);
+      setHasGitChanges(true);
+      // 刷新文件树，让新灵感出现在侧栏
+      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+      if (treeRes.ok) {
+        const payload = (await treeRes.json()) as NotesTreeResponse;
+        setTree(payload.root);
+        treeRevRef.current = payload.rev;
+        openAncestors(path);
+      }
+    } catch {
+      // 落盘失败：退回草稿态，让用户可重试（内容仍在编辑器里）
+      draftCreatedPathRef.current = null;
+      activePathRef.current = null; // fix: 防止后续自动保存打到不存在的路径
+      isDraftRef.current = true;
+      setIsDraft(true);
+    } finally {
+      draftCreatingRef.current = false;
+    }
+  }, [openAncestors]);
+
   /** Editor onChange — 更新状态 + 防抖自动保存 */
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleEditorChange = useCallback((value: string) => {
     setEditContent(value);
+    // 草稿态：空白时不落盘；敲下第一个非空字符才创建文件并转为普通编辑
+    if (isDraftRef.current) {
+      if (!draftCreatedPathRef.current && value.trim()) {
+        isDraftRef.current = false;
+        setIsDraft(false);
+        void createDraftFile(value);
+      }
+      return;
+    }
+    // fix: 文件创建请求正在进行中，等落盘完成再走自动保存分支
+    if (draftCreatingRef.current) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(async () => {
       const path = activePathRef.current;
@@ -1203,7 +1303,7 @@ export default function NotesExplorer() {
         setHasGitChanges(true);
       } catch { /* 网络错误静默忽略 */ }
     }, 1500);
-  }, []); // stable — intentionally no deps, uses refs
+  }, [createDraftFile]); // 其余皆 ref / setter，稳定
 
   /** 切换阅读 / 编辑模式 */
   const handleEditToggle = useCallback(async () => {
@@ -1222,23 +1322,109 @@ export default function NotesExplorer() {
 
   /** 切换笔记前自动保存未提交的修改 */
   const flushEditBeforeSwitch = useCallback(async () => {
-    if (isEditing && isDirty && activePath) {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = null;
-      }
+    if (skipNextFlushRef.current) {
+      skipNextFlushRef.current = false;
+      return;
+    }
+    if (!isEditing) return;
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (isDirty && activePath) {
       await handleSave(activePath, editContent);
+      return;
+    }
+    // fix: 草稿已落盘（note state 尚未更新）但有未保存内容时也执行 flush
+    if (!draftCreatingRef.current && draftCreatedPathRef.current && editContent.trim()) {
+      await handleSave(draftCreatedPathRef.current, editContent);
     }
   }, [isEditing, isDirty, activePath, editContent, handleSave]);
 
   /** 退出编辑模式当 note 切换时，清理 pending auto-save */
   useEffect(() => {
+    // 草稿首次落盘（null → 新路径）不算「切换笔记」，保持编辑态不被打断
+    if (keepEditingOnCommitRef.current) {
+      keepEditingOnCommitRef.current = false;
+      return;
+    }
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
     setIsEditing(false);
   }, [note?.path]);
+
+  /** 快速记录灵感：零摩擦进编辑器，敲第一个字才落盘（见 createDraftFile） */
+  const handleQuickCapture = useCallback(() => {
+    void flushEditBeforeSwitch().then(() => {
+      // fix: 直接用 captureFolderRef（已在 mount 时从 localStorage 初始化，并随时同步）
+      const folder = captureFolderRef.current;
+      setCaptureFolder(folder);
+      captureFolderRef.current = folder;
+      draftCreatedPathRef.current = null;
+      noteUpdatedAtRef.current = null;
+      activePathRef.current = null;
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      setNote(null);
+      setActivePath(null);
+      setEditContent("");
+      setEditorMinHeight(0);
+      setNoteState("ready");
+      isDraftRef.current = true;
+      setIsDraft(true);
+      setIsEditing(true);
+      if (isMobileViewport) {
+        setMobileSidebarOpen(false);
+        setMobileAssistantPanelOpen(false);
+      }
+    });
+  }, [flushEditBeforeSwitch, isMobileViewport]);
+
+  /** 切换「存到…」目标文件夹，并记忆为下次默认 */
+  const handleCaptureFolderChange = useCallback((folder: string) => {
+    setCaptureFolder(folder);
+    captureFolderRef.current = folder;
+    try {
+      window.localStorage.setItem(CAPTURE_FOLDER_KEY, folder);
+    } catch { /* ignore */ }
+  }, []);
+
+  /** 回首页：清空当前文章/草稿，本次会话（含刷新）不再被自动恢复弹回 */
+  const goHome = useCallback(() => {
+    void flushEditBeforeSwitch().then(() => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      isDraftRef.current = false;
+      draftCreatedPathRef.current = null;
+      setIsDraft(false);
+      setIsEditing(false);
+      setEditContent("");
+      setNote(null);
+      setActivePath(null);
+      activePathRef.current = null;
+      noteUpdatedAtRef.current = null;
+      pendingHashRef.current = null;
+      setNoteState("ready");
+      setGitPanelOpen(false);
+      try {
+        window.localStorage.removeItem(LAST_FILE_KEY);
+      } catch { /* ignore */ }
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete("file");
+      nextUrl.hash = "";
+      window.history.replaceState(null, "", nextUrl);
+      if (isMobileViewport) {
+        setMobileSidebarOpen(false);
+        setMobileAssistantPanelOpen(false);
+      }
+    });
+  }, [flushEditBeforeSwitch, isMobileViewport]);
 
   // 全局 Git 状态轮询 — 为侧边栏底部状态条和移动端 badge 提供数据
   useEffect(() => {
@@ -1669,6 +1855,57 @@ export default function NotesExplorer() {
     }
   }, [shareToken]);
 
+  // ── ⋯ 菜单：点外部关闭 ────────────────────────────────
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (
+        moreMenuRef.current?.contains(e.target as Node) ||
+        moreButtonRef.current?.contains(e.target as Node)
+      ) return;
+      setMoreMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [moreMenuOpen]);
+
+  // ── 删除文件 ──────────────────────────────────────────
+  const handleDeleteNote = useCallback(async () => {
+    if (!activePath) return;
+    setDeleteLoading(true);
+    try {
+      const res = await fetch("/api/notes/file", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: activePath }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "删除失败");
+      }
+      // 文件已删除 — 先关弹窗、清定时器，再刷新文件树（失败不影响后续流程）
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      setDeleteConfirmOpen(false);
+      skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
+      try {
+        const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+        if (treeRes.ok) {
+          const payload = (await treeRes.json()) as NotesTreeResponse;
+          setTree(payload.root);
+          treeRevRef.current = payload.rev;
+        }
+      } catch { /* 刷新文件树失败不影响回首页 */ }
+      goHome();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [activePath, goHome]);
+
   const updatedAt = note ? new Date(note.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "";
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
@@ -1896,6 +2133,20 @@ export default function NotesExplorer() {
                 <span className={styles.sidebarToggleBadge} aria-hidden="true" />
               )}
             </button>
+            {!isDesktopGitView && (activePath || isDraft) ? (
+              <button
+                type="button"
+                className={`${styles.iconButton} ${styles.homeBtn}`}
+                onClick={goHome}
+                aria-label="回到首页"
+                title="回到首页"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 10.5 12 3l9 7.5" />
+                  <path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5" />
+                </svg>
+              </button>
+            ) : null}
           </div>
           {isDesktopGitView ? (
             <div className={styles.noteMeta}>
@@ -1903,7 +2154,7 @@ export default function NotesExplorer() {
             </div>
           ) : (
             <div className={styles.noteMeta}>
-              <span>{activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : "智能仪表盘"}</span>
+              <span>{isDraft ? "记录灵感" : activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : ""}</span>
               {!isEditing && hasGitChanges && note ? (
                 <button
                   type="button"
@@ -1936,66 +2187,109 @@ export default function NotesExplorer() {
                 {savedFlash ? (
                   <span className={styles.savedHint}>已保存</span>
                 ) : null}
-                {note && (
-                  <>
-                    {!isEditing ? (
-                      <button
-                        type="button"
-                        className={styles.shareButton}
-                        onClick={handleOpenShareDialog}
-                        aria-label="分享当前文章"
-                        title="分享当前文章"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                          <path d="M7.2 11.2 12 6.4l4.8 4.8" />
-                          <path d="M12 6.4v11.2" />
-                          <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
-                        </svg>
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className={`${styles.editBtn} ${(isMobileViewport ? mobileTocOpen : tocSectionOpen && sidebarVisible) ? styles.editBtnActive : ""}`}
-                      onClick={handleTocToggle}
-                      disabled={/\.html?$/i.test(note.path ?? "")}
-                      aria-label="大纲"
-                      title="大纲"
-                    >
-                      <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
-                        <path fill="currentColor" d="M141.019429 7.606857c21.869714 0 40.374857 7.387429 55.588571 22.235429 15.213714 14.848 22.820571 33.133714 22.820571 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428A75.337143 75.337143 0 0 1 78.994286 7.606857h62.025143z m802.816 0c21.065143 0 39.204571 7.387429 54.418285 22.235429 15.213714 14.848 22.820571 33.133714 22.820572 55.003428v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A75.629714 75.629714 0 0 1 365.714286 144.530286V84.845714c0-21.869714 7.606857-40.228571 22.820571-55.003428 15.213714-14.848 33.718857-22.235429 55.588572-22.235429h499.712zM141.019429 371.565714c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.718857 22.820571 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820571 54.418285a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a74.313143 74.313143 0 0 1-22.820571-54.418285v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.718857 22.820572 55.588571v59.684572c0 21.065143-7.606857 39.204571-22.820572 54.418285a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572A74.313143 74.313143 0 0 1 365.714286 509.659429v-59.684572c0-21.869714 7.606857-40.374857 22.820571-55.588571 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712zM141.019429 736.694857c21.869714 0 40.374857 7.606857 55.588571 22.820572 15.213714 15.213714 22.820571 33.353143 22.820571 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820571 55.588571a75.629714 75.629714 0 0 1-55.588571 22.820572H78.994286c-21.065143 0-39.204571-7.606857-54.418286-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.353143-22.820571 54.418286-22.820572h62.025143z m802.816 0c21.065143 0 39.204571 7.606857 54.418285 22.820572 15.213714 15.213714 22.820571 33.353143 22.820572 54.418285v59.684572c0 21.869714-7.606857 40.374857-22.820572 55.588571a74.313143 74.313143 0 0 1-54.418285 22.820572H444.123429c-21.869714 0-40.374857-7.606857-55.588572-22.820572a75.629714 75.629714 0 0 1-22.820571-55.588571v-59.684572c0-21.065143 7.606857-39.204571 22.820571-54.418285 15.213714-15.213714 33.718857-22.820571 55.588572-22.820572h499.712z" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      className={`${styles.editBtn} ${isEditing ? styles.editBtnActive : ""}`}
-                      onClick={() => void handleEditToggle()}
-                      disabled={/\.html?$/i.test(note.path ?? "")}
-                      aria-label={isEditing ? "退出编辑" : "编辑笔记"}
-                      title={isEditing ? "退出编辑模式" : "编辑笔记"}
-                    >
-                      {isEditing ? (
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-                          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
-                        </svg>
-                      ) : (
-                        <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" style={{ transform: "scale(1.3)" }}>
-                          <path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z" />
-                        </svg>
-                      )}
-                    </button>
-                  </>
+                {note && !isEditing && (
+                  <button
+                    type="button"
+                    className={`${styles.editBtn} ${isEditing ? styles.editBtnActive : ""}`}
+                    onClick={() => void handleEditToggle()}
+                    disabled={/\.html?$/i.test(note.path ?? "")}
+                    aria-label="编辑笔记"
+                    title="编辑笔记"
+                  >
+                    <svg viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" style={{ transform: "scale(1.3)" }}>
+                      <path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z" />
+                    </svg>
+                  </button>
+                )}
+                {note && isEditing && (
+                  <button
+                    type="button"
+                    className={`${styles.editBtn} ${styles.editBtnActive}`}
+                    onClick={() => void handleEditToggle()}
+                    aria-label="退出编辑"
+                    title="退出编辑模式"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                    </svg>
+                  </button>
                 )}
                 <button
                   type="button"
-                  className={`${styles.iconButton} ${styles.claudeHeaderBtn} ${isAssistantPanelOpen ? styles.iconButtonActive : ""}`}
+                  className={`${styles.fellowPill} ${isAssistantPanelOpen ? styles.fellowPillActive : ""} ${aiStatus === "thinking" ? styles.fellowPillThinking : ""} ${aiStatus === "done" ? styles.fellowPillDone : ""}`}
                   onClick={handleClaudeToggle}
                   aria-pressed={isAssistantPanelOpen}
-                  aria-label="AI 助手"
-                  title="AI 助手"
+                  aria-label="Fellow AI 助手"
+                  title="Fellow"
                 >
                   <span aria-hidden="true">✦</span>
+                  <span>Fellow</span>
+                  {aiStatus === "done" && <span className={styles.fellowPillBadge} aria-hidden="true" />}
                 </button>
+                {/* ⋯ 更多菜单：仅在打开了笔记且非草稿态时显示 */}
+                {note && !isDraft ? (
+                  <div className={styles.moreMenuWrapper}>
+                    <button
+                      ref={moreButtonRef}
+                      type="button"
+                      className={`${styles.iconButton} ${moreMenuOpen ? styles.iconButtonActive : ""}`}
+                      onClick={() => setMoreMenuOpen((o) => !o)}
+                      aria-label="更多操作"
+                      title="更多操作"
+                      aria-expanded={moreMenuOpen}
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                        <circle cx="5" cy="12" r="1.5" />
+                        <circle cx="12" cy="12" r="1.5" />
+                        <circle cx="19" cy="12" r="1.5" />
+                      </svg>
+                    </button>
+                    {moreMenuOpen && (
+                      <div ref={moreMenuRef} className={styles.moreMenuDropdown} role="menu">
+                        <button
+                          type="button"
+                          className={styles.moreMenuItem}
+                          role="menuitem"
+                          onClick={() => { setMoreMenuOpen(false); handleTocToggle(); }}
+                          disabled={/\.html?$/i.test(note.path ?? "")}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                            <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+                          </svg>
+                          大纲
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.moreMenuItem}
+                          role="menuitem"
+                          onClick={() => { setMoreMenuOpen(false); handleOpenShareDialog(); }}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M7.2 11.2 12 6.4l4.8 4.8" /><path d="M12 6.4v11.2" />
+                            <path d="M5 15.5v3.1c0 .8.6 1.4 1.4 1.4h11.2c.8 0 1.4-.6 1.4-1.4v-3.1" />
+                          </svg>
+                          分享
+                        </button>
+                        <div className={styles.moreMenuDivider} role="separator" />
+                        <button
+                          type="button"
+                          className={`${styles.moreMenuItem} ${styles.moreMenuItemDanger}`}
+                          role="menuitem"
+                          onClick={() => { setMoreMenuOpen(false); setDeleteConfirmOpen(true); }}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                            <path d="M10 11v6" /><path d="M14 11v6" />
+                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                          </svg>
+                          删除文件
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </>
             )}
           </div>
@@ -2018,15 +2312,43 @@ export default function NotesExplorer() {
         {/* 编辑模式 — CodeMirror inline markdown 编辑 */}
         {!isDesktopGitView && isEditing ? (
           <div
-            className={styles.editorPane}
+            className={`${styles.editorPane} ${isDraft ? styles.editorPaneDraft : ""}`}
             style={editorMinHeight ? { minHeight: editorMinHeight } : undefined}
+            onMouseDown={(e) => {
+              // 点击 editorPane 空白区域（select/input/button 除外）保持 CM 聚焦
+              const target = e.target as HTMLElement;
+              if (target.closest("select, input, button, a, textarea")) return;
+              e.preventDefault();
+              editorFocusRef.current?.focus();
+            }}
           >
+            {isDraft ? (
+              <div className={styles.captureBar}>
+                <span className={styles.captureBarLabel}>存到</span>
+                <select
+                  className={styles.captureBarSelect}
+                  value={captureFolder}
+                  onChange={(e) => handleCaptureFolderChange(e.target.value)}
+                  aria-label="选择保存的文件夹"
+                  onBlur={() => { setTimeout(() => editorFocusRef.current?.focus(), 80); }}
+                >
+                  {captureFolderOptions.map((f) => (
+                    <option key={f} value={f}>{f || "/ 根目录"}</option>
+                  ))}
+                </select>
+                <span className={styles.captureBarHint}>开始输入即自动保存</span>
+              </div>
+            ) : null}
             <NotesEditor
+              ref={editorFocusRef}
               value={editContent}
               onChange={handleEditorChange}
               onReady={() => {
-                // CM 渲染完毕，内容高度已由 CM 自身撑起，释放占位高度
                 setEditorMinHeight(0);
+                // fix: 草稿模式下确保 CM 就绪后光标落在编辑器内
+                if (isDraftRef.current) {
+                  setTimeout(() => editorFocusRef.current?.focus(), 0);
+                }
               }}
             />
           </div>
@@ -2103,13 +2425,56 @@ export default function NotesExplorer() {
                       );
                     }, 50);
                   }
-                }} 
-                onNewNote={openNewNote} 
+                }}
+                onQuickCapture={handleQuickCapture}
               />
             ) : null}
           </article>
         ) : null}
       </section>
+
+      {/* ── 删除确认条（底部滑入）────────────────────────── */}
+      {deleteConfirmOpen ? (
+        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => !deleteLoading && setDeleteConfirmOpen(false)}>
+          <section
+            className={`${styles.shareDialog} ${styles.deleteDialog}`}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-confirm-label"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <header className={styles.shareDialogHeader}>
+              <div>
+                <p className={styles.shareDialogEyebrow}>永久删除</p>
+                <h2 id="delete-confirm-label" className={styles.shareDialogTitle}>
+                  {note ? stripNoteExtension(note.path.split("/").pop() ?? note.path) : ""}
+                </h2>
+              </div>
+            </header>
+            <div className={styles.shareDialogBody}>
+              <p className={styles.deleteDialogDesc}>此操作无法撤销。已同步到云端的文件可在「云端同步」面板中恢复。</p>
+            </div>
+            <footer className={styles.shareDialogActions}>
+              <button
+                type="button"
+                className={styles.shareSecondaryButton}
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={deleteLoading}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={styles.deleteConfirmDelete}
+                onClick={() => void handleDeleteNote()}
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? "删除中…" : "删除"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {shareModalOpen ? (
         <div className={styles.shareOverlay} role="presentation" onMouseDown={() => setShareModalOpen(false)}>
@@ -2233,7 +2598,7 @@ export default function NotesExplorer() {
               {/* 右侧面板专供 Claude；后续多会话切换的 tab 将渲染在此容器内 */}
               <div className={styles.assistantPanelTabs}>
                 <span className={`${styles.assistantPanelTab} ${styles.assistantPanelTabActive}`}>
-                  ✦ Claude
+                  ✦ Fellow
                 </span>
               </div>
               <div className={styles.assistantPanelControls}>

@@ -6,10 +6,10 @@ interface NotesDashboardProps {
   files: NotesFileNode[];
   onSelectNote: (path: string) => void;
   onAskAI: (query?: string) => void;
-  onNewNote: () => void;
+  onQuickCapture: () => void;
 }
 
-export default function NotesDashboard({ files, onSelectNote, onAskAI, onNewNote }: NotesDashboardProps) {
+export default function NotesDashboard({ files, onSelectNote, onAskAI, onQuickCapture }: NotesDashboardProps) {
   const recentFiles = useMemo(() => {
     return [...files]
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
@@ -19,11 +19,10 @@ export default function NotesDashboard({ files, onSelectNote, onAskAI, onNewNote
   return (
     <div className={styles.dashboardContainer}>
       <div className={styles.dashboardHero}>
-        <h1 className={styles.dashboardTitle}>Ask Inkfellow...</h1>
-        <p className={styles.dashboardSubtitle}>你的知识库已准备就绪，有问题直接问，或者开始记录新想法。</p>
-        
-        <form 
-          className={styles.dashboardSearchBox} 
+        <p className={styles.dashboardSubtitle}>你的个人知识库，已就绪。</p>
+
+        <form
+          className={styles.dashboardSearchBox}
           onSubmit={(e) => {
             e.preventDefault();
             const input = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
@@ -43,10 +42,10 @@ export default function NotesDashboard({ files, onSelectNote, onAskAI, onNewNote
             <circle cx="11" cy="11" r="8" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
-          <input 
-            name="q" 
-            className={styles.dashboardSearchInput} 
-            placeholder="向 AI 提问或搜索笔记..." 
+          <input
+            name="q"
+            className={styles.dashboardSearchInput}
+            placeholder="有什么想写或想聊的..."
             autoComplete="off"
           />
           <button type="submit" className={styles.dashboardSearchShortcut}>✦</button>
@@ -57,8 +56,12 @@ export default function NotesDashboard({ files, onSelectNote, onAskAI, onNewNote
         <div className={styles.dashboardSection}>
           <div className={styles.dashboardSectionHeader}>
             <h2 className={styles.dashboardSectionTitle}>继续你的工作</h2>
-            <button type="button" className={styles.dashboardNewNoteBtn} onClick={onNewNote}>
-              + 记录新想法
+            <button type="button" className={styles.dashboardCaptureChip} onClick={onQuickCapture}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+              <span>记录灵感</span>
             </button>
           </div>
           

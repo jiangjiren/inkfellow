@@ -494,6 +494,18 @@ export const createMarkdownNote = async (relativePath: string, content = "") => 
   };
 };
 
+export const deleteNote = async (relativePath: string) => {
+  const { absolutePath, relativePath: resolvedPath } = await resolveExistingVaultPath(relativePath);
+
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) {
+    throw new VaultAccessError("Only files can be deleted.", 400);
+  }
+
+  await fs.unlink(absolutePath);
+  return { path: resolvedPath };
+};
+
 export const createFolder = async (relativePath: string) => {
   const sanitized = sanitizeRelativePath(relativePath);
 

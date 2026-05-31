@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mapVaultError, readMarkdownNote, statMarkdownNote, createMarkdownNote, updateMarkdownNote } from "@/lib/notesVault";
+import { mapVaultError, readMarkdownNote, statMarkdownNote, createMarkdownNote, updateMarkdownNote, deleteNote } from "@/lib/notesVault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +26,20 @@ export async function PUT(request: NextRequest) {
     }
     const note = await createMarkdownNote(body.path, body.content ?? "");
     return NextResponse.json(note, { status: 201 });
+  } catch (error) {
+    const mappedError = mapVaultError(error);
+    return NextResponse.json({ error: mappedError.message }, { status: mappedError.status });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = (await request.json()) as { path?: string };
+    if (!body.path?.trim()) {
+      return NextResponse.json({ error: "Missing note path." }, { status: 400 });
+    }
+    const result = await deleteNote(body.path);
+    return NextResponse.json(result);
   } catch (error) {
     const mappedError = mapVaultError(error);
     return NextResponse.json({ error: mappedError.message }, { status: mappedError.status });

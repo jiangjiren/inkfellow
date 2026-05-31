@@ -1,3 +1,10 @@
+/* ── CSS custom property for gradient-angle animation (pill border sweep) ── */
+@property --pill-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
 /* ── Layout ────────────────────────────────────── */
 .shell {
   position: relative;
@@ -3016,13 +3023,116 @@
   /* desktop: visible as normal iconButton */
 }
 
+/* ── 桌面端 Fellow 胶囊按钮 (极简基础状态) ─────────────────────────────────── */
+.fellowPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--notes-border);
+  border-radius: 15px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: var(--notes-transition-fast);
+  /* 注意：这里不能加 overflow: hidden，否则流光边框会被裁切 */
+}
+
+/* 常态下：仅让 ✦ 图标拥有高质感渐变色 */
+.fellowPill span:first-child {
+  font-size: 12px;
+  line-height: 1;
+  background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  transition: transform 0.3s ease;
+}
+
+.fellowPill:hover {
+  background: var(--notes-bg-document);
+  border-color: rgba(124, 58, 237, 0.3);
+  box-shadow: 0 3px 8px rgba(124, 58, 237, 0.08);
+  transform: translateY(-1px);
+}
+
+.fellowPill:active {
+  transform: translateY(0);
+}
+
+/* 激活态（面板打开时） */
+.fellowPillActive {
+  background: var(--notes-bg-document);
+  border-color: rgba(124, 58, 237, 0.4);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.05);
+}
+
+/* ── 思考态 (Thinking)：流光边框，胶囊形状用 @property 转渐变角而非转元素 ── */
+.fellowPillThinking {
+  border-color: transparent; /* 隐藏原生边框，让位给流光边框 */
+}
+
+.fellowPillThinking::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 16.5px; /* 15px + 1.5px inset，保持胶囊弧度一致 */
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--pill-angle),
+    transparent 0%,
+    transparent 40%,
+    rgba(0, 240, 255, 0.8) 60%,
+    rgba(138, 43, 226, 0.9) 80%,
+    rgba(255, 191, 0, 1) 100%
+  );
+  z-index: -1;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: pillBorderSpin 1.5s linear infinite;
+}
+
+@keyframes pillBorderSpin {
+  to { --pill-angle: 360deg; }
+}
+
+/* 思考态时，同时让前置图标微微呼吸闪烁，增加灵动感 */
+@keyframes starPulse {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.1); filter: brightness(1.3); }
+}
+
+.fellowPillThinking span:first-child {
+  animation: starPulse 1.5s ease-in-out infinite;
+}
+
+/* ── 完成态 (Done)：轻量反馈 ── */
+.fellowPillDone {
+  border-color: rgba(124, 58, 237, 0.5);
+  background: rgba(124, 58, 237, 0.04);
+  box-shadow: none;
+}
+
+.fellowPillBadge {
+  display: none; /* 抛弃旧版小绿点 */
+}
+
 .claudeFab {
   display: none; /* hidden on desktop */
 }
 
 @media (max-width: 900px), (orientation: portrait) {
   .claudeHeaderBtn {
-    display: none; /* hide header button on mobile, FAB takes over */
+    display: none;
+  }
+  .fellowPill {
+    display: none; /* 移动端由 FAB 接管 */
   }
 
   .claudeFab {
@@ -3354,13 +3464,16 @@
 /* ── CodeMirror 5 外层包裹 div ─────────────────────── */
 .cmContainer {
   width: min(100%, 820px);
-  min-height: calc(100vh - 64px);
+  min-height: calc(100dvh - 64px);
   padding: 40px 56px 96px;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── CodeMirror 5 基础覆盖 ─────────────────────────── */
 .cmContainer :global(.CodeMirror) {
+  flex: 1;
   height: auto !important;
   min-height: 400px;
   font-family: var(--notes-font-sans) !important;
@@ -3773,20 +3886,10 @@
   box-sizing: border-box;
 }
 
-.dashboardTitle {
-  font-size: 42px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--notes-text-primary) 0%, var(--notes-text-secondary) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin: 0 0 12px 0;
-}
-
 .dashboardSubtitle {
-  font-size: 16px;
-  color: var(--notes-text-secondary);
-  margin: 0 0 32px 0;
+  font-size: 15px;
+  color: var(--notes-text-muted);
+  margin: 0 0 20px 0;
   max-width: 480px;
 }
 
@@ -3864,22 +3967,6 @@
   font-weight: 600;
   color: var(--notes-text-primary);
   margin: 0;
-}
-
-.dashboardNewNoteBtn {
-  background: transparent;
-  border: none;
-  color: var(--notes-accent);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 6px 12px;
-  border-radius: 16px;
-  transition: background 0.2s;
-}
-
-.dashboardNewNoteBtn:hover {
-  background: var(--notes-accent-bg);
 }
 
 .dashboardRecentGrid {
@@ -3962,13 +4049,9 @@
     padding: 6vh 20px 10vh;
   }
   
-  .dashboardTitle {
-    font-size: 32px;
-  }
-  
   .dashboardSubtitle {
-    font-size: 15px;
-    margin-bottom: 24px;
+    font-size: 14px;
+    margin-bottom: 16px;
   }
   
   .dashboardSearchBox {
@@ -4027,4 +4110,212 @@
 
 .dashboardContainer * {
   box-sizing: border-box;
+}
+
+/* ── 首页「记录灵感」按钮（接管原新建笔记位置，保留醒目背景）──── */
+.dashboardCaptureChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: var(--notes-accent);
+  color: #fff;
+  border: none;
+  border-radius: 18px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.dashboardCaptureChip svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.dashboardCaptureChip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  filter: brightness(1.05);
+}
+
+.dashboardCaptureChip:active {
+  transform: translateY(0);
+}
+
+/* ── 阅读页 Home 回首页按钮（沿用 iconButton 外观）────────── */
+.homeBtn {
+  margin-left: 6px;
+}
+
+/* ── ⋯ 更多菜单 ────────────────────────────────────────────── */
+.moreMenuWrapper {
+  position: relative;
+}
+
+.moreMenuDropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 148px;
+  background: var(--notes-bg-sidebar);
+  border: 1px solid var(--notes-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 4px;
+  z-index: 100;
+  animation: menuFadeIn 0.12s ease-out;
+}
+
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.moreMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--notes-text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.moreMenuItem svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--notes-text-secondary);
+}
+
+.moreMenuItem:hover {
+  background: var(--notes-bg-hover);
+}
+
+.moreMenuItem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.moreMenuItemDanger {
+  color: #c0392b;
+}
+
+.moreMenuItemDanger svg {
+  color: #c0392b;
+}
+
+.moreMenuItemDanger:hover {
+  background: rgba(192, 57, 43, 0.08);
+}
+
+.moreMenuDivider {
+  height: 1px;
+  background: var(--notes-border);
+  margin: 4px 6px;
+}
+
+/* ── 删除确认弹窗（复用 shareDialog 结构，居中显示）────────── */
+.deleteDialog {
+  max-width: 400px;
+}
+
+.deleteDialogDesc {
+  margin: 0;
+  font-size: 14px;
+  color: var(--notes-text-secondary);
+  line-height: 1.6;
+}
+
+.deleteConfirmDelete {
+  padding: 7px 20px;
+  border-radius: 8px;
+  border: none;
+  background: #c0392b;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.deleteConfirmDelete:hover {
+  filter: brightness(1.1);
+}
+
+.deleteConfirmDelete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 快速记录草稿态：扣除 captureBar 高度避免溢出 scrollbar ── */
+.editorPaneDraft .cmContainer {
+  min-height: calc(100dvh - 108px);
+}
+
+.captureBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 14px;
+  font-size: 13px;
+  color: var(--notes-text-secondary);
+  flex-wrap: nowrap;
+  width: min(100%, 820px);
+  box-sizing: border-box;
+}
+
+.captureBarLabel {
+  color: var(--notes-text-muted);
+}
+
+.captureBarSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--notes-bg-sidebar);
+  border: 1px solid var(--notes-border);
+  border-radius: 14px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--notes-text-primary);
+  cursor: pointer;
+  max-width: 240px;
+}
+
+.captureBarSelect:hover {
+  border-color: var(--notes-accent);
+}
+
+.captureBarHint {
+  margin-left: auto;
+  color: var(--notes-text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 900px), (orientation: portrait) {
+  .dashboardRecentCard {
+    padding: 14px 16px;
+  }
+
+  .dashboardRecentCardPath {
+    display: none;
+  }
+
+  .captureBarHint {
+    display: none;
+  }
 }

@@ -2315,9 +2315,9 @@ export default function NotesExplorer() {
             className={`${styles.editorPane} ${isDraft ? styles.editorPaneDraft : ""}`}
             style={editorMinHeight ? { minHeight: editorMinHeight } : undefined}
             onMouseDown={(e) => {
-              // 点击 editorPane 空白区域（select/input/button 除外）保持 CM 聚焦
+              // 点击 editorPane 空白区域（CM 编辑区和表单元素除外）保持 CM 聚焦
               const target = e.target as HTMLElement;
-              if (target.closest("select, input, button, a, textarea")) return;
+              if (target.closest(".CodeMirror, select, input, button, a, textarea")) return;
               e.preventDefault();
               editorFocusRef.current?.focus();
             }}

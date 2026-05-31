@@ -1870,7 +1870,7 @@ const CLAUDE_MODELS = [
   { model: "claude-haiku-4-5-20251001",  label: "Haiku 4.5",  name: "Haiku 4.5",  desc: "极速轻量" },
 ];
 
-let _profileData = { activeProfileId: "p_claude", profiles: [] };
+let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
 let _claudeAuthStatus = null; // null=checking, true=ok, false=not logged in
 
 async function checkClaudeAuth() {
@@ -1968,6 +1968,11 @@ function providerBadge(provider) {
 const authProfileList = document.getElementById("auth-profile-list");
 
 function renderProfileList(data) {
+  // activeProfileId 以本实例 localStorage 为准，与 model/effort/permission 同一机制
+  const savedId = localStorage.getItem("activeProfileId");
+  if (savedId && data.profiles.some(p => p.id === savedId)) {
+    data = { ...data, activeProfileId: savedId };
+  }
   _profileData = data;
   authProfileList.innerHTML = data.profiles.map(p => {
     const isActive = p.id === data.activeProfileId;
@@ -2013,6 +2018,7 @@ async function activateProfile(id) {
       body: JSON.stringify({ action: "activate", profileId: id }) });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || "切换失败");
+    localStorage.setItem("activeProfileId", id);
     renderProfileList(d.data);
     if (d.resetSession) { currentSessionId = null; ws?.send(JSON.stringify({ reset: true })); }
     setAuthStatus("saved", "已切换");
@@ -3317,6 +3323,7 @@ function send() {
     model: selectedModel,
     permissionMode: selectedPermissionMode,
     effort: selectedEffort,
+    profileId: _profileData.activeProfileId,
   };
   if (pendingImages.length > 0) {
     wsPayload.images = pendingImages.map(img => ({ data: img.data, mediaType: img.mediaType }));

@@ -25,6 +25,9 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 const htmlPath   = join(__dirname, "public/index.html");
 const SESSION_FILE = process.env.CLAUDE_CHAT_SESSION_FILE || join(__dirname, `session-${PORT}.json`);
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
+// 厂商配置（profiles + apiKey）跨实例共享，但「当前选中哪个厂商」按实例隔离，
+// 否则一个用户切换厂商会同步到另一个实例。activeProfileId 单独存 per-PORT 文件。
+const ACTIVE_PROFILE_FILE = process.env.CLAUDE_CHAT_ACTIVE_PROFILE_FILE || join(__dirname, `active-profile-${PORT}.json`);
 
 // ── WeChat Bot Configs & Isolated Paths ──────────────────────
 const WECHAT_CONFIG_FILE = join(__dirname, `wechat-bot-${PORT}.json`);
@@ -165,18 +168,46 @@ function normalizeProfiles(raw) {
   return { activeProfileId, profiles };
 }
 
-function readProfiles() {
+// 读取本实例选中的 activeProfileId（per-PORT，不与其他实例共享）
+function readActiveProfileId() {
   try {
-    if (existsSync(AUTH_PROFILE_FILE)) {
-      return normalizeProfiles(JSON.parse(readFileSync(AUTH_PROFILE_FILE, "utf8")));
+    if (existsSync(ACTIVE_PROFILE_FILE)) {
+      const v = JSON.parse(readFileSync(ACTIVE_PROFILE_FILE, "utf8")).activeProfileId;
+      if (typeof v === "string") return v;
     }
   } catch { }
-  return normalizeProfiles(null);
+  return null;
+}
+
+function readProfiles() {
+  let data;
+  try {
+    if (existsSync(AUTH_PROFILE_FILE)) {
+      data = normalizeProfiles(JSON.parse(readFileSync(AUTH_PROFILE_FILE, "utf8")));
+    } else {
+      data = normalizeProfiles(null);
+    }
+  } catch {
+    data = normalizeProfiles(null);
+  }
+  // activeProfileId 以本实例的 per-PORT 文件为准（仅当指向的厂商仍存在时）
+  const perInstanceActive = readActiveProfileId();
+  if (perInstanceActive && data.profiles.some(p => p.id === perInstanceActive)) {
+    data.activeProfileId = perInstanceActive;
+  }
+  return data;
 }
 
 function writeProfiles(data) {
-  writeFileSync(AUTH_PROFILE_FILE, JSON.stringify(data, null, 2), "utf8");
+  // 厂商配置共享；activeProfileId 不写入共享文件，避免污染另一个实例
+  const shared = { profiles: data.profiles };
+  writeFileSync(AUTH_PROFILE_FILE, JSON.stringify(shared, null, 2), "utf8");
   try { chmodSync(AUTH_PROFILE_FILE, 0o600); } catch { }
+  // 当前选中的厂商按实例隔离
+  try {
+    writeFileSync(ACTIVE_PROFILE_FILE, JSON.stringify({ activeProfileId: data.activeProfileId }), "utf8");
+    chmodSync(ACTIVE_PROFILE_FILE, 0o600);
+  } catch { }
 }
 
 function maskSecret(secret) {

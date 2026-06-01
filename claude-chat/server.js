@@ -11,6 +11,7 @@ const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import Anthropic from "@anthropic-ai/sdk";
+import * as scheduler from "./scheduler.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -554,6 +555,25 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
           fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
         }
+        // 检测到定时意图时，注入 cron 操作指令，自动携带来源渠道信息
+        if (/分钟后|小时后|定时|每天|每周|每月|提醒|自动/.test(prompt)) {
+          const nowMs = Date.now();
+          fullPrompt = `[系统能力说明] 你可以直接用 Bash 工具创建定时任务，不要只承诺稍后执行。
+当前时间戳（毫秒）：${nowMs}，当前时间：${new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+
+循环任务（每天/每周等）：
+  curl -s -X POST "http://localhost:${PORT}/api/cron/jobs" -H "Content-Type: application/json" -d '{"description":"...","cronExpr":"0 9 * * *","prompt":"...","sourceChannel":"wechat","sourcePeer":"${sender}","timezone":"Asia/Shanghai"}'
+
+一次性任务（X分钟后/X小时后）：
+  curl -s -X POST "http://localhost:${PORT}/api/cron/jobs/once" -H "Content-Type: application/json" -d '{"description":"...","runAtMs":时间戳毫秒数,"prompt":"...","sourceChannel":"wechat","sourcePeer":"${sender}"}'
+  例：2分钟后 runAtMs = ${nowMs + 2 * 60 * 1000}
+
+sourceChannel 和 sourcePeer 已固定，不要修改。任务执行结果会自动发回微信。
+任务执行时 prompt 里写清楚要做什么（如"搜索今天AI新闻并整理成摘要"）。
+请立即调用 Bash 工具执行 curl 命令创建任务，然后告诉用户创建成功。
+
+用户请求：${fullPrompt}`;
+        }
         console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns)`);
         const userMsg = {
           type: "user",
@@ -621,6 +641,21 @@ if (existsSync(WECHAT_CONFIG_FILE)) {
   }
 }
 
+
+// ── Scheduler init ────────────────────────────────────────
+scheduler.init({
+  PORT,
+  DATA_DIR,
+  VAULT_PATH: DEFAULT_CWD,
+  WECHAT_CONFIG_FILE,
+  sendWechatMessage,
+  buildAgentEnv,
+  getActiveProfile,
+  readProfiles,
+  readHistory,
+  writeHistory,
+  resolveAllowedCwd,
+});
 
 // ── HTTP ──────────────────────────────────────────────────
 const http = createServer((req, res) => {
@@ -736,6 +771,74 @@ const http = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
     return;
+  }
+
+  // ── REST API: cron scheduler ──────────────────────────────
+  if (url === "/api/cron/jobs" && method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(scheduler.listJobs()));
+    return;
+  }
+
+  if (url === "/api/cron/jobs" && method === "POST") {
+    let body = "";
+    req.on("data", c => { body += c; });
+    req.on("end", () => {
+      try {
+        const payload = JSON.parse(body || "{}");
+        const job = scheduler.createJob(payload);
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(job));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (url === "/api/cron/jobs/once" && method === "POST") {
+    let body = "";
+    req.on("data", c => { body += c; });
+    req.on("end", () => {
+      try {
+        const payload = JSON.parse(body || "{}");
+        const job = scheduler.createOnceJob(payload);
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(job));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  const cronJobRe = url.match(/^\/api\/cron\/jobs\/([^/]+)$/);
+  if (cronJobRe) {
+    const id = cronJobRe[1];
+    if (method === "DELETE") {
+      const ok = scheduler.deleteJob(id);
+      res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok }));
+      return;
+    }
+    if (method === "PATCH") {
+      let body = "";
+      req.on("data", c => { body += c; });
+      req.on("end", () => {
+        try {
+          const { enabled } = JSON.parse(body || "{}");
+          const ok = scheduler.toggleJob(id, Boolean(enabled));
+          res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
   }
 
   // ── REST API: history ─────────────────────────────────────

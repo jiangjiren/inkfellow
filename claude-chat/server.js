@@ -9,9 +9,10 @@ import crypto from "node:crypto";
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import Anthropic from "@anthropic-ai/sdk";
 import * as scheduler from "./scheduler.js";
+import { z } from "zod";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -509,6 +510,68 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
   })();
 }
 
+function _buildSchedulerMcpServer(sender) {
+  const nowMs = Date.now();
+  const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const isCurrentWechatJob = job => job.sourceChannel === "wechat" && job.sourcePeer === sender;
+
+  const createScheduleTool = tool(
+    "create_schedule",
+    "创建定时任务（循环或一次性）。sourceChannel 和 sourcePeer 由系统固定注入，不需要传入。",
+    {
+      kind: z.enum(["once", "cron"]).describe("once=一次性任务，cron=循环任务"),
+      description: z.string().describe("任务的简短描述，如：每天提醒喝水"),
+      taskPrompt: z.string().describe("任务触发时发给 Agent 的完整执行指令"),
+      cronExpr: z.string().optional().describe("cron 表达式，kind=cron 时必填，如 '0 9 * * *'（Asia/Shanghai）"),
+      runAtMs: z.number().optional().describe(`Unix 毫秒时间戳，kind=once 时必填。当前时间：${nowStr}，当前毫秒戳：${nowMs}`),
+      timezone: z.string().optional().describe("时区，默认 Asia/Shanghai"),
+    },
+    async ({ kind, description, taskPrompt, cronExpr, runAtMs, timezone }) => {
+      try {
+        let job;
+        if (kind === "cron") {
+          job = scheduler.createJob({ description, cronExpr, prompt: taskPrompt, outputs: [], timezone: timezone || "Asia/Shanghai", sourceChannel: "wechat", sourcePeer: sender });
+        } else {
+          job = scheduler.createOnceJob({ description, runAtMs, prompt: taskPrompt, outputs: [], sourceChannel: "wechat", sourcePeer: sender });
+        }
+        const runTime = job.runAtMs
+          ? new Date(job.runAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
+          : `cron: ${job.cronExpr}`;
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, id: job.id, description: job.description, scheduledAt: runTime }) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: "text", text: `创建定时任务失败：${err.message}` }] };
+      }
+    }
+  );
+
+  const listSchedulesTool = tool(
+    "list_schedules",
+    "列出当前用户（当前微信账号）的所有定时任务",
+    {},
+    async () => {
+      const jobs = scheduler.listJobs().filter(isCurrentWechatJob);
+      const summary = jobs.map(j => ({ id: j.id, description: j.description, cronExpr: j.cronExpr || null, runAtMs: j.runAtMs || null, enabled: j.enabled }));
+      return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+    }
+  );
+
+  const deleteScheduleTool = tool(
+    "delete_schedule",
+    "删除指定 ID 的定时任务",
+    { id: z.string().describe("要删除的任务 ID（从 list_schedules 获取）") },
+    async ({ id }) => {
+      const job = scheduler.listJobs().find(j => j.id === id);
+      if (!job || !isCurrentWechatJob(job)) {
+        return { isError: true, content: [{ type: "text", text: "未找到当前微信用户可删除的定时任务" }] };
+      }
+      const ok = scheduler.deleteJob(id);
+      return { content: [{ type: "text", text: JSON.stringify({ ok, id }) }] };
+    }
+  );
+
+  return createSdkMcpServer({ name: "scheduler", tools: [createScheduleTool, listSchedulesTool, deleteScheduleTool], alwaysLoad: true });
+}
+
 async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal) {
   console.log(`[WeChat Agent] processWechatQuery starting for ${sender}...`);
   try {
@@ -555,26 +618,20 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
           fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
         }
-        // 检测到定时意图时，注入 cron 操作指令，自动携带来源渠道信息
-        if (/分钟后|小时后|定时|每天|每周|每月|提醒|自动/.test(prompt)) {
-          const nowMs = Date.now();
-          fullPrompt = `[系统能力说明] 你可以直接用 Bash 工具创建定时任务，不要只承诺稍后执行。
-当前时间戳（毫秒）：${nowMs}，当前时间：${new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
-
-循环任务（每天/每周等）：
-  curl -s -X POST "http://localhost:${PORT}/api/cron/jobs" -H "Content-Type: application/json" -d '{"description":"...","cronExpr":"0 9 * * *","prompt":"...","sourceChannel":"wechat","sourcePeer":"${sender}","timezone":"Asia/Shanghai"}'
-
-一次性任务（X分钟后/X小时后）：
-  curl -s -X POST "http://localhost:${PORT}/api/cron/jobs/once" -H "Content-Type: application/json" -d '{"description":"...","runAtMs":时间戳毫秒数,"prompt":"...","sourceChannel":"wechat","sourcePeer":"${sender}"}'
-  例：2分钟后 runAtMs = ${nowMs + 2 * 60 * 1000}
-
-sourceChannel 和 sourcePeer 已固定，不要修改。任务执行结果会自动发回微信。
-任务执行时 prompt 里写清楚要做什么（如"搜索今天AI新闻并整理成摘要"）。
-请立即调用 Bash 工具执行 curl 命令创建任务，然后告诉用户创建成功。
+        // 检测到定时意图时，挂载 scheduler MCP server（含 create/list/delete 工具）
+        const hasSchedulerIntent = /分钟后|小时后|定时|每天|每周|每月|提醒|自动|取消任务|删除任务|查看任务/.test(prompt);
+        const extraMcpServers = hasSchedulerIntent ? { scheduler: _buildSchedulerMcpServer(sender) } : {};
+        if (hasSchedulerIntent) {
+          fullPrompt = `你必须使用 scheduler MCP 工具处理这次定时任务请求。
+- 创建任务用 create_schedule。
+- 查看任务用 list_schedules。
+- 删除任务用 delete_schedule。
+- 不要使用 Bash、curl 或 /api/cron/jobs。
+- 只有工具调用成功后，才能告诉用户已设置或已删除。
 
 用户请求：${fullPrompt}`;
         }
-        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns)`);
+        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasSchedulerIntent})`);
         const userMsg = {
           type: "user",
           message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
@@ -582,7 +639,16 @@ sourceChannel 和 sourcePeer 已固定，不要修改。任务执行结果会自
         };
         const generator = query({
           prompt: (async function* () { yield userMsg; })(),
-          options: { cwd: wechatCwd, permissionMode: "auto", allowDangerouslySkipPermissions: true, includePartialMessages: false, env: agentEnv, abortController: { signal: abortSignal } },
+          options: {
+            cwd: wechatCwd,
+            permissionMode: "auto",
+            allowDangerouslySkipPermissions: true,
+            includePartialMessages: false,
+            env: agentEnv,
+            abortController: { signal: abortSignal },
+            mcpServers: extraMcpServers,
+            ...(hasSchedulerIntent ? { disallowedTools: ["Bash"] } : {}),
+          },
         });
         for await (const ev of generator) {
           if (ev.type === "assistant") {
@@ -828,8 +894,9 @@ const http = createServer((req, res) => {
       req.on("data", c => { body += c; });
       req.on("end", () => {
         try {
-          const { enabled } = JSON.parse(body || "{}");
-          const ok = scheduler.toggleJob(id, Boolean(enabled));
+          const payload = JSON.parse(body || "{}");
+          if (typeof payload.enabled !== "boolean") throw new Error("enabled 必须是布尔值");
+          const ok = scheduler.toggleJob(id, payload.enabled);
           res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok }));
         } catch (err) {

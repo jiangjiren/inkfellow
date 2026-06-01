@@ -9,6 +9,7 @@ let ctx = null;
 
 // jobId -> cancellable handle (node-cron task or { destroy: () => clearTimeout })
 const activeTasks = new Map();
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 // Channel adapters: { send(peer, text) } — add feishu/telegram here later
 const channelAdapters = {};
@@ -90,11 +91,12 @@ export function createJob({ description, cronExpr, prompt, outputs, timezone, no
   };
   writeSchedules({ ...data, jobs: [...data.jobs, job] });
   _registerTask(job);
-  console.log(`[Scheduler] Created job "${job.description}" (${job.cronExpr}) source=${sourceChannel || "none"}`);
+  console.log(`[Scheduler] Created job "${job.description}" (${job.cronExpr}) source=${sourceChannel || "none"} peer=${sourcePeer ? String(sourcePeer).slice(0, 12) : "none"}...`);
   return job;
 }
 
 export function createOnceJob({ description, runAtMs, prompt, outputs, notePath, sourceChannel, sourcePeer }) {
+  runAtMs = _validateRunAtMs(runAtMs);
   const delayMs = runAtMs - Date.now();
   if (delayMs < 0) throw new Error("runAtMs 必须是未来的时间");
 
@@ -115,17 +117,9 @@ export function createOnceJob({ description, runAtMs, prompt, outputs, notePath,
     createdAt: new Date().toISOString(),
   };
   writeSchedules({ ...data, jobs: [...data.jobs, job] });
+  _registerTask(job);
 
-  const timer = setTimeout(async () => {
-    activeTasks.delete(job.id);
-    await _executeJob(job);
-    const d = readSchedules();
-    writeSchedules({ ...d, jobs: d.jobs.filter(j => j.id !== job.id) });
-    console.log(`[Scheduler] One-shot job "${job.description}" completed and removed`);
-  }, delayMs);
-  activeTasks.set(job.id, { destroy: () => clearTimeout(timer) });
-
-  console.log(`[Scheduler] Created one-shot job "${job.description}" in ${Math.round(delayMs / 1000)}s source=${sourceChannel || "none"}`);
+  console.log(`[Scheduler] Created one-shot job "${job.description}" in ${Math.round(delayMs / 1000)}s source=${sourceChannel || "none"} peer=${sourcePeer ? String(sourcePeer).slice(0, 12) : "none"}...`);
   return job;
 }
 
@@ -143,6 +137,9 @@ export function toggleJob(id, enabled) {
   const data = readSchedules();
   const idx = data.jobs.findIndex(j => j.id === id);
   if (idx < 0) return false;
+  if (enabled && data.jobs[idx].once) {
+    data.jobs[idx].runAtMs = _validateRunAtMs(data.jobs[idx].runAtMs);
+  }
   data.jobs[idx].enabled = enabled;
   writeSchedules(data);
   if (enabled) _registerTask(data.jobs[idx]); else _cancelTask(id);
@@ -153,32 +150,11 @@ export function toggleJob(id, enabled) {
 
 function _loadAndResume() {
   const { jobs } = readSchedules();
-  const now = Date.now();
   let count = 0;
   for (const job of jobs) {
     if (!job.enabled) continue;
-    if (job.once) {
-      if (job.runAtMs <= now) {
-        console.log(`[Scheduler] Running missed one-shot job "${job.description}"`);
-        _executeJob(job).finally(() => {
-          const d = readSchedules();
-          writeSchedules({ ...d, jobs: d.jobs.filter(j => j.id !== job.id) });
-        });
-      } else {
-        const delayMs = job.runAtMs - now;
-        const timer = setTimeout(async () => {
-          activeTasks.delete(job.id);
-          await _executeJob(job);
-          const d = readSchedules();
-          writeSchedules({ ...d, jobs: d.jobs.filter(j => j.id !== job.id) });
-        }, delayMs);
-        activeTasks.set(job.id, { destroy: () => clearTimeout(timer) });
-        count++;
-      }
-    } else {
-      _registerTask(job);
-      count++;
-    }
+    _registerTask(job);
+    count++;
   }
   console.log(`[Scheduler] Resumed ${count} job(s)`);
 }
@@ -190,6 +166,10 @@ function _cancelTask(id) {
 
 function _registerTask(job) {
   _cancelTask(job.id);
+  if (job.once) {
+    _registerOnceTask(job);
+    return;
+  }
   try {
     const task = cron.schedule(job.cronExpr, () => {
       _executeJob(job).catch(err =>
@@ -200,6 +180,59 @@ function _registerTask(job) {
   } catch (err) {
     console.error(`[Scheduler] Failed to register job "${job.description}":`, err.message);
   }
+}
+
+function _registerOnceTask(job) {
+  const runAtMs = Number(job.runAtMs);
+  if (!Number.isFinite(runAtMs)) {
+    console.error(`[Scheduler] Failed to register one-shot job "${job.description}": invalid runAtMs`);
+    return;
+  }
+
+  let timer = null;
+  let cancelled = false;
+
+  const scheduleNext = () => {
+    if (cancelled) return;
+
+    const remainingMs = runAtMs - Date.now();
+    if (remainingMs > 0) {
+      timer = setTimeout(scheduleNext, Math.min(remainingMs, MAX_TIMER_DELAY_MS));
+      return;
+    }
+
+    activeTasks.delete(job.id);
+    console.log(`[Scheduler] Running one-shot job "${job.description}"`);
+    (async () => {
+      try {
+        await _executeJob(job);
+      } finally {
+        _removeJob(job.id);
+        console.log(`[Scheduler] One-shot job "${job.description}" completed and removed`);
+      }
+    })().catch(err => {
+      console.error(`[Scheduler] Unhandled error in one-shot job "${job.description}":`, err);
+    });
+  };
+
+  activeTasks.set(job.id, {
+    destroy() {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    },
+  });
+  scheduleNext();
+}
+
+function _removeJob(id) {
+  const d = readSchedules();
+  writeSchedules({ ...d, jobs: d.jobs.filter(j => j.id !== id) });
+}
+
+function _validateRunAtMs(runAtMs) {
+  const ts = Number(runAtMs);
+  if (!Number.isFinite(ts)) throw new Error("runAtMs 必须是有效的毫秒时间戳");
+  return ts;
 }
 
 async function _executeJob(job) {

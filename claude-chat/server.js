@@ -26,6 +26,47 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 
 const htmlPath   = join(__dirname, "public/index.html");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
+const WEB_SCHEDULER_PEER = `web:${PORT}`;
+
+const SCHEDULER_INTENT_RE = /分钟后|小时后|一会儿|稍后|稍候|等会|定时|每天|每周|每月|每小时|每隔|工作日|提醒|自动|取消任务|删除任务|查看任务|暂停任务|恢复任务/;
+const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
+
+当用户提到以下任一场景时，必须使用 scheduler MCP 工具处理，不能只用文字承诺：
+- 定时、每天、每周、每月、每小时、工作日、提醒我、自动
+- X分钟后、X小时后、一会儿、稍后、等会
+- 查看任务、取消任务、删除任务、暂停任务、恢复任务
+
+可用工具：
+- create_schedule：创建循环或一次性任务
+- list_schedules：查看当前用户的任务
+- delete_schedule：删除任务
+- toggle_schedule：暂停或恢复任务
+
+创建规则：
+- 周期任务使用 kind="cron"，并填写 cronExpr。
+- 一次性任务使用 kind="once"，并填写 runAtMs，runAtMs 是 Unix 毫秒时间戳。
+- timezone 默认使用 Asia/Shanghai。
+- taskPrompt 必须是任务触发时发给 Agent 的完整执行指令，不能只写一句模糊描述。
+- 只有工具调用成功后，才能告诉用户“已创建/已删除/已设置”。
+
+禁止：
+- 不要使用 Bash、curl 或 /api/cron/jobs。
+- 不要让用户手动配置 sourceChannel/sourcePeer。
+- 不要编造任务 ID。
+- 不要只回复“好的，到时提醒你”。
+
+常用 cron：
+- 0 9 * * *：每天 9:00
+- 0 9 * * 1-5：工作日 9:00
+- 0 21 * * *：每天 21:00
+- 0 9 * * 1：每周一 9:00
+- 0 0 1 * *：每月 1 日 0:00
+
+交互规则：
+- 如果用户说“每天早上提醒我复盘”，应直接创建任务。
+- 如果时间不明确，例如“明天提醒我”，需要先问具体时间。
+- 如果任务内容不明确，例如“提醒我一下”，需要先问提醒什么。
+- 如果用户要取消、暂停或恢复任务，先 list_schedules，再根据用户描述匹配任务并调用对应工具。`;
 
 // per-PORT 运行时文件统一放在 data/ 子目录，一条 gitignore 收口，备份运维清晰。
 // activeProfileId 完全由前端 localStorage 管理（与 model/effort/permission 同一机制），
@@ -510,10 +551,14 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
   })();
 }
 
-function _buildSchedulerMcpServer(sender) {
+function hasSchedulerIntent(prompt) {
+  return SCHEDULER_INTENT_RE.test(String(prompt || ""));
+}
+
+function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-  const isCurrentWechatJob = job => job.sourceChannel === "wechat" && job.sourcePeer === sender;
+  const isCurrentJob = job => job.sourceChannel === sourceChannel && job.sourcePeer === sourcePeer;
 
   const createScheduleTool = tool(
     "create_schedule",
@@ -529,10 +574,17 @@ function _buildSchedulerMcpServer(sender) {
     async ({ kind, description, taskPrompt, cronExpr, runAtMs, timezone }) => {
       try {
         let job;
+        const common = {
+          description,
+          prompt: taskPrompt,
+          outputs: defaultOutputs,
+          sourceChannel,
+          sourcePeer,
+        };
         if (kind === "cron") {
-          job = scheduler.createJob({ description, cronExpr, prompt: taskPrompt, outputs: [], timezone: timezone || "Asia/Shanghai", sourceChannel: "wechat", sourcePeer: sender });
+          job = scheduler.createJob({ ...common, cronExpr, timezone: timezone || "Asia/Shanghai" });
         } else {
-          job = scheduler.createOnceJob({ description, runAtMs, prompt: taskPrompt, outputs: [], sourceChannel: "wechat", sourcePeer: sender });
+          job = scheduler.createOnceJob({ ...common, runAtMs });
         }
         const runTime = job.runAtMs
           ? new Date(job.runAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
@@ -546,10 +598,10 @@ function _buildSchedulerMcpServer(sender) {
 
   const listSchedulesTool = tool(
     "list_schedules",
-    "列出当前用户（当前微信账号）的所有定时任务",
+    "列出当前用户的所有定时任务",
     {},
     async () => {
-      const jobs = scheduler.listJobs().filter(isCurrentWechatJob);
+      const jobs = scheduler.listJobs().filter(isCurrentJob);
       const summary = jobs.map(j => ({ id: j.id, description: j.description, cronExpr: j.cronExpr || null, runAtMs: j.runAtMs || null, enabled: j.enabled }));
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
@@ -561,15 +613,37 @@ function _buildSchedulerMcpServer(sender) {
     { id: z.string().describe("要删除的任务 ID（从 list_schedules 获取）") },
     async ({ id }) => {
       const job = scheduler.listJobs().find(j => j.id === id);
-      if (!job || !isCurrentWechatJob(job)) {
-        return { isError: true, content: [{ type: "text", text: "未找到当前微信用户可删除的定时任务" }] };
+      if (!job || !isCurrentJob(job)) {
+        return { isError: true, content: [{ type: "text", text: "未找到当前用户可删除的定时任务" }] };
       }
       const ok = scheduler.deleteJob(id);
       return { content: [{ type: "text", text: JSON.stringify({ ok, id }) }] };
     }
   );
 
-  return createSdkMcpServer({ name: "scheduler", tools: [createScheduleTool, listSchedulesTool, deleteScheduleTool], alwaysLoad: true });
+  const toggleScheduleTool = tool(
+    "toggle_schedule",
+    "暂停或恢复指定 ID 的定时任务",
+    {
+      id: z.string().describe("要暂停或恢复的任务 ID（从 list_schedules 获取）"),
+      enabled: z.boolean().describe("true=恢复任务，false=暂停任务"),
+    },
+    async ({ id, enabled }) => {
+      const job = scheduler.listJobs().find(j => j.id === id);
+      if (!job || !isCurrentJob(job)) {
+        return { isError: true, content: [{ type: "text", text: "未找到当前用户可操作的定时任务" }] };
+      }
+      const ok = scheduler.toggleJob(id, enabled);
+      return { content: [{ type: "text", text: JSON.stringify({ ok, id, enabled }) }] };
+    }
+  );
+
+  return createSdkMcpServer({
+    name: "scheduler",
+    instructions: INKFELLOW_SCHEDULER_PROMPT,
+    tools: [createScheduleTool, listSchedulesTool, deleteScheduleTool, toggleScheduleTool],
+    alwaysLoad: true,
+  });
 }
 
 async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal) {
@@ -587,6 +661,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     if (isExpired) wechatSenderSessions.delete(sender);
     const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
 
+    const hasScheduler = hasSchedulerIntent(prompt);
     const sdkClient = buildAnthropicClientForWechat(profileData);
 
     const typingInterval = setInterval(() => {
@@ -595,7 +670,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
 
     let finalResponse = "";
     try {
-      if (sdkClient) {
+      if (sdkClient && !hasScheduler) {
         // ── 有独立 API Key 的 provider（anthropic / deepseek / openrouter）──
         // 用 Anthropic SDK messages.create()，传结构化消息数组
         const { client, model } = sdkClient;
@@ -608,7 +683,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         // 只取 text 块，过滤掉 thinking / redacted_thinking（不存 signature，不会报错）
         finalResponse = response.content.filter(b => b.type === "text").map(b => b.text).join("");
       } else {
-        // ── claude 会员：OAuth token 不能直接调 API，走 Agent SDK query() ──
+        // ── claude 会员，或需要工具能力的请求：走 Agent SDK query() ──
         // 不使用 resume（thinking signature 问题），改用文本注入历史
         const agentEnv = buildAgentEnv(profileData, "medium", null);
         const wechatCwd = resolveAllowedCwd("");
@@ -618,25 +693,21 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
           fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
         }
-        // 检测到定时意图时，挂载 scheduler MCP server（含 create/list/delete 工具）
-        const hasSchedulerIntent = /分钟后|小时后|定时|每天|每周|每月|提醒|自动|取消任务|删除任务|查看任务/.test(prompt);
-        const extraMcpServers = hasSchedulerIntent ? { scheduler: _buildSchedulerMcpServer(sender) } : {};
-        if (hasSchedulerIntent) {
-          fullPrompt = `你必须使用 scheduler MCP 工具处理这次定时任务请求。
-- 创建任务用 create_schedule。
-- 查看任务用 list_schedules。
-- 删除任务用 delete_schedule。
-- 不要使用 Bash、curl 或 /api/cron/jobs。
-- 只有工具调用成功后，才能告诉用户已设置或已删除。
-
-用户请求：${fullPrompt}`;
-        }
-        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasSchedulerIntent})`);
+        const extraMcpServers = hasScheduler
+          ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
+          : {};
+        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasScheduler})`);
         const userMsg = {
           type: "user",
           message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
           parent_tool_use_id: null,
         };
+        const queryAbortController = new AbortController();
+        if (abortSignal.aborted) {
+          queryAbortController.abort();
+        } else {
+          abortSignal.addEventListener("abort", () => queryAbortController.abort(), { once: true });
+        }
         const generator = query({
           prompt: (async function* () { yield userMsg; })(),
           options: {
@@ -645,9 +716,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
             allowDangerouslySkipPermissions: true,
             includePartialMessages: false,
             env: agentEnv,
-            abortController: { signal: abortSignal },
+            abortController: queryAbortController,
             mcpServers: extraMcpServers,
-            ...(hasSchedulerIntent ? { disallowedTools: ["Bash"] } : {}),
+            ...(hasScheduler ? {
+              systemPrompt: { type: "preset", preset: "claude_code", append: INKFELLOW_SCHEDULER_PROMPT },
+              disallowedTools: ["Bash"],
+            } : {}),
           },
         });
         for await (const ev of generator) {
@@ -1123,6 +1197,8 @@ wss.on("connection", (ws) => {
     // Cancel any in-flight query before starting a new one
     if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
 
+    const schedulerRequest = hasSchedulerIntent(msg.prompt);
+
     // Build message content — text only, or images + text
     const content = [];
     const images = msg.images ?? (msg.image ? [msg.image] : []); // support both formats
@@ -1172,6 +1248,17 @@ wss.on("connection", (ws) => {
       effort,
       env: webEnv,
     };
+    if (schedulerRequest) {
+      options.mcpServers = {
+        scheduler: _buildSchedulerMcpServer({
+          sourceChannel: "web",
+          sourcePeer: WEB_SCHEDULER_PEER,
+          defaultOutputs: ["chat_history"],
+        }),
+      };
+      options.systemPrompt = { type: "preset", preset: "claude_code", append: INKFELLOW_SCHEDULER_PROMPT };
+      options.disallowedTools = ["Bash"];
+    }
     if (sessionId) options.resume = sessionId;
     if (!activeProfile || activeProfile.provider === "claude") {
       if (msg.model) options.model = msg.model;

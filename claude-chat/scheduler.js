@@ -286,7 +286,7 @@ async function _deliverResult(job, text) {
   // Build delivery targets: start with sourceChannel, then any overrides in outputs
   const targets = [];
 
-  if (job.sourceChannel && job.sourcePeer) {
+  if (job.sourceChannel && job.sourcePeer && job.sourceChannel !== "web") {
     targets.push({ channel: job.sourceChannel, peer: job.sourcePeer });
   }
 

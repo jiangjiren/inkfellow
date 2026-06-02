@@ -160,6 +160,23 @@ const isImagePath = (relativePath: string) => IMAGE_EXTENSIONS.has(path.extname(
 
 const isPdfPath = (relativePath: string) => path.extname(relativePath).toLowerCase() === ".pdf";
 
+const sanitizeNameSegment = (input: string) => {
+  const decoded = decodeLoose(input).replace(/\\/g, "/").trim();
+  if (!decoded) {
+    throw new VaultAccessError("Missing name.");
+  }
+  if (decoded.includes("/") || decoded.includes("\0")) {
+    throw new VaultAccessError("Invalid name.");
+  }
+  if (decoded === "." || decoded === "..") {
+    throw new VaultAccessError("Invalid name.");
+  }
+  if (EXCLUDED_DIRECTORY_NAMES.has(decoded)) {
+    throw new VaultAccessError("This name is excluded.", 403);
+  }
+  return decoded;
+};
+
 const compareNodes = (left: NotesTreeNode, right: NotesTreeNode) => {
   if (left.type !== right.type) {
     return left.type === "directory" ? -1 : 1;
@@ -494,6 +511,55 @@ export const createMarkdownNote = async (relativePath: string, content = "") => 
   };
 };
 
+export const renameVaultEntry = async (
+  relativePath: string,
+  nextName: string,
+  expectedKind?: "file" | "folder",
+) => {
+  const { absolutePath, relativePath: resolvedPath } = await resolveExistingVaultPath(relativePath);
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile() && !stat.isDirectory()) {
+    throw new VaultAccessError("Only files and folders can be renamed.", 400);
+  }
+  const actualKind = stat.isDirectory() ? "folder" : "file";
+  if (expectedKind && actualKind !== expectedKind) {
+    throw new VaultAccessError(
+      expectedKind === "file" ? "Only files can be renamed here." : "Only folders can be renamed here.",
+      400,
+    );
+  }
+
+  const cleanName = sanitizeNameSegment(nextName);
+  if (stat.isFile() && !isNoteFile(cleanName)) {
+    throw new VaultAccessError("Only Markdown, HTML, PDF, and image files can be renamed.", 415);
+  }
+
+  if (stat.isDirectory() && !resolvedPath) {
+    throw new VaultAccessError("The root folder cannot be renamed.", 400);
+  }
+
+  const vaultRoot = await getVaultRoot();
+  const parentPath = path.posix.dirname(resolvedPath);
+  const nextRelativePath = parentPath === "." ? cleanName : `${parentPath}/${cleanName}`;
+  const nextAbsolutePath = path.resolve(vaultRoot, nextRelativePath);
+  assertInsideVault(nextAbsolutePath, vaultRoot);
+
+  try {
+    await fs.access(nextAbsolutePath);
+    throw new VaultAccessError("A file or folder with this name already exists.", 409);
+  } catch (err) {
+    if (err instanceof VaultAccessError) throw err;
+  }
+
+  await fs.rename(absolutePath, nextAbsolutePath);
+  return {
+    oldPath: resolvedPath,
+    path: nextRelativePath,
+    name: cleanName,
+    kind: actualKind,
+  };
+};
+
 export const deleteNote = async (relativePath: string) => {
   const { absolutePath, relativePath: resolvedPath } = await resolveExistingVaultPath(relativePath);
 
@@ -503,6 +569,22 @@ export const deleteNote = async (relativePath: string) => {
   }
 
   await fs.unlink(absolutePath);
+  return { path: resolvedPath };
+};
+
+export const deleteFolder = async (relativePath: string) => {
+  const { absolutePath, relativePath: resolvedPath } = await resolveExistingVaultPath(relativePath);
+
+  if (!resolvedPath) {
+    throw new VaultAccessError("The root folder cannot be deleted.", 400);
+  }
+
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isDirectory()) {
+    throw new VaultAccessError("Only folders can be deleted.", 400);
+  }
+
+  await fs.rm(absolutePath, { recursive: true, force: false });
   return { path: resolvedPath };
 };
 
@@ -532,6 +614,45 @@ export const createFolder = async (relativePath: string) => {
   await fs.writeFile(keepFile, "", "utf8");
 
   return { path: sanitized, name: path.posix.basename(sanitized) };
+};
+
+export const importVaultFiles = async (
+  targetFolder: string,
+  files: Array<{ name: string; data: Uint8Array }>,
+) => {
+  const sanitizedFolder = sanitizeRelativePath(targetFolder, { allowEmpty: true });
+  const vaultRoot = await getVaultRoot();
+  const targetAbsolutePath = path.resolve(vaultRoot, sanitizedFolder);
+  assertInsideVault(targetAbsolutePath, vaultRoot);
+
+  const targetStat = await fs.stat(targetAbsolutePath).catch(() => null);
+  if (!targetStat?.isDirectory()) {
+    throw new VaultAccessError("Target folder not found.", 404);
+  }
+
+  const imported: Array<{ path: string; name: string; size: number }> = [];
+  for (const file of files) {
+    const cleanName = sanitizeNameSegment(path.basename(file.name));
+    if (!isNoteFile(cleanName)) {
+      throw new VaultAccessError("Only Markdown, HTML, PDF, and image files can be imported.", 415);
+    }
+
+    const relativePath = sanitizedFolder ? `${sanitizedFolder}/${cleanName}` : cleanName;
+    const absolutePath = path.resolve(vaultRoot, relativePath);
+    assertInsideVault(absolutePath, vaultRoot);
+
+    try {
+      await fs.access(absolutePath);
+      throw new VaultAccessError(`"${cleanName}" already exists.`, 409);
+    } catch (err) {
+      if (err instanceof VaultAccessError) throw err;
+    }
+
+    await fs.writeFile(absolutePath, file.data);
+    imported.push({ path: relativePath, name: cleanName, size: file.data.byteLength });
+  }
+
+  return { files: imported };
 };
 
 export const mapVaultError = (error: unknown) => {

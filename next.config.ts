@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  outputFileTracingExcludes: {
+    '*': ['node_modules/**/*'],
+  },
   webpack(config, { dev }) {
     // Limit parallel workers to reduce peak memory during build
     config.parallelism = 1;

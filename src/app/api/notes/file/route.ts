@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mapVaultError, readMarkdownNote, statMarkdownNote, createMarkdownNote, updateMarkdownNote, deleteNote } from "@/lib/notesVault";
+import { mapVaultError, readMarkdownNote, statMarkdownNote, createMarkdownNote, updateMarkdownNote, deleteNote, renameVaultEntry } from "@/lib/notesVault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function PATCH(request: NextRequest) {
   try {
-    const body = (await request.json()) as { path?: string; content?: string };
+    const body = (await request.json()) as { path?: string; content?: string; action?: string; name?: string };
+    if (body.action === "rename") {
+      if (!body.path || !body.name) {
+        return NextResponse.json({ error: "Missing path or name." }, { status: 400 });
+      }
+      const result = await renameVaultEntry(body.path, body.name, "file");
+      return NextResponse.json(result);
+    }
     if (!body.path || body.content === undefined) {
       return NextResponse.json({ error: "Missing path or content." }, { status: 400 });
     }

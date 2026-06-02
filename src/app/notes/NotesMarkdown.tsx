@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element */
-import type { MouseEvent, ReactNode } from "react";
+import type { ComponentPropsWithoutRef, MouseEvent, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -131,6 +131,11 @@ type NotesMarkdownProps = {
   onNavigate?: (path: string, hash?: string | null) => void;
   assetHrefFactory?: (path: string, currentPath: string) => string;
   allowInternalNoteLinks?: boolean;
+};
+
+type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
+  inline?: boolean;
+  node?: unknown;
 };
 
 const decodeLoose = (value: string) => {
@@ -287,6 +292,18 @@ const normalizeMarkdownImage = (
   }
 
   return assetHrefFactory(src, currentPath);
+};
+
+const getImageDownloadFilename = (src: string, fallback = "image.png") => {
+  try {
+    const url = new URL(src, window.location.origin);
+    const sourcePath = url.searchParams.get("path") || url.pathname;
+    const filename = sourcePath.split("/").pop();
+    return filename ? decodeLoose(filename) : fallback;
+  } catch {
+    const filename = src.split("?")[0].split("/").pop();
+    return filename ? decodeLoose(filename) : fallback;
+  }
 };
 
 const transformObsidianSyntax = (
@@ -449,9 +466,43 @@ export default function NotesMarkdown({
           currentPath,
           assetHrefFactory,
         );
+        function handleDownload(e: MouseEvent) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!normalizedSrc) return;
+          const filename = getImageDownloadFilename(normalizedSrc);
+          fetch(normalizedSrc)
+            .then((r) => r.blob())
+            .then((blob) => {
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              a.click();
+              window.setTimeout(() => URL.revokeObjectURL(url), 0);
+            })
+            .catch(() => {
+              const a = document.createElement("a");
+              a.href = normalizedSrc;
+              a.download = filename;
+              a.click();
+            });
+        }
         return (
           <span className={styles.imageFrame}>
             <img src={normalizedSrc} alt={alt ?? ""} loading="lazy" />
+            <button
+              type="button"
+              className={styles.imageDownloadBtn}
+              onClick={handleDownload}
+              aria-label="下载图片"
+              title="下载图片"
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 2.5v7M5.5 7 8 9.5 10.5 7" />
+                <path d="M3 13h10" />
+              </svg>
+            </button>
           </span>
         );
       },
@@ -462,8 +513,9 @@ export default function NotesMarkdown({
           </div>
         );
       },
-      code({ node, className, children, ...props }: any) {
-        if (props.inline) {
+      code({ node, className, children, inline, ...props }: MarkdownCodeProps) {
+        void node;
+        if (inline) {
           return (
             <code className={className} {...props}>
               {children}

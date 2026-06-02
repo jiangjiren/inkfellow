@@ -68,9 +68,26 @@ type LoadNoteOptions = {
   updateHistory?: boolean;
 };
 
+type TreeActionTarget = {
+  kind: "file" | "folder";
+  name: string;
+  path: string;
+};
+
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const stripNoteExtension = (value: string) => value.replace(/\.(md|html?)$/i, "");
+const getParentFolder = (filePath: string) => filePath.includes("/") ? filePath.split("/").slice(0, -1).join("/") : "";
+const sanitizeEntryName = (value: string) => value.trim().replace(/[/\\:*?"<>|]/g, "-");
+const replaceMovedPath = (currentPath: string, oldPath: string, nextPath: string, kind: TreeActionTarget["kind"]) => {
+  if (kind === "file") {
+    return currentPath === oldPath ? nextPath : currentPath;
+  }
+  if (currentPath === oldPath) {
+    return nextPath;
+  }
+  return currentPath.startsWith(`${oldPath}/`) ? `${nextPath}${currentPath.slice(oldPath.length)}` : currentPath;
+};
 
 // PDF / 图片走只读预览，不经文本加载/编辑流程
 const isPdfPath = (value: string | null | undefined) => /\.pdf$/i.test(value ?? "");
@@ -82,6 +99,11 @@ const decodeLoose = (value: string) => {
   } catch {
     return value;
   }
+};
+
+const getFilenameFromPath = (value: string | null | undefined, fallback: string) => {
+  const filename = value?.split("/").pop();
+  return filename ? decodeLoose(filename) : fallback;
 };
 
 const normalizeIndexKey = (value: string) =>
@@ -186,22 +208,81 @@ const filterTree = (node: NotesTreeNode, query: string): NotesTreeNode | null =>
   return null;
 };
 
+function TreeActionMenu({
+  target,
+  onCreateNote,
+  onCreateFolder,
+  onImport,
+  onRename,
+  onDelete,
+  onDownload,
+}: {
+  target: TreeActionTarget;
+  onCreateNote: (folder: string) => void;
+  onCreateFolder: (folder: string) => void;
+  onImport: (folder: string) => void;
+  onRename: (target: TreeActionTarget) => void;
+  onDelete: (target: TreeActionTarget) => void;
+  onDownload: (path: string) => void;
+}) {
+  const isFolder = target.kind === "folder";
+  const canDownload = target.kind === "file" && (isPdfPath(target.path) || isImagePath(target.path));
+
+  return (
+    <div className={styles.treeActionMenu} role="menu" onClick={(event) => event.stopPropagation()}>
+      {isFolder ? (
+        <>
+          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onCreateNote(target.path)}>新建笔记</button>
+          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onCreateFolder(target.path)}>新建文件夹</button>
+          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onImport(target.path)}>导入文件</button>
+          <div className={styles.moreMenuDivider} role="separator" />
+        </>
+      ) : null}
+      {canDownload ? (
+        <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onDownload(target.path)}>下载</button>
+      ) : null}
+      <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onRename(target)}>重命名</button>
+      <button type="button" className={`${styles.treeActionItem} ${styles.moreMenuItemDanger}`} role="menuitem" onClick={() => onDelete(target)}>删除</button>
+    </div>
+  );
+}
+
 function TreeItem({
   node,
   level,
   activePath,
   expandedFolders,
   searchQuery,
+  activeMenuPath,
+  isMobileViewport,
   onToggle,
   onSelect,
+  onOpenMenu,
+  onCloseMenu,
+  onCreateNote,
+  onCreateFolder,
+  onImport,
+  onRename,
+  onDelete,
+  onDownload,
 }: {
   node: NotesTreeNode;
   level: number;
   activePath: string | null;
   expandedFolders: Set<string>;
   searchQuery: string;
+  activeMenuPath: string | null;
+  isMobileViewport: boolean;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onOpenMenu: (target: TreeActionTarget) => void;
+  onCloseMenu: () => void;
+  onCreateNote: (folder: string) => void;
+  onCreateFolder: (folder: string) => void;
+  onImport: (folder: string) => void;
+  onRename: (target: TreeActionTarget) => void;
+  onDelete: (target: TreeActionTarget) => void;
+  onDownload: (path: string) => void;
 }) {
   if (node.type === "file") {
     const isActive = node.path === activePath;
@@ -209,52 +290,124 @@ function TreeItem({
     const isPdf = /\.pdf$/i.test(node.name);
     const isImg = isImagePath(node.name);
     const ext = isImg ? node.name.split(".").pop()?.toLowerCase() : null;
+    const target: TreeActionTarget = { kind: "file", name: node.name, path: node.path };
     return (
-      <button
-        type="button"
-        className={`${styles.treeFile} ${isActive ? styles.treeFileActive : ""}`}
+      <div
+        className={styles.treeNodeWrap}
         style={{ "--level": level } as CSSProperties}
-        onClick={() => onSelect(node.path)}
-        title={node.path}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onOpenMenu(target);
+        }}
       >
-        <svg className={styles.fileDot} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "13px", height: "13px" }}>
-          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-          <polyline points="14 2 14 8 20 8" />
-        </svg>
-        <span className={styles.treeLabel}>{isImg ? node.name.replace(/\.[^.]+$/, "") : isPdf ? node.name.replace(/\.pdf$/i, "") : stripNoteExtension(node.name)}</span>
-        {isHtml ? <span className={styles.fileTypeBadge}>html</span> : null}
-        {isPdf ? <span className={styles.fileTypeBadge}>pdf</span> : null}
-        {isImg ? <span className={styles.fileTypeBadge}>{ext}</span> : null}
-      </button>
+        <button
+          type="button"
+          className={`${styles.treeFile} ${isActive ? styles.treeFileActive : ""}`}
+          onClick={() => onSelect(node.path)}
+          title={node.path}
+        >
+          <svg className={styles.fileDot} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "13px", height: "13px" }}>
+            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+          <span className={styles.treeLabel}>{isImg ? node.name.replace(/\.[^.]+$/, "") : isPdf ? node.name.replace(/\.pdf$/i, "") : stripNoteExtension(node.name)}</span>
+          {isHtml ? <span className={styles.fileTypeBadge}>html</span> : null}
+          {isPdf ? <span className={styles.fileTypeBadge}>pdf</span> : null}
+          {isImg ? <span className={styles.fileTypeBadge}>{ext}</span> : null}
+        </button>
+        <button
+          type="button"
+          className={styles.treeNodeMore}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenMenu(target);
+          }}
+          aria-label={`${node.name} 的操作`}
+          title="更多操作"
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.5" />
+            <circle cx="12" cy="12" r="1.5" />
+            <circle cx="19" cy="12" r="1.5" />
+          </svg>
+        </button>
+        {!isMobileViewport && activeMenuPath === node.path ? (
+          <TreeActionMenu
+            target={target}
+            onCreateNote={(folder) => { onCloseMenu(); onCreateNote(folder); }}
+            onCreateFolder={(folder) => { onCloseMenu(); onCreateFolder(folder); }}
+            onImport={(folder) => { onCloseMenu(); onImport(folder); }}
+            onRename={(menuTarget) => { onCloseMenu(); onRename(menuTarget); }}
+            onDelete={(menuTarget) => { onCloseMenu(); onDelete(menuTarget); }}
+            onDownload={(path) => { onCloseMenu(); onDownload(path); }}
+          />
+        ) : null}
+      </div>
     );
   }
 
   const isExpanded = searchQuery ? true : expandedFolders.has(node.path);
+  const target: TreeActionTarget = { kind: "folder", name: node.name, path: node.path };
   return (
     <div className={styles.treeGroup}>
       {node.path ? (
-        <button
-          type="button"
-          className={styles.treeFolder}
+        <div
+          className={styles.treeNodeWrap}
           style={{ "--level": level } as CSSProperties}
-          onClick={() => onToggle(node.path)}
-          title={node.path}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onOpenMenu(target);
+          }}
         >
-          <span className={`${styles.chevron} ${isExpanded ? styles.chevronOpen : ""}`} aria-hidden="true">
-            ›
-          </span>
-          <svg className={styles.folderGlyph} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "16px", height: "16px", color: "var(--notes-accent)" }}>
-            {isExpanded ? (
-              <>
-                <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" fill="var(--notes-accent-bg)" />
-                <path d="M2 10h20" />
-              </>
-            ) : (
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--notes-accent-bg)" />
-            )}
-          </svg>
-          <span className={styles.treeLabel}>{node.name}</span>
-        </button>
+          <button
+            type="button"
+            className={styles.treeFolder}
+            onClick={() => onToggle(node.path)}
+            title={node.path}
+          >
+            <span className={`${styles.chevron} ${isExpanded ? styles.chevronOpen : ""}`} aria-hidden="true">
+              ›
+            </span>
+            <svg className={styles.folderGlyph} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "16px", height: "16px", color: "var(--notes-accent)" }}>
+              {isExpanded ? (
+                <>
+                  <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" fill="var(--notes-accent-bg)" />
+                  <path d="M2 10h20" />
+                </>
+              ) : (
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--notes-accent-bg)" />
+              )}
+            </svg>
+            <span className={styles.treeLabel}>{node.name}</span>
+          </button>
+          <button
+            type="button"
+            className={styles.treeNodeMore}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenMenu(target);
+            }}
+            aria-label={`${node.name} 的操作`}
+            title="更多操作"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.5" />
+              <circle cx="12" cy="12" r="1.5" />
+              <circle cx="19" cy="12" r="1.5" />
+            </svg>
+          </button>
+          {!isMobileViewport && activeMenuPath === node.path ? (
+            <TreeActionMenu
+              target={target}
+              onCreateNote={(folder) => { onCloseMenu(); onCreateNote(folder); }}
+              onCreateFolder={(folder) => { onCloseMenu(); onCreateFolder(folder); }}
+              onImport={(folder) => { onCloseMenu(); onImport(folder); }}
+              onRename={(menuTarget) => { onCloseMenu(); onRename(menuTarget); }}
+              onDelete={(menuTarget) => { onCloseMenu(); onDelete(menuTarget); }}
+              onDownload={(path) => { onCloseMenu(); onDownload(path); }}
+            />
+          ) : null}
+        </div>
       ) : null}
 
       {isExpanded || !node.path ? (
@@ -267,8 +420,18 @@ function TreeItem({
               activePath={activePath}
               expandedFolders={expandedFolders}
               searchQuery={searchQuery}
+              activeMenuPath={activeMenuPath}
+              isMobileViewport={isMobileViewport}
               onToggle={onToggle}
               onSelect={onSelect}
+              onOpenMenu={onOpenMenu}
+              onCloseMenu={onCloseMenu}
+              onCreateNote={onCreateNote}
+              onCreateFolder={onCreateFolder}
+              onImport={onImport}
+              onRename={onRename}
+              onDelete={onDelete}
+              onDownload={onDownload}
             />
           ))}
         </div>
@@ -392,6 +555,21 @@ export default function NotesExplorer() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+  const [globalCreateMenuOpen, setGlobalCreateMenuOpen] = useState(false);
+  const globalCreateMenuRef = useRef<HTMLDivElement>(null);
+  const globalCreateButtonRef = useRef<HTMLButtonElement>(null);
+  const [treeMenuTarget, setTreeMenuTarget] = useState<TreeActionTarget | null>(null);
+  const [treeSheetTarget, setTreeSheetTarget] = useState<TreeActionTarget | null>(null);
+  const [renameTarget, setRenameTarget] = useState<TreeActionTarget | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameLoading, setRenameLoading] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TreeActionTarget | null>(null);
+  const [importFolder, setImportFolder] = useState("");
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   // ── ⋯ 更多菜单 ───────────────────────────────────────
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -727,17 +905,23 @@ export default function NotesExplorer() {
   }, [isMobileViewport, mobileSidebarOpen, mobileAssistantPanelOpen]);
 
   useEffect(() => {
-    if (!shareModalOpen && !deleteConfirmOpen && !moreMenuOpen) return;
+    if (!shareModalOpen && !deleteConfirmOpen && !moreMenuOpen && !renameTarget && !treeMenuTarget && !treeSheetTarget && !globalCreateMenuOpen && !importError) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShareModalOpen(false);
         setDeleteConfirmOpen(false);
+        setDeleteTarget(null);
         setMoreMenuOpen(false);
+        setRenameTarget(null);
+        setTreeMenuTarget(null);
+        setTreeSheetTarget(null);
+        setGlobalCreateMenuOpen(false);
+        setImportError(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [shareModalOpen, deleteConfirmOpen, moreMenuOpen]);
+  }, [shareModalOpen, deleteConfirmOpen, moreMenuOpen, renameTarget, treeMenuTarget, treeSheetTarget, globalCreateMenuOpen, importError]);
 
   useEffect(() => {
     if (!isResizingAssistantPanel) {
@@ -955,6 +1139,18 @@ export default function NotesExplorer() {
     },
     [getReaderScrollSnapshot, openAncestors, restoreReaderScroll],
   );
+
+  const refreshTree = useCallback(async () => {
+    const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
+    if (!treeRes.ok) {
+      const data = (await treeRes.json().catch(() => ({}))) as { error?: string };
+      throw new Error(data.error ?? "刷新文件树失败");
+    }
+    const payload = (await treeRes.json()) as NotesTreeResponse;
+    setTree(payload.root);
+    treeRevRef.current = payload.rev;
+    return payload;
+  }, []);
 
   // ── 选中文字 → 自动发送到 Claude 引用框 ──────────────────────
   const hasReaderSelectionRef = useRef(false);
@@ -1473,8 +1669,8 @@ export default function NotesExplorer() {
   }, [isEditing, handleSave]);
 
   /** 打开新建笔记对话框，默认目录 = 当前笔记所在目录 */
-  const openNewNote = useCallback(() => {
-    const defaultFolder = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
+  const openNewNote = useCallback((folder?: string) => {
+    const defaultFolder = folder ?? (activePath ? getParentFolder(activePath) : "");
     setNewNoteFolder(defaultFolder);
     setNewNoteTitle("");
     setNewNoteError(null);
@@ -1487,8 +1683,8 @@ export default function NotesExplorer() {
   }, [activePath]);
 
   /** 打开新建文件夹对话框 */
-  const openNewFolder = useCallback(() => {
-    const defaultParent = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
+  const openNewFolder = useCallback((folder?: string) => {
+    const defaultParent = folder ?? (activePath ? getParentFolder(activePath) : "");
     setNewFolderParent(defaultParent);
     setNewFolderName("");
     setNewFolderError(null);
@@ -1518,28 +1714,24 @@ export default function NotesExplorer() {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? "创建失败");
       }
-      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
-      if (treeRes.ok) {
-        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
-        setTree(payload.root);
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          const parts = folderPath.split("/");
-          let accumulated = "";
-          for (const part of parts) {
-            accumulated = accumulated ? `${accumulated}/${part}` : part;
-            next.add(accumulated);
-          }
-          return next;
-        });
-      }
+      await refreshTree();
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        const parts = folderPath.split("/");
+        let accumulated = "";
+        for (const part of parts) {
+          accumulated = accumulated ? `${accumulated}/${part}` : part;
+          next.add(accumulated);
+        }
+        return next;
+      });
       setNewFolderOpen(false);
     } catch (err) {
       setNewFolderError(err instanceof Error ? err.message : "创建失败");
     } finally {
       setNewFolderLoading(false);
     }
-  }, [newFolderName, newFolderParent]);
+  }, [newFolderName, newFolderParent, refreshTree]);
 
   /** 新建笔记对话框内 inline 新建文件夹 */
   const handleInlineCreateFolder = useCallback(async () => {
@@ -1564,11 +1756,7 @@ export default function NotesExplorer() {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? "创建失败");
       }
-      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
-      if (treeRes.ok) {
-        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
-        setTree(payload.root);
-      }
+      await refreshTree();
       setNewNoteFolder(folderPath);
       setInlineFolderOpen(false);
       setInlineFolderName("");
@@ -1578,7 +1766,7 @@ export default function NotesExplorer() {
     } finally {
       setInlineFolderLoading(false);
     }
-  }, [inlineFolderName, newNoteFolder]);
+  }, [inlineFolderName, newNoteFolder, refreshTree]);
 
 
 
@@ -1608,24 +1796,19 @@ export default function NotesExplorer() {
         throw new Error(data.error ?? "创建失败");
       }
 
-      // 刷新文件树
-      const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
-      if (treeRes.ok) {
-        const payload = (await treeRes.json()) as { root: NotesDirectoryNode };
-        setTree(payload.root);
-        // 展开新笔记所在目录
-        if (newNoteFolder) {
-          setExpandedFolders((prev) => {
-            const next = new Set(prev);
-            const parts = newNoteFolder.split("/");
-            let accumulated = "";
-            for (const part of parts) {
-              accumulated = accumulated ? `${accumulated}/${part}` : part;
-              next.add(accumulated);
-            }
-            return next;
-          });
-        }
+      await refreshTree();
+      // 展开新笔记所在目录
+      if (newNoteFolder) {
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          const parts = newNoteFolder.split("/");
+          let accumulated = "";
+          for (const part of parts) {
+            accumulated = accumulated ? `${accumulated}/${part}` : part;
+            next.add(accumulated);
+          }
+          return next;
+        });
       }
 
       setNewNoteOpen(false);
@@ -1636,7 +1819,7 @@ export default function NotesExplorer() {
     } finally {
       setNewNoteLoading(false);
     }
-  }, [newNoteTitle, newNoteFolder, loadNote]);
+  }, [newNoteTitle, newNoteFolder, loadNote, refreshTree]);
 
   /** ⌘N / Ctrl+N 快捷键 */
   useEffect(() => {
@@ -1660,6 +1843,8 @@ export default function NotesExplorer() {
   }, [newNoteOpen, newFolderOpen, openNewNote]);
 
   const handleToggle = useCallback((path: string) => {
+    setTreeMenuTarget(null);
+    setGlobalCreateMenuOpen(false);
     setExpandedFolders((current) => {
       const next = new Set(current);
       if (next.has(path)) {
@@ -1673,6 +1858,8 @@ export default function NotesExplorer() {
 
   const handleSelect = useCallback(
     (path: string) => {
+      setTreeMenuTarget(null);
+      setGlobalCreateMenuOpen(false);
       void flushEditBeforeSwitch().then(() => loadNote(path));
       if (isMobileViewport) {
         setMobileSidebarOpen(false);
@@ -1687,6 +1874,194 @@ export default function NotesExplorer() {
     },
     [loadNote],
   );
+
+  const handleImageDownload = useCallback(async () => {
+    if (!activePath || !isImagePath(activePath)) return;
+
+    const src = `/api/notes/doc?path=${encodeURIComponent(activePath)}`;
+    const filename = getFilenameFromPath(activePath, "image.png");
+
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error("Image download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch {
+      const anchor = document.createElement("a");
+      anchor.href = src;
+      anchor.download = filename;
+      anchor.click();
+    }
+  }, [activePath]);
+
+  const handleDownloadPath = useCallback(async (path: string) => {
+    const src = `/api/notes/doc?path=${encodeURIComponent(path)}`;
+    const filename = getFilenameFromPath(path, "download");
+
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error("Download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch {
+      const anchor = document.createElement("a");
+      anchor.href = src;
+      anchor.download = filename;
+      anchor.click();
+    }
+  }, []);
+
+  const handleOpenTreeMenu = useCallback((target: TreeActionTarget) => {
+    setGlobalCreateMenuOpen(false);
+    if (isMobileViewport) {
+      setTreeMenuTarget(null);
+      setTreeSheetTarget(target);
+    } else {
+      setTreeSheetTarget(null);
+      setTreeMenuTarget((current) => current?.path === target.path ? null : target);
+    }
+  }, [isMobileViewport]);
+
+  const handleOpenRename = useCallback((target: TreeActionTarget) => {
+    const ext = target.kind === "file" ? target.name.match(/\.[^.]+$/)?.[0] ?? "" : "";
+    setRenameTarget(target);
+    setRenameName(target.kind === "file" && ext ? target.name.slice(0, -ext.length) : target.name);
+    setRenameError(null);
+    setTreeMenuTarget(null);
+    setTreeSheetTarget(null);
+    setTimeout(() => renameInputRef.current?.focus(), 30);
+  }, []);
+
+  const handleOpenDelete = useCallback((target: TreeActionTarget) => {
+    setDeleteTarget(target);
+    setDeleteConfirmOpen(true);
+    setTreeMenuTarget(null);
+    setTreeSheetTarget(null);
+  }, []);
+
+  const handleStartImport = useCallback((folder: string) => {
+    setImportFolder(folder);
+    setImportError(null);
+    setTreeMenuTarget(null);
+    setTreeSheetTarget(null);
+    setGlobalCreateMenuOpen(false);
+    if (importInputRef.current) {
+      importInputRef.current.value = "";
+      importInputRef.current.click();
+    }
+  }, []);
+
+  const handleImportFiles = useCallback(async (fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList ?? []);
+    if (selectedFiles.length === 0) return;
+
+    setImportLoading(true);
+    try {
+      const form = new FormData();
+      form.set("folder", importFolder);
+      selectedFiles.forEach((file) => form.append("files", file));
+
+      const res = await fetch("/api/notes/import", {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "导入失败");
+      }
+      const data = (await res.json()) as { files: Array<{ path: string }> };
+      await refreshTree();
+      if (data.files.length === 1) {
+        setHasGitChanges(true);
+        void loadNote(data.files[0].path);
+      } else if (importFolder) {
+        openAncestors(`${importFolder}/_`);
+      }
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setImportLoading(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }, [importFolder, loadNote, openAncestors, refreshTree]);
+
+  const handleRenameTarget = useCallback(async () => {
+    if (!renameTarget) return;
+    const baseName = sanitizeEntryName(renameName);
+    if (!baseName) {
+      setRenameError("请输入名称");
+      renameInputRef.current?.focus();
+      return;
+    }
+
+    const ext = renameTarget.kind === "file" ? renameTarget.name.match(/\.[^.]+$/)?.[0] ?? "" : "";
+    const normalizedBaseName = renameTarget.kind === "file" && ext && baseName.toLowerCase().endsWith(ext.toLowerCase())
+      ? baseName.slice(0, -ext.length)
+      : baseName;
+    const nextName = renameTarget.kind === "file" && ext ? `${normalizedBaseName}${ext}` : normalizedBaseName;
+    const parentPath = getParentFolder(renameTarget.path);
+    const nextPath = parentPath ? `${parentPath}/${nextName}` : nextName;
+    if (nextName === renameTarget.name) {
+      setRenameTarget(null);
+      return;
+    }
+
+    setRenameLoading(true);
+    setRenameError(null);
+    try {
+      const currentPath = activePathRef.current;
+      const nextActivePath = currentPath
+        ? replaceMovedPath(currentPath, renameTarget.path, nextPath, renameTarget.kind)
+        : null;
+      if (currentPath && nextActivePath !== currentPath) {
+        await flushEditBeforeSwitch();
+      }
+
+      const res = await fetch(renameTarget.kind === "file" ? "/api/notes/file" : "/api/notes/folder", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(renameTarget.kind === "file"
+          ? { action: "rename", path: renameTarget.path, name: nextName }
+          : { path: renameTarget.path, name: nextName }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "重命名失败");
+      }
+      const result = (await res.json()) as { oldPath: string; path: string; kind: TreeActionTarget["kind"] };
+      await refreshTree();
+
+      setExpandedFolders((prev) => {
+        const next = new Set<string>();
+        prev.forEach((folder) => next.add(replaceMovedPath(folder, result.oldPath, result.path, "folder")));
+        next.add(result.kind === "folder" ? result.path : getParentFolder(result.path));
+        return next;
+      });
+
+      if (currentPath) {
+        const resolvedNextActivePath = replaceMovedPath(currentPath, result.oldPath, result.path, result.kind);
+        if (resolvedNextActivePath !== currentPath) {
+          setHasGitChanges(true);
+          void loadNote(resolvedNextActivePath, null, { preserveScroll: true });
+        }
+      }
+      setRenameTarget(null);
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "重命名失败");
+    } finally {
+      setRenameLoading(false);
+    }
+  }, [flushEditBeforeSwitch, loadNote, refreshTree, renameName, renameTarget]);
 
   const handleSelectTocHeading = useCallback(
     (slug: string) => {
@@ -1869,15 +2244,41 @@ export default function NotesExplorer() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [moreMenuOpen]);
 
+  useEffect(() => {
+    if (!treeMenuTarget && !globalCreateMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        globalCreateMenuRef.current?.contains(target) ||
+        globalCreateButtonRef.current?.contains(target) ||
+        (target instanceof Element && target.closest(`.${styles.treeActionMenu}`))
+      ) {
+        return;
+      }
+      setTreeMenuTarget(null);
+      setGlobalCreateMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [globalCreateMenuOpen, treeMenuTarget]);
+
   // ── 删除文件 ──────────────────────────────────────────
   const handleDeleteNote = useCallback(async () => {
-    if (!activePath) return;
+    const target = deleteTarget ?? (activePath ? { kind: "file" as const, path: activePath, name: getFilenameFromPath(activePath, activePath) } : null);
+    if (!target) return;
     setDeleteLoading(true);
     try {
-      const res = await fetch("/api/notes/file", {
+      const currentPath = activePathRef.current;
+      const affectsActivePath = !!currentPath && (
+        target.kind === "file"
+          ? currentPath === target.path
+          : (currentPath === target.path || currentPath.startsWith(`${target.path}/`))
+      );
+
+      const res = await fetch(target.kind === "file" ? "/api/notes/file" : "/api/notes/folder", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: activePath }),
+        body: JSON.stringify({ path: target.path }),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -1889,22 +2290,23 @@ export default function NotesExplorer() {
         autoSaveTimerRef.current = null;
       }
       setDeleteConfirmOpen(false);
-      skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
+      setDeleteTarget(null);
+      if (affectsActivePath) {
+        skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
+      }
       try {
-        const treeRes = await fetch("/api/notes/tree", { cache: "no-store" });
-        if (treeRes.ok) {
-          const payload = (await treeRes.json()) as NotesTreeResponse;
-          setTree(payload.root);
-          treeRevRef.current = payload.rev;
-        }
+        await refreshTree();
       } catch { /* 刷新文件树失败不影响回首页 */ }
-      goHome();
+      if (affectsActivePath) {
+        setHasGitChanges(true);
+        goHome();
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : "删除失败");
     } finally {
       setDeleteLoading(false);
     }
-  }, [activePath, goHome]);
+  }, [activePath, deleteTarget, goHome, refreshTree]);
 
   const updatedAt = note ? new Date(note.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "";
   const shellStyle: NotesShellStyle = {
@@ -1919,7 +2321,7 @@ export default function NotesExplorer() {
   const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
-  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen || mobileTocOpen);
+  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
   // track when overlay opens to prevent ghost-click closing it immediately (Android touch issue)
   if (hasMobileOverlayOpen) mobileOverlayOpenTime.current = mobileOverlayOpenTime.current || Date.now();
   if (!hasMobileOverlayOpen) mobileOverlayOpenTime.current = 0;
@@ -1965,33 +2367,45 @@ export default function NotesExplorer() {
           </div>
           <span className={styles.counter}>{files.length} 篇</span>
           <div className={styles.sidebarActions}>
-            <button
-              type="button"
-              className={styles.newNoteButton}
-              onClick={openNewFolder}
-              aria-label="新建文件夹"
-              title="新建文件夹"
-            >
-              <svg viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor">
-                <path d="M703.8 547.8h-167v-167c0-13.8-11.2-25-25-25s-25 11.2-25 25v167h-167c-13.8 0-25 11.2-25 25s11.2 25 25 25h167v167c0 13.8 11.2 25 25 25s25-11.2 25-25v-167h167c13.8 0 25-11.2 25-25s-11.2-25-25-25z" />
-                <path d="M833.3 234.1H530.8l-29.6-58.5c-10.4-20.6-26.4-37.9-46.1-50.1-19.7-12.1-42.3-18.5-65.5-18.5H188.7c-68.9 0-125 56.1-125 125v513.5c0 96.5 78.5 175 175 175h544.7c96.5 0 175-78.5 175-175V359.1c-0.1-68.9-56.1-125-125.1-125z m75 511.5c0 68.9-56.1 125-125 125H238.7c-68.9 0-125-56.1-125-125V232c0-41.4 33.6-75 75-75h200.9c28.4 0 54.1 15.8 66.9 41.1l36.6 72.2c4.3 8.4 12.9 13.7 22.3 13.7h317.9c41.4 0 75 33.6 75 75v386.6z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={styles.newNoteButton}
-              onClick={openNewNote}
-              aria-label="新建笔记 (⌘N)"
-              title="新建笔记 (⌘N)"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
-              </svg>
-            </button>
+            <div className={styles.globalCreateWrapper}>
+              <button
+                ref={globalCreateButtonRef}
+                type="button"
+                className={`${styles.newNoteButton} ${globalCreateMenuOpen ? styles.iconButtonActive : ""}`}
+                onClick={() => {
+                  setTreeMenuTarget(null);
+                  setGlobalCreateMenuOpen((open) => !open);
+                }}
+                aria-label="新建或导入"
+                title="新建或导入"
+                aria-expanded={globalCreateMenuOpen}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              {globalCreateMenuOpen ? (
+                <div ref={globalCreateMenuRef} className={styles.globalCreateMenu} role="menu">
+                  <button type="button" className={styles.moreMenuItem} role="menuitem" onClick={() => { setGlobalCreateMenuOpen(false); openNewNote(); }}>新建笔记</button>
+                  <button type="button" className={styles.moreMenuItem} role="menuitem" onClick={() => { setGlobalCreateMenuOpen(false); openNewFolder(); }}>新建文件夹</button>
+                  <button type="button" className={styles.moreMenuItem} role="menuitem" onClick={() => handleStartImport(activePath ? getParentFolder(activePath) : "")} disabled={importLoading}>
+                    {importLoading ? "导入中…" : "导入文件"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
 
         </div>
+        <input
+          ref={importInputRef}
+          type="file"
+          multiple
+          className={styles.hiddenFileInput}
+          accept=".md,.html,.htm,.pdf,image/avif,image/gif,image/jpeg,image/png,image/svg+xml,image/webp"
+          onChange={(event) => void handleImportFiles(event.currentTarget.files)}
+        />
 
         <label className={styles.search}>
           <span className={styles.searchIcon} aria-hidden="true" />
@@ -2017,8 +2431,18 @@ export default function NotesExplorer() {
               activePath={activePath}
               expandedFolders={expandedFolders}
               searchQuery={searchQuery.trim()}
+              activeMenuPath={treeMenuTarget?.path ?? null}
+              isMobileViewport={isMobileViewport}
               onToggle={handleToggle}
               onSelect={handleSelect}
+              onOpenMenu={handleOpenTreeMenu}
+              onCloseMenu={() => setTreeMenuTarget(null)}
+              onCreateNote={(folder) => openNewNote(folder)}
+              onCreateFolder={(folder) => openNewFolder(folder)}
+              onImport={handleStartImport}
+              onRename={handleOpenRename}
+              onDelete={handleOpenDelete}
+              onDownload={handleDownloadPath}
             />
           ) : null}
         </div>
@@ -2068,6 +2492,7 @@ export default function NotesExplorer() {
           setMobileAssistantPanelOpen(false);
           setGitPanelOpen(false);
           setMobileTocOpen(false);
+          setTreeSheetTarget(null);
         }}
         aria-label={mobileSidebarOpen ? "关闭目录" : "关闭辅助面板"}
         aria-hidden={!hasMobileOverlayOpen}
@@ -2215,18 +2640,6 @@ export default function NotesExplorer() {
                     </svg>
                   </button>
                 )}
-                <button
-                  type="button"
-                  className={`${styles.fellowPill} ${isAssistantPanelOpen ? styles.fellowPillActive : ""} ${aiStatus === "thinking" ? styles.fellowPillThinking : ""} ${aiStatus === "done" ? styles.fellowPillDone : ""}`}
-                  onClick={handleClaudeToggle}
-                  aria-pressed={isAssistantPanelOpen}
-                  aria-label="Fellow AI 助手"
-                  title="Fellow"
-                >
-                  <span aria-hidden="true">✦</span>
-                  <span>Fellow</span>
-                  {aiStatus === "done" && <span className={styles.fellowPillBadge} aria-hidden="true" />}
-                </button>
                 {/* ⋯ 更多菜单：仅在打开了笔记且非草稿态时显示 */}
                 {note && !isDraft ? (
                   <div className={styles.moreMenuWrapper}>
@@ -2277,7 +2690,12 @@ export default function NotesExplorer() {
                           type="button"
                           className={`${styles.moreMenuItem} ${styles.moreMenuItemDanger}`}
                           role="menuitem"
-                          onClick={() => { setMoreMenuOpen(false); setDeleteConfirmOpen(true); }}
+                          onClick={() => {
+                            setMoreMenuOpen(false);
+                            if (note) {
+                              handleOpenDelete({ kind: "file", name: note.name, path: note.path });
+                            }
+                          }}
                         >
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                             <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
@@ -2290,6 +2708,18 @@ export default function NotesExplorer() {
                     )}
                   </div>
                 ) : null}
+                <button
+                  type="button"
+                  className={`${styles.fellowPill} ${isAssistantPanelOpen ? styles.fellowPillActive : ""} ${aiStatus === "thinking" ? styles.fellowPillThinking : ""} ${aiStatus === "done" ? styles.fellowPillDone : ""}`}
+                  onClick={handleClaudeToggle}
+                  aria-pressed={isAssistantPanelOpen}
+                  aria-label="Fellow AI 助手"
+                  title="Fellow"
+                >
+                  <span aria-hidden="true">✦</span>
+                  <span>Fellow</span>
+                  {aiStatus === "done" && <span className={styles.fellowPillBadge} aria-hidden="true" />}
+                </button>
               </>
             )}
           </div>
@@ -2379,12 +2809,26 @@ export default function NotesExplorer() {
             {/* 图片：<img> 原生预览 */}
             {noteState === "ready" && isImagePath(activePath) ? (
               <div className={styles.imageViewer}>
-                <img
-                  key={activePath ?? "img"}
-                  src={`/api/notes/doc?path=${encodeURIComponent(activePath ?? "")}`}
-                  alt={activePath?.split("/").pop() ?? "图片"}
-                  className={styles.imageViewerImg}
-                />
+                <div className={styles.imageViewerFrame}>
+                  <img
+                    key={activePath ?? "img"}
+                    src={`/api/notes/doc?path=${encodeURIComponent(activePath ?? "")}`}
+                    alt={getFilenameFromPath(activePath, "图片")}
+                    className={styles.imageViewerImg}
+                  />
+                  <button
+                    type="button"
+                    className={styles.imageDownloadBtn}
+                    onClick={handleImageDownload}
+                    aria-label="下载图片"
+                    title="下载图片"
+                  >
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M8 2.5v7M5.5 7 8 9.5 10.5 7" />
+                      <path d="M3 13h10" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -2433,9 +2877,108 @@ export default function NotesExplorer() {
         ) : null}
       </section>
 
+      {importError ? (
+        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => setImportError(null)}>
+          <section
+            className={styles.shareDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="import-error-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className={styles.shareDialogHeader}>
+              <div>
+                <p className={styles.shareDialogEyebrow}>导入文件</p>
+                <h2 id="import-error-title" className={styles.shareDialogTitle}>导入失败</h2>
+              </div>
+              <button
+                type="button"
+                className={styles.shareDialogClose}
+                onClick={() => setImportError(null)}
+                aria-label="关闭导入错误"
+                title="关闭导入错误"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </header>
+            <div className={styles.shareDialogBody}>
+              <p className={`${styles.shareDialogMessage} ${styles.shareDialogError}`}>{importError}</p>
+            </div>
+            <footer className={styles.shareDialogActions}>
+              <button type="button" className={styles.sharePrimaryButton} onClick={() => setImportError(null)}>知道了</button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {renameTarget ? (
+        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => !renameLoading && setRenameTarget(null)}>
+          <section
+            className={styles.shareDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rename-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className={styles.shareDialogHeader}>
+              <div>
+                <p className={styles.shareDialogEyebrow}>{renameTarget.kind === "folder" ? "重命名文件夹" : "重命名文件"}</p>
+                <h2 id="rename-dialog-title" className={styles.shareDialogTitle}>{renameTarget.name}</h2>
+              </div>
+              <button
+                type="button"
+                className={styles.shareDialogClose}
+                onClick={() => setRenameTarget(null)}
+                aria-label="关闭重命名窗口"
+                title="关闭重命名窗口"
+                disabled={renameLoading}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </header>
+            <div className={styles.shareDialogBody}>
+              <label className={styles.renameField}>
+                <span>名称</span>
+                <span className={styles.renameInputRow}>
+                  <input
+                    ref={renameInputRef}
+                    value={renameName}
+                    onChange={(event) => {
+                      setRenameName(event.target.value);
+                      setRenameError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void handleRenameTarget();
+                      if (event.key === "Escape") setRenameTarget(null);
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {renameTarget.kind === "file" ? (
+                    <span className={styles.renameExtension}>{renameTarget.name.match(/\.[^.]+$/)?.[0] ?? ""}</span>
+                  ) : null}
+                </span>
+              </label>
+              {renameError ? <p className={`${styles.shareDialogMessage} ${styles.shareDialogError}`}>{renameError}</p> : null}
+            </div>
+            <footer className={styles.shareDialogActions}>
+              <button type="button" className={styles.shareSecondaryButton} onClick={() => setRenameTarget(null)} disabled={renameLoading}>取消</button>
+              <button type="button" className={styles.sharePrimaryButton} onClick={() => void handleRenameTarget()} disabled={renameLoading}>
+                {renameLoading ? "保存中" : "保存"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {/* ── 删除确认条（底部滑入）────────────────────────── */}
       {deleteConfirmOpen ? (
-        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => !deleteLoading && setDeleteConfirmOpen(false)}>
+        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => {
+          if (!deleteLoading) {
+            setDeleteConfirmOpen(false);
+            setDeleteTarget(null);
+          }
+        }}>
           <section
             className={`${styles.shareDialog} ${styles.deleteDialog}`}
             role="alertdialog"
@@ -2447,18 +2990,27 @@ export default function NotesExplorer() {
               <div>
                 <p className={styles.shareDialogEyebrow}>永久删除</p>
                 <h2 id="delete-confirm-label" className={styles.shareDialogTitle}>
-                  {note ? stripNoteExtension(note.path.split("/").pop() ?? note.path) : ""}
+                  {deleteTarget?.kind === "folder"
+                    ? deleteTarget.name
+                    : stripNoteExtension((deleteTarget?.name ?? note?.path.split("/").pop()) ?? "")}
                 </h2>
               </div>
             </header>
             <div className={styles.shareDialogBody}>
-              <p className={styles.deleteDialogDesc}>此操作无法撤销。已同步到云端的文件可在「云端同步」面板中恢复。</p>
+              <p className={styles.deleteDialogDesc}>
+                {deleteTarget?.kind === "folder"
+                  ? "将删除此文件夹及其中所有文件。此操作无法撤销。"
+                  : "此操作无法撤销。已同步到云端的文件可在「云端同步」面板中恢复。"}
+              </p>
             </div>
             <footer className={styles.shareDialogActions}>
               <button
                 type="button"
                 className={styles.shareSecondaryButton}
-                onClick={() => setDeleteConfirmOpen(false)}
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteTarget(null);
+                }}
                 disabled={deleteLoading}
               >
                 取消
@@ -2708,6 +3260,53 @@ export default function NotesExplorer() {
             activeSlug={activeTocSlug}
             onSelect={handleSelectTocHeading}
           />
+        </aside>
+      ) : null}
+
+      {isMobileViewport ? (
+        <aside
+          className={`${styles.nodeActionSheet} ${treeSheetTarget ? styles.nodeActionSheetOpen : ""}`}
+          aria-label="文件操作"
+          aria-hidden={!treeSheetTarget}
+          inert={!treeSheetTarget}
+        >
+          <header className={styles.nodeActionSheetHeader}>
+            <div className={styles.nodeActionSheetTitleGroup}>
+              <span className={styles.nodeActionSheetTitle}>{treeSheetTarget?.name ?? ""}</span>
+              <span className={styles.nodeActionSheetPath}>{treeSheetTarget?.path ?? ""}</span>
+            </div>
+            <button
+              type="button"
+              className={styles.mobileTocSheetClose}
+              onClick={() => setTreeSheetTarget(null)}
+              aria-label="关闭文件操作"
+              tabIndex={treeSheetTarget ? 0 : -1}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+          </header>
+          <div className={styles.nodeActionSheetBody}>
+            {treeSheetTarget?.kind === "folder" ? (
+              <>
+                <button type="button" className={styles.nodeActionButton} onClick={() => { const folder = treeSheetTarget.path; setTreeSheetTarget(null); openNewNote(folder); }}>新建笔记</button>
+                <button type="button" className={styles.nodeActionButton} onClick={() => { const folder = treeSheetTarget.path; setTreeSheetTarget(null); openNewFolder(folder); }}>新建文件夹</button>
+                <button type="button" className={styles.nodeActionButton} onClick={() => handleStartImport(treeSheetTarget.path)} disabled={importLoading}>
+                  {importLoading ? "导入中…" : "导入文件"}
+                </button>
+              </>
+            ) : null}
+            {treeSheetTarget?.kind === "file" && (isPdfPath(treeSheetTarget.path) || isImagePath(treeSheetTarget.path)) ? (
+              <button type="button" className={styles.nodeActionButton} onClick={() => { const path = treeSheetTarget.path; setTreeSheetTarget(null); void handleDownloadPath(path); }}>下载</button>
+            ) : null}
+            {treeSheetTarget ? (
+              <>
+                <button type="button" className={styles.nodeActionButton} onClick={() => handleOpenRename(treeSheetTarget)}>重命名</button>
+                <button type="button" className={`${styles.nodeActionButton} ${styles.nodeActionButtonDanger}`} onClick={() => handleOpenDelete(treeSheetTarget)}>删除</button>
+              </>
+            ) : null}
+          </div>
         </aside>
       ) : null}
 

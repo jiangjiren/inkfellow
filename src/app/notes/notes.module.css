@@ -207,10 +207,20 @@
   gap: 2px;
 }
 
+.treeNodeWrap {
+  --level: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: calc(var(--level) * 14px);
+}
+
 .treeFolder,
 .treeFile {
-  --level: 0;
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   min-height: 32px;
   display: flex;
   align-items: center;
@@ -226,6 +236,12 @@
   line-height: 1.4;
   cursor: pointer;
   transition: var(--notes-transition-fast);
+}
+
+.treeNodeWrap .treeFolder,
+.treeNodeWrap .treeFile {
+  padding-left: 8px;
+  padding-right: 4px;
 }
 
 .treeFile {
@@ -248,6 +264,68 @@
 .treeFileActive:hover {
   background: var(--notes-accent-hover) !important;
   color: #ffffff !important;
+}
+
+.treeNodeMore {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--notes-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--notes-transition-fast);
+}
+
+.treeNodeWrap:hover .treeNodeMore,
+.treeNodeMore:focus-visible {
+  opacity: 1;
+}
+
+.treeNodeMore:hover,
+.treeNodeMore:focus-visible {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.treeActionMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 2px;
+  z-index: 80;
+  min-width: 138px;
+  padding: 4px;
+  border: 1px solid var(--notes-border);
+  border-radius: 10px;
+  background: var(--notes-bg-sidebar);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: menuFadeIn 0.12s ease-out;
+}
+
+.treeActionItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.treeActionItem:hover,
+.treeActionItem:focus-visible {
+  background: var(--notes-bg-hover);
 }
 
 .chevron {
@@ -815,6 +893,13 @@
   padding: 32px 24px 64px;
   min-height: calc(100dvh - 56px);
   box-sizing: border-box;
+}
+
+.imageViewerFrame {
+  display: inline-block;
+  position: relative;
+  max-width: 100%;
+  line-height: 0;
 }
 
 .imageViewerImg {
@@ -2625,8 +2710,11 @@
 }
 
 .imageFrame {
-  display: block;
+  display: inline-block;
+  position: relative;
   margin: 1.5em 0;
+  vertical-align: top;
+  max-width: 100%;
 }
 
 .imageFrame img {
@@ -2637,6 +2725,51 @@
   border-radius: 8px;
   box-shadow: var(--notes-shadow-card);
   background: var(--notes-bg-document);
+}
+
+.imageDownloadBtn {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 180ms ease, background 150ms ease, transform 150ms ease;
+  padding: 0;
+}
+
+.imageFrame:hover .imageDownloadBtn {
+  opacity: 1;
+}
+
+.imageViewerFrame:hover .imageDownloadBtn {
+  opacity: 1;
+}
+
+/* 触屏设备没有 hover，按钮常驻 */
+@media (hover: none) {
+  .imageDownloadBtn {
+    opacity: 0.75;
+  }
+}
+
+.imageDownloadBtn:hover {
+  background: rgba(0, 0, 0, 0.62);
+  transform: scale(1.08);
+}
+
+.imageDownloadBtn:active {
+  transform: scale(0.94);
 }
 
 .markdown hr {
@@ -2905,6 +3038,116 @@
 
   .mobileTocSheet .articleTocHeader {
     display: none;
+  }
+
+  .treeNodeMore {
+    width: 34px;
+    height: 34px;
+    opacity: 1;
+  }
+
+  .treeFolder,
+  .treeFile {
+    min-height: 38px;
+  }
+
+  .nodeActionSheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: env(safe-area-inset-bottom, 0px);
+    top: auto;
+    z-index: 56;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-height: min(72dvh, 560px);
+    border-top: 1px solid var(--notes-border);
+    border-radius: 16px 16px 0 0;
+    background: var(--notes-bg-sidebar);
+    box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.18);
+    transform: translateY(104%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+    will-change: transform, opacity;
+  }
+
+  .nodeActionSheetOpen {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .nodeActionSheetHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--notes-border);
+  }
+
+  .nodeActionSheetTitleGroup {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .nodeActionSheetTitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--notes-text-primary);
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .nodeActionSheetPath {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--notes-text-muted);
+    font-size: 11px;
+  }
+
+  .nodeActionSheetBody {
+    display: grid;
+    gap: 2px;
+    padding: 8px 10px max(12px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .nodeActionButton {
+    width: 100%;
+    min-height: 46px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--notes-text-primary);
+    font: inherit;
+    font-size: 16px;
+    text-align: left;
+    padding: 0 12px;
+    cursor: pointer;
+  }
+
+  .nodeActionButton:hover,
+  .nodeActionButton:focus-visible {
+    background: var(--notes-bg-hover);
+  }
+
+  .nodeActionButton:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .nodeActionButtonDanger {
+    color: #c0392b;
+  }
+
+  .nodeActionButtonDanger:hover,
+  .nodeActionButtonDanger:focus-visible {
+    background: rgba(192, 57, 43, 0.08);
   }
 
   /* git mobile bottom sheet — same metrics as assistantPanel, higher z-index to sit above it */
@@ -3802,6 +4045,32 @@
   flex: 0 0 auto;
 }
 
+.globalCreateWrapper {
+  position: relative;
+}
+
+.globalCreateMenu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 90;
+  min-width: 142px;
+  padding: 4px;
+  border: 1px solid var(--notes-border);
+  border-radius: 10px;
+  background: var(--notes-bg-sidebar);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: menuFadeIn 0.12s ease-out;
+}
+
+.hiddenFileInput {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* ── 对话框内 label 行（label + 新建文件夹按钮） ─── */
 .newNoteLabelRow {
   display: flex;
@@ -4252,6 +4521,48 @@
   height: 1px;
   background: var(--notes-border);
   margin: 4px 6px;
+}
+
+.renameField {
+  display: grid;
+  gap: 7px;
+  color: var(--notes-text-secondary);
+  font-size: 13px;
+}
+
+.renameInputRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 9px;
+  background: var(--notes-bg-document);
+  overflow: hidden;
+  transition: var(--notes-transition-fast);
+}
+
+.renameInputRow:focus-within {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.renameInputRow input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 10px 11px;
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 15px;
+}
+
+.renameExtension {
+  flex: 0 0 auto;
+  padding: 0 11px 0 0;
+  color: var(--notes-text-muted);
+  font-size: 14px;
 }
 
 /* ── 删除确认弹窗（复用 shareDialog 结构，居中显示）────────── */

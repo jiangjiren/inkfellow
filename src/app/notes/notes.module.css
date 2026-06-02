@@ -482,6 +482,12 @@
   transition: var(--notes-transition-spring);
 }
 
+.readerGitMode {
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .reader::-webkit-scrollbar-thumb {
   background: var(--notes-border-strong);
   border: 2px solid transparent;
@@ -1428,6 +1434,7 @@
   min-height: 0;
   display: grid;
   grid-template-columns: 100% 100%;
+  grid-template-rows: 1fr;
   width: 100%;
   transform: translateX(0);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1927,13 +1934,21 @@
   text-decoration: underline;
 }
 
+/* ── Sticky Bottom Bar (message + sync button) ── */
+.gitBottomBar {
+  position: sticky;
+  bottom: 0;
+  background: var(--notes-bg-sidebar);
+  border-top: 1px solid var(--notes-border);
+  flex-shrink: 0;
+}
+
 /* ── Smart Sync Action Area ── */
 .gitActions {
   padding: 10px 18px 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  flex-shrink: 0;
 }
 
 .gitButton {
@@ -4563,6 +4578,46 @@
   padding: 0 11px 0 0;
   color: var(--notes-text-muted);
   font-size: 14px;
+}
+
+/* ── 内联重命名（文件树节点） ────────────────────────────── */
+.treeNodeWrapRenaming {
+  flex-direction: column;
+  align-items: stretch;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.treeRenameWrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 8px;
+  border-radius: var(--notes-radius-item);
+  background: var(--notes-bg-panel);
+  border: 1px solid var(--notes-accent);
+  box-shadow: 0 0 0 2px var(--notes-accent-bg);
+}
+
+.treeRenameInput {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  padding: 2px 0;
+}
+
+.treeRenameError {
+  font-size: 11px;
+  color: var(--notes-danger, #dc3545);
+  padding: 2px 8px 3px;
+  line-height: 1.3;
 }
 
 /* ── 删除确认弹窗（复用 shareDialog 结构，居中显示）────────── */

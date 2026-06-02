@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 import type { ComponentPropsWithoutRef, MouseEvent, ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { slugifyHeading } from "@/lib/noteToc";
@@ -400,6 +400,56 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   );
 }
 
+const MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+
+function loadMermaidCDN(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if ((window as any).__mermaid__) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${MERMAID_CDN}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", reject);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = MERMAID_CDN;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+function Mermaid({ chart }: { chart: string }) {
+  const [svg, setSvg] = useState<string>("");
+
+  useEffect(() => {
+    let isMounted = true;
+    loadMermaidCDN().then(() => {
+      const mermaid = (window as any).mermaid;
+      if (!mermaid) return;
+      mermaid.initialize({ startOnLoad: false, theme: "default" });
+      const id = `mermaid-${Math.random().toString(36).substring(2, 9)}`;
+      mermaid.render(id, chart).then((result: { svg: string }) => {
+        if (isMounted) setSvg(result.svg);
+      }).catch((e: unknown) => {
+        console.error(e);
+        if (isMounted) setSvg(`<div style="color:red;padding:1rem;border:1px solid red;border-radius:4px;">Mermaid syntax error</div>`);
+      });
+    }).catch(() => {
+      if (isMounted) setSvg(`<div style="color:red;padding:1rem">Failed to load Mermaid</div>`);
+    });
+    return () => { isMounted = false; };
+  }, [chart]);
+
+  if (!svg) {
+    return <div className={styles.codeBlockContainer} style={{ padding: "1rem", opacity: 0.5 }}>Rendering diagram...</div>;
+  }
+
+  return <div dangerouslySetInnerHTML={{ __html: svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
+}
+
 export default function NotesMarkdown({
   markdown,
   currentPath,
@@ -522,6 +572,14 @@ export default function NotesMarkdown({
             </code>
           );
         }
+        
+        const match = /language-(\w+)/.exec(className || "");
+        const lang = match ? match[1] : "code";
+
+        if (lang === "mermaid") {
+          return <Mermaid chart={String(children).replace(/\n$/, "")} />;
+        }
+
         return (
           <CodeBlock className={className}>
             {children}

@@ -477,6 +477,8 @@ export default function NotesGit({ onOpenFile }: Props) {
             </div>
           )}
 
+          {/* ── Sticky bottom: message + sync button ── */}
+          <div className={styles.gitBottomBar}>
           {/* ── Message customization area ── */}
           {hasChanges && (
             <div className={styles.gitMessageBar}>
@@ -564,6 +566,7 @@ export default function NotesGit({ onOpenFile }: Props) {
               )}
             </div>
           </div>
+          </div>{/* end gitBottomBar */}
         </div>
 
         {/* ── Slide 2: iOS-style Sliding Secondary Detail Pane (Diff or Version Timeline) ── */}

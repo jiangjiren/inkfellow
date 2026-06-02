@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { extname } from "node:path";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -68,6 +68,19 @@ const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
 - 如果任务内容不明确，例如“提醒我一下”，需要先问提醒什么。
 - 如果用户要取消、暂停或恢复任务，先 list_schedules，再根据用户描述匹配任务并调用对应工具。`;
 
+const WECHAT_OUTPUT_PROMPT = `【微信通道输出规则】
+
+你正在通过微信 bot 和用户对话，用户只能看到你发到微信里的内容。
+
+当用户要求你生成、编辑、制作、发送图片，或要求把文件/图片“发给我/发到微信”时：
+- 如果你生成了本地图片，最终回复必须单独包含一行 Markdown 图片引用，格式严格为：![图片](/absolute/path/to/image.png)
+- 图片路径必须是真实存在的本地文件路径，支持 .png/.jpg/.jpeg/.webp/.gif。
+- 系统会自动读取这个 Markdown 图片引用，把本地图片上传并发送到微信。
+- 不要只描述图片效果，也不要只说“已经发了”；没有写出 Markdown 图片引用就等于没有发到微信。
+- 如果你已经知道图片文件路径，直接在最终回复中引用它，不要让用户再问一次。
+
+当用户引用之前发过的图片时，优先查看对话历史里的附件本地路径。`;
+
 // per-PORT 运行时文件统一放在 data/ 子目录，一条 gitignore 收口，备份运维清晰。
 // activeProfileId 完全由前端 localStorage 管理（与 model/effort/permission 同一机制），
 // 服务端只接受客户端请求里的 profileId 参数，不再持久化「当前选哪个厂商」。
@@ -89,6 +102,52 @@ const SESSION_FILE      = join(DATA_DIR, `session-${PORT}.json`);
 const WECHAT_CONFIG_FILE = join(DATA_DIR, `wechat-bot-${PORT}.json`);
 const WECHAT_SYNC_FILE   = join(DATA_DIR, `wechat-bot-${PORT}.sync.json`);
 const FIXED_BASE_URL = "https://ilinkai.weixin.qq.com";
+const WECHAT_CDN_BASE_URL = process.env.WECHAT_CDN_BASE_URL || "https://novac2c.cdn.weixin.qq.com/c2c";
+const WECHAT_MEDIA_DIR = join(DATA_DIR, `wechat-media-${PORT}`);
+const WECHAT_MAX_INLINE_IMAGE_BYTES = Number.parseInt(process.env.WECHAT_MAX_INLINE_IMAGE_BYTES || String(5 * 1024 * 1024), 10);
+const WECHAT_MAX_MEDIA_BYTES = Number.parseInt(process.env.WECHAT_MAX_MEDIA_BYTES || String(25 * 1024 * 1024), 10);
+mkdirSync(WECHAT_MEDIA_DIR, { recursive: true });
+
+const WECHAT_MESSAGE_ITEM_TYPE = {
+  TEXT: 1,
+  IMAGE: 2,
+  VOICE: 3,
+  FILE: 4,
+  VIDEO: 5,
+};
+
+const WECHAT_UPLOAD_MEDIA_TYPE = {
+  IMAGE: 1,
+  VIDEO: 2,
+  FILE: 3,
+  VOICE: 4,
+};
+
+const WECHAT_IMAGE_MIME_BY_EXT = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+const WECHAT_MIME_BY_EXT = {
+  ...WECHAT_IMAGE_MIME_BY_EXT,
+  ".bmp": "image/bmp",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".wav": "audio/wav",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".zip": "application/zip",
+};
 
 const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
@@ -452,7 +511,226 @@ async function requestWechat(baseUrl, token, endpoint, body = {}) {
   return res.json();
 }
 
-async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = undefined) {
+function aesEcbPaddedSize(plaintextSize) {
+  return Math.ceil((plaintextSize + 1) / 16) * 16;
+}
+
+function encryptAesEcb(plaintext, key) {
+  const cipher = crypto.createCipheriv("aes-128-ecb", key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+function decryptAesEcb(ciphertext, key) {
+  const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function parseWechatAesKey(aesKeyBase64) {
+  const decoded = Buffer.from(aesKeyBase64, "base64");
+  if (decoded.length === 16) return decoded;
+  if (decoded.length === 32 && /^[0-9a-fA-F]{32}$/.test(decoded.toString("ascii"))) {
+    return Buffer.from(decoded.toString("ascii"), "hex");
+  }
+  throw new Error(`Invalid WeChat media aes_key length: ${decoded.length}`);
+}
+
+function normalizeWechatAesKeyBase64(hexOrBase64) {
+  const value = String(hexOrBase64 || "");
+  if (/^[0-9a-fA-F]{32}$/.test(value)) {
+    return Buffer.from(value, "hex").toString("base64");
+  }
+  return value;
+}
+
+function buildWechatCdnDownloadUrl(encryptQueryParam) {
+  return `${WECHAT_CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
+}
+
+function buildWechatCdnUploadUrl(uploadParam, filekey) {
+  return `${WECHAT_CDN_BASE_URL}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+}
+
+function getMimeFromFileName(fileName) {
+  return WECHAT_MIME_BY_EXT[extname(fileName).toLowerCase()] || "application/octet-stream";
+}
+
+function sniffImageMime(data, fallback = "application/octet-stream") {
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (data.length >= 6) {
+    const header = data.subarray(0, 6).toString("ascii");
+    if (header === "GIF87a" || header === "GIF89a") return "image/gif";
+  }
+  if (data.length >= 12 && data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return fallback;
+}
+
+function extFromMime(mime, fallback = ".bin") {
+  const entry = Object.entries(WECHAT_MIME_BY_EXT).find(([, value]) => value === mime);
+  return entry?.[0] || fallback;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchWechatCdnBytes(media) {
+  const url = media.full_url || buildWechatCdnDownloadUrl(media.encrypt_query_param);
+  const res = await fetchWithTimeout(url, {}, 30000);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`WeChat CDN download ${res.status}: ${body.slice(0, 120)}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+async function downloadWechatMediaItem(item) {
+  let kind = "";
+  let media = null;
+  let aesKeyBase64 = "";
+  let fileName = "";
+  let mime = "application/octet-stream";
+
+  if (item.type === WECHAT_MESSAGE_ITEM_TYPE.IMAGE) {
+    const image = item.image_item;
+    media = image?.media || image?.thumb_media;
+    if (!media?.encrypt_query_param && !media?.full_url) return null;
+    aesKeyBase64 = normalizeWechatAesKeyBase64(image?.aeskey || media.aes_key || "");
+    kind = "image";
+  } else if (item.type === WECHAT_MESSAGE_ITEM_TYPE.VOICE) {
+    const voice = item.voice_item;
+    media = voice?.media;
+    if (!media?.encrypt_query_param && !media?.full_url) return null;
+    aesKeyBase64 = normalizeWechatAesKeyBase64(media.aes_key || "");
+    kind = "voice";
+    fileName = "voice.silk";
+    mime = "audio/silk";
+  } else if (item.type === WECHAT_MESSAGE_ITEM_TYPE.FILE) {
+    const file = item.file_item;
+    media = file?.media;
+    if (!media?.encrypt_query_param && !media?.full_url) return null;
+    aesKeyBase64 = normalizeWechatAesKeyBase64(media.aes_key || "");
+    kind = "file";
+    fileName = file?.file_name || "attachment.bin";
+    mime = getMimeFromFileName(fileName);
+  } else if (item.type === WECHAT_MESSAGE_ITEM_TYPE.VIDEO) {
+    const video = item.video_item;
+    media = video?.media;
+    if (!media?.encrypt_query_param && !media?.full_url) return null;
+    aesKeyBase64 = normalizeWechatAesKeyBase64(media.aes_key || "");
+    kind = "video";
+    fileName = "video.mp4";
+    mime = "video/mp4";
+  } else {
+    return null;
+  }
+
+  const encryptedOrPlain = await fetchWechatCdnBytes(media);
+  const data = aesKeyBase64 ? decryptAesEcb(encryptedOrPlain, parseWechatAesKey(aesKeyBase64)) : encryptedOrPlain;
+  if (data.length > WECHAT_MAX_MEDIA_BYTES) {
+    throw new Error(`media too large (${data.length} bytes)`);
+  }
+
+  if (kind === "image") {
+    mime = sniffImageMime(data, "image/jpeg");
+    fileName = `image-${Date.now()}-${crypto.randomBytes(4).toString("hex")}${extFromMime(mime, ".jpg")}`;
+  } else {
+    const safeBase = basename(fileName).replace(/[^\w.\-()\u4e00-\u9fa5]/g, "_") || `${kind}.bin`;
+    fileName = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}-${safeBase}`;
+  }
+
+  const filePath = join(WECHAT_MEDIA_DIR, fileName);
+  writeFileSync(filePath, data);
+  return { kind, fileName, filePath, mime, size: data.length, data };
+}
+
+async function uploadWechatMediaFile(baseUrl, token, toUser, filePath) {
+  const data = readFileSync(filePath);
+  if (data.length > WECHAT_MAX_MEDIA_BYTES) {
+    throw new Error(`media too large for WeChat upload (${data.length} bytes)`);
+  }
+
+  const mime = getMimeFromFileName(filePath);
+  const mediaType = mime.startsWith("image/")
+    ? WECHAT_UPLOAD_MEDIA_TYPE.IMAGE
+    : mime.startsWith("video/")
+      ? WECHAT_UPLOAD_MEDIA_TYPE.VIDEO
+      : WECHAT_UPLOAD_MEDIA_TYPE.FILE;
+  const filekey = crypto.randomBytes(16).toString("hex");
+  const aeskey = crypto.randomBytes(16);
+  const rawsize = data.length;
+  const rawfilemd5 = crypto.createHash("md5").update(data).digest("hex");
+  const filesize = aesEcbPaddedSize(rawsize);
+
+  const uploadResp = await requestWechat(baseUrl, token, "ilink/bot/getuploadurl", {
+    filekey,
+    media_type: mediaType,
+    to_user_id: toUser,
+    rawsize,
+    rawfilemd5,
+    filesize,
+    no_need_thumb: true,
+    aeskey: aeskey.toString("hex"),
+  });
+  const uploadParam = uploadResp.upload_param;
+  if (!uploadParam && !uploadResp.upload_full_url) {
+    throw new Error(`getuploadurl returned no upload_param: ${JSON.stringify(uploadResp).slice(0, 300)}`);
+  }
+
+  const ciphertext = encryptAesEcb(data, aeskey);
+  const uploadUrl = uploadResp.upload_full_url || buildWechatCdnUploadUrl(uploadParam, filekey);
+  const uploadRes = await fetchWithTimeout(uploadUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: new Uint8Array(ciphertext),
+  }, 30000);
+  if (uploadRes.status !== 200) {
+    const errText = uploadRes.headers.get("x-error-message") || await uploadRes.text().catch(() => "");
+    throw new Error(`WeChat CDN upload ${uploadRes.status}: ${errText.slice(0, 160)}`);
+  }
+
+  const downloadParam = uploadRes.headers.get("x-encrypted-param");
+  if (!downloadParam) {
+    throw new Error("WeChat CDN upload response missing x-encrypted-param");
+  }
+
+  const aesKeyForMessage = Buffer.from(aeskey.toString("hex")).toString("base64");
+  if (mediaType === WECHAT_UPLOAD_MEDIA_TYPE.IMAGE) {
+    return {
+      type: WECHAT_MESSAGE_ITEM_TYPE.IMAGE,
+      image_item: {
+        media: { encrypt_query_param: downloadParam, aes_key: aesKeyForMessage, encrypt_type: 1 },
+        aeskey: aeskey.toString("hex"),
+        mid_size: filesize,
+      },
+    };
+  }
+  if (mediaType === WECHAT_UPLOAD_MEDIA_TYPE.VIDEO) {
+    return {
+      type: WECHAT_MESSAGE_ITEM_TYPE.VIDEO,
+      video_item: {
+        media: { encrypt_query_param: downloadParam, aes_key: aesKeyForMessage, encrypt_type: 1 },
+        video_size: filesize,
+      },
+    };
+  }
+  return {
+    type: WECHAT_MESSAGE_ITEM_TYPE.FILE,
+    file_item: {
+      media: { encrypt_query_param: downloadParam, aes_key: aesKeyForMessage, encrypt_type: 1 },
+      file_name: basename(filePath),
+      len: String(rawsize),
+    },
+  };
+}
+
+async function sendWechatItem(baseUrl, token, toUser, item, contextToken = undefined) {
   const clientId = `inkfellow-wechat-${crypto.randomUUID()}`;
   await requestWechat(baseUrl, token, "ilink/bot/sendmessage", {
     msg: {
@@ -461,15 +739,127 @@ async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = un
       client_id: clientId,
       message_type: 2, // MessageType.BOT
       message_state: 2, // MessageState.FINISH
-      item_list: [
-        {
-          type: 1, // MessageItemType.TEXT
-          text_item: { text: text }
-        }
-      ],
+      item_list: [item],
       context_token: contextToken || undefined,
     }
   });
+}
+
+async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = undefined) {
+  await sendWechatItem(baseUrl, token, toUser, {
+    type: WECHAT_MESSAGE_ITEM_TYPE.TEXT,
+    text_item: { text: text }
+  }, contextToken);
+}
+
+function extractWechatOutboundMediaRefs(text) {
+  const refs = [];
+  const seen = new Set();
+  const addRef = (raw, target) => {
+    const clean = String(target || "")
+      .trim()
+      .replace(/^<(.+)>$/, "$1")
+      .replace(/^["'](.+)["']$/, "$1");
+    if (!clean || seen.has(clean)) return;
+    if (!/\.(png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(clean)) return;
+    seen.add(clean);
+    refs.push({ raw, target: clean });
+  };
+
+  const markdownImageRe = /!\[[^\]]*]\((<[^>\n]+>|[^)\n]+)\)/g;
+  let match;
+  while ((match = markdownImageRe.exec(text)) !== null) {
+    addRef(match[0], match[1]);
+  }
+
+  const markdownLinkRe = /(?<!!)\[[^\]]+]\((<[^>\n]+>|[^)\n]+)\)/g;
+  while ((match = markdownLinkRe.exec(text)) !== null) {
+    addRef(match[0], match[1]);
+  }
+
+  const pathRe = /(`?)(file:\/\/\/[^`'")\s<>]+\.(?:png|jpe?g|webp|gif)|\/[^`'")\s<>]+\.(?:png|jpe?g|webp|gif)|(?:\.{1,2}\/|claude-chat\/data\/|data\/|wechat-media-\d+\/)[^`'")\s<>]+\.(?:png|jpe?g|webp|gif))\1/gi;
+  while ((match = pathRe.exec(text)) !== null) {
+    addRef(match[0], match[2]);
+  }
+
+  return refs.slice(0, 5);
+}
+
+function resolveWechatOutboundLocalPath(target) {
+  const clean = String(target || "")
+    .trim()
+    .replace(/^file:\/\//, "")
+    .replace(/[?#].*$/, "");
+  if (!clean || /^https?:\/\//i.test(clean)) return null;
+  const candidates = [
+    isAbsolute(clean) ? clean : resolve(DEFAULT_CWD, clean),
+    isAbsolute(clean) ? clean : resolve(process.cwd(), clean),
+    isAbsolute(clean) ? clean : resolve(__dirname, clean),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const st = statSync(candidate);
+      if (st.isFile()) return candidate;
+    } catch { }
+  }
+  return null;
+}
+
+async function downloadOutboundRemoteMedia(target) {
+  const url = new URL(target);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+
+  const res = await fetchWithTimeout(url.toString(), {}, 20000);
+  if (!res.ok) throw new Error(`download ${res.status}`);
+
+  const contentLength = Number.parseInt(res.headers.get("content-length") || "0", 10);
+  if (contentLength > WECHAT_MAX_MEDIA_BYTES) {
+    throw new Error(`remote media too large (${contentLength} bytes)`);
+  }
+
+  const data = Buffer.from(await res.arrayBuffer());
+  if (data.length > WECHAT_MAX_MEDIA_BYTES) {
+    throw new Error(`remote media too large (${data.length} bytes)`);
+  }
+
+  const contentType = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  let ext = extFromMime(contentType, "");
+  if (!ext) ext = extname(url.pathname).toLowerCase() || ".bin";
+  const fileName = `outbound-${Date.now()}-${crypto.randomBytes(4).toString("hex")}${ext}`;
+  const filePath = join(WECHAT_MEDIA_DIR, fileName);
+  writeFileSync(filePath, data);
+  return filePath;
+}
+
+async function sendWechatResponseWithMedia(baseUrl, token, toUser, text, contextToken = undefined) {
+  const refs = extractWechatOutboundMediaRefs(text);
+  if (refs.length === 0) {
+    console.log("[WeChat Media] No outbound media refs found in response.");
+    await sendWechatMessage(baseUrl, token, toUser, text, contextToken);
+    return;
+  }
+  console.log(`[WeChat Media] Found ${refs.length} outbound media ref(s): ${refs.map(r => r.target).join(", ")}`);
+
+  let caption = text;
+  for (const ref of refs) {
+    caption = caption.replace(ref.raw, "").trim();
+  }
+  if (caption) {
+    await sendWechatMessage(baseUrl, token, toUser, caption, contextToken);
+  }
+
+  for (const ref of refs) {
+    try {
+      const localPath = resolveWechatOutboundLocalPath(ref.target) || await downloadOutboundRemoteMedia(ref.target);
+      if (!localPath) continue;
+      const item = await uploadWechatMediaFile(baseUrl, token, toUser, localPath);
+      await sendWechatItem(baseUrl, token, toUser, item, contextToken);
+      console.log(`[WeChat Media] Sent outbound media: ${localPath}`);
+    } catch (err) {
+      console.warn(`[WeChat Media] Failed to send outbound media ${ref.target}: ${err.message}`);
+      await sendWechatMessage(baseUrl, token, toUser, `图片发送失败：${ref.target}`, contextToken).catch(() => {});
+    }
+  }
 }
 
 async function sendWechatTyping(baseUrl, token, toUser, status = 1, contextToken = undefined) {
@@ -486,6 +876,104 @@ async function sendWechatTyping(baseUrl, token, toUser, status = 1, contextToken
       });
     }
   } catch {}
+}
+
+function extractWechatTextParts(msg) {
+  const parts = [];
+  for (const item of msg.item_list || []) {
+    if (item.type === WECHAT_MESSAGE_ITEM_TYPE.TEXT && item.text_item?.text) {
+      parts.push(String(item.text_item.text));
+    }
+    if (item.type === WECHAT_MESSAGE_ITEM_TYPE.VOICE && item.voice_item?.voice_to_text) {
+      parts.push(String(item.voice_item.voice_to_text));
+    }
+  }
+  return parts.map(t => t.trim()).filter(Boolean);
+}
+
+function buildWechatPrompt(textParts, mediaFiles) {
+  const userText = textParts.join("\n").trim();
+  if (userText) return userText;
+  if (mediaFiles.some(f => f.kind === "image")) return "请分析我发来的图片。";
+  if (mediaFiles.some(f => f.kind === "voice")) return "请处理我发来的语音消息。";
+  if (mediaFiles.length > 0) return "请处理我发来的文件。";
+  return "";
+}
+
+function formatWechatMediaSummary(mediaFiles) {
+  if (mediaFiles.length === 0) return "";
+  return mediaFiles.map((file, idx) =>
+    `[${idx + 1}] ${file.kind}: ${file.fileName}, ${file.mime}, ${file.size} bytes, saved at ${file.filePath}`
+  ).join("\n");
+}
+
+function buildWechatUserContent(prompt, mediaFiles, { includeImageBlocks }) {
+  const supportedImages = mediaFiles.filter(file =>
+    file.kind === "image" &&
+    Object.values(WECHAT_IMAGE_MIME_BY_EXT).includes(file.mime) &&
+    file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES
+  );
+  const imageBlocks = includeImageBlocks
+    ? supportedImages.map(file => ({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: file.mime,
+        data: file.data.toString("base64"),
+      },
+    }))
+    : [];
+
+  const nonInlineMedia = mediaFiles.filter(file => !supportedImages.includes(file));
+  const summary = formatWechatMediaSummary(nonInlineMedia);
+  const text = summary
+    ? `${prompt}\n\n收到以下附件，已保存到服务器本地路径，必要时可按路径读取：\n${summary}`
+    : prompt;
+  return [{ type: "text", text }, ...imageBlocks];
+}
+
+function summarizeWechatHistoryPrompt(prompt, mediaFiles) {
+  const summary = formatWechatMediaSummary(mediaFiles);
+  return summary ? `${prompt}\n\n附件：\n${summary}` : prompt;
+}
+
+async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
+  const sender = msg.from_user_id;
+  const contextToken = msg.context_token;
+  if (!sender) return;
+
+  const textParts = extractWechatTextParts(msg);
+  const mediaItems = (msg.item_list || []).filter(item =>
+    item.type === WECHAT_MESSAGE_ITEM_TYPE.IMAGE ||
+    item.type === WECHAT_MESSAGE_ITEM_TYPE.VOICE ||
+    item.type === WECHAT_MESSAGE_ITEM_TYPE.FILE ||
+    item.type === WECHAT_MESSAGE_ITEM_TYPE.VIDEO
+  );
+
+  const mediaFiles = [];
+  for (const item of mediaItems) {
+    try {
+      const file = await downloadWechatMediaItem(item);
+      if (file) mediaFiles.push(file);
+    } catch (err) {
+      console.warn(`[WeChat Media] Failed to download inbound media from ${sender}: ${err.message}`);
+      await sendWechatMessage(baseUrl, token, sender, `附件下载失败：${err.message}`, contextToken).catch(() => {});
+    }
+  }
+
+  const prompt = buildWechatPrompt(textParts, mediaFiles);
+  if (!prompt) return;
+
+  console.log(`[WeChat Inbound] message from ${sender}: "${prompt}" media=${mediaFiles.length}`);
+
+  // 用户主动开启新对话
+  if (mediaFiles.length === 0 && /^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
+    wechatSenderSessions.delete(sender);
+    sendWechatMessage(baseUrl, token, sender, "已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
+    return;
+  }
+
+  processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles);
 }
 
 async function startWechatPolling(baseUrl, token, initialBuf = "") {
@@ -524,22 +1012,9 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
 
         const messages = resp.msgs ?? [];
         for (const msg of messages) {
-          const textItem = msg.item_list?.find(i => i.type === 1)?.text_item;
-          if (!textItem) continue;
-
-          const sender = msg.from_user_id;
-          const prompt = textItem.text.trim();
-          const contextToken = msg.context_token;
-          console.log(`[WeChat Inbound] message from ${sender}: "${prompt}"`);
-
-          // 用户主动开启新对话
-          if (/^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
-            wechatSenderSessions.delete(sender);
-            sendWechatMessage(baseUrl, token, sender, "✅ 已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
-            continue;
-          }
-
-          processWechatQuery(baseUrl, token, sender, prompt, contextToken, ac.signal);
+          handleWechatInboundMessage(baseUrl, token, msg, ac.signal).catch(err => {
+            console.error("[WeChat Loop] Error handling inbound message:", err.message);
+          });
         }
       } catch (err) {
         if (ac.signal.aborted) break;
@@ -646,7 +1121,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
   });
 }
 
-async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal) {
+async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles = []) {
   console.log(`[WeChat Agent] processWechatQuery starting for ${sender}...`);
   try {
     await sendWechatTyping(baseUrl, token, sender, 1, contextToken);
@@ -663,6 +1138,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
 
     const hasScheduler = hasSchedulerIntent(prompt);
     const sdkClient = buildAnthropicClientForWechat(profileData);
+    const includeImageBlocks = !sdkClient || active?.provider !== "deepseek";
+    const userContent = buildWechatUserContent(prompt, mediaFiles, { includeImageBlocks });
+    const historyPrompt = summarizeWechatHistoryPrompt(prompt, mediaFiles);
+    const wechatSystemPrompt = hasScheduler
+      ? `${WECHAT_OUTPUT_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`
+      : WECHAT_OUTPUT_PROMPT;
 
     const typingInterval = setInterval(() => {
       sendWechatTyping(baseUrl, token, sender, 1, contextToken);
@@ -676,10 +1157,10 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         const { client, model } = sdkClient;
         const messages = [
           ...history.map(t => ({ role: t.role, content: t.content })),
-          { role: "user", content: prompt },
+          { role: "user", content: userContent },
         ];
         console.log(`[WeChat Agent] messages.create (model: ${model}, history: ${history.length} turns)`);
-        const response = await client.messages.create({ model, max_tokens: 4096, messages });
+        const response = await client.messages.create({ model, max_tokens: 4096, system: WECHAT_OUTPUT_PROMPT, messages });
         // 只取 text 块，过滤掉 thinking / redacted_thinking（不存 signature，不会报错）
         finalResponse = response.content.filter(b => b.type === "text").map(b => b.text).join("");
       } else {
@@ -693,13 +1174,14 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
           fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
         }
+        const agentUserContent = buildWechatUserContent(fullPrompt, mediaFiles, { includeImageBlocks });
         const extraMcpServers = hasScheduler
           ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
           : {};
         console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasScheduler})`);
         const userMsg = {
           type: "user",
-          message: { role: "user", content: [{ type: "text", text: fullPrompt }] },
+          message: { role: "user", content: agentUserContent },
           parent_tool_use_id: null,
         };
         const queryAbortController = new AbortController();
@@ -718,8 +1200,8 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
             env: agentEnv,
             abortController: queryAbortController,
             mcpServers: extraMcpServers,
+            systemPrompt: { type: "preset", preset: "claude_code", append: wechatSystemPrompt },
             ...(hasScheduler ? {
-              systemPrompt: { type: "preset", preset: "claude_code", append: INKFELLOW_SCHEDULER_PROMPT },
               disallowedTools: ["Bash"],
             } : {}),
           },
@@ -745,12 +1227,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
 
     if (!abortSignal.aborted && finalResponse.trim()) {
       try {
-        await sendWechatMessage(baseUrl, token, sender, finalResponse.trim(), contextToken);
+        await sendWechatResponseWithMedia(baseUrl, token, sender, finalResponse.trim(), contextToken);
         console.log(`[WeChat Agent] Message sent to ${sender}.`);
 
         // 追加本轮到历史，只存文本，超限时丢弃最早一轮
         const newTurns = [...history,
-          { role: "user", content: prompt },
+          { role: "user", content: historyPrompt },
           { role: "assistant", content: finalResponse.trim() },
         ];
         if (newTurns.length > WECHAT_MAX_HISTORY_TURNS * 2) newTurns.splice(0, 2);

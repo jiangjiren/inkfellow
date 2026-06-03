@@ -1651,7 +1651,9 @@ const wss = new WebSocketServer({ server: http });
 
 wss.on("connection", (ws) => {
   let abortCtrl = null;
-  // Send cached skills immediately so "/" popup works before first message
+  // Reload skills from disk on each connection so newly installed skills appear immediately
+  const freshSkills = loadSkillsFromDisk();
+  if (freshSkills.length > 0) cachedSkills = freshSkills;
   ws.send(JSON.stringify({ type: "system", subtype: "init", skills: cachedSkills, slash_commands: cachedSkills }));
 
   const send = (obj) => {

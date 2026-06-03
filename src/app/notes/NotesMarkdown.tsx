@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 import type { ComponentPropsWithoutRef, MouseEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { slugifyHeading } from "@/lib/noteToc";
@@ -400,54 +400,130 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   );
 }
 
-const MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+// Mermaid is loaded lazily from CDN rather than bundled: bundling it (d3 + a large tree)
+// OOMs the webpack build on this low-memory host. Singleton promise + timeout + failure
+// state keep weak-network/offline cases from hanging in the loading spinner forever.
+type MermaidApi = {
+  initialize: (config: Record<string, unknown>) => void;
+  render: (id: string, chart: string) => Promise<{ svg: string }>;
+};
 
-function loadMermaidCDN(): Promise<void> {
-  if (typeof window === "undefined") return Promise.resolve();
-  if ((window as any).__mermaid__) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${MERMAID_CDN}"]`);
+const MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+const MERMAID_LOAD_TIMEOUT_MS = 12000;
+
+let mermaidPromise: Promise<MermaidApi> | null = null;
+
+function getMermaid(): Promise<MermaidApi> {
+  if (mermaidPromise) return mermaidPromise;
+
+  mermaidPromise = new Promise<MermaidApi>((resolve, reject) => {
+    if (typeof window === "undefined") {
+      reject(new Error("Mermaid unavailable during SSR"));
+      return;
+    }
+    const w = window as unknown as { mermaid?: MermaidApi };
+    if (w.mermaid) {
+      resolve(w.mermaid);
+      return;
+    }
+
+    let settled = false;
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      mermaidPromise = null; // allow a later render to retry the load
+      reject(new Error(message));
+    };
+    const succeed = () => {
+      if (settled) return;
+      if (!w.mermaid) {
+        fail("Mermaid 加载失败");
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(w.mermaid);
+    };
+    const timer = setTimeout(() => fail("加载 Mermaid 超时，请检查网络后重试"), MERMAID_LOAD_TIMEOUT_MS);
+
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${MERMAID_CDN}"]`);
     if (existing) {
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", reject);
+      existing.addEventListener("load", succeed);
+      existing.addEventListener("error", () => fail("Mermaid 加载失败"));
+      if (w.mermaid) succeed();
       return;
     }
     const script = document.createElement("script");
     script.src = MERMAID_CDN;
     script.async = true;
-    script.onload = () => resolve();
-    script.onerror = reject;
+    script.addEventListener("load", succeed);
+    script.addEventListener("error", () => fail("Mermaid 加载失败"));
     document.head.appendChild(script);
+  }).then((mermaid) => {
+    mermaid.initialize({ startOnLoad: false, theme: "default" });
+    return mermaid;
   });
+
+  return mermaidPromise;
 }
 
+function MermaidError({ chart, detail }: { chart: string; detail: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
+  return (
+    <div className={styles.mermaidError}>
+      <pre className={styles.mermaidErrorCode}><code>{chart}</code></pre>
+      <div className={styles.mermaidErrorBar}>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+          <path d="M8 1L15 14H1L8 1z" /><line x1="8" y1="6" x2="8" y2="10" /><line x1="8" y1="12" x2="8" y2="13" />
+        </svg>
+        <span>Mermaid 语法错误</span>
+        <button
+          type="button"
+          className={styles.mermaidErrorToggle}
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls={detailId}
+        >
+          {expanded ? "收起 ▴" : "查看详情 ▾"}
+        </button>
+      </div>
+      {expanded && <div id={detailId} className={styles.mermaidErrorDetail}>{detail}</div>}
+    </div>
+  );
+}
+
+// Rendered with key={chart} by the parent, so each chart gets a fresh instance and
+// the effect runs exactly once — no synchronous state reset needed.
 function Mermaid({ chart }: { chart: string }) {
-  const [svg, setSvg] = useState<string>("");
+  const [state, setState] = useState<{ svg: string; error: string | null }>({ svg: "", error: null });
 
   useEffect(() => {
-    let isMounted = true;
-    loadMermaidCDN().then(() => {
-      const mermaid = (window as any).mermaid;
-      if (!mermaid) return;
-      mermaid.initialize({ startOnLoad: false, theme: "default" });
-      const id = `mermaid-${Math.random().toString(36).substring(2, 9)}`;
-      mermaid.render(id, chart).then((result: { svg: string }) => {
-        if (isMounted) setSvg(result.svg);
-      }).catch((e: unknown) => {
-        console.error(e);
-        if (isMounted) setSvg(`<div style="color:red;padding:1rem;border:1px solid red;border-radius:4px;">Mermaid syntax error</div>`);
+    let cancelled = false;
+    const id = `mermaid-${Math.random().toString(36).substring(2, 9)}`;
+    getMermaid()
+      .then((mermaid) => mermaid.render(id, chart))
+      .then(({ svg }) => {
+        if (!cancelled) setState({ svg, error: null });
+      })
+      .catch((e: unknown) => {
+        // Remove the stray node mermaid injects into <body> on failure (the bottom toast)
+        document.getElementById(`d${id}`)?.remove();
+        if (!cancelled) setState({ svg: "", error: e instanceof Error ? e.message : String(e) });
       });
-    }).catch(() => {
-      if (isMounted) setSvg(`<div style="color:red;padding:1rem">Failed to load Mermaid</div>`);
-    });
-    return () => { isMounted = false; };
+    return () => { cancelled = true; };
   }, [chart]);
 
-  if (!svg) {
-    return <div className={styles.codeBlockContainer} style={{ padding: "1rem", opacity: 0.5 }}>Rendering diagram...</div>;
+  if (state.error !== null) {
+    return <MermaidError chart={chart} detail={state.error} />;
   }
 
-  return <div dangerouslySetInnerHTML={{ __html: svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
+  if (!state.svg) {
+    return <div className={styles.mermaidLoading}>渲染图表中…</div>;
+  }
+
+  return <div dangerouslySetInnerHTML={{ __html: state.svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
 }
 
 export default function NotesMarkdown({
@@ -577,7 +653,8 @@ export default function NotesMarkdown({
         const lang = match ? match[1] : "code";
 
         if (lang === "mermaid") {
-          return <Mermaid chart={String(children).replace(/\n$/, "")} />;
+          const chart = String(children).replace(/\n$/, "");
+          return <Mermaid key={chart} chart={chart} />;
         }
 
         return (

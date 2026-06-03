@@ -306,6 +306,27 @@ const getImageDownloadFilename = (src: string, fallback = "image.png") => {
   }
 };
 
+const LATEX_SYMBOLS: Record<string, string> = {
+  rightarrow: "→", Rightarrow: "⇒", leftarrow: "←", Leftarrow: "⇐",
+  leftrightarrow: "↔", Leftrightarrow: "⇔", uparrow: "↑", downarrow: "↓",
+  to: "→", gets: "←", implies: "⟹", iff: "⟺",
+  times: "×", div: "÷", pm: "±", cdot: "·", ldots: "…", cdots: "⋯",
+  infty: "∞", partial: "∂", nabla: "∇", sqrt: "√",
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε",
+  theta: "θ", lambda: "λ", mu: "μ", pi: "π", sigma: "σ", tau: "τ",
+  phi: "φ", omega: "ω", Delta: "Δ", Sigma: "Σ", Omega: "Ω",
+  leq: "≤", geq: "≥", neq: "≠", approx: "≈", equiv: "≡",
+  in: "∈", notin: "∉", subset: "⊂", cup: "∪", cap: "∩",
+  forall: "∀", exists: "∃",
+};
+
+const substituteLatexMath = (text: string) =>
+  text.replace(/\$([^$\n]+?)\$/g, (match, inner: string) => {
+    const trimmed = inner.trim();
+    const replaced = trimmed.replace(/\\([A-Za-z]+)/g, (_, cmd: string) => LATEX_SYMBOLS[cmd] ?? `\\${cmd}`);
+    return replaced.includes("\\") ? match : replaced;
+  });
+
 const transformObsidianSyntax = (
   markdown: string,
   currentPath: string,
@@ -321,7 +342,7 @@ const transformObsidianSyntax = (
         return part;
       }
 
-      return part
+      return substituteLatexMath(part)
         .replace(/!\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
           const { target, alias } = splitObsidianTarget(rawTarget);
           const label = escapeMarkdownLabel(alias || target);

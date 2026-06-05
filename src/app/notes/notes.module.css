@@ -1432,9 +1432,8 @@
 .gitStack {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 100% 100%;
-  grid-template-rows: 1fr;
+  display: flex;
+  overflow: hidden;
   width: 100%;
   transform: translateX(0);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1445,9 +1444,10 @@
 }
 
 .gitStackPane {
+  flex: 0 0 100%;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -1464,6 +1464,7 @@
   justify-content: space-between;
   padding: 14px 18px 10px;
   border-bottom: 1px solid var(--notes-border);
+  flex-shrink: 0;
 }
 
 .gitStatusLeft {
@@ -1565,6 +1566,7 @@
   line-height: 1.5;
   word-break: break-all;
   animation: popoverFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  flex-shrink: 0;
 }
 
 .gitFeedbackError {
@@ -1960,8 +1962,6 @@
 
 /* ── Sticky Bottom Bar (message + sync button) ── */
 .gitBottomBar {
-  position: sticky;
-  bottom: 0;
   background: var(--notes-bg-sidebar);
   border-top: 1px solid var(--notes-border);
   flex-shrink: 0;
@@ -3258,6 +3258,8 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 }
 

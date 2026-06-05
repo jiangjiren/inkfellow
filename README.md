@@ -90,7 +90,7 @@ inkfellow is a full PWA. Once installed it launches like a native app — no bro
 
 The repo includes a `vault/` sample knowledge base so you can deploy a working demo to Vercel instantly.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/jiangjiren/clawapp)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/jiangjiren/inkfellow)
 
 After deploying, go to Vercel → Project → Settings → **Environment Variables** and add:
 
@@ -107,7 +107,7 @@ After deploying, go to Vercel → Project → Settings → **Environment Variabl
 
 If you're not comfortable with the command line, the easiest path is to hand the job to an AI coding agent — **Claude Code**, **Codex**, **OpenCode**, or any similar tool. Just paste the repository URL and say something like:
 
-> "Please clone this repo and deploy it on my server: `https://github.com/jiangjiren/clawapp`"
+> "Please clone this repo and deploy it on my server: `https://github.com/jiangjiren/inkfellow`"
 
 The agent will read the README, run the commands, and guide you through the configuration. Most users get a working installation this way without touching a single line of code themselves.
 
@@ -130,7 +130,7 @@ sudo apt update && sudo apt install -y git nodejs npm nginx
 ## Quick Start
 
 ```bash
-git clone <this-repo> notes-app
+git clone https://github.com/jiangjiren/inkfellow notes-app
 cd notes-app
 npm install
 bash scripts/setup-vault.sh   # creates vault + bare git repo, writes VAULT_PATH to .env.local
@@ -390,7 +390,7 @@ crontab -e
 0 0 * * * /path/to/node /path/to/clawapp/scripts/nightly-sync.js /path/to/your/vault >> ~/.pm2/logs/nightly-sync.log 2>&1
 ```
 
-Logs land in `~/.pm2/logs/nightly-sync-<vault>.log`. Run the script manually to verify it works before the first midnight trigger:
+Logs land in the path you set in the cron line above. Run the script manually to verify it works before the first midnight trigger:
 
 ```bash
 node scripts/nightly-sync.js /path/to/your/vault

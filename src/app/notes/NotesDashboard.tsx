@@ -11,7 +11,9 @@ interface NotesDashboardProps {
 
 export default function NotesDashboard({ files, onSelectNote, onAskAI, onQuickCapture }: NotesDashboardProps) {
   const recentFiles = useMemo(() => {
+    const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif|tiff?)$/i;
     return [...files]
+      .filter((f) => !imageExts.test(f.name))
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 6);
   }, [files]);

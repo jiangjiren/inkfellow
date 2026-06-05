@@ -1467,8 +1467,12 @@ const http = createServer((req, res) => {
   // ── REST API: history ─────────────────────────────────────
   if (url === "/api/history" && method === "GET") {
     const history = readHistory();
+    // 列表只返回摘要，不带消息内容，避免传输几MB JSON
+    const summaries = history.map(({ id, title, date, messages }) => ({
+      id, title, date, messageCount: messages ? messages.length : 0,
+    }));
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(history));
+    res.end(JSON.stringify(summaries));
     return;
   }
 
@@ -1598,6 +1602,17 @@ const http = createServer((req, res) => {
   const historyItemRe = url.match(/^\/api\/history\/([^/]+)$/);
   if (historyItemRe) {
     const id = historyItemRe[1];
+    if (method === "GET") {
+      const conv = readHistory().find(h => h.id === id);
+      if (conv) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(conv));
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+      return;
+    }
     if (method === "PUT") {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });
@@ -1607,6 +1622,10 @@ const http = createServer((req, res) => {
           const history = readHistory();
           const idx = history.findIndex(h => h.id === conv.id);
           if (idx >= 0) {
+            // 列表接口只返回摘要（无 messages），重命名等局部更新不应抹掉已存消息
+            if (!("messages" in conv) && history[idx].messages) {
+              conv.messages = history[idx].messages;
+            }
             history[idx] = conv;
           } else {
             history.unshift(conv);

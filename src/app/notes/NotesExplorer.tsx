@@ -648,6 +648,27 @@ export default function NotesExplorer() {
   const [shareState, setShareState] = useState<ShareState>("idle");
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
+
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+        const text = selection.toString().trim();
+        if (text.length > 0) {
+          const range = selection.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          setSelectionRect(rect);
+        } else {
+          setSelectionRect(null);
+        }
+      } else {
+        setSelectionRect(null);
+      }
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, []);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
   const [globalCreateMenuOpen, setGlobalCreateMenuOpen] = useState(false);
   const globalCreateMenuRef = useRef<HTMLDivElement>(null);
@@ -3535,7 +3556,29 @@ export default function NotesExplorer() {
         </div>
       ) : null}
 
-
+      {selectionRect ? (
+        <button
+          className={styles.selectionAskAiBtn}
+          style={{
+            top: Math.max(10, selectionRect.top - 40),
+            left: selectionRect.left + selectionRect.width / 2,
+          }}
+          onPointerDown={(e) => {
+            e.preventDefault(); // preserve selection
+            if (isMobileViewport) {
+              setMobileSidebarOpen(false);
+              setMobileAssistantPanelOpen(true);
+            } else {
+              setAssistantPanelVisible(true);
+            }
+            setSelectionRect(null);
+            // We do not set setIsDashboardChatActive(true) because they are reading a note.
+          }}
+          aria-label="Ask AI about selection"
+        >
+          ✦ Ask AI
+        </button>
+      ) : null}
     </main>
   );
 }

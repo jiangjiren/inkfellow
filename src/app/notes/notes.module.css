@@ -1433,7 +1433,6 @@
   flex: 1;
   min-height: 0;
   display: flex;
-  overflow: hidden;
   width: 100%;
   transform: translateX(0);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);

@@ -2,7 +2,7 @@
 /**
  * Nightly auto-sync for inkfellow vaults.
  * Usage: node nightly-sync.js <vault-path>
- * Cron:  0 0 * * * node /home/admin/apps/clawapp/scripts/nightly-sync.js /path/to/vault
+ * Cron:  0 0 * * * /path/to/node /path/to/clawapp/scripts/nightly-sync.js /path/to/vault
  *
  * Flow: pull → stage → check changes → AI commit message → commit → push
  */

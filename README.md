@@ -376,7 +376,7 @@ After each push, open the Git panel in inkfellow and click **Pull**.
 Find your node binary path first:
 
 ```bash
-which node   # e.g. /home/admin/.nvm/versions/node/v25.5.0/bin/node
+which node   # e.g. /home/you/.nvm/versions/node/v20.x.x/bin/node
 ```
 
 Open your crontab and add one line per vault:
@@ -387,7 +387,7 @@ crontab -e
 
 ```
 # inkfellow nightly sync — adjust paths to match your installation
-0 0 * * * /home/admin/.nvm/versions/node/v25.5.0/bin/node /home/admin/apps/clawapp/scripts/nightly-sync.js /home/admin/vault/jiang-vault >> ~/.pm2/logs/nightly-sync-jiang.log 2>&1
+0 0 * * * /path/to/node /path/to/clawapp/scripts/nightly-sync.js /path/to/your/vault >> ~/.pm2/logs/nightly-sync.log 2>&1
 ```
 
 Logs land in `~/.pm2/logs/nightly-sync-<vault>.log`. Run the script manually to verify it works before the first midnight trigger:
@@ -510,15 +510,15 @@ Each user gets their own isolated instance: a separate Next.js process, a separa
 
 ```bash
 # Working vault
-mkdir -p /home/admin/vault/USERNAME-vault
+mkdir -p /home/you/vault/USERNAME-vault
 
 # Bare git repo (for sync/backup, same pattern as the main vault)
-git init --bare /home/admin/git/USERNAME-vault.git
+git init --bare /home/you/git/USERNAME-vault.git
 
 # Initialize git in the working vault and make the first commit
-cd /home/admin/vault/USERNAME-vault
+cd /home/you/vault/USERNAME-vault
 git init
-git remote add origin /home/admin/git/USERNAME-vault.git
+git remote add origin /home/you/git/USERNAME-vault.git
 git config user.email "USERNAME@inkfellow"
 git config user.name "USERNAME"
 git checkout -b main
@@ -539,11 +539,11 @@ Edit `ecosystem.config.cjs` and add **two** new entries to the `apps` array — 
   name: "inkfellow-USERNAME",
   script: "node_modules/.bin/next",
   args: "start",
-  cwd: "/home/admin/apps/clawapp",   // always use an absolute path, not __dirname
+  cwd: "/path/to/clawapp",   // always use an absolute path, not __dirname
   env: {
     PORT: "3001",                     // pick a free port (3001, 3002, …)
     NODE_ENV: "production",
-    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    VAULT_PATH: "/home/you/vault/USERNAME-vault",
     NOTES_BASIC_AUTH_USERNAME: "USERNAME",
     NOTES_BASIC_AUTH_PASSWORD: "STRONG_PASSWORD",
   },
@@ -557,12 +557,12 @@ Edit `ecosystem.config.cjs` and add **two** new entries to the `apps` array — 
 {
   name: "claude-chat-USERNAME",
   script: "server.js",
-  cwd: "/home/admin/apps/clawapp/claude-chat",
+  cwd: "/path/to/clawapp/claude-chat",
   node_args: "--env-file-if-exists=.env",
   env: {
     PORT: "8083",                     // pick a free port different from the main claude-chat (8082)
     HOST: "127.0.0.1",
-    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    VAULT_PATH: "/home/you/vault/USERNAME-vault",
     CLAUDE_PERMISSION_MODE: "auto",
   },
   autorestart: true,
@@ -588,7 +588,7 @@ pm2 start ecosystem.config.cjs --only inkfellow-USERNAME,claude-chat-USERNAME
 
 ### Step 3 — Add an Nginx server block
 
-Add a new server block to `/etc/nginx/conf.d/mindflowinsight.conf`:
+Add a new server block to your Nginx config (e.g. `/etc/nginx/conf.d/inkfellow.conf`):
 
 ```nginx
 server {
@@ -674,14 +674,14 @@ The new subdomain is now live at `https://USERNAME.yourdomain.com`.
 **Fix:** Rebuild and restart:
 
 ```bash
-cd /home/admin/apps/clawapp
+cd /path/to/clawapp
 
 # Stop both instances first to avoid port conflicts
-pm2 stop inkfellow inkfellow-wumin   # adjust names to match yours
+pm2 stop all   # or list specific names: pm2 stop inkfellow inkfellow-USERNAME2
 
 npm run build
 
-pm2 start ecosystem.config.cjs --only inkfellow,inkfellow-wumin
+pm2 start ecosystem.config.cjs
 ```
 
 If a `next-server` process is still holding the port after stopping PM2, kill it first:
@@ -712,7 +712,7 @@ The `cwd` in `ecosystem.config.cjs` is resolving to the wrong directory. Replace
 const BASE = __dirname;
 
 // ✅ always use the absolute path
-const BASE = "/home/admin/apps/clawapp";
+const BASE = "/path/to/clawapp";
 ```
 
 ## Security Model

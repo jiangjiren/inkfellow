@@ -3,7 +3,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PM2="node /home/admin/.npm/_npx/5f7878ce38f1eb13/node_modules/pm2/bin/pm2"
+PM2="$(which pm2 2>/dev/null || echo npx pm2)"
 
 cd "$APP_DIR"
 

@@ -35,7 +35,7 @@ The default account source is the Claude subscription credential on the server:
    ls ~/.claude/.credentials.json
    ```
 
-   Do not set `ANTHROPIC_API_KEY` if you want subscription credentials to be used. Also make sure your process manager uses the same user and home directory. For example, if `claude /login` was run as `admin`, then PM2 or systemd should run `claude-chat` as `admin` with `HOME=/home/admin`.
+   Do not set `ANTHROPIC_API_KEY` if you want subscription credentials to be used. Also make sure your process manager uses the same user and home directory. For example, if `claude /login` was run as `youruser`, then PM2 or systemd should run `claude-chat` as `youruser` with `HOME=/home/youruser`.
 
 2. Optional DeepSeek API Key: open the Claude panel, click `设置`, choose `DeepSeek API Key`, enter the key, and save. The next message will use DeepSeek's Anthropic-compatible endpoint. Switch back to `Claude 会员额度` to use the server's Claude subscription credential again.
 

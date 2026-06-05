@@ -378,7 +378,7 @@ git push -u origin main
 先确认 node 路径：
 
 ```bash
-which node   # 例如 /home/admin/.nvm/versions/node/v25.5.0/bin/node
+which node   # 例如 /home/you/.nvm/versions/node/v20.x.x/bin/node
 ```
 
 打开 crontab，每个 vault 添加一行：
@@ -389,7 +389,7 @@ crontab -e
 
 ```
 # inkfellow 凌晨自动同步 — 按实际路径修改
-0 0 * * * /home/admin/.nvm/versions/node/v25.5.0/bin/node /home/admin/apps/clawapp/scripts/nightly-sync.js /home/admin/vault/jiang-vault >> ~/.pm2/logs/nightly-sync-jiang.log 2>&1
+0 0 * * * /path/to/node /path/to/clawapp/scripts/nightly-sync.js /path/to/your/vault >> ~/.pm2/logs/nightly-sync.log 2>&1
 ```
 
 日志落到 `~/.pm2/logs/nightly-sync-<vault>.log`。首次配置后可手动跑一次验证：
@@ -512,15 +512,15 @@ SERVICE_NAME=notes-app bash scripts/update_app.sh
 
 ```bash
 # 工作目录
-mkdir -p /home/admin/vault/USERNAME-vault
+mkdir -p /home/you/vault/USERNAME-vault
 
 # 裸仓库（用于同步/备份，与主 vault 保持一致的结构）
-git init --bare /home/admin/git/USERNAME-vault.git
+git init --bare /home/you/git/USERNAME-vault.git
 
 # 在工作目录初始化 git 并推送初始提交
-cd /home/admin/vault/USERNAME-vault
+cd /home/you/vault/USERNAME-vault
 git init
-git remote add origin /home/admin/git/USERNAME-vault.git
+git remote add origin /home/you/git/USERNAME-vault.git
 git config user.email "USERNAME@inkfellow"
 git config user.name "USERNAME"
 git checkout -b main
@@ -541,11 +541,11 @@ git push -u origin main
   name: "inkfellow-USERNAME",
   script: "node_modules/.bin/next",
   args: "start",
-  cwd: "/home/admin/apps/clawapp",   // 必须用绝对路径，不能用 __dirname
+  cwd: "/path/to/clawapp",   // 必须用绝对路径，不能用 __dirname
   env: {
     PORT: "3001",                     // 选一个空闲端口（3001、3002……）
     NODE_ENV: "production",
-    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    VAULT_PATH: "/home/you/vault/USERNAME-vault",
     NOTES_BASIC_AUTH_USERNAME: "USERNAME",
     NOTES_BASIC_AUTH_PASSWORD: "强密码",
   },
@@ -559,12 +559,12 @@ git push -u origin main
 {
   name: "claude-chat-USERNAME",
   script: "server.js",
-  cwd: "/home/admin/apps/clawapp/claude-chat",
+  cwd: "/path/to/clawapp/claude-chat",
   node_args: "--env-file-if-exists=.env",
   env: {
     PORT: "8083",                     // 选一个与主 claude-chat (8082) 不同的空闲端口
     HOST: "127.0.0.1",
-    VAULT_PATH: "/home/admin/vault/USERNAME-vault",
+    VAULT_PATH: "/home/you/vault/USERNAME-vault",
     CLAUDE_PERMISSION_MODE: "auto",
   },
   autorestart: true,
@@ -589,7 +589,7 @@ pm2 start ecosystem.config.cjs --only inkfellow-USERNAME,claude-chat-USERNAME
 
 ### 第三步 — 添加 Nginx server block
 
-在 `/etc/nginx/conf.d/mindflowinsight.conf` 中追加：
+在你的 Nginx 配置文件（如 `/etc/nginx/conf.d/inkfellow.conf`）中追加：
 
 ```nginx
 server {
@@ -675,14 +675,14 @@ sudo certbot --nginx --expand \
 **修复：** 重新构建并重启：
 
 ```bash
-cd /home/admin/apps/clawapp
+cd /path/to/clawapp
 
 # 先停止所有实例，避免端口冲突
-pm2 stop inkfellow inkfellow-USERNAME   # 按实际名称调整
+pm2 stop all   # 或按名称指定：pm2 stop inkfellow inkfellow-USERNAME2
 
 npm run build
 
-pm2 start ecosystem.config.cjs --only inkfellow,inkfellow-USERNAME
+pm2 start ecosystem.config.cjs
 ```
 
 如果 PM2 停止后端口仍被占用，先手动 kill 残留进程：
@@ -712,7 +712,7 @@ pm2 start inkfellow-USERNAME
 const BASE = __dirname;
 
 // ✅ 始终使用绝对路径
-const BASE = "/home/admin/apps/clawapp";
+const BASE = "/path/to/clawapp";
 ```
 
 ## 安全说明

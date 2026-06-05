@@ -61,3 +61,6 @@ claude-chat/data/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# build backup
+.next.bak/

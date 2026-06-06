@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import type {
   NotesDirectoryNode,
@@ -773,8 +773,15 @@ export default function NotesExplorer() {
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [mobileAssistantPanelOpen, setMobileAssistantPanelOpen] = useState(false);
+  const [mobileAssistantSheet, setMobileAssistantSheet] = useState<'closed' | 'peeked' | 'expanded'>('closed');
+  const mobileAssistantPanelOpen = mobileAssistantSheet === 'expanded';
   const mobileOverlayOpenTime = useRef(0);
+  // 移动端底部 sheet 的跟手拖拽状态（用 ref 直接改样式，避免每帧 re-render）
+  const assistantPanelRef = useRef<HTMLElement>(null);
+  const sheetDragRef = useRef<{
+    active: boolean; startY: number; baseY: number; panelH: number;
+    lastY: number; lastT: number; velocity: number; moved: number;
+  } | null>(null);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
   // 大纲已从右侧面板迁出：桌面端常驻左栏（可折叠），移动端用底部 sheet 唤出
   const [tocSectionOpen, setTocSectionOpen] = useState(true);
@@ -1058,7 +1065,7 @@ export default function NotesExplorer() {
       setIsMobileViewport(isMobile);
       if (!isMobile) {
         setMobileSidebarOpen(false);
-        setMobileAssistantPanelOpen(false);
+        setMobileAssistantSheet('closed');
       }
     };
 
@@ -1138,14 +1145,14 @@ export default function NotesExplorer() {
   }, [sidebarVisible]);
 
   useEffect(() => {
-    if (!isMobileViewport || (!mobileSidebarOpen && !mobileAssistantPanelOpen)) {
+    if (!isMobileViewport || (!mobileSidebarOpen && mobileAssistantSheet !== 'expanded')) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMobileSidebarOpen(false);
-        setMobileAssistantPanelOpen(false);
+        setMobileAssistantSheet('peeked');
       }
     };
 
@@ -1157,7 +1164,7 @@ export default function NotesExplorer() {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isMobileViewport, mobileSidebarOpen, mobileAssistantPanelOpen]);
+  }, [isMobileViewport, mobileSidebarOpen, mobileAssistantSheet]);
 
   useEffect(() => {
     if (!shareModalOpen && !deleteConfirmOpen && !moreMenuOpen && !renameTarget && !treeMenuTarget && !treeSheetTarget && !globalCreateMenuOpen && !importError) return;
@@ -1832,7 +1839,7 @@ export default function NotesExplorer() {
       setIsEditing(true);
       if (isMobileViewport) {
         setMobileSidebarOpen(false);
-        setMobileAssistantPanelOpen(false);
+        setMobileAssistantSheet('closed');
       }
     });
   }, [flushEditBeforeSwitch, isMobileViewport]);
@@ -1874,7 +1881,7 @@ export default function NotesExplorer() {
       window.history.replaceState(null, "", nextUrl);
       if (isMobileViewport) {
         setMobileSidebarOpen(false);
-        setMobileAssistantPanelOpen(false);
+        setMobileAssistantSheet('closed');
       }
     });
   }, [flushEditBeforeSwitch, isMobileViewport]);
@@ -2345,11 +2352,80 @@ export default function NotesExplorer() {
 
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
-      setMobileAssistantPanelOpen((open) => !open);
+      setMobileAssistantSheet((s) => s === 'expanded' ? 'peeked' : 'expanded');
     } else {
       setAssistantPanelVisible((visible) => !visible);
     }
   }, [isMobileViewport]);
+
+  // ── 移动端底部 sheet：跟手拖拽 + 速度吸附 ─────────────────
+  // 三个吸附点（translateY，单位 px）：expanded=0, peeked=H-44, closed=H。
+  // 向上拖展开，向下拖收起，拖到底则彻底关闭（回到 FAB）。
+  const SHEET_PEEK_PX = 44;
+  const handleSheetPointerDown = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!isMobileViewport) return;
+    const el = assistantPanelRef.current;
+    if (!el) return;
+    const panelH = el.offsetHeight;
+    const baseY = mobileAssistantSheet === 'expanded' ? 0
+      : mobileAssistantSheet === 'peeked' ? Math.max(0, panelH - SHEET_PEEK_PX)
+      : panelH;
+    sheetDragRef.current = {
+      active: true, startY: e.clientY, baseY, panelH,
+      lastY: e.clientY, lastT: e.timeStamp, velocity: 0, moved: 0,
+    };
+    el.style.transition = 'none'; // 拖拽期间关闭过渡，跟手
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [isMobileViewport, mobileAssistantSheet]);
+
+  const handleSheetPointerMove = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    const d = sheetDragRef.current;
+    const el = assistantPanelRef.current;
+    if (!d || !d.active || !el) return;
+    const delta = e.clientY - d.startY;
+    d.moved = Math.max(d.moved, Math.abs(delta));
+    const y = Math.min(d.panelH, Math.max(0, d.baseY + delta));
+    el.style.transform = `translateY(${y}px)`;
+    const dt = e.timeStamp - d.lastT;
+    if (dt > 0) d.velocity = (e.clientY - d.lastY) / dt; // px/ms，正=向下
+    d.lastY = e.clientY;
+    d.lastT = e.timeStamp;
+  }, []);
+
+  const handleSheetPointerUp = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    const d = sheetDragRef.current;
+    const el = assistantPanelRef.current;
+    if (!d || !d.active) return;
+    d.active = false;
+
+    // 让 class 先提交，下一帧再清掉 inline transform 并恢复过渡，
+    // 这样吸附动画从「当前拖拽位置」平滑过渡到目标档位，不会先弹回旧档再跳。
+    const settle = () => {
+      requestAnimationFrame(() => {
+        if (!el) return;
+        el.style.transition = '';
+        el.style.transform = '';
+      });
+    };
+
+    // 轻点（位移很小）：等同点击切换 peeked ↔ expanded
+    if (d.moved < 6) {
+      if (el) { el.style.transition = ''; el.style.transform = ''; }
+      setMobileAssistantSheet((s) => s === 'expanded' ? 'peeked' : 'expanded');
+      return;
+    }
+
+    const finalY = Math.min(d.panelH, Math.max(0, d.baseY + (e.clientY - d.startY)));
+    const order: Array<'expanded' | 'peeked' | 'closed'> = ['expanded', 'peeked', 'closed'];
+    const anchors = [0, Math.max(0, d.panelH - SHEET_PEEK_PX), d.panelH];
+    // 动量投影：用松手时的速度把落点向前推一段（120ms 惯性），再吸附到最近档位。
+    // 这样「快速甩到底」会落到 closed，「缓慢小拖」按实际位置就近吸附，符合直觉。
+    const projectedY = Math.min(d.panelH, Math.max(0, finalY + d.velocity * 120));
+    const targetIdx = anchors.reduce((best, a, i) =>
+      Math.abs(a - projectedY) < Math.abs(anchors[best] - projectedY) ? i : best, 0);
+    setMobileAssistantSheet(order[targetIdx]);
+    settle();
+  }, []);
 
   const handleTocToggle = useCallback(() => {
     if (isMobileViewport) {
@@ -2585,7 +2661,7 @@ export default function NotesExplorer() {
   const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && isDashboardChatActive;
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
-  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantPanelOpen || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
+  const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantSheet === 'expanded' || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
   // track when overlay opens to prevent ghost-click closing it immediately (Android touch issue)
   if (hasMobileOverlayOpen) mobileOverlayOpenTime.current = mobileOverlayOpenTime.current || Date.now();
   if (!hasMobileOverlayOpen) mobileOverlayOpenTime.current = 0;
@@ -2595,7 +2671,7 @@ export default function NotesExplorer() {
       className={`${styles.shell} ${isDesktopSidebarHidden ? styles.shellSidebarHidden : ""} ${
         mobileSidebarOpen ? styles.shellMobileSidebarOpen : ""
       } ${
-        mobileAssistantPanelOpen ? styles.shellMobileAssistantPanelOpen : ""
+        mobileAssistantSheet === 'expanded' ? styles.shellMobileAssistantPanelOpen : mobileAssistantSheet === 'peeked' ? styles.shellMobileAssistantPanelPeeked : ""
       } ${
         isDesktopAssistantPanelHidden ? styles.shellAssistantPanelHidden : ""
       } ${isResizingAssistantPanel || isResizingSidebar ? styles.shellResizing : ""}`}
@@ -2758,7 +2834,7 @@ export default function NotesExplorer() {
         onClick={() => {
           if (Date.now() - mobileOverlayOpenTime.current < 350) return;
           setMobileSidebarOpen(false);
-          setMobileAssistantPanelOpen(false);
+          setMobileAssistantSheet('peeked');
           setGitPanelOpen(false);
           setMobileTocOpen(false);
           setTreeSheetTarget(null);
@@ -2809,7 +2885,7 @@ export default function NotesExplorer() {
               className={`${styles.iconButton} ${styles.sidebarToggleBtn} ${isSidebarOpen ? styles.iconButtonActive : ""}`}
               onClick={() => {
                 if (isMobileViewport) {
-                  setMobileAssistantPanelOpen(false);
+                  setMobileAssistantSheet('closed');
                   setMobileSidebarOpen((open) => !open);
                 } else {
                   setSidebarVisible((visible) => !visible);
@@ -3126,7 +3202,7 @@ export default function NotesExplorer() {
                   setIsDashboardChatActive(true);
                   if (isMobileViewport) {
                     setMobileSidebarOpen(false);
-                    setMobileAssistantPanelOpen(true);
+                    setMobileAssistantSheet('expanded');
                   } else {
                     setAssistantPanelVisible(true);
                   }
@@ -3325,11 +3401,25 @@ export default function NotesExplorer() {
       ) : null}
 
       <aside
-        className={`${styles.assistantPanel} ${isAssistantPanelOpen ? "" : styles.assistantPanelHidden} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
+        ref={assistantPanelRef}
+        className={`${styles.assistantPanel} ${(!isAssistantPanelOpen && !(isMobileViewport && mobileAssistantSheet === 'peeked')) ? styles.assistantPanelHidden : ""} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
         aria-label="辅助面板"
-        aria-hidden={!isAssistantPanelOpen}
-        inert={!isAssistantPanelOpen}
+        aria-hidden={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}
+        inert={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}
       >
+        {isMobileViewport && (
+          <button
+            type="button"
+            className={styles.mobileSheetHandle}
+            onPointerDown={handleSheetPointerDown}
+            onPointerMove={handleSheetPointerMove}
+            onPointerUp={handleSheetPointerUp}
+            onPointerCancel={handleSheetPointerUp}
+            aria-label={mobileAssistantSheet === 'expanded' ? '收起对话面板' : '展开对话面板'}
+          >
+            <span className={styles.mobileSheetHandlePill} />
+          </button>
+        )}
         {!isDashboardChatMode && (
           <>
             <button
@@ -3401,7 +3491,7 @@ export default function NotesExplorer() {
       {/* 移动端 Fellow 悬浮按钮：仅在打开笔记时显示 */}
       {note ? <button
         type="button"
-        className={`${styles.claudeFab} ${mobileAssistantPanelOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
+        className={`${styles.claudeFab} ${mobileAssistantSheet !== 'closed' ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
         onClick={handleClaudeToggle}
         aria-label="Fellow AI 助手"
         title="Fellow"
@@ -3666,7 +3756,7 @@ export default function NotesExplorer() {
             e.preventDefault(); // preserve selection
             if (isMobileViewport) {
               setMobileSidebarOpen(false);
-              setMobileAssistantPanelOpen(true);
+              setMobileAssistantSheet('expanded');
             } else {
               setAssistantPanelVisible(true);
             }

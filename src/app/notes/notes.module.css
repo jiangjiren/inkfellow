@@ -79,6 +79,7 @@
   opacity: 0.5;
 }
 
+
 .shellSidebarHidden .sidebar {
   width: 0 !important;
   opacity: 0;
@@ -105,15 +106,6 @@
 .mobileSidebarClose,
 .mobileScrim {
   display: none;
-}
-
-.eyebrow {
-  margin: 0 0 3px;
-  font-size: 10px;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--notes-text-muted);
 }
 
 .title {
@@ -513,7 +505,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 48px;
+  min-height: 44px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(24px) saturate(190%);
@@ -1045,6 +1037,7 @@
   background: var(--notes-accent);
   box-shadow: 0 0 0 3px var(--notes-accent-bg);
 }
+
 
 .assistantPanelHeader {
   min-height: 44px;
@@ -4097,6 +4090,200 @@
   margin: -8px 0 14px;
   font-size: 12.5px;
   color: #e0433a;
+}
+
+/* ── FolderPicker ────────────────────────────────── */
+.folderPicker {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.folderPickerTrigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 1.5px solid var(--notes-border);
+  border-radius: 9px;
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  min-width: 0;
+}
+
+.folderPickerTrigger:hover {
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.folderPickerTriggerOpen {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+
+.folderPickerIcon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--notes-accent);
+  opacity: 0.8;
+}
+
+.folderPickerLabel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.folderPickerParent {
+  color: var(--notes-text-secondary);
+  font-size: 12px;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.folderPickerLeaf {
+  font-weight: 500;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderPickerChevron {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--notes-text-secondary);
+  transition: transform 0.15s ease;
+  margin-left: auto;
+}
+
+.folderPickerChevronOpen {
+  transform: rotate(180deg);
+}
+
+.folderPickerPopover {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  border-radius: 11px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  animation: menuFadeIn 0.1s ease-out;
+}
+
+.folderPickerSearchWrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--notes-border);
+}
+
+.folderPickerSearchIcon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--notes-text-secondary);
+}
+
+.folderPickerSearchInput {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--notes-text-primary);
+  outline: none;
+}
+
+.folderPickerSearchInput::placeholder {
+  color: var(--notes-text-secondary);
+  opacity: 0.6;
+}
+
+.folderPickerList {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.folderPickerItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  padding-left: calc(10px + var(--fp-level, 0) * 14px);
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--notes-text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+  box-sizing: border-box;
+}
+
+.folderPickerItem:hover {
+  background: var(--notes-accent-bg);
+}
+
+.folderPickerItemSelected {
+  color: var(--notes-accent);
+  background: var(--notes-accent-bg);
+  font-weight: 500;
+}
+
+.folderPickerItemIcon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--notes-accent);
+  opacity: 0.65;
+}
+
+.folderPickerItemSelected .folderPickerItemIcon {
+  opacity: 1;
+}
+
+.folderPickerItemCheck {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--notes-accent);
+}
+
+.folderPickerEmpty {
+  padding: 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--notes-text-secondary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .folderPickerPopover {
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
 }
 
 .newNoteActions {

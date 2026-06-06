@@ -611,6 +611,146 @@ function ArticleToc({
   );
 }
 
+function FolderPicker({
+  id,
+  tree,
+  value,
+  onChange,
+  tabIndex,
+}: {
+  id?: string;
+  tree: NotesDirectoryNode | null;
+  value: string;
+  onChange: (path: string) => void;
+  tabIndex?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const selectedRef = useRef<HTMLButtonElement>(null);
+
+  const folders = useMemo(() => (tree ? collectFolders(tree) : [""]), [tree]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? folders.filter((f) => f.toLowerCase().includes(q)) : folders;
+  }, [folders, search]);
+
+  const showSearch = folders.length > 8;
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch("");
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (showSearch) {
+      setTimeout(() => searchRef.current?.focus(), 30);
+    } else {
+      setTimeout(() => selectedRef.current?.scrollIntoView({ block: "nearest" }), 30);
+    }
+  }, [open, showSearch]);
+
+  const segments = value ? value.split("/") : [];
+  const leafName = segments.length > 0 ? segments[segments.length - 1] : null;
+  const parentPath = segments.length > 1 ? segments.slice(0, -1).join(" / ") : null;
+
+  return (
+    <div ref={containerRef} className={styles.folderPicker}>
+      <button
+        id={id}
+        type="button"
+        className={`${styles.folderPickerTrigger} ${open ? styles.folderPickerTriggerOpen : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        tabIndex={tabIndex}
+      >
+        <svg className={styles.folderPickerIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <span className={styles.folderPickerLabel}>
+          {!value ? (
+            <span className={styles.folderPickerLeaf}>根目录</span>
+          ) : (
+            <>
+              {parentPath && <span className={styles.folderPickerParent}>{parentPath} /&nbsp;</span>}
+              <span className={styles.folderPickerLeaf}>{leafName}</span>
+            </>
+          )}
+        </span>
+        <svg className={`${styles.folderPickerChevron} ${open ? styles.folderPickerChevronOpen : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className={styles.folderPickerPopover} role="listbox" aria-label="选择文件夹位置">
+          {showSearch && (
+            <div className={styles.folderPickerSearchWrap}>
+              <svg className={styles.folderPickerSearchIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                ref={searchRef}
+                type="text"
+                className={styles.folderPickerSearchInput}
+                placeholder="搜索文件夹…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { setOpen(false); setSearch(""); }
+                }}
+              />
+            </div>
+          )}
+          <div className={styles.folderPickerList}>
+            {filtered.length === 0 ? (
+              <div className={styles.folderPickerEmpty}>无匹配文件夹</div>
+            ) : filtered.map((folder) => {
+              const level = folder ? folder.split("/").length : 0;
+              const name = folder ? folder.split("/").pop()! : "根目录";
+              const isSelected = folder === value;
+              return (
+                <button
+                  key={folder}
+                  ref={isSelected ? selectedRef : null}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  className={`${styles.folderPickerItem} ${isSelected ? styles.folderPickerItemSelected : ""}`}
+                  style={{ "--fp-level": level } as CSSProperties}
+                  onClick={() => { onChange(folder); setOpen(false); setSearch(""); }}
+                >
+                  <svg className={styles.folderPickerItemIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span>{name}</span>
+                  {isSelected && (
+                    <svg className={styles.folderPickerItemCheck} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
   // 当前文件树的结构指纹，用于轮询比对，只在增/删/改名时才刷新
@@ -2486,7 +2626,6 @@ export default function NotesExplorer() {
         />
         <div className={styles.sidebarHeader}>
           <div>
-            <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
             <h1 className={styles.title}>知识库</h1>
           </div>
           <span className={styles.counter}>{files.length} 篇</span>
@@ -3216,38 +3355,6 @@ export default function NotesExplorer() {
               title="拖拽调整面板宽度，双击恢复默认"
               tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
             />
-            <header className={`${styles.assistantPanelHeader} ${styles.assistantPanelHeaderLight}`}>
-              {/* 右侧面板专供 Claude；后续多会话切换的 tab 将渲染在此容器内 */}
-              <div className={styles.assistantPanelTabs}>
-                <span className={`${styles.assistantPanelTab} ${styles.assistantPanelTabActive}`}>
-                  ✦ Fellow
-                </span>
-              </div>
-              <div className={styles.assistantPanelControls}>
-                <button
-                  type="button"
-                  className={styles.assistantPanelClose}
-                  onClick={() => {
-                    if (isMobileViewport) {
-                      setMobileAssistantPanelOpen(false);
-                    } else {
-                      setAssistantPanelVisible(false);
-                    }
-                  }}
-                  aria-label="隐藏面板"
-                  title="隐藏面板"
-                  tabIndex={isAssistantPanelOpen ? 0 : -1}
-                >
-                  {isMobileViewport ? (
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                  ) : (
-                    <span aria-hidden="true">×</span>
-                  )}
-                </button>
-              </div>
-            </header>
           </>
         )}
 
@@ -3429,16 +3536,12 @@ export default function NotesExplorer() {
                 新建文件夹
               </button>
             </div>
-            <select
+            <FolderPicker
               id="new-note-folder"
-              className={styles.newNoteSelect}
+              tree={tree}
               value={newNoteFolder}
-              onChange={(e) => setNewNoteFolder(e.target.value)}
-            >
-              {tree ? collectFolders(tree).map((f) => (
-                <option key={f} value={f}>{f || "/ 根目录"}</option>
-              )) : null}
-            </select>
+              onChange={setNewNoteFolder}
+            />
             {inlineFolderOpen ? (
               <div className={styles.inlineFolderForm}>
                 <input
@@ -3521,16 +3624,12 @@ export default function NotesExplorer() {
             />
 
             <label className={styles.newNoteLabel} htmlFor="new-folder-parent">位置</label>
-            <select
+            <FolderPicker
               id="new-folder-parent"
-              className={styles.newNoteSelect}
+              tree={tree}
               value={newFolderParent}
-              onChange={(e) => setNewFolderParent(e.target.value)}
-            >
-              {tree ? collectFolders(tree).map((f) => (
-                <option key={f} value={f}>{f || "/ 根目录"}</option>
-              )) : null}
-            </select>
+              onChange={setNewFolderParent}
+            />
 
             {newFolderError ? <p className={styles.newNoteError}>{newFolderError}</p> : null}
 

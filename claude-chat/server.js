@@ -24,6 +24,11 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
   ? process.env.CLAUDE_PERMISSION_MODE
   : "auto";
 
+// How long a query() stream can be silent before we consider it stalled.
+// We use event-interval (not total duration) so long but active tasks (multi-tool,
+// compaction, slow thinking) are never killed — only truly frozen streams are.
+const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
+
 const htmlPath   = join(__dirname, "public/index.html");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
 const WEB_SCHEDULER_PEER = `web:${PORT}`;
@@ -1150,6 +1155,8 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     }, 6000);
 
     let finalResponse = "";
+    let wechatStallTimer = null;
+    let isWechatStall = false;
     try {
       if (sdkClient && !hasScheduler) {
         // ── 有独立 API Key 的 provider（anthropic / deepseek / openrouter）──
@@ -1185,6 +1192,13 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           parent_tool_use_id: null,
         };
         const queryAbortController = new AbortController();
+        const resetWechatStall = () => {
+          clearTimeout(wechatStallTimer);
+          wechatStallTimer = setTimeout(() => {
+            isWechatStall = true;
+            queryAbortController.abort();
+          }, STREAM_STALL_MS);
+        };
         if (abortSignal.aborted) {
           queryAbortController.abort();
         } else {
@@ -1206,19 +1220,28 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
             } : {}),
           },
         });
+        resetWechatStall();
         for await (const ev of generator) {
+          resetWechatStall();
           if (ev.type === "assistant") {
             const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
             if (text) finalResponse = text;
           }
           if (ev.type === "result" && ev.subtype === "success" && ev.result) finalResponse = ev.result;
         }
+        clearTimeout(wechatStallTimer);
       }
     } catch (err) {
       if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
-      console.error("[WeChat Agent] Error:", err);
-      finalResponse = `⚠️ 助手发生错误: ${err.message}`;
+      if (err?.name === "AbortError" && isWechatStall) {
+        console.warn("[WeChat Agent] Stream stalled, timed out after 3 min.");
+        finalResponse = "⚠️ AI 响应超时，请稍后重试。";
+      } else {
+        console.error("[WeChat Agent] Error:", err);
+        finalResponse = `⚠️ 助手发生错误: ${err.message}`;
+      }
     } finally {
+      clearTimeout(wechatStallTimer);
       clearInterval(typingInterval);
       await sendWechatTyping(baseUrl, token, sender, 2, contextToken);
     }
@@ -1666,6 +1689,7 @@ const http = createServer((req, res) => {
 
 
 // ── WebSocket ─────────────────────────────────────────────
+
 const wss = new WebSocketServer({ server: http });
 
 wss.on("connection", (ws) => {
@@ -1768,11 +1792,19 @@ wss.on("connection", (ws) => {
     }
 
     (async () => {
+      let stallTimer = null;
+      let isStallAbort = false;
+      const resetStall = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
+      };
       try {
+        resetStall();
         for await (const ev of query({
           prompt: (async function* () { yield userMsg; })(),
           options,
         })) {
+          resetStall();
           if (ev.type === "system" && ev.subtype === "init") {
             saveSession(ev.session_id);
             send({ type: "session", sessionId: ev.session_id });
@@ -1789,17 +1821,28 @@ wss.on("connection", (ws) => {
             });
             continue;
           }
+          // Forward retry/status events so the frontend can show progress instead of silently spinning
+          if (ev.type === "system" && (ev.subtype === "api_retry" || ev.subtype === "status")) {
+            send(ev);
+            continue;
+          }
           if (ev.type !== "system") send(ev);
         }
         send({ type: "done" });
       } catch (err) {
         if (err?.name === "AbortError") {
-          send({ type: "stopped" });
+          if (isStallAbort) {
+            send({ type: "error", text: "AI 响应超时（3分钟内无数据），请重新发送消息。" });
+            send({ type: "done" });
+          } else {
+            send({ type: "stopped" });
+          }
         } else {
           send({ type: "error", text: String(err) });
           send({ type: "done" });
         }
       } finally {
+        clearTimeout(stallTimer);
         if (abortCtrl === ac) abortCtrl = null;
       }
     })();

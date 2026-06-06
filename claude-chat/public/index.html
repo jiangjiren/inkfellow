@@ -2753,14 +2753,20 @@ connect();
 // dies silently (no onclose event) — detected when we've been generating with no server
 // events for longer than the server-side threshold plus a generous buffer.
 const CLIENT_STALL_MS = 240_000; // 4 min — server kills at 3, so this only fires if WS is dead
-setInterval(() => {
+function checkClientStall() {
   if (isGenerating && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
     showInlineError("连接已断开，请重新发送消息。");
     setGenerating(false);
     removeTyping();
     lastWsEventAt = 0;
   }
-}, 15_000);
+}
+setInterval(checkClientStall, 15_000);
+// Mobile: JS timers pause when tab is backgrounded, so the interval above never fires.
+// visibilitychange fires immediately when the user returns, giving instant recovery.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) checkClientStall();
+});
 
 // ── Slash commands ────────────────────────────────────────
 const BUILTIN = [
@@ -3423,6 +3429,10 @@ function send() {
   hidePopup();
   if (!currentConvId) currentConvId = genId();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
+  // If a previous request froze without a done/stopped event, assistantEl still
+  // points to the old AI message element. Clear it so the upcoming response is
+  // appended after this new user message, not inside the old AI bubble.
+  resetAssistantState();
   addMessage("user", text, imagePreviewUrls);
   messageLog.push({ role: "user", text, cost: null });
   promptEl.value = "";

@@ -194,6 +194,57 @@ function clearSession() {
   try { writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: null }), "utf8"); } catch { }
 }
 
+// Locate the Claude Code session JSONL for a given session id. The file lives under
+// ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl; we glob across project dirs
+// rather than re-deriving the cwd encoding, so we stay robust to path-encoding quirks.
+function findSessionFile(id) {
+  if (!id) return null;
+  const base = join(homedir(), ".claude", "projects");
+  try {
+    for (const dir of readdirSync(base)) {
+      const p = join(base, dir, `${id}.jsonl`);
+      if (existsSync(p)) return p;
+    }
+  } catch { }
+  return null;
+}
+
+// Extract plain-text conversation history from a (possibly corrupted) session file.
+// We keep only user/assistant *text* blocks and drop thinking / tool_use / tool_result
+// — the same approach the WeChat path uses to sidestep the thinking-signature problem.
+// Returns the most-recent turns within a char budget so we preserve as much recent
+// context as fits without blowing the context window.
+function extractSessionTextHistory(id, charBudget = 16000) {
+  const file = findSessionFile(id);
+  if (!file) return [];
+  let lines;
+  try { lines = readFileSync(file, "utf8").split("\n"); } catch { return []; }
+  const turns = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type !== "user" && o.type !== "assistant") continue;
+    const m = o.message;
+    if (!m || (m.role !== "user" && m.role !== "assistant")) continue;
+    let text = "";
+    if (typeof m.content === "string") text = m.content;
+    else if (Array.isArray(m.content)) {
+      text = m.content.filter(b => b && b.type === "text").map(b => b.text).join("");
+    }
+    text = text.trim();
+    if (text) turns.push({ role: m.role, text });
+  }
+  // Walk backwards keeping the most recent turns until we hit the budget.
+  const kept = [];
+  let used = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    used += turns[i].text.length;
+    if (used > charBudget && kept.length > 0) break;
+    kept.unshift(turns[i]);
+  }
+  return kept;
+}
+
 // ── Profiles (账号配置) ────────────────────────────────────
 function genProfileId() {
   return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1517,16 +1568,20 @@ const http = createServer((req, res) => {
     });
     proc.stdout?.on("data", d => { stdout += d; });
     proc.stderr?.on("data", d => { stderr += d; });
-    proc.on("error", () => {
+    // Guard against double-response: both "error" and "close" fire when spawn fails,
+    // the second writeHead call crashes the server (ERR_HTTP_HEADERS_SENT).
+    let authResponded = false;
+    const sendAuthResponse = (body) => {
+      if (authResponded) return;
+      authResponded = true;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ authenticated: false, detail: "claude CLI not found" }));
-    });
+      res.end(JSON.stringify(body));
+    };
+    proc.on("error", () => sendAuthResponse({ authenticated: false, detail: "claude CLI not found" }));
     proc.on("close", () => {
       let detail = {};
       try { detail = JSON.parse(stdout); } catch { detail = { raw: stdout.trim() || stderr.trim() }; }
-      const authenticated = detail.loggedIn === true;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ authenticated, detail }));
+      sendAuthResponse({ authenticated: detail.loggedIn === true, detail });
     });
     return;
   }
@@ -1794,17 +1849,26 @@ wss.on("connection", (ws) => {
     (async () => {
       let stallTimer = null;
       let isStallAbort = false;
+      // Stall watchdog: resets on each SDK event. Catches truly frozen streams.
       const resetStall = () => {
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
       };
-      try {
-        resetStall();
+      // Hard cap: api_retry loops reset the stall timer indefinitely; this ensures
+      // the request always terminates even when the SDK retries for minutes on end.
+      const MAX_QUERY_MS = 8 * 60_000;
+      const hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_QUERY_MS);
+
+      // Run one query() to completion, forwarding all events to the client.
+      const runQuery = async (promptMsg, queryOptions) => {
         for await (const ev of query({
-          prompt: (async function* () { yield userMsg; })(),
-          options,
+          prompt: (async function* () { yield promptMsg; })(),
+          options: queryOptions,
         })) {
-          resetStall();
+          // api_retry means the SDK is in a backoff loop — don't reset the stall
+          // timer here or it will keep resetting indefinitely while the WebSocket
+          // sits idle and the browser receives nothing. Real progress resets it.
+          if (!(ev.type === "system" && ev.subtype === "api_retry")) resetStall();
           if (ev.type === "system" && ev.subtype === "init") {
             saveSession(ev.session_id);
             send({ type: "session", sessionId: ev.session_id });
@@ -1828,11 +1892,52 @@ wss.on("connection", (ws) => {
           }
           if (ev.type !== "system") send(ev);
         }
+      };
+
+      const isThinkingSignatureError = (err) => {
+        const s = String(err);
+        return s.includes("signature") && s.includes("thinking");
+      };
+
+      // Rebuild the request as a fresh (no-resume) query that carries the prior
+      // conversation as injected text — preserving context while shedding the
+      // corrupted thinking blocks. Mirrors the WeChat path's history injection.
+      const buildRecoveryMsg = () => {
+        const history = extractSessionTextHistory(sessionId);
+        if (history.length === 0) return null;
+        const historyText = history
+          .map(t => `${t.role === "user" ? "用户" : "助手"}：${t.text}`)
+          .join("\n");
+        const injected = `以下是本次对话此前的历史记录（供你延续上下文）：\n${historyText}\n\n用户：${msg.prompt}`;
+        const recoveredContent = content
+          .filter(b => b.type !== "text")        // keep any images
+          .concat([{ type: "text", text: injected }]);
+        return { type: "user", message: { role: "user", content: recoveredContent }, parent_tool_use_id: null };
+      };
+
+      try {
+        resetStall();
+        try {
+          await runQuery(userMsg, options);
+        } catch (err) {
+          // Thinking-signature 400 on resume: the session's thinking blocks are
+          // unverifiable after an interruption. Recover by replaying the turn on a
+          // fresh session with text-injected history, instead of losing all context.
+          if (!isThinkingSignatureError(err) || ac.signal.aborted) throw err;
+          const recoveryMsg = buildRecoveryMsg();
+          clearSession(); // abandon the corrupted session; the retry starts a clean one
+          if (!recoveryMsg) throw err; // nothing to inject → surface the original error
+          console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");
+          const recoveryOptions = { ...options };
+          delete recoveryOptions.resume; // start fresh; history is carried in the prompt
+          resetStall();
+          await runQuery(recoveryMsg, recoveryOptions);
+        }
         send({ type: "done" });
       } catch (err) {
         if (err?.name === "AbortError") {
           if (isStallAbort) {
-            send({ type: "error", text: "AI 响应超时（3分钟内无数据），请重新发送消息。" });
+            send({ type: "error", text: "AI 响应超时（API 重试超出上限），请稍后重新发送消息。" });
             send({ type: "done" });
           } else {
             send({ type: "stopped" });
@@ -1843,6 +1948,7 @@ wss.on("connection", (ws) => {
         }
       } finally {
         clearTimeout(stallTimer);
+        clearTimeout(hardTimer);
         if (abortCtrl === ac) abortCtrl = null;
       }
     })();

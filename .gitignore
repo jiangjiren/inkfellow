@@ -47,6 +47,11 @@ public/workbox-*.js.map
 public/swe-worker-*.js
 public/swe-worker-*.js.map
 
+# Tauri desktop app (local build only)
+/src-tauri/
+/public/loading.html
+/scripts/cleanup-standalone.js
+
 # AI service (claude-chat) — runtime/credential files; source code is tracked
 claude-chat/node_modules
 claude-chat/auth-profile.json

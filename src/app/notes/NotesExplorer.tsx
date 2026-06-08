@@ -1491,22 +1491,32 @@ export default function NotesExplorer() {
     if (!activePath || isPdfPath(activePath) || isImagePath(activePath)) return;
 
     const es = new EventSource(`/api/notes/watch?path=${encodeURIComponent(activePath)}`);
+    let pending = false;
 
-    es.addEventListener("change", () => {
-      if (isReloadingRef.current) return;
+    const runReload = async () => {
+      // 重载进行中：标记 pending，结束后再补一次，避免并发写入被丢
+      if (isReloadingRef.current) { pending = true; return; }
       isReloadingRef.current = true;
       isSilentReloadRef.current = true;
-      void (async () => {
-        try {
-          await loadNote(activePath, null, { preserveScroll: true, silent: true, updateHistory: false });
-          const r = await fetch(`/api/notes/git?check=${encodeURIComponent(activePath)}`);
-          const data = r.ok ? (await r.json() as { changed: boolean }) : null;
-          if (data != null) setHasGitChanges(data.changed);
-        } catch { /* silent */ } finally {
-          isReloadingRef.current = false;
-          setTimeout(() => { isSilentReloadRef.current = false; }, 400);
-        }
-      })();
+      try {
+        await loadNote(activePath, null, { preserveScroll: true, silent: true, updateHistory: false });
+        const r = await fetch(`/api/notes/git?check=${encodeURIComponent(activePath)}`);
+        const data = r.ok ? (await r.json() as { changed: boolean }) : null;
+        if (data != null) setHasGitChanges(data.changed);
+      } catch { /* silent */ } finally {
+        isReloadingRef.current = false;
+        setTimeout(() => { isSilentReloadRef.current = false; }, 400);
+        if (pending) { pending = false; void runReload(); }
+      }
+    };
+
+    es.addEventListener("change", () => { void runReload(); });
+
+    // 重连时补一次重载，兜住断连间隙内错过的改动；首次连接已由 loadNote 加载过，跳过
+    let opened = false;
+    es.addEventListener("open", () => {
+      if (opened) void runReload();
+      opened = true;
     });
 
     return () => {

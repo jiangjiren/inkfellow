@@ -1,5 +1,6 @@
 import { type NextRequest } from "next/server";
 import { watch } from "fs";
+import path from "path";
 import { mapVaultError, resolveVaultPath } from "@/lib/notesVault";
 
 export const dynamic = "force-dynamic";
@@ -22,12 +23,19 @@ export async function GET(request: NextRequest) {
 
   const encoder = new TextEncoder();
 
+  // 监听父目录而非文件本身：编辑器/Agent 常用「写临时文件 + rename 覆盖」的原子写入，
+  // 直接 watch 文件会在 rename 后因 inode 失效而停止触发。目录 inode 稳定，可靠捕获。
+  const watchDir = path.dirname(absolutePath);
+  const watchBasename = path.basename(absolutePath);
+
   const stream = new ReadableStream({
     start(controller) {
       let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const watcher = watch(absolutePath, { persistent: false }, (eventType) => {
+      const watcher = watch(watchDir, { persistent: false }, (eventType, filename) => {
         if (eventType !== "change" && eventType !== "rename") return;
+        // filename 为 null（极少数平台）时保守触发，避免漏更新
+        if (filename !== null && filename !== watchBasename) return;
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           try {

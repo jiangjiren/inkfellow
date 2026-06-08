@@ -79,7 +79,6 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 .tool-input { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .tool-spinner { flex-shrink: 0; width: 11px; height: 11px; border: 1.5px solid rgba(26,108,246,0.25); border-top-color: var(--accent); border-radius: 50%; animation: toolSpin 0.65s linear infinite; }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
-.cost { font-size: 10px; color: var(--text-dim); text-align: right; margin-top: 2px; }
 .typing { display: flex; gap: 4px; align-items: center; padding: 4px 0; }
 .typing span { width: 5px; height: 5px; background: var(--text-dim); border-radius: 50%; animation: blink 1.2s infinite; }
 .typing span:nth-child(2) { animation-delay: 0.2s; }
@@ -3111,11 +3110,6 @@ function handleEvent(ev) {
     let resultCost = null;
     if (ev.total_cost_usd != null) {
       resultCost = ev.total_cost_usd;
-      const costEl = document.createElement("div");
-      costEl.className = "cost";
-      costEl.textContent = `$${resultCost.toFixed(4)}`;
-      const all = messagesEl.querySelectorAll(".msg");
-      if (all.length) all[all.length - 1].appendChild(costEl);
     }
     resetAssistantState();
     if (savedText || savedBlocks?.length) {
@@ -3820,12 +3814,6 @@ async function loadConversation(conv) {
     const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text);
     if (hasAssistantBlocks) {
       renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
-    }
-    if (msg.cost != null) {
-      const costEl = document.createElement("div");
-      costEl.className = "cost";
-      costEl.textContent = `$${Number(msg.cost).toFixed(4)}`;
-      el.appendChild(costEl);
     }
   }
   currentConvId = conv.id;

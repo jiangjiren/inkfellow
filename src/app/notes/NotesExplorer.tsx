@@ -1484,43 +1484,33 @@ export default function NotesExplorer() {
     };
   }, []);
 
-  // 每 2 秒轻量检查当前文件的修改时间，有变化才重新加载内容
-  // 用 ref 追踪加载状态，避免 noteState 进入依赖导致 interval 反复重置
+  // SSE 监听服务端文件变动，替代 2s 轮询；activePath 切换时自动重连
   const isReloadingRef = useRef(false);
   useEffect(() => {
-    const interval = setInterval(async () => {
-      const path = activePathRef.current;
-      const knownUpdatedAt = noteUpdatedAtRef.current;
-      // 没打开文件、还没完成首次加载、正在重载中 → 跳过
-      if (!path || !knownUpdatedAt || isReloadingRef.current) return;
-      try {
-        const params = new URLSearchParams({ path, meta: "true" });
-        const res = await fetch(`/api/notes/file?${params}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const { updatedAt } = (await res.json()) as { updatedAt: string };
-        if (updatedAt && updatedAt !== knownUpdatedAt) {
-          isReloadingRef.current = true;
-          await loadNote(path, null, {
-            preserveScroll: true,
-            silent: true,
-            updateHistory: false,
-          });
-          isReloadingRef.current = false;
-          // 重载后查实际 git 状态：可能是 Agent 新增改动，也可能是撤销/还原
-          fetch(`/api/notes/git?check=${encodeURIComponent(path)}`)
-            .then((r) => r.ok ? r.json() : null)
-            .then((data: { changed: boolean } | null) => {
-              if (data != null) setHasGitChanges(data.changed);
-            })
-            .catch(() => { /* silent */ });
-        }
-      } catch {
-        isReloadingRef.current = false;
-      }
-    }, 2000);
+    if (!activePath || isPdfPath(activePath) || isImagePath(activePath)) return;
 
-    return () => clearInterval(interval);
-  }, [loadNote]); // ← 不依赖 noteState，interval 永久稳定运行
+    const es = new EventSource(`/api/notes/watch?path=${encodeURIComponent(activePath)}`);
+
+    es.addEventListener("change", () => {
+      if (isReloadingRef.current) return;
+      isReloadingRef.current = true;
+      void (async () => {
+        try {
+          await loadNote(activePath, null, { preserveScroll: true, silent: true, updateHistory: false });
+          const r = await fetch(`/api/notes/git?check=${encodeURIComponent(activePath)}`);
+          const data = r.ok ? (await r.json() as { changed: boolean }) : null;
+          if (data != null) setHasGitChanges(data.changed);
+        } catch { /* silent */ } finally {
+          isReloadingRef.current = false;
+        }
+      })();
+    });
+
+    return () => {
+      es.close();
+      isReloadingRef.current = false;
+    };
+  }, [activePath, loadNote]);
 
   useEffect(() => {
     let cancelled = false;

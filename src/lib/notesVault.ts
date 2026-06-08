@@ -273,6 +273,8 @@ export const computeTreeRev = (root: NotesDirectoryNode): string => {
   return createHash("sha1").update(paths.join("\n")).digest("hex");
 };
 
+export const resolveVaultPath = resolveExistingVaultPath;
+
 // 只读取文件元数据（修改时间），不加载内容，供轮询检测变化用
 export const statMarkdownNote = async (relativePath: string) => {
   const resolved = await resolveExistingVaultPath(relativePath);

@@ -773,7 +773,7 @@ export default function NotesExplorer() {
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [mobileAssistantSheet, setMobileAssistantSheet] = useState<'closed' | 'peeked' | 'expanded'>('closed');
+  const [mobileAssistantSheet, setMobileAssistantSheet] = useState<'closed' | 'expanded'>('closed');
   const mobileAssistantPanelOpen = mobileAssistantSheet === 'expanded';
   const mobileOverlayOpenTime = useRef(0);
   // 移动端底部 sheet 的跟手拖拽状态（用 ref 直接改样式，避免每帧 re-render）
@@ -1153,7 +1153,7 @@ export default function NotesExplorer() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMobileSidebarOpen(false);
-        setMobileAssistantSheet('peeked');
+        setMobileAssistantSheet('closed');
       }
     };
 
@@ -2394,24 +2394,20 @@ export default function NotesExplorer() {
 
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
-      setMobileAssistantSheet((s) => s === 'expanded' ? 'peeked' : 'expanded');
+      setMobileAssistantSheet((s) => s === 'expanded' ? 'closed' : 'expanded');
     } else {
       setAssistantPanelVisible((visible) => !visible);
     }
   }, [isMobileViewport]);
 
   // ── 移动端底部 sheet：跟手拖拽 + 速度吸附 ─────────────────
-  // 三个吸附点（translateY，单位 px）：expanded=0, peeked=H-44, closed=H。
-  // 向上拖展开，向下拖收起，拖到底则彻底关闭（回到 FAB）。
-  const SHEET_PEEK_PX = 44;
+  // 两个吸附点（translateY，单位 px）：expanded=0, closed=H。
   const handleSheetPointerDown = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
     if (!isMobileViewport) return;
     const el = assistantPanelRef.current;
     if (!el) return;
     const panelH = el.offsetHeight;
-    const baseY = mobileAssistantSheet === 'expanded' ? 0
-      : mobileAssistantSheet === 'peeked' ? Math.max(0, panelH - SHEET_PEEK_PX)
-      : panelH;
+    const baseY = mobileAssistantSheet === 'expanded' ? 0 : panelH;
     sheetDragRef.current = {
       active: true, startY: e.clientY, baseY, panelH,
       lastY: e.clientY, lastT: e.timeStamp, velocity: 0, moved: 0,
@@ -2450,16 +2446,16 @@ export default function NotesExplorer() {
       });
     };
 
-    // 轻点（位移很小）：等同点击切换 peeked ↔ expanded
+    // 轻点（位移很小）：等同点击切换 closed ↔ expanded
     if (d.moved < 6) {
       if (el) { el.style.transition = ''; el.style.transform = ''; }
-      setMobileAssistantSheet((s) => s === 'expanded' ? 'peeked' : 'expanded');
+      setMobileAssistantSheet((s) => s === 'expanded' ? 'closed' : 'expanded');
       return;
     }
 
     const finalY = Math.min(d.panelH, Math.max(0, d.baseY + (e.clientY - d.startY)));
-    const order: Array<'expanded' | 'peeked' | 'closed'> = ['expanded', 'peeked', 'closed'];
-    const anchors = [0, Math.max(0, d.panelH - SHEET_PEEK_PX), d.panelH];
+    const order: Array<'expanded' | 'closed'> = ['expanded', 'closed'];
+    const anchors = [0, d.panelH];
     // 动量投影：用松手时的速度把落点向前推一段（120ms 惯性），再吸附到最近档位。
     // 这样「快速甩到底」会落到 closed，「缓慢小拖」按实际位置就近吸附，符合直觉。
     const projectedY = Math.min(d.panelH, Math.max(0, finalY + d.velocity * 120));
@@ -2713,7 +2709,7 @@ export default function NotesExplorer() {
       className={`${styles.shell} ${isDesktopSidebarHidden ? styles.shellSidebarHidden : ""} ${
         mobileSidebarOpen ? styles.shellMobileSidebarOpen : ""
       } ${
-        mobileAssistantSheet === 'expanded' ? styles.shellMobileAssistantPanelOpen : mobileAssistantSheet === 'peeked' ? styles.shellMobileAssistantPanelPeeked : ""
+        mobileAssistantSheet === 'expanded' ? styles.shellMobileAssistantPanelOpen : ""
       } ${
         isDesktopAssistantPanelHidden ? styles.shellAssistantPanelHidden : ""
       } ${isResizingAssistantPanel || isResizingSidebar ? styles.shellResizing : ""}`}
@@ -2876,7 +2872,7 @@ export default function NotesExplorer() {
         onClick={() => {
           if (Date.now() - mobileOverlayOpenTime.current < 350) return;
           setMobileSidebarOpen(false);
-          setMobileAssistantSheet('peeked');
+          setMobileAssistantSheet('closed');
           setGitPanelOpen(false);
           setMobileTocOpen(false);
           setTreeSheetTarget(null);
@@ -3446,7 +3442,7 @@ export default function NotesExplorer() {
 
       <aside
         ref={assistantPanelRef}
-        className={`${styles.assistantPanel} ${(!isAssistantPanelOpen && !(isMobileViewport && mobileAssistantSheet === 'peeked')) ? styles.assistantPanelHidden : ""} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
+        className={`${styles.assistantPanel} ${!isAssistantPanelOpen ? styles.assistantPanelHidden : ""} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
         aria-label="辅助面板"
         aria-hidden={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}
         inert={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}

@@ -2986,13 +2986,6 @@
     pointer-events: auto;
   }
 
-  /* 收起态：仅露出顶部 44px 手柄区域 */
-  .shellMobileAssistantPanelPeeked .assistantPanel {
-    transform: translateY(calc(100% - 44px));
-    opacity: 1;
-    pointer-events: auto;
-  }
-
   .assistantPanel.assistantPanelHidden {
     transform: translateY(104%) !important;
     opacity: 0 !important;

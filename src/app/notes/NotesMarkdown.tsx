@@ -363,7 +363,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   const [copied, setCopied] = useState(false);
   const codeString = String(children).replace(/\n$/, "");
   const match = /language-(\w+)/.exec(className || "");
-  const lang = match ? match[1] : "code";
+  const lang = match ? match[1] : "";
 
   const handleCopy = async () => {
     try {
@@ -377,43 +377,30 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
 
   return (
     <div className={styles.codeBlockContainer}>
-      <div className={styles.codeBlockHeader}>
-        <div className={styles.macDots}>
-          <span className={`${styles.macDot} ${styles.macDotRed}`}>
-            <span className={styles.macSymbol}>×</span>
+      {lang && <span className={styles.codeLanguage}>{lang.toLowerCase()}</span>}
+      <button
+        type="button"
+        onClick={handleCopy}
+        className={`${styles.codeCopyButton} ${copied ? styles.codeCopyButtonCopied : ""}`}
+        aria-label="复制代码"
+      >
+        {copied ? (
+          <span className={styles.copySuccess}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ width: "12px", height: "12px", marginRight: "3px" }}>
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            已复制
           </span>
-          <span className={`${styles.macDot} ${styles.macDotYellow}`}>
-            <span className={styles.macSymbol}>−</span>
+        ) : (
+          <span className={styles.copyText}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: "12px", height: "12px", marginRight: "3px" }}>
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            复制
           </span>
-          <span className={`${styles.macDot} ${styles.macDotGreen}`}>
-            <span className={styles.macSymbol}>+</span>
-          </span>
-        </div>
-        <span className={styles.codeLanguage}>{lang.toLowerCase()}</span>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className={`${styles.codeCopyButton} ${copied ? styles.codeCopyButtonCopied : ""}`}
-          aria-label="复制代码"
-        >
-          {copied ? (
-            <span className={styles.copySuccess}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ width: "12px", height: "12px", marginRight: "3px" }}>
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-              已复制
-            </span>
-          ) : (
-            <span className={styles.copyText}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: "12px", height: "12px", marginRight: "3px" }}>
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-              复制
-            </span>
-          )}
-        </button>
-      </div>
+        )}
+      </button>
       <pre>
         <code className={className}>{children}</code>
       </pre>
@@ -652,6 +639,9 @@ export default function NotesMarkdown({
             </button>
           </span>
         );
+      },
+      pre({ children }) {
+        return <>{children}</>;
       },
       table({ children }) {
         return (

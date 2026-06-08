@@ -3654,81 +3654,40 @@
   box-shadow: var(--notes-shadow-card);
 }
 
-.codeBlockHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  background: #ebebea;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+.codeLanguage {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.28);
+  text-transform: lowercase;
+  font-family: var(--notes-font-mono);
+  letter-spacing: 0.04em;
+  pointer-events: none;
   user-select: none;
 }
 
-.macDots {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.macDot {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-
-.macDotRed {
-  background: #ff5f56;
-}
-
-.macDotYellow {
-  background: #ffbd2e;
-}
-
-.macDotGreen {
-  background: #27c93f;
-}
-
-.macSymbol {
-  font-size: 8px;
-  font-weight: bold;
-  color: rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  line-height: 1;
-  transform: translateY(-0.5px);
-}
-
-.macDots:hover .macSymbol {
-  opacity: 1;
-}
-
-.codeLanguage {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: rgba(0, 0, 0, 0.4);
-  text-transform: uppercase;
-  font-family: var(--notes-font-sans);
-  letter-spacing: 0.06em;
-  margin-left: 24px;
-  flex: 1;
-}
-
 .codeCopyButton {
+  position: absolute;
+  top: 8px;
+  right: 10px;
   display: inline-flex;
   align-items: center;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(245, 245, 244, 0.9);
   color: rgba(0, 0, 0, 0.5);
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 550;
   cursor: pointer;
-  transition: var(--notes-transition-fast);
+  opacity: 0;
+  transition: opacity 150ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.codeBlockContainer:hover .codeCopyButton {
+  opacity: 1;
 }
 
 .codeCopyButton:hover {
@@ -3742,6 +3701,7 @@
 }
 
 .codeCopyButtonCopied {
+  opacity: 1 !important;
   border-color: rgba(40, 167, 69, 0.3) !important;
   background: rgba(40, 167, 69, 0.15) !important;
   color: #28a745 !important;
@@ -3752,7 +3712,7 @@
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
-  padding: 14px 18px !important;
+  padding: 36px 18px 14px !important;
 }
 
 /* ── 编辑按钮（铅笔）& 完成按钮 ──────────────────── */

@@ -5077,11 +5077,11 @@
 }
 
 @keyframes diffFlash {
-  0%   { background-color: rgba(90, 125, 69, 0.18); }
+  0%   { background-color: rgba(250, 204, 21, 0.35); }
   100% { background-color: transparent; }
 }
 
 .diffFlash {
-  animation: diffFlash 1.5s ease-out forwards;
-  border-radius: 3px;
+  animation: diffFlash 2.5s ease-out forwards;
+  border-radius: 4px;
 }

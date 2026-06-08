@@ -5075,3 +5075,13 @@
   color: #78716c;
   margin: 1.5em 0;
 }
+
+@keyframes diffFlash {
+  0%   { background-color: rgba(90, 125, 69, 0.18); }
+  100% { background-color: transparent; }
+}
+
+.diffFlash {
+  animation: diffFlash 1.5s ease-out forwards;
+  border-radius: 3px;
+}

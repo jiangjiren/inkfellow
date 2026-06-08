@@ -885,6 +885,7 @@ export default function NotesExplorer() {
   const noteUpdatedAtRef = useRef<string | null>(null);
   const claudeFrameRef = useRef<HTMLIFrameElement>(null);
   const readerRef = useRef<HTMLElement>(null);
+  const isSilentReloadRef = useRef(false);
   const syncTocRef = useRef<(() => void) | null>(null);
   const [activeTocSlug, setActiveTocSlug] = useState("");
   const [isScrolled, setIsScrolled] = useState(false);
@@ -1494,6 +1495,7 @@ export default function NotesExplorer() {
     es.addEventListener("change", () => {
       if (isReloadingRef.current) return;
       isReloadingRef.current = true;
+      isSilentReloadRef.current = true;
       void (async () => {
         try {
           await loadNote(activePath, null, { preserveScroll: true, silent: true, updateHistory: false });
@@ -1502,6 +1504,7 @@ export default function NotesExplorer() {
           if (data != null) setHasGitChanges(data.changed);
         } catch { /* silent */ } finally {
           isReloadingRef.current = false;
+          setTimeout(() => { isSilentReloadRef.current = false; }, 400);
         }
       })();
     });
@@ -1511,6 +1514,45 @@ export default function NotesExplorer() {
       isReloadingRef.current = false;
     };
   }, [activePath, loadNote]);
+
+  // 监听 markdown 区域的 DOM 变动，SSE 静默重载时高亮发生变化的段落
+  useEffect(() => {
+    const reader = readerRef.current;
+    if (!reader) return;
+
+    const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "PRE", "TD", "TH"]);
+
+    const observer = new MutationObserver((mutations) => {
+      if (!isSilentReloadRef.current) return;
+      const flashed = new Set<Element>();
+      for (const m of mutations) {
+        const nodes = m.type === "childList" ? [...m.addedNodes] : [m.target];
+        for (const node of nodes) {
+          let el: Element | null = node.nodeType === Node.ELEMENT_NODE
+            ? (node as Element)
+            : (node as Text).parentElement;
+          if (!el?.closest("[data-markdown-content]")) continue;
+          while (el) {
+            if (BLOCK_TAGS.has(el.tagName)) {
+              if (!flashed.has(el)) {
+                flashed.add(el);
+                el.classList.add(styles.diffFlash);
+                const target = el;
+                el.addEventListener("animationend", () => target.classList.remove(styles.diffFlash), { once: true });
+              }
+              break;
+            }
+            if (!el.closest("[data-markdown-content]")) break;
+            el = el.parentElement;
+          }
+        }
+      }
+    });
+
+    observer.observe(reader, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -3171,12 +3213,14 @@ export default function NotesExplorer() {
               /\.html?$/i.test(note.path) ? (
                 <NotesHtml html={note.content} />
               ) : (
-                <NotesMarkdown
-                  markdown={note.content}
-                  currentPath={note.path}
-                  noteIndex={noteIndex}
-                  onNavigate={handleMarkdownNavigate}
-                />
+                <div data-markdown-content>
+                  <NotesMarkdown
+                    markdown={note.content}
+                    currentPath={note.path}
+                    noteIndex={noteIndex}
+                    onNavigate={handleMarkdownNavigate}
+                  />
+                </div>
               )
             ) : null}
 

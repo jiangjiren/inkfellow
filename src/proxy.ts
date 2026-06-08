@@ -71,6 +71,12 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  const host = request.headers.get("host") || "";
+  const isLocal = host.includes("localhost") || host.includes("127.0.0.1");
+  if (isLocal) {
+    return NextResponse.next();
+  }
+
   const { username, password } = getNotesAuthConfig();
   if (!password) {
     return createNotesAuthResponse(isNotesApiPath(pathname));

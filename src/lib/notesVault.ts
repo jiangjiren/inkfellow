@@ -1,4 +1,4 @@
-import { promises as fs } from "fs";
+import { promises as fs, readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import path from "path";
 import type {
@@ -48,7 +48,39 @@ export class VaultAccessError extends Error {
   }
 }
 
-const getConfiguredVaultPath = () => process.env.VAULT_PATH?.trim() || DEFAULT_VAULT_PATH;
+const getTauriConfigVaultPath = (): string | null => {
+  try {
+    let configPath = "";
+    if (process.platform === "win32") {
+      configPath = path.join(process.env.APPDATA || "", "com.tauri.dev", "config.json");
+    } else if (process.platform === "darwin") {
+      configPath = path.join(
+        process.env.HOME || "",
+        "Library",
+        "Application Support",
+        "com.tauri.dev",
+        "config.json"
+      );
+    } else {
+      const configHome = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config");
+      configPath = path.join(configHome, "com.tauri.dev", "config.json");
+    }
+
+    if (existsSync(configPath)) {
+      const content = readFileSync(configPath, "utf8");
+      const config = JSON.parse(content) as { vault_path?: string };
+      if (config.vault_path && existsSync(config.vault_path)) {
+        return config.vault_path;
+      }
+    }
+  } catch {
+    // Ignore error and fall back
+  }
+  return null;
+};
+
+const getConfiguredVaultPath = () =>
+  process.env.VAULT_PATH?.trim() || getTauriConfigVaultPath() || DEFAULT_VAULT_PATH;
 
 const toVaultPath = (relativePath: string) => relativePath.split(path.sep).join("/");
 

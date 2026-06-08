@@ -3,6 +3,7 @@ import type { NextConfig } from 'next';
 import withPWA from '@ducanh2912/next-pwa';
 
 const nextConfig: NextConfig = {
+  output: 'standalone',
   turbopack: {
     root: path.join(__dirname),
   },
@@ -15,7 +16,20 @@ const nextConfig: NextConfig = {
     staticGenerationMaxConcurrency: 1,
   },
   outputFileTracingExcludes: {
-    '*': ['node_modules/**/*'],
+    '*': [
+      'vault/**/*',
+      'src-tauri/**/*',
+      '.git/**/*',
+    ],
+  },
+  async rewrites() {
+    const port = process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT || '8082';
+    return [
+      {
+        source: '/notes-claude/:path*',
+        destination: `http://127.0.0.1:${port}/:path*`,
+      },
+    ];
   },
   webpack(config, { dev }) {
     // Limit parallel workers to reduce peak memory during build
@@ -23,7 +37,7 @@ const nextConfig: NextConfig = {
     if (!dev) {
       // Reduce minifier memory usage by disabling parallel minification
       if (config.optimization?.minimizer) {
-        config.optimization.minimizer.forEach((m: any) => {
+        config.optimization.minimizer.forEach((m: { options?: { minimizer?: { options?: { parallel?: boolean } } } }) => {
           if (m?.options?.minimizer?.options) {
             m.options.minimizer.options.parallel = false;
           }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-unused-vars */
 /**
  * Nightly auto-sync for inkfellow vaults.
  * Usage: node nightly-sync.js <vault-path>

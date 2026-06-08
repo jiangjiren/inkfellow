@@ -751,19 +751,122 @@ function FolderPicker({
   );
 }
 
+interface TauriWindow {
+  __TAURI__?: {
+    core?: {
+      invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  __TAURI_INTERNALS__?: {
+    invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  };
+}
+
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
+  const [vaultPath, setVaultPath] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
+  const vaultMenuRef = useRef<HTMLDivElement | null>(null);
+  const vaultButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [recentVaults, setRecentVaults] = useState<string[]>([]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const tauriWin = typeof window !== "undefined" ? (window as unknown as TauriWindow) : null;
+  const isTauri = !!tauriWin && (tauriWin.__TAURI__ !== undefined || tauriWin.__TAURI_INTERNALS__ !== undefined);
+  const showTauri = mounted && isTauri;
+
+  // Track recent vaults in localStorage
+  useEffect(() => {
+    if (vaultPath) {
+      try {
+        const stored = localStorage.getItem("recent_vaults");
+        const list: string[] = stored ? JSON.parse(stored) : [];
+        const newList = [vaultPath, ...list.filter((p) => p !== vaultPath)].slice(0, 5);
+        setRecentVaults(newList);
+        localStorage.setItem("recent_vaults", JSON.stringify(newList));
+      } catch { /* ignore */ }
+    }
+  }, [vaultPath]);
+
+  // Click outside vault menu close
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (
+        vaultMenuOpen &&
+        vaultMenuRef.current &&
+        !vaultMenuRef.current.contains(e.target as Node) &&
+        vaultButtonRef.current &&
+        !vaultButtonRef.current.contains(e.target as Node)
+      ) {
+        setVaultMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [vaultMenuOpen]);
+
+  const handleChooseVault = useCallback(async () => {
+    if (isTauri && tauriWin) {
+      try {
+        const invoke = tauriWin.__TAURI_INTERNALS__?.invoke || tauriWin.__TAURI__?.core?.invoke;
+        if (invoke) {
+          const path = await invoke("select_and_set_vault_cmd") as string;
+          setVaultPath(path);
+          setVaultMenuOpen(false);
+        }
+      } catch (e) {
+        console.error("Failed to select vault:", e);
+      }
+    }
+  }, [isTauri, tauriWin]);
+
+  const handleSwitchToVault = useCallback(async (path: string) => {
+    setVaultMenuOpen(false);
+    if (isTauri && tauriWin && path !== vaultPath) {
+      try {
+        const invoke = tauriWin.__TAURI_INTERNALS__?.invoke || tauriWin.__TAURI__?.core?.invoke;
+        if (invoke) {
+          await invoke("set_vault_path_cmd", { path });
+        }
+      } catch (e) {
+        console.error("Failed to switch vault:", e);
+      }
+    }
+  }, [isTauri, tauriWin, vaultPath]);
+
+  useEffect(() => {
+    if (isTauri && tauriWin) {
+      const invoke = tauriWin.__TAURI_INTERNALS__?.invoke || tauriWin.__TAURI__?.core?.invoke;
+      if (invoke) {
+        invoke("get_vault_path_cmd").then((path: unknown) => {
+          setVaultPath(path as string);
+        }).catch(() => {});
+      }
+    }
+  }, [isTauri, tauriWin]);
+
+  const vaultName = useMemo(() => {
+    if (!vaultPath) return "未指定笔记本";
+    const segments = vaultPath.split(/[/\\]/).filter(Boolean);
+    return segments[segments.length - 1] || vaultPath;
+  }, [vaultPath]);
+
+  const getDisplayPath = useCallback((p: string | null) => {
+    if (!p) return "";
+    const len = p.length;
+    if (len > 30) {
+      return p.slice(0, 10) + "..." + p.slice(len - 17);
+    }
+    return p;
+  }, []);
+
   // 当前文件树的结构指纹，用于轮询比对，只在增/删/改名时才刷新
   const treeRevRef = useRef<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
-  // suppress dashboard flash when restoring last opened file (only on reload/back-forward)
-  const [restoringLastFile, setRestoringLastFile] = useState(() => {
-    try {
-      const navType = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-      const isRestore = !navType || navType.type === "reload" || navType.type === "back_forward";
-      return isRestore && !!window.localStorage.getItem(LAST_FILE_KEY);
-    } catch { return false; }
-  });
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -825,7 +928,6 @@ export default function NotesExplorer() {
   const [renameTarget, setRenameTarget] = useState<TreeActionTarget | null>(null);
   const [renameName, setRenameName] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
-  const [renameLoading, setRenameLoading] = useState(false);
   const renameInProgressRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<TreeActionTarget | null>(null);
   const [importFolder, setImportFolder] = useState("");
@@ -872,12 +974,10 @@ export default function NotesExplorer() {
   // 草稿首次落盘会让 note.path 从 null 变为新路径，需跳过「切换笔记退出编辑」那一次
   const keepEditingOnCommitRef = useRef(false);
   const [editContent, setEditContent] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // 「已保存」短暂提示
   const [editorMinHeight, setEditorMinHeight] = useState(0); // 占位高度，防 scroll 被钳制
   const [hasGitChanges, setHasGitChanges] = useState(false); // 当前文件有未提交改动
   const [globalGitPending, setGlobalGitPending] = useState<number | null>(null); // 全局待同步数
-  const editorRef = useRef<HTMLTextAreaElement>(null); // kept for potential future use
   const editorFocusRef = useRef<NotesEditorHandle>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
@@ -1712,23 +1812,18 @@ export default function NotesExplorer() {
     const path = notePath ?? activePath;
     const body = content ?? editContent;
     if (!path) return;
-    setIsSaving(true);
-    try {
-      const res = await fetch("/api/notes/file", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path, content: body }),
-      });
-      if (!res.ok) throw new Error("保存失败");
-      const saved = (await res.json()) as { updatedAt: string; content: string };
-      setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
-      noteUpdatedAtRef.current = saved.updatedAt;
-      setSavedFlash(true);
-      setTimeout(() => setSavedFlash(false), 1600);
-      setHasGitChanges(true);
-    } finally {
-      setIsSaving(false);
-    }
+    const res = await fetch("/api/notes/file", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, content: body }),
+    });
+    if (!res.ok) throw new Error("保存失败");
+    const saved = (await res.json()) as { updatedAt: string; content: string };
+    setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
+    noteUpdatedAtRef.current = saved.updatedAt;
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1600);
+    setHasGitChanges(true);
   }, [activePath, editContent]);
 
   /** 草稿首次输入 → 真正落盘到 captureFolder，随后转为普通笔记编辑 */
@@ -2328,7 +2423,6 @@ export default function NotesExplorer() {
       return;
     }
 
-    setRenameLoading(true);
     setRenameError(null);
     try {
       const currentPath = activePathRef.current;
@@ -2371,8 +2465,6 @@ export default function NotesExplorer() {
     } catch (err) {
       setRenameError(err instanceof Error ? err.message : "重命名失败");
       renameInProgressRef.current = false;
-    } finally {
-      setRenameLoading(false);
     }
   }, [flushEditBeforeSwitch, loadNote, refreshTree, renameName, renameTarget]);
 
@@ -2685,8 +2777,6 @@ export default function NotesExplorer() {
       setDeleteLoading(false);
     }
   }, [activePath, deleteTarget, goHome, refreshTree]);
-
-  const updatedAt = note ? new Date(note.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "";
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
     "--sidebar-width": `${sidebarWidth}px`,
@@ -2739,10 +2829,99 @@ export default function NotesExplorer() {
           tabIndex={!isMobileViewport && isSidebarOpen ? 0 : -1}
         />
         <div className={styles.sidebarHeader}>
-          <div>
-            <h1 className={styles.title}>知识库</h1>
-          </div>
-          <span className={styles.counter}>{files.length} 篇</span>
+          {showTauri ? (
+            <div className={styles.vaultSwitcherWrapper}>
+              <button
+                ref={vaultButtonRef}
+                type="button"
+                className={styles.vaultSwitcherBtn}
+                onClick={() => setVaultMenuOpen((open) => !open)}
+                aria-expanded={vaultMenuOpen}
+                title={`当前笔记本路径: ${vaultPath || "未设置"}`}
+              >
+                <div className={styles.vaultSwitcherMain}>
+                  <p className={styles.vaultSwitcherEyebrow}>
+                    {process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}
+                  </p>
+                  <h1 className={styles.vaultSwitcherTitle}>
+                    <span>{vaultName}</span>
+                    <svg className={styles.vaultChevron} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </h1>
+                </div>
+              </button>
+
+              {vaultMenuOpen ? (
+                <div ref={vaultMenuRef} className={styles.vaultDropdownMenu} role="menu">
+                  <div className={styles.vaultDropdownSectionTitle}>当前笔记本</div>
+                  <div className={styles.activeVaultCard}>
+                    <div className={styles.activeVaultIcon}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+                        <path d="M6 6h10" />
+                        <path d="M6 10h10" />
+                      </svg>
+                    </div>
+                    <div className={styles.activeVaultInfo}>
+                      <p className={styles.activeVaultName}>{vaultName}</p>
+                      <p className={styles.activeVaultPath} title={vaultPath || ""}>{getDisplayPath(vaultPath)}</p>
+                    </div>
+                  </div>
+
+                  <div className={styles.vaultDropdownDivider} />
+
+                  {recentVaults.length > 1 && (
+                    <>
+                      <div className={styles.vaultDropdownSectionTitle}>最近使用</div>
+                      <div className={styles.recentVaultsList}>
+                        {recentVaults.map((path) => {
+                          if (path === vaultPath) return null;
+                          const name = path.split(/[/\\]/).filter(Boolean).pop() || "未命名";
+                          return (
+                            <button
+                              key={path}
+                              type="button"
+                              className={styles.vaultDropdownItem}
+                              onClick={() => handleSwitchToVault(path)}
+                              role="menuitem"
+                            >
+                              <svg className={styles.dropdownItemIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+                              </svg>
+                              <div className={styles.recentVaultInfo}>
+                                <span className={styles.recentVaultNameText}>{name}</span>
+                                <span className={styles.recentVaultPathText}>{getDisplayPath(path)}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className={styles.vaultDropdownDivider} />
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    className={styles.vaultDropdownItemAction}
+                    onClick={handleChooseVault}
+                    role="menuitem"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span>选择其他笔记本文件夹...</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div>
+              <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
+              <h1 className={styles.title}>知识库</h1>
+            </div>
+          )}
+          {!showTauri && <span className={styles.counter}>{files.length} 篇</span>}
           <div className={styles.sidebarActions}>
             <div className={styles.globalCreateWrapper}>
               <button
@@ -3193,6 +3372,7 @@ export default function NotesExplorer() {
             {noteState === "ready" && isImagePath(activePath) ? (
               <div className={styles.imageViewer}>
                 <div className={styles.imageViewerFrame}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     key={activePath ?? "img"}
                     src={`/api/notes/doc?path=${encodeURIComponent(activePath ?? "")}`}
@@ -3510,7 +3690,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src="/notes-claude/?v=6"
+          src={`/notes-claude/?v=6${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}

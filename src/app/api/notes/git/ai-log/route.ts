@@ -29,6 +29,20 @@ type ChangedFile = {
   state: "added" | "deleted" | "modified" | "renamed";
 };
 
+interface Profile {
+  id: string;
+  provider: string;
+  apiKey?: string;
+  haikuModel?: string;
+  sonnetModel?: string;
+  [key: string]: unknown;
+}
+
+interface ProfileData {
+  activeProfileId?: string;
+  profiles?: Profile[];
+}
+
 // Graceful fallback message generator
 function generateFallbackMessage(files: ChangedFile[]): string {
   if (files.length === 0) {
@@ -87,20 +101,20 @@ export async function POST() {
 
     // 3. Read auth-profile.json to get AI credentials
     const profilePath = path.join(process.cwd(), "claude-chat", "auth-profile.json");
-    let profileData: any = null;
+    let profileData: ProfileData | null = null;
     try {
       const content = await readFile(profilePath, "utf-8");
-      profileData = JSON.parse(content);
+      profileData = JSON.parse(content) as ProfileData;
     } catch {
       // Ignored: fallback to template
     }
 
     const activeId = profileData?.activeProfileId;
-    let activeProfile = profileData?.profiles?.find((p: any) => p.id === activeId);
+    let activeProfile = profileData?.profiles?.find((p) => p.id === activeId);
 
     // Fallback: if active profile has no key (e.g. p_claude), find ANY profile that does
     if (!activeProfile || !activeProfile.apiKey) {
-      const anyWithKey = profileData?.profiles?.find((p: any) => p.apiKey);
+      const anyWithKey = profileData?.profiles?.find((p) => p.apiKey);
       if (anyWithKey) {
         activeProfile = anyWithKey;
       }
@@ -123,7 +137,7 @@ export async function POST() {
     // 5. Construct custom LLM API call based on the provider
     let endpoint = "";
     let modelName = "";
-    let bodyPayload: any = {};
+    let bodyPayload: Record<string, unknown> = {};
     const apiKey = activeProfile.apiKey;
 
     const systemPrompt = "你是一个专业的个人笔记与知识管理专家。请根据以下 Git 变更差异（git diff）生成一条极简、温润、苹果风的笔记同步日志。\n\n设计原则：\n1. 最多 80 字，必须是中文，严禁废话。\n2. 去除所有开发技术噪音：绝对不要包含 git 命令、Markdown 标记、类名、哈希值、分支名或文件名后缀（如 .md）。\n3. 语气要温暖、专注、生活化。多用“整理”、“重写”、“添加”、“修正”等有温度的词。例如：'重写了关于心流的大纲，补充了阅读感悟' 或 '修正了年度计划中的错别字，优化排版'。\n4. 如果改动极其微小，请用一句话高度概括（如：'微调了部分段落的措辞与排版'）。";

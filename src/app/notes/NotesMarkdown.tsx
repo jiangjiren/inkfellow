@@ -600,6 +600,9 @@ export default function NotesMarkdown({
           currentPath,
           assetHrefFactory,
         );
+        if (!normalizedSrc) {
+          return null;
+        }
         function handleDownload(e: MouseEvent) {
           e.preventDefault();
           e.stopPropagation();

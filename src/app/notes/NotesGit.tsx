@@ -97,7 +97,7 @@ export default function NotesGit({ onOpenFile }: Props) {
   const [isEditingMessage, setIsEditingMessage] = useState(false);
   const [feedback, setFeedback]       = useState<string | null>(null);
   const [isError, setIsError]         = useState(false);
-
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [fileStats, setFileStats]     = useState<FileStats>({});
   const [discardingPath, setDiscardingPath] = useState<string | null>(null);
   const [isDiscarding, setIsDiscarding]     = useState(false);

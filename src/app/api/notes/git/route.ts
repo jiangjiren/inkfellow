@@ -253,6 +253,7 @@ export async function GET(req: Request) {
 
       return NextResponse.json({ path: cleanDiffPath, binary: false, lines, addCount, removeCount } satisfies FileDiff);
     } catch (err) {
+      console.error("Git API Error (diff):", err);
       const msg = err instanceof Error ? err.message : String(err);
       return NextResponse.json({ error: msg }, { status: 500 });
     }
@@ -325,8 +326,19 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ files, ahead, behind, lastSync });
   } catch (err) {
+    console.error("Git API Error (status):", err);
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+async function hasRemote() {
+  try {
+    const { stdout } = await git(["remote"]);
+    const remotes = stdout.split(/\s+/).filter(Boolean);
+    return remotes.includes("origin");
+  } catch {
+    return false;
   }
 }
 
@@ -334,13 +346,20 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as { action: "pull" | "push" | "discard"; message?: string; path?: string };
+    const remoteExists = await hasRemote();
 
     if (body.action === "pull") {
+      if (!remoteExists) {
+        return NextResponse.json({ ok: true, output: "未配置远程仓库，跳过拉取。" });
+      }
       const { stdout, stderr } = await git(["pull", "--rebase", "--autostash"]);
       return NextResponse.json({ ok: true, output: stdout || stderr });
     }
 
     if (body.action === "push") {
+      if (!remoteExists) {
+        return NextResponse.json({ error: "未配置远程仓库，无法上传。请先为笔记本配置远程 Git 仓库（如通过 git remote add origin <url>）。" }, { status: 400 });
+      }
       const message = body.message?.trim() || `更新笔记 ${new Date().toLocaleDateString("zh-CN")}`;
       await git(["add", "-A"]);
 
@@ -383,6 +402,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: "未知操作" }, { status: 400 });
   } catch (err) {
+    console.error("Git API Error (POST):", err);
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }

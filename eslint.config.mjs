@@ -14,6 +14,12 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "src-tauri/**",
     "claude-chat/**",
+    "desktop-bundle/**",
+    "desktop-lite/marked.min.js",
+    "public/sw.js",
+    "public/workbox-*.js",
+    "public/swe-worker-*.js",
+    "scripts/cleanup-standalone.js",
   ]),
 ]);
 

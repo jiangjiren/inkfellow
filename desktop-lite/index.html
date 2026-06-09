@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>inkfellow</title>
+    <link rel="icon" href="./icon.png?v=3" />
+    <link rel="stylesheet" href="./app.css?v=3" />
+  </head>
+  <body>
+    <div id="shell" class="shell">
+
+      <!-- ── Left Sidebar ───────────────────────────── -->
+      <aside id="sidebar" class="sidebar">
+
+        <div class="sidebarHeader">
+          <h1 class="title">inkfellow</h1>
+          <div class="sidebarHeaderActions">
+            <button id="btn-new-note" class="iconButton" type="button" title="New note">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+            </button>
+            <button id="btn-choose-vault" class="iconButton" type="button" title="Change vault folder">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12V5.5L7 3l5 2.5V12"/><rect x="5" y="8" width="6" height="4" rx="0.5"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="vault-row" class="vaultRow">
+          <svg class="vaultRowIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11V5l4-2 4 2v6"/><path d="M6 11V8h4v3"/></svg>
+          <span id="vault-label" class="vaultRowLabel">Loading...</span>
+        </div>
+
+        <label class="search">
+          <span class="searchIcon"></span>
+          <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search notes…" />
+        </label>
+
+        <div id="search-results" class="searchResults" hidden></div>
+
+        <div id="tree-panel" class="treePanel">
+          <div id="tree" class="treeGroup"></div>
+        </div>
+
+        <div class="sidebarFooter">
+          <button id="btn-git-footer" class="sidebarGitStatus" type="button">
+            <span id="sidebar-git-dot" class="sidebarGitDot"></span>
+            <span id="sidebar-git-label" class="sidebarGitLabel">Checking…</span>
+            <span class="sidebarGitArrow">›</span>
+          </button>
+        </div>
+
+      </aside>
+
+      <!-- Sidebar resize handle -->
+      <div id="sidebar-resizer" class="sidebarResizer"></div>
+
+      <!-- ── Center: Reader ─────────────────────────── -->
+      <main id="reader" class="reader">
+
+        <header id="reader-header" class="readerHeader">
+          <div class="readerHeaderLeft">
+            <button id="btn-toggle-sidebar" class="iconButton" type="button" title="Toggle sidebar">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/></svg>
+            </button>
+            <div id="note-meta" class="noteMeta">
+              <span id="note-title">选择一篇笔记</span>
+            </div>
+          </div>
+          <div class="readerActions">
+            <span id="dirty-indicator" class="dirtyIndicator" hidden title="Unsaved changes">●</span>
+            <button id="btn-toggle-mode" class="iconButton" type="button" title="Toggle Edit / Preview" hidden>Edit</button>
+            <button id="btn-save" class="iconButton" type="button" title="Save (Ctrl+S)" disabled>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V3h7l3 3v7H3z"/><path d="M10 3v4H5V3"/><path d="M5 13V9h6v4"/></svg>
+            </button>
+            <button id="btn-delete" class="iconButton iconButtonDanger" type="button" title="Delete note" disabled>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,4 13,4"/><path d="M6 4V2h4v2"/><path d="M5 4l1 9h4l1-9"/></svg>
+            </button>
+            <button id="btn-toggle-panel" class="iconButton iconButtonPanelToggle" type="button" title="Toggle Fellow panel">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.5"/><path d="M4 13c0-2.2 1.8-4 4-4s4 1.8 4 4"/></svg>
+              <span>Fellow</span>
+            </button>
+          </div>
+        </header>
+
+        <div id="doc-area" class="docArea">
+          <div class="emptyState">
+            <div class="emptyStateIcon">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="6" width="32" height="36" rx="3"/><line x1="15" y1="15" x2="33" y2="15"/><line x1="15" y1="21" x2="33" y2="21"/><line x1="15" y1="27" x2="25" y2="27"/></svg>
+            </div>
+            <p class="emptyStateTitle">打开或创建一篇笔记</p>
+            <p class="emptyStateHint">从左侧文件树中选择，或点击 <strong>+</strong> 新建</p>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- Assistant panel resize handle -->
+      <div id="panel-resizer" class="assistantPanelResizer"></div>
+
+      <!-- ── Right: Assistant Panel ─────────────────── -->
+      <aside id="assistant-panel" class="assistantPanel">
+
+        <div class="assistantPanelHeader">
+          <div class="assistantPanelTabs" role="tablist">
+            <button class="assistantPanelTab assistantPanelTabActive" role="tab" data-tab="agent" type="button">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="5" r="2"/><path d="M3.5 12c0-1.9 1.6-3.5 3.5-3.5s3.5 1.6 3.5 3.5"/></svg>
+              Fellow
+            </button>
+            <button class="assistantPanelTab" role="tab" data-tab="toc" type="button">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="2" y1="4" x2="12" y2="4"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="4" y1="10" x2="10" y2="10"/></svg>
+              Outline
+            </button>
+            <button class="assistantPanelTab" role="tab" data-tab="git" type="button">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="10.5" r="1.5"/><circle cx="10" cy="5.5" r="1.5"/><line x1="4" y1="5" x2="4" y2="9"/><path d="M5.5 3.5H8c1.1 0 2 .9 2 2v0"/></svg>
+              Git
+            </button>
+          </div>
+          <div class="assistantPanelControls">
+            <button id="btn-close-panel" class="assistantPanelClose" type="button" title="Close panel">✕</button>
+          </div>
+        </div>
+
+        <!-- Fellow (agent iframe) -->
+        <iframe
+          id="agent-frame"
+          class="assistantPanelFrame"
+          title="inkfellow Fellow"
+          allow="clipboard-read; clipboard-write"
+        ></iframe>
+
+        <!-- Outline (TOC) -->
+        <div id="toc-panel" class="articleToc" hidden>
+          <div class="articleTocHeader">
+            <span>OUTLINE</span>
+            <strong id="toc-count"></strong>
+          </div>
+          <ul id="toc-list" class="articleTocList"></ul>
+          <p class="articleTocEmpty" id="toc-empty" hidden>当前笔记没有标题</p>
+        </div>
+
+        <!-- Git -->
+        <div id="git-panel" class="gitTabPanel" hidden>
+          <div class="gitStatusBar">
+            <div class="gitStatusLeft">
+              <span id="git-status-dot" class="gitStatusDot"></span>
+              <div>
+                <div id="git-status-label" class="gitStatusLabel">Checking…</div>
+                <div id="git-status-sub" class="gitStatusSubLabel"></div>
+              </div>
+            </div>
+            <button id="btn-git-refresh" class="gitRefresh" type="button" title="Refresh Git status">↺</button>
+          </div>
+          <div id="git-feedback" class="gitFeedback" hidden></div>
+          <div class="gitFileListContainer">
+            <div class="gitFileList">
+              <ul id="git-file-list"></ul>
+            </div>
+          </div>
+          <div class="gitCommitArea">
+            <input id="git-commit-msg" class="gitCommitInput" type="text" placeholder="Commit message…" value="Update notes" />
+            <div class="gitCommitActions">
+              <button id="btn-git-init" class="ghostButton" type="button">Init</button>
+              <button id="btn-git-pull" class="ghostButton" type="button">Pull</button>
+              <button id="btn-git-push" class="primaryButton" type="button">Commit + Push</button>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </div>
+
+    <!-- Context menu (floats near tree node "⋯" button) -->
+    <div id="context-menu" class="treeActionMenu" hidden></div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast" aria-live="polite" hidden></div>
+
+    <!-- Rename / input dialog overlay -->
+    <div id="dialog-overlay" class="dialogOverlay" hidden>
+      <div class="dialog">
+        <p id="dialog-message" class="dialogMessage"></p>
+        <input id="dialog-input" class="dialogInput" type="text" />
+        <div class="dialogActions">
+          <button id="dialog-cancel" class="ghostButton" type="button">Cancel</button>
+          <button id="dialog-confirm" class="primaryButton" type="button">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./marked.min.js?v=4"></script>
+    <script src="./app.js?v=4"></script>
+  </body>
+</html>

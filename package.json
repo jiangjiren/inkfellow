@@ -9,7 +9,10 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
-    "tauri:build": "npm run build && node -e \"const fs = require('fs'); ['vault', 'src-tauri', '.git'].forEach(dir => { const p = '.next/standalone/' + dir; if(fs.existsSync(p)) fs.rmSync(p, {recursive: true, force: true}); });\" && npx -y @tauri-apps/cli build"
+    "desktop:prepare": "node scripts/prepare-desktop-sidecar.mjs",
+    "desktop:build": "npx -y @tauri-apps/cli build",
+    "desktop:dev": "npx -y @tauri-apps/cli dev",
+    "tauri:build": "npm run desktop:build"
   },
   "dependencies": {
     "@ducanh2912/next-pwa": "^10.2.9",

@@ -14,6 +14,10 @@ const nextConfig: NextConfig = {
     cpus: 1,
     workerThreads: true,
     staticGenerationMaxConcurrency: 1,
+    // 经过 proxy.ts 中间件的请求体默认上限 10MB；文件导入分批最大 ~20MB，
+    // 放开到 50MB（与 nginx client_max_body_size 对齐），否则大批次会被截断、
+    // multipart 边界丢失导致整批 FormData 解析失败。
+    proxyClientMaxBodySize: '50mb',
   },
   outputFileTracingExcludes: {
     '*': [

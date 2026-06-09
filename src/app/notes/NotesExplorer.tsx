@@ -933,6 +933,9 @@ export default function NotesExplorer() {
   const [importFolder, setImportFolder] = useState("");
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  // 分批导入进度：total=总数, done=已处理数；importFailed=失败清单（全部跑完后展示）
+  const [importProgress, setImportProgress] = useState<{ total: number; done: number } | null>(null);
+  const [importFailed, setImportFailed] = useState<Array<{ name: string; reason: string }>>([]);
   const importInputRef = useRef<HTMLInputElement>(null);
   // ── ⋯ 更多菜单 ───────────────────────────────────────
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -2372,32 +2375,73 @@ export default function NotesExplorer() {
     const selectedFiles = Array.from(fileList ?? []);
     if (selectedFiles.length === 0) return;
 
-    setImportLoading(true);
-    try {
-      const form = new FormData();
-      form.set("folder", importFolder);
-      selectedFiles.forEach((file) => form.append("files", file));
-
-      const res = await fetch("/api/notes/import", {
-        method: "POST",
-        body: form,
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error ?? "导入失败");
+    // 分批：每批最多 4 个文件，且累计不超过 8MB，逐批顺序上传，
+    // 既避开反向代理的请求体大小限制，也降低服务端内存峰值。
+    const MAX_FILES_PER_BATCH = 4;
+    const MAX_BYTES_PER_BATCH = 8 * 1024 * 1024;
+    const batches: File[][] = [];
+    let current: File[] = [];
+    let currentBytes = 0;
+    for (const file of selectedFiles) {
+      const tooManyFiles = current.length >= MAX_FILES_PER_BATCH;
+      const tooLarge = current.length > 0 && currentBytes + file.size > MAX_BYTES_PER_BATCH;
+      if (tooManyFiles || tooLarge) {
+        batches.push(current);
+        current = [];
+        currentBytes = 0;
       }
-      const data = (await res.json()) as { files: Array<{ path: string }> };
+      current.push(file);
+      currentBytes += file.size;
+    }
+    if (current.length > 0) batches.push(current);
+
+    setImportFailed([]);
+    setImportProgress({ total: selectedFiles.length, done: 0 });
+    setImportLoading(true);
+
+    const imported: Array<{ path: string }> = [];
+    const failed: Array<{ name: string; reason: string }> = [];
+    let done = 0;
+    try {
+      for (const batch of batches) {
+        const form = new FormData();
+        form.set("folder", importFolder);
+        batch.forEach((file) => form.append("files", file));
+
+        try {
+          const res = await fetch("/api/notes/import", { method: "POST", body: form });
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { error?: string };
+            // 整批请求失败（如 413 / 网络错误）：本批全部记为失败，继续下一批。
+            const reason = data.error ?? (res.status === 413 ? "文件过大" : `导入失败（${res.status}）`);
+            batch.forEach((file) => failed.push({ name: file.name, reason }));
+          } else {
+            const data = (await res.json()) as {
+              files: Array<{ path: string }>;
+              failed?: Array<{ name: string; reason: string }>;
+            };
+            imported.push(...data.files);
+            if (data.failed?.length) failed.push(...data.failed);
+          }
+        } catch {
+          batch.forEach((file) => failed.push({ name: file.name, reason: "网络错误" }));
+        }
+
+        done += batch.length;
+        setImportProgress({ total: selectedFiles.length, done });
+      }
+
       await refreshTree();
-      if (data.files.length === 1) {
-        setHasGitChanges(true);
-        void loadNote(data.files[0].path);
+      if (imported.length > 0) setHasGitChanges(true);
+      if (imported.length === 1 && failed.length === 0) {
+        void loadNote(imported[0].path);
       } else if (importFolder) {
         openAncestors(`${importFolder}/_`);
       }
-    } catch (err) {
-      setImportError(err instanceof Error ? err.message : "导入失败");
+      if (failed.length > 0) setImportFailed(failed);
     } finally {
       setImportLoading(false);
+      setImportProgress(null);
       if (importInputRef.current) importInputRef.current.value = "";
     }
   }, [importFolder, loadNote, openAncestors, refreshTree]);
@@ -3441,6 +3485,71 @@ export default function NotesExplorer() {
           </article>
         ) : null}
       </section>
+
+      {importProgress ? (
+        <div className={styles.shareOverlay} role="presentation">
+          <section
+            className={styles.importProgressDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="import-progress-title"
+            aria-busy="true"
+          >
+            <span className={styles.importSpinner} aria-hidden="true" />
+            <h2 id="import-progress-title" className={styles.importProgressTitle}>正在导入…</h2>
+            <p className={styles.importProgressCount}>
+              {importProgress.done} / {importProgress.total}
+            </p>
+            <div className={styles.importProgressTrack} role="progressbar" aria-valuemin={0} aria-valuemax={importProgress.total} aria-valuenow={importProgress.done}>
+              <div
+                className={styles.importProgressFill}
+                style={{ width: `${importProgress.total ? Math.round((importProgress.done / importProgress.total) * 100) : 0}%` }}
+              />
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {importFailed.length > 0 ? (
+        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => setImportFailed([])}>
+          <section
+            className={styles.shareDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="import-failed-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className={styles.shareDialogHeader}>
+              <div>
+                <p className={styles.shareDialogEyebrow}>导入文件</p>
+                <h2 id="import-failed-title" className={styles.shareDialogTitle}>{importFailed.length} 个文件未导入</h2>
+              </div>
+              <button
+                type="button"
+                className={styles.shareDialogClose}
+                onClick={() => setImportFailed([])}
+                aria-label="关闭"
+                title="关闭"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </header>
+            <div className={styles.shareDialogBody}>
+              <ul className={styles.importFailedList}>
+                {importFailed.map((item, index) => (
+                  <li key={`${item.name}-${index}`} className={styles.importFailedItem}>
+                    <span className={styles.importFailedName}>{item.name}</span>
+                    <span className={styles.importFailedReason}>{item.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <footer className={styles.shareDialogActions}>
+              <button type="button" className={styles.sharePrimaryButton} onClick={() => setImportFailed([])}>知道了</button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {importError ? (
         <div className={styles.shareOverlay} role="presentation" onMouseDown={() => setImportError(null)}>

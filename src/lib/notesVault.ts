@@ -665,28 +665,33 @@ export const importVaultFiles = async (
   }
 
   const imported: Array<{ path: string; name: string; size: number }> = [];
+  const failed: Array<{ name: string; reason: string }> = [];
   for (const file of files) {
-    const cleanName = sanitizeNameSegment(path.basename(file.name));
-    if (!isNoteFile(cleanName)) {
-      throw new VaultAccessError("Only Markdown, HTML, PDF, and image files can be imported.", 415);
-    }
-
-    const relativePath = sanitizedFolder ? `${sanitizedFolder}/${cleanName}` : cleanName;
-    const absolutePath = path.resolve(vaultRoot, relativePath);
-    assertInsideVault(absolutePath, vaultRoot);
-
+    // 单个文件出错时只记录、不中断，让其余文件继续导入。
     try {
-      await fs.access(absolutePath);
-      throw new VaultAccessError(`"${cleanName}" already exists.`, 409);
-    } catch (err) {
-      if (err instanceof VaultAccessError) throw err;
-    }
+      const cleanName = sanitizeNameSegment(path.basename(file.name));
+      if (!isNoteFile(cleanName)) {
+        throw new VaultAccessError("仅支持 Markdown、HTML、PDF 和图片文件。", 415);
+      }
 
-    await fs.writeFile(absolutePath, file.data);
-    imported.push({ path: relativePath, name: cleanName, size: file.data.byteLength });
+      const relativePath = sanitizedFolder ? `${sanitizedFolder}/${cleanName}` : cleanName;
+      const absolutePath = path.resolve(vaultRoot, relativePath);
+      assertInsideVault(absolutePath, vaultRoot);
+
+      const exists = await fs.access(absolutePath).then(() => true).catch(() => false);
+      if (exists) {
+        throw new VaultAccessError(`“${cleanName}”已存在。`, 409);
+      }
+
+      await fs.writeFile(absolutePath, file.data);
+      imported.push({ path: relativePath, name: cleanName, size: file.data.byteLength });
+    } catch (err) {
+      const reason = err instanceof VaultAccessError ? err.message : "写入失败。";
+      failed.push({ name: file.name, reason });
+    }
   }
 
-  return { files: imported };
+  return { files: imported, failed };
 };
 
 export const mapVaultError = (error: unknown) => {

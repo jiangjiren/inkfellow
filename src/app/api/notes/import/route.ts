@@ -14,12 +14,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing files." }, { status: 400 });
     }
 
-    const files = await Promise.all(
-      entries.map(async (file) => ({
-        name: file.name,
-        data: new Uint8Array(await file.arrayBuffer()),
-      })),
-    );
+    // 逐个读取文件，避免一次性把整批文件全部展开到内存导致峰值飙升。
+    const files: Array<{ name: string; data: Uint8Array }> = [];
+    for (const file of entries) {
+      files.push({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) });
+    }
     const result = await importVaultFiles(targetFolder, files);
     return NextResponse.json(result, { status: 201 });
   } catch (error) {

@@ -28,6 +28,11 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
+    # Allow larger uploads. File import batches files (≤8MB/request) on the
+    # client, but a single large photo can still exceed nginx's 1MB default,
+    # which would be rejected with 413 before reaching Next.js.
+    client_max_body_size 20m;
+
     # ── Notes App (Next.js on port 3000) ─────────────────────────
     location / {
         proxy_pass         http://127.0.0.1:3000;

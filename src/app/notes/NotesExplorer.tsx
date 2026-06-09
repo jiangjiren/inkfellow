@@ -2375,10 +2375,12 @@ export default function NotesExplorer() {
     const selectedFiles = Array.from(fileList ?? []);
     if (selectedFiles.length === 0) return;
 
-    // 分批：每批最多 4 个文件，且累计不超过 8MB，逐批顺序上传，
-    // 既避开反向代理的请求体大小限制，也降低服务端内存峰值。
-    const MAX_FILES_PER_BATCH = 4;
-    const MAX_BYTES_PER_BATCH = 8 * 1024 * 1024;
+    // 分批：每批累计不超过 ~20MB（nginx 上限 50M，留足余量），最多 8 个文件。
+    // 单张超过 20MB 的大文件自成一批。批与批之间并发上传（见下方并发池），
+    // 既避开请求体大小限制、控制服务端内存峰值，又不牺牲整体速度。
+    const MAX_FILES_PER_BATCH = 8;
+    const MAX_BYTES_PER_BATCH = 20 * 1024 * 1024;
+    const UPLOAD_CONCURRENCY = 3;
     const batches: File[][] = [];
     let current: File[] = [];
     let currentBytes = 0;
@@ -2402,34 +2404,48 @@ export default function NotesExplorer() {
     const imported: Array<{ path: string }> = [];
     const failed: Array<{ name: string; reason: string }> = [];
     let done = 0;
-    try {
-      for (const batch of batches) {
-        const form = new FormData();
-        form.set("folder", importFolder);
-        batch.forEach((file) => form.append("files", file));
 
-        try {
-          const res = await fetch("/api/notes/import", { method: "POST", body: form });
-          if (!res.ok) {
-            const data = (await res.json().catch(() => ({}))) as { error?: string };
-            // 整批请求失败（如 413 / 网络错误）：本批全部记为失败，继续下一批。
-            const reason = data.error ?? (res.status === 413 ? "文件过大" : `导入失败（${res.status}）`);
-            batch.forEach((file) => failed.push({ name: file.name, reason }));
-          } else {
-            const data = (await res.json()) as {
-              files: Array<{ path: string }>;
-              failed?: Array<{ name: string; reason: string }>;
-            };
-            imported.push(...data.files);
-            if (data.failed?.length) failed.push(...data.failed);
-          }
-        } catch {
-          batch.forEach((file) => failed.push({ name: file.name, reason: "网络错误" }));
+    const uploadBatch = async (batch: File[]) => {
+      const form = new FormData();
+      form.set("folder", importFolder);
+      batch.forEach((file) => form.append("files", file));
+
+      try {
+        const res = await fetch("/api/notes/import", { method: "POST", body: form });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          // 整批请求失败（如 413 / 网络错误）：本批全部记为失败，继续其余批次。
+          const reason = data.error ?? (res.status === 413 ? "文件过大" : `导入失败（${res.status}）`);
+          batch.forEach((file) => failed.push({ name: file.name, reason }));
+        } else {
+          const data = (await res.json()) as {
+            files: Array<{ path: string }>;
+            failed?: Array<{ name: string; reason: string }>;
+          };
+          imported.push(...data.files);
+          if (data.failed?.length) failed.push(...data.failed);
         }
-
-        done += batch.length;
-        setImportProgress({ total: selectedFiles.length, done });
+      } catch {
+        batch.forEach((file) => failed.push({ name: file.name, reason: "网络错误" }));
       }
+
+      // JS 单线程，await 之间的累加与 push 不会竞态。
+      done += batch.length;
+      setImportProgress({ total: selectedFiles.length, done });
+    };
+
+    try {
+      // 并发池：同时最多 UPLOAD_CONCURRENCY 个批次在传，传完一个立刻领下一个。
+      let nextIndex = 0;
+      const worker = async () => {
+        while (nextIndex < batches.length) {
+          const batch = batches[nextIndex++];
+          await uploadBatch(batch);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, batches.length) }, worker),
+      );
 
       await refreshTree();
       if (imported.length > 0) setHasGitChanges(true);

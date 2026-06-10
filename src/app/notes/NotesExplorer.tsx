@@ -1461,6 +1461,8 @@ export default function NotesExplorer() {
         const params = new URLSearchParams({ path });
         const response = await fetch(`/api/notes/file?${params.toString()}`, {
           cache: "no-store",
+          // 超时保护：静默重载依赖 isReloadingRef 串行化，挂死的请求会永久阻塞后续刷新
+          signal: AbortSignal.timeout(15000),
         });
 
         if (!response.ok) {
@@ -1588,13 +1590,20 @@ export default function NotesExplorer() {
     };
   }, []);
 
-  // SSE 监听服务端文件变动，替代 2s 轮询；activePath 切换时自动重连
+  // SSE 监听服务端文件变动，替代 2s 轮询；activePath 切换时自动重连。
+  // EventSource 收到 HTTP 错误响应（部署重启窗口的 502、鉴权过期的 401 等）会永久
+  // 关闭且不再自动重试，必须自行管理重连；另用服务端 20s 的 ping 事件做活性看门狗，
+  // 兜住休眠/切网后协议层探测不到的半死连接。
   const isReloadingRef = useRef(false);
   useEffect(() => {
     if (!activePath || isPdfPath(activePath) || isImagePath(activePath)) return;
 
-    const es = new EventSource(`/api/notes/watch?path=${encodeURIComponent(activePath)}`);
+    let es: EventSource | null = null;
+    let disposed = false;
     let pending = false;
+    let retryDelay = 1000;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
     const runReload = async () => {
       // 重载进行中：标记 pending，结束后再补一次，避免并发写入被丢
@@ -1606,24 +1615,67 @@ export default function NotesExplorer() {
         const r = await fetch(`/api/notes/git?check=${encodeURIComponent(activePath)}`);
         const data = r.ok ? (await r.json() as { changed: boolean }) : null;
         if (data != null) setHasGitChanges(data.changed);
-      } catch { /* silent */ } finally {
+      } catch {
+        // 瞬时失败（网络抖动/服务重启窗口）会把这次变更永久丢掉，3s 后补一次
+        if (!disposed) setTimeout(() => { void runReload(); }, 3000);
+      } finally {
         isReloadingRef.current = false;
         setTimeout(() => { isSilentReloadRef.current = false; }, 400);
         if (pending) { pending = false; void runReload(); }
       }
     };
 
-    es.addEventListener("change", () => { void runReload(); });
+    // 服务端每 20s 一个 ping；65s 内无任何消息（容忍丢 2 个 ping）视为连接半死，强制重建
+    const armWatchdog = () => {
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+      watchdogTimer = setTimeout(() => scheduleReconnect(0), 65000);
+    };
 
-    // 重连时补一次重载，兜住断连间隙内错过的改动；首次连接已由 loadNote 加载过，跳过
-    let opened = false;
-    es.addEventListener("open", () => {
-      if (opened) void runReload();
-      opened = true;
-    });
+    const scheduleReconnect = (delay = retryDelay) => {
+      if (disposed) return;
+      es?.close();
+      es = null;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(connect, delay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      es = new EventSource(`/api/notes/watch?path=${encodeURIComponent(activePath)}`);
+      armWatchdog();
+      es.addEventListener("open", () => {
+        retryDelay = 1000;
+        armWatchdog();
+        // 每次连接建立都补一次重载，兜住 watcher 挂载前错过的改动
+        // （含初次 loadNote 与服务端 fs.watch 生效之间的窗口）
+        void runReload();
+      });
+      es.addEventListener("change", () => { armWatchdog(); void runReload(); });
+      es.addEventListener("ping", () => armWatchdog());
+      es.addEventListener("error", () => {
+        // CLOSED 表示浏览器已放弃自动重连（收到 HTTP 错误响应），需手动重建；
+        // CONNECTING 则是浏览器在自动重连，交给看门狗兜底即可
+        if (es?.readyState === EventSource.CLOSED) scheduleReconnect();
+      });
+    };
+
+    // 标签页回到前台时补一次重载并重置看门狗，立即覆盖休眠/后台期间错过的改动
+    const handleVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      armWatchdog();
+      void runReload();
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+
+    connect();
 
     return () => {
-      es.close();
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+      es?.close();
+      document.removeEventListener("visibilitychange", handleVisible);
       isReloadingRef.current = false;
     };
   }, [activePath, loadNote]);

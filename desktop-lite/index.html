@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>inkfellow</title>
     <link rel="icon" href="./icon.png?v=3" />
-    <link rel="stylesheet" href="./app.css?v=3" />
+    <link rel="stylesheet" href="./vendor/codemirror.min.css" />
+    <link rel="stylesheet" href="./app.css?v=4" />
   </head>
   <body>
     <div id="shell" class="shell">
@@ -14,20 +15,18 @@
       <aside id="sidebar" class="sidebar">
 
         <div class="sidebarHeader">
-          <h1 class="title">inkfellow</h1>
-          <div class="sidebarHeaderActions">
-            <button id="btn-new-note" class="iconButton" type="button" title="New note">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+          <div class="vaultSwitcherWrapper">
+            <button id="btn-vault-switcher" class="vaultSwitcherBtn" type="button" aria-expanded="false" title="当前笔记本路径: 未设置">
+              <div class="vaultSwitcherMain">
+                <p class="vaultSwitcherEyebrow">inkfellow</p>
+                <h1 class="vaultSwitcherTitle">
+                  <span id="vault-label">加载中…</span>
+                  <svg class="vaultChevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                </h1>
+              </div>
             </button>
-            <button id="btn-choose-vault" class="iconButton" type="button" title="Change vault folder">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12V5.5L7 3l5 2.5V12"/><rect x="5" y="8" width="6" height="4" rx="0.5"/></svg>
-            </button>
+            <div id="vault-menu" class="vaultDropdownMenu" role="menu" hidden></div>
           </div>
-        </div>
-
-        <div id="vault-row" class="vaultRow">
-          <svg class="vaultRowIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11V5l4-2 4 2v6"/><path d="M6 11V8h4v3"/></svg>
-          <span id="vault-label" class="vaultRowLabel">Loading...</span>
         </div>
 
         <label class="search">
@@ -44,7 +43,7 @@
         <div class="sidebarFooter">
           <button id="btn-git-footer" class="sidebarGitStatus" type="button">
             <span id="sidebar-git-dot" class="sidebarGitDot"></span>
-            <span id="sidebar-git-label" class="sidebarGitLabel">Checking…</span>
+            <span id="sidebar-git-label" class="sidebarGitLabel">正在检查…</span>
             <span class="sidebarGitArrow">›</span>
           </button>
         </div>
@@ -67,16 +66,26 @@
             </div>
           </div>
           <div class="readerActions">
-            <span id="dirty-indicator" class="dirtyIndicator" hidden title="Unsaved changes">●</span>
-            <button id="btn-toggle-mode" class="iconButton" type="button" title="Toggle Edit / Preview" hidden>Edit</button>
-            <button id="btn-save" class="iconButton" type="button" title="Save (Ctrl+S)" disabled>
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V3h7l3 3v7H3z"/><path d="M10 3v4H5V3"/><path d="M5 13V9h6v4"/></svg>
-            </button>
-            <button id="btn-delete" class="iconButton iconButtonDanger" type="button" title="Delete note" disabled>
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,4 13,4"/><path d="M6 4V2h4v2"/><path d="M5 4l1 9h4l1-9"/></svg>
-            </button>
-            <button id="btn-toggle-panel" class="iconButton iconButtonPanelToggle" type="button" title="Toggle Fellow panel">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.5"/><path d="M4 13c0-2.2 1.8-4 4-4s4 1.8 4 4"/></svg>
+            <span id="saved-hint" class="savedHint" hidden>已保存</span>
+            <button id="btn-toggle-mode" class="editBtn" type="button" title="编辑笔记" hidden></button>
+            <div class="moreMenuWrapper">
+              <button id="btn-more-menu" class="iconButton" type="button" title="更多操作" aria-expanded="false" disabled>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+              </button>
+              <div id="more-menu" class="moreMenuDropdown" role="menu" hidden>
+                <button id="menu-outline" class="moreMenuItem" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                  大纲
+                </button>
+                <div class="moreMenuDivider" role="separator"></div>
+                <button id="menu-delete" class="moreMenuItem moreMenuItemDanger" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                  删除文件
+                </button>
+              </div>
+            </div>
+            <button id="btn-toggle-panel" class="fellowPill" type="button" title="Fellow" aria-label="Fellow AI 助手">
+              <span aria-hidden="true">✦</span>
               <span>Fellow</span>
             </button>
           </div>
@@ -88,7 +97,7 @@
               <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="6" width="32" height="36" rx="3"/><line x1="15" y1="15" x2="33" y2="15"/><line x1="15" y1="21" x2="33" y2="21"/><line x1="15" y1="27" x2="25" y2="27"/></svg>
             </div>
             <p class="emptyStateTitle">打开或创建一篇笔记</p>
-            <p class="emptyStateHint">从左侧文件树中选择，或点击 <strong>+</strong> 新建</p>
+            <p class="emptyStateHint">从左侧文件树中选择，或在文件夹的 <strong>⋯</strong> 菜单中新建</p>
           </div>
         </div>
 
@@ -108,11 +117,11 @@
             </button>
             <button class="assistantPanelTab" role="tab" data-tab="toc" type="button">
               <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="2" y1="4" x2="12" y2="4"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="4" y1="10" x2="10" y2="10"/></svg>
-              Outline
+              大纲
             </button>
             <button class="assistantPanelTab" role="tab" data-tab="git" type="button">
               <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="10.5" r="1.5"/><circle cx="10" cy="5.5" r="1.5"/><line x1="4" y1="5" x2="4" y2="9"/><path d="M5.5 3.5H8c1.1 0 2 .9 2 2v0"/></svg>
-              Git
+              同步
             </button>
           </div>
           <div class="assistantPanelControls">
@@ -131,40 +140,15 @@
         <!-- Outline (TOC) -->
         <div id="toc-panel" class="articleToc" hidden>
           <div class="articleTocHeader">
-            <span>OUTLINE</span>
+            <span>大纲</span>
             <strong id="toc-count"></strong>
           </div>
           <ul id="toc-list" class="articleTocList"></ul>
           <p class="articleTocEmpty" id="toc-empty" hidden>当前笔记没有标题</p>
         </div>
 
-        <!-- Git -->
-        <div id="git-panel" class="gitTabPanel" hidden>
-          <div class="gitStatusBar">
-            <div class="gitStatusLeft">
-              <span id="git-status-dot" class="gitStatusDot"></span>
-              <div>
-                <div id="git-status-label" class="gitStatusLabel">Checking…</div>
-                <div id="git-status-sub" class="gitStatusSubLabel"></div>
-              </div>
-            </div>
-            <button id="btn-git-refresh" class="gitRefresh" type="button" title="Refresh Git status">↺</button>
-          </div>
-          <div id="git-feedback" class="gitFeedback" hidden></div>
-          <div class="gitFileListContainer">
-            <div class="gitFileList">
-              <ul id="git-file-list"></ul>
-            </div>
-          </div>
-          <div class="gitCommitArea">
-            <input id="git-commit-msg" class="gitCommitInput" type="text" placeholder="Commit message…" value="Update notes" />
-            <div class="gitCommitActions">
-              <button id="btn-git-init" class="ghostButton" type="button">Init</button>
-              <button id="btn-git-pull" class="ghostButton" type="button">Pull</button>
-              <button id="btn-git-push" class="primaryButton" type="button">Commit + Push</button>
-            </div>
-          </div>
-        </div>
+        <!-- Git（内容由 renderGitPanel 动态渲染） -->
+        <div id="git-panel" class="gitTabPanel" hidden></div>
 
       </aside>
     </div>
@@ -188,6 +172,9 @@
     </div>
 
     <script src="./marked.min.js?v=4"></script>
-    <script src="./app.js?v=4"></script>
+    <script src="./vendor/codemirror.min.js"></script>
+    <script src="./vendor/markdown.min.js"></script>
+    <script src="./vendor/continuelist.min.js"></script>
+    <script src="./app.js?v=7"></script>
   </body>
 </html>

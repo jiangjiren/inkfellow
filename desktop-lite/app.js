@@ -44,6 +44,20 @@ const state = {
 };
 
 /* ── Tauri bridge ────────────────────────────────── */
+function waitForTauri(timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    if (window.__TAURI__?.core?.invoke) { resolve(); return; }
+    const start = Date.now();
+    const check = setInterval(() => {
+      if (window.__TAURI__?.core?.invoke) { clearInterval(check); resolve(); return; }
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(check);
+        reject(new Error("Tauri API timeout: __TAURI__ not available after " + timeoutMs + "ms"));
+      }
+    }, 50);
+  });
+}
+
 async function invoke(command, args = {}) {
   const api = window.__TAURI__?.core;
   if (!api?.invoke) throw new Error("Tauri API not available.");
@@ -177,20 +191,85 @@ function showConfirm(message) {
   });
 }
 
-/* ── Dirty state ─────────────────────────────────── */
+/* ── Dirty state & autosave ──────────────────────── */
+const AUTOSAVE_DELAY = 800;
+
 function setDirty(v) {
   state.dirty = v;
-  qs("dirty-indicator").hidden = !v;
-  qs("btn-save").disabled = !state.activeNote || !v;
+}
+
+function scheduleAutosave() {
+  clearTimeout(state.autosaveTimer);
+  state.autosaveTimer = setTimeout(() => { void saveNote(); }, AUTOSAVE_DELAY);
+}
+
+function cancelAutosave() {
+  clearTimeout(state.autosaveTimer);
+}
+
+/* 切换笔记/模式前把未保存内容落盘，避免丢失 */
+async function flushPendingSave() {
+  cancelAutosave();
+  if (state.dirty) await saveNote();
+}
+
+/* 保存成功后短暂显示"已保存"（与 web 端一致） */
+function flashSavedHint() {
+  const el = qs("saved-hint");
+  el.hidden = false;
+  el.style.animation = "none";
+  void el.offsetWidth;
+  el.style.animation = "";
+  clearTimeout(state.savedHintTimer);
+  state.savedHintTimer = setTimeout(() => { el.hidden = true; }, 1700);
 }
 
 /* ── Edit / Preview mode ─────────────────────────── */
-function setEditMode(on) {
-  state.editMode = on;
+const EDIT_PENCIL_ICON = `<svg viewBox="0 0 1024 1024" aria-hidden="true" style="transform: scale(1.3)"><path fill="currentColor" d="M846 792H142c-4.4 0-8 3.6-8 8v40c0 4.4 3.6 8 8 8h704c4.4 0 8-3.6 8-8v-40c0-4.4-3.6-8-8-8zM194.7 726.4l157.4-41.5c4.1-1.1 7.8-3.2 10.8-6.2l357.5-357.5c9.4-9.4 9.4-24.6 0-33.9L614.3 181c-9.4-9.4-24.6-9.4-33.9 0L222.9 538.5c-3 3-5.2 6.7-6.2 10.8l-41.5 157.4c-3.2 12 7.6 22.8 19.5 19.7z m62.5-91.8l16.6-63.2c0.7-2.7 2.2-5.3 4.2-7.3l312.3-312.4c3.1-3.1 8.2-3.1 11.3 0l48.1 48.1c3.1 3.1 3.1 8.2 0 11.3L337.3 623.5c-2 2-4.5 3.4-7.2 4.2L267 644.4c-5.9 1.5-11.3-3.9-9.8-9.8z"/></svg>`;
+const EXIT_EDIT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
+
+function updateEditButton() {
   const btn = qs("btn-toggle-mode");
-  btn.textContent = on ? "Preview" : "Edit";
+  btn.innerHTML = state.editMode ? EXIT_EDIT_ICON : EDIT_PENCIL_ICON;
+  btn.title = state.editMode ? "退出编辑模式" : "编辑笔记";
+  btn.classList.toggle("editBtnActive", state.editMode);
+}
+
+/* 编辑/预览共用 doc-area 作为滚动容器，切换时按比例保持阅读位置 */
+function getDocScrollRatio() {
+  const el = qs("doc-area");
+  const max = el.scrollHeight - el.clientHeight;
+  return max > 0 ? el.scrollTop / max : 0;
+}
+
+function applyDocScrollRatio(ratio) {
+  const el = qs("doc-area");
+  const max = el.scrollHeight - el.clientHeight;
+  el.scrollTop = ratio * max;
+}
+
+/* 把光标放到当前可视区域顶部附近，避免输入时视图跳走 */
+function placeCaretAtVisibleArea() {
+  const cm = state.editor;
+  if (!cm) return;
+  const rect = qs("doc-area").getBoundingClientRect();
+  const pos = cm.coordsChar({ left: rect.left + 80, top: rect.top + 60 }, "window");
+  cm.setCursor(pos);
+}
+
+async function setEditMode(on) {
+  const ratio = getDocScrollRatio();
+  await flushPendingSave();
+  state.editMode = on;
+  updateEditButton();
   localStorage.setItem(EDIT_MODE_KEY, on ? "1" : "0");
   renderDocArea();
+  applyDocScrollRatio(ratio);
+  // CodeMirror 初次渲染后高度才稳定，下一帧再校准一次
+  requestAnimationFrame(() => {
+    applyDocScrollRatio(ratio);
+    placeCaretAtVisibleArea();
+  });
 }
 
 /* ── Markdown rendering ──────────────────────────── */
@@ -200,9 +279,18 @@ function renderMarkdownContent(md) {
 }
 
 /* ── TOC extraction ──────────────────────────────── */
+/* slug 保留中文等 Unicode 字符；重复标题追加序号保证唯一 */
+function slugifyHeading(text, seen) {
+  const base = text.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "") || "heading";
+  const count = seen.get(base) || 0;
+  seen.set(base, count + 1);
+  return count > 0 ? `${base}-${count}` : base;
+}
+
 function extractToc(markdown) {
   const lines = markdown.split("\n");
   const entries = [];
+  const seen = new Map();
   let inCode = false;
   for (const line of lines) {
     if (line.trim().startsWith("```")) { inCode = !inCode; continue; }
@@ -211,8 +299,7 @@ function extractToc(markdown) {
     if (m) {
       const level = m[1].length;
       const text = m[2].replace(/[*_`~\[\]]/g, "").trim();
-      const slug = text.toLowerCase().replace(/\s+/g, "-").replace(/[^\w-]/g, "");
-      entries.push({ level, text, slug });
+      entries.push({ level, text, slug: slugifyHeading(text, seen) });
     }
   }
   return entries;
@@ -230,8 +317,8 @@ function renderToc() {
     return;
   }
 
-  const content = state.editMode
-    ? qs("note-textarea")?.value || state.activeNote.content
+  const content = state.editMode && state.editor
+    ? state.editor.getValue()
     : state.activeNote.content;
   const entries = extractToc(content);
 
@@ -243,6 +330,7 @@ function renderToc() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = entry.text;
+    btn.dataset.slug = entry.slug;
     btn.className = "articleTocLink" + (entry.level > 2 ? " articleTocLinkSub" : "");
     btn.addEventListener("click", () => {
       const docArea = qs("doc-area");
@@ -252,6 +340,31 @@ function renderToc() {
     li.appendChild(btn);
     list.appendChild(li);
   }
+
+  updateActiveTocLink();
+}
+
+/* 滚动跟随：高亮阅读位置所在的标题（与 web 端大纲行为一致） */
+function updateActiveTocLink() {
+  const list = qs("toc-list");
+  if (!list.childElementCount) return;
+  const docArea = qs("doc-area");
+  const headings = docArea.querySelectorAll("[data-heading-slug]");
+  if (!headings.length) return;
+
+  const threshold = docArea.getBoundingClientRect().top + 90;
+  let active = headings[0].getAttribute("data-heading-slug");
+  for (const h of headings) {
+    if (h.getBoundingClientRect().top <= threshold) {
+      active = h.getAttribute("data-heading-slug");
+    } else {
+      break;
+    }
+  }
+
+  list.querySelectorAll(".articleTocLink").forEach((btn) => {
+    btn.classList.toggle("articleTocLinkActive", btn.dataset.slug === active);
+  });
 }
 
 /* ── Document area render ────────────────────────── */
@@ -264,21 +377,6 @@ function renderDocArea() {
     wireDashboard();
     qs("btn-toggle-mode").hidden = true;
     return;
-    docArea.innerHTML = `
-      <div class="emptyState">
-        <div class="emptyStateIcon">
-          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="8" y="6" width="32" height="36" rx="3"/>
-            <line x1="15" y1="15" x2="33" y2="15"/>
-            <line x1="15" y1="21" x2="33" y2="21"/>
-            <line x1="15" y1="27" x2="25" y2="27"/>
-          </svg>
-        </div>
-        <p class="emptyStateTitle">打开或创建一篇笔记</p>
-        <p class="emptyStateHint">从左侧文件树中选择，或点击 <strong>+</strong> 新建</p>
-      </div>`;
-    qs("btn-toggle-mode").hidden = true;
-    return;
   }
 
   const ext = state.activeNote.extension;
@@ -286,24 +384,38 @@ function renderDocArea() {
   const isImage = isImageExt(ext);
   qs("btn-toggle-mode").hidden = !isText;
 
+  state.editor = null;
+
   if (state.editMode && isText) {
     docArea.className = "docArea docAreaEdit";
-    docArea.innerHTML = `<div class="document"><textarea id="note-textarea" class="noteTextarea" spellcheck="true" placeholder="在此编写 Markdown…"></textarea></div>`;
-    const ta = qs("note-textarea");
-    ta.value = state.activeNote.content;
-    ta.addEventListener("input", () => {
+    docArea.innerHTML = `<div class="document"><div id="cm-container" class="cmContainer"></div></div>`;
+    const cm = CodeMirror(qs("cm-container"), {
+      value: state.activeNote.content,
+      mode: "markdown",
+      lineWrapping: true,
+      autofocus: false,
+      indentUnit: 2,
+      tabSize: 2,
+      extraKeys: { Enter: "newlineAndIndentContinueMarkdownList" },
+      // 编辑器自身不滚动（外层 docArea 统一滚动），需全量渲染行
+      viewportMargin: Infinity,
+    });
+    state.editor = cm;
+    cm.on("change", () => {
       setDirty(true);
+      scheduleAutosave();
       if (state.activeTab === "toc") renderToc();
     });
-    ta.addEventListener("mouseup", sendSelectionContext);
-    ta.addEventListener("keyup", sendSelectionContext);
-    ta.focus();
+    cm.on("blur", () => { void flushPendingSave(); });
+    cm.on("cursorActivity", sendSelectionContext);
+    cm.getInputField().focus({ preventScroll: true });
   } else {
     docArea.className = "docArea";
     if (ext === "md") {
       const html = renderMarkdownContent(state.activeNote.content);
       docArea.innerHTML = `<div class="document"><article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
+      resolveMarkdownImages(state.activeNote.path);
     } else if (/^html?$/.test(ext)) {
       docArea.innerHTML = `<div class="document"><article class="prose" id="prose-content">${state.activeNote.content}</article></div>`;
     } else if (isImage) {
@@ -414,12 +526,54 @@ function wireDashboard() {
 function addHeadingSlugs() {
   const container = qs("prose-content");
   if (!container) return;
+  const seen = new Map();
   container.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((h) => {
-    const text = h.textContent.trim();
-    const slug = text.toLowerCase().replace(/\s+/g, "-").replace(/[^\w-]/g, "");
+    const slug = slugifyHeading(h.textContent, seen);
     h.setAttribute("data-heading-slug", slug);
     h.id = `h-${slug}`;
   });
+}
+
+/* 将 md 里引用的本地图片 src 转成 data URL */
+function resolveRelativePath(base, rel) {
+  const baseParts = base ? base.split("/") : [];
+  const segs = rel.replace(/^\.\//, "").split("/");
+  const out = [...baseParts];
+  for (const s of segs) {
+    if (s === "..") out.pop();
+    else if (s !== "." && s !== "") out.push(s);
+  }
+  return out.join("/");
+}
+
+async function resolveMarkdownImages(notePath) {
+  const container = qs("prose-content");
+  if (!container) return;
+  const imgs = container.querySelectorAll("img");
+  if (!imgs.length) return;
+
+  const noteDir = notePath.includes("/") ? notePath.split("/").slice(0, -1).join("/") : "";
+
+  for (const img of imgs) {
+    const raw = (img.getAttribute("src") || "").trim();
+    // 跳过外链、data URL、锚点
+    if (!raw || /^(https?:|data:|#)/i.test(raw)) continue;
+
+    const assetPath = raw.startsWith("/")
+      ? raw.replace(/^\/+/, "")
+      : resolveRelativePath(noteDir, raw);
+
+    // 加载中占位
+    img.style.opacity = "0.3";
+    try {
+      const asset = await invoke("read_asset", { path: assetPath });
+      img.src = asset.dataUrl;
+    } catch {
+      img.classList.add("imgBroken");
+    } finally {
+      img.style.opacity = "";
+    }
+  }
 }
 
 /* ── Header meta ─────────────────────────────────── */
@@ -430,6 +584,8 @@ function renderNoteMeta() {
   if (!state.activeNote) {
     titleEl.textContent = "inkfellow Desktop";
     metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
+    qs("btn-more-menu").disabled = true;
+    toggleMoreMenu(false);
     return;
   }
 
@@ -448,7 +604,16 @@ function renderNoteMeta() {
     metaEl.insertBefore(sep, titleEl);
   }
 
-  qs("btn-delete").disabled = false;
+  qs("btn-more-menu").disabled = false;
+}
+
+/* ── ⋯ 更多菜单 ──────────────────────────────────── */
+function toggleMoreMenu(force) {
+  const menu = qs("more-menu");
+  const btn = qs("btn-more-menu");
+  const open = force !== undefined ? force : menu.hidden;
+  menu.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 /* ── Tree rendering ──────────────────────────────── */
@@ -659,11 +824,17 @@ async function renameEntry(target) {
 async function deleteEntry(target) {
   const confirmed = await showConfirm(`Delete "${target.name}"? This cannot be undone.`);
   if (!confirmed) return;
+  const affectsActive =
+    (target.kind === "file" && target.path === state.activePath) ||
+    (target.kind === "folder" && state.activePath?.startsWith(target.path + "/"));
+  // 删除当前打开的笔记前取消自动保存，避免删除后被写回
+  if (affectsActive) {
+    cancelAutosave();
+    setDirty(false);
+  }
   try {
     await invoke("delete_entry", { path: target.path });
-    if (target.kind === "file" && target.path === state.activePath) {
-      clearActiveNote();
-    } else if (target.kind === "folder" && state.activePath?.startsWith(target.path + "/")) {
+    if (affectsActive) {
       clearActiveNote();
     }
     await loadTree(false);
@@ -701,11 +872,8 @@ async function newFolderInFolder(target) {
 
 /* ── Note operations ─────────────────────────────── */
 async function loadNote(path, silent = false) {
-  if (state.dirty && !silent) {
-    const ok = await showConfirm("Discard unsaved changes?");
-    if (!ok) return;
-    setDirty(false);
-  }
+  // 自动保存模式：切换前把未保存内容落盘
+  await flushPendingSave();
 
   const docArea = qs("doc-area");
   docArea.className = "docArea";
@@ -732,6 +900,7 @@ async function loadNote(path, silent = false) {
 }
 
 function clearActiveNote() {
+  cancelAutosave();
   state.activePath = null;
   state.activeNote = null;
   setDirty(false);
@@ -741,22 +910,32 @@ function clearActiveNote() {
 }
 
 async function saveNote() {
-  if (!state.activeNote || !state.dirty) return;
-  const btn = qs("btn-save");
-  btn.disabled = true;
-  const ta = qs("note-textarea");
-  const content = ta ? ta.value : state.activeNote.content;
+  if (!state.activeNote || !state.dirty || state.saving) return;
+  cancelAutosave();
+  const savedPath = state.activeNote.path;
+  const content = state.editor ? state.editor.getValue() : state.activeNote.content;
+  state.saving = true;
   try {
-    const note = await invoke("write_note", { path: state.activeNote.path, content });
-    state.activeNote = note;
-    setDirty(false);
+    const note = await invoke("write_note", { path: savedPath, content });
+    // 保存期间笔记可能已被切换，仅在仍是当前笔记时更新状态
+    if (state.activeNote?.path === savedPath) {
+      state.activeNote = note;
+      if (state.editor && state.editor.getValue() !== content) {
+        // 保存期间又有新输入，保持 dirty 并等待下一轮自动保存
+        setDirty(true);
+        scheduleAutosave();
+      } else {
+        setDirty(false);
+        flashSavedHint();
+      }
+    }
     await loadTree(false);
-    showToast("Saved.");
     if (state.activeTab === "toc") renderToc();
   } catch (err) {
     showToast(String(err));
+    scheduleAutosave();
   } finally {
-    btn.disabled = !state.dirty;
+    state.saving = false;
   }
 }
 
@@ -776,8 +955,11 @@ async function createNote() {
 
 async function deleteActiveNote() {
   if (!state.activeNote) return;
-  const ok = await showConfirm(`Delete "${state.activeNote.name}"? This cannot be undone.`);
+  const ok = await showConfirm(`确定删除「${state.activeNote.name}」吗？此操作无法撤销。`);
   if (!ok) return;
+  // 取消待执行的自动保存，避免删除后又把文件写回来
+  cancelAutosave();
+  setDirty(false);
   try {
     await invoke("delete_entry", { path: state.activeNote.path });
     clearActiveNote();
@@ -788,14 +970,109 @@ async function deleteActiveNote() {
   }
 }
 
+/* ── Vault switcher ──────────────────────────────── */
+const RECENT_VAULTS_KEY = "recent_vaults";
+
+function vaultDisplayName(path) {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function vaultDisplayPath(path) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 3 ? `…${parts.slice(-3).join("/")}` : path;
+}
+
+function getRecentVaults() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_VAULTS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberVault(path) {
+  if (!path) return;
+  const list = [path, ...getRecentVaults().filter((p) => p !== path)].slice(0, 5);
+  try {
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+function toggleVaultMenu(force) {
+  const menu = qs("vault-menu");
+  const btn = qs("btn-vault-switcher");
+  const open = force !== undefined ? force : menu.hidden;
+  menu.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) renderVaultMenu();
+}
+
+function renderVaultMenu() {
+  const menu = qs("vault-menu");
+  const current = state.vaultPath;
+  const recents = getRecentVaults().filter((p) => p !== current);
+
+  menu.innerHTML = `
+    <div class="vaultDropdownSectionTitle">当前笔记本</div>
+    <div class="activeVaultCard">
+      <div class="activeVaultIcon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/></svg>
+      </div>
+      <div class="activeVaultInfo">
+        <p class="activeVaultName">${escapeHtml(vaultDisplayName(current))}</p>
+        <p class="activeVaultPath" title="${escapeHtml(current)}">${escapeHtml(vaultDisplayPath(current))}</p>
+      </div>
+    </div>
+    ${recents.length ? `
+      <div class="vaultDropdownDivider"></div>
+      <div class="vaultDropdownSectionTitle">最近使用</div>
+      <div class="recentVaultsList">
+        ${recents.map((path) => `
+          <button type="button" class="vaultDropdownItem" role="menuitem" data-vault-path="${escapeHtml(path)}">
+            <svg class="dropdownItemIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/></svg>
+            <span class="recentVaultInfo">
+              <span class="recentVaultNameText">${escapeHtml(vaultDisplayName(path))}</span>
+              <span class="recentVaultPathText">${escapeHtml(vaultDisplayPath(path))}</span>
+            </span>
+          </button>`).join("")}
+      </div>` : ""}
+    <div class="vaultDropdownDivider"></div>
+    <button type="button" id="btn-choose-vault" class="vaultDropdownItemAction" role="menuitem">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span>选择其他笔记本文件夹…</span>
+    </button>`;
+
+  menu.querySelectorAll("[data-vault-path]").forEach((el) => {
+    el.addEventListener("click", () => switchToVault(el.getAttribute("data-vault-path")));
+  });
+  qs("btn-choose-vault").addEventListener("click", chooseVault);
+}
+
+async function applyVaultChange(desktop) {
+  applyDesktopState(desktop);
+  clearActiveNote();
+  await loadTree(true);
+  waitForAgent();
+  refreshGitStatus();
+}
+
+async function switchToVault(path) {
+  toggleVaultMenu(false);
+  if (!path || path === state.vaultPath) return;
+  try {
+    const desktop = await invoke("set_vault_path", { path });
+    await applyVaultChange(desktop);
+  } catch (err) {
+    showToast(String(err));
+  }
+}
+
 async function chooseVault() {
+  toggleVaultMenu(false);
   try {
     const desktop = await invoke("select_and_set_vault");
-    applyDesktopState(desktop);
-    clearActiveNote();
-    await loadTree(true);
-    waitForAgent();
-    refreshGitStatus();
+    await applyVaultChange(desktop);
   } catch (err) {
     if (!String(err).includes("cancelled")) showToast(String(err));
   }
@@ -849,10 +1126,9 @@ function sendNoteContext() {
 function sendSelectionContext() {
   const frame = qs("agent-frame");
   if (!frame.contentWindow) return;
-  const ta = qs("note-textarea");
   let text = "";
-  if (ta && document.activeElement === ta) {
-    text = ta.value.slice(ta.selectionStart, ta.selectionEnd).trim();
+  if (state.editor && state.editor.hasFocus()) {
+    text = state.editor.getSelection().trim();
   } else {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) text = sel.toString().trim();
@@ -884,116 +1160,6 @@ async function waitForAgent() {
 }
 
 /* ── Git ─────────────────────────────────────────── */
-async function refreshGitStatus() {
-  const dot = qs("sidebar-git-dot");
-  const label = qs("sidebar-git-label");
-  const statusDot = qs("git-status-dot");
-  const statusLabel = qs("git-status-label");
-  const statusSub = qs("git-status-sub");
-  const fileList = qs("git-file-list");
-
-  try {
-    const st = await invoke("git_status");
-
-    if (!st.initialized) {
-      dot.className = "sidebarGitDot";
-      label.textContent = "No git repo";
-      statusDot.className = "gitStatusDot";
-      statusLabel.textContent = "Not initialized";
-      statusSub.textContent = "";
-      fileList.replaceChildren();
-      return;
-    }
-
-    const synced = st.clean;
-    dot.className = "sidebarGitDot" + (synced ? " sidebarGitDotSynced" : "");
-
-    const branch = st.branch || "unknown";
-    const changes = st.entries.length;
-    label.textContent = changes > 0 ? `${branch} · ${changes} changed` : `${branch} · synced`;
-    statusLabel.textContent = branch;
-
-    const parts = [];
-    if (st.ahead > 0) parts.push(`↑ ${st.ahead} ahead`);
-    if (st.behind > 0) parts.push(`↓ ${st.behind} behind`);
-    if (changes > 0) parts.push(`${changes} changes`);
-    else if (synced) parts.push("Clean");
-    statusSub.textContent = parts.join(" · ");
-
-    statusDot.className = "gitStatusDot" + (synced ? " synced" : "");
-
-    fileList.replaceChildren();
-    for (const entry of st.entries.slice(0, 50)) {
-      const code = entry.slice(0, 2).trim();
-      const file = entry.slice(3);
-      const li = document.createElement("li");
-      li.className = "gitFileItem";
-      const dotEl = document.createElement("span");
-      dotEl.className = `gitStateDot ${code === "M" || code === "AM" ? "gitStateDotM" : code === "A" || code === "??" ? "gitStateDotA" : code === "D" ? "gitStateDotD" : "gitStateDotR"}`;
-      const path = document.createElement("span");
-      path.className = "gitFileItemPath";
-      path.textContent = file;
-      li.append(dotEl, path);
-      fileList.appendChild(li);
-    }
-  } catch (err) {
-    label.textContent = "Git error";
-    statusLabel.textContent = "Error";
-    statusSub.textContent = String(err).slice(0, 60);
-  }
-}
-
-function showGitFeedback(msg, isError = false) {
-  const el = qs("git-feedback");
-  el.textContent = msg;
-  el.className = "gitFeedback" + (isError ? " error" : "");
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 6000);
-}
-
-async function gitCommitPush() {
-  const msgInput = qs("git-commit-msg");
-  const message = msgInput.value.trim() || "Update notes";
-  const btn = qs("btn-git-push");
-  btn.disabled = true;
-  try {
-    const results = await invoke("git_commit_and_push", { message });
-    const out = results.map((r) => [r.stdout, r.stderr].filter(Boolean).join("\n")).join("\n").trim();
-    showGitFeedback(out || "Done.");
-    await refreshGitStatus();
-  } catch (err) {
-    showGitFeedback(String(err), true);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function gitPull() {
-  const btn = qs("btn-git-pull");
-  btn.disabled = true;
-  try {
-    const result = await invoke("git_pull");
-    const out = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-    showGitFeedback(out || "Pulled.");
-    await refreshGitStatus();
-  } catch (err) {
-    showGitFeedback(String(err), true);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function gitInit() {
-  try {
-    const result = await invoke("git_init");
-    showGitFeedback(result.stdout || "Initialized.");
-    await refreshGitStatus();
-  } catch (err) {
-    showGitFeedback(String(err), true);
-  }
-}
-
-/* ── Panel tabs ──────────────────────────────────── */
 function gitStateLabel(value) {
   return {
     modified: "已修改",
@@ -1035,7 +1201,7 @@ async function refreshGitStatus() {
 
     if (!st.initialized) {
       dot.className = "sidebarGitDot";
-      label.textContent = "No git repo";
+      label.textContent = "尚未初始化同步";
       renderGitPanel();
       return;
     }
@@ -1043,14 +1209,56 @@ async function refreshGitStatus() {
     const files = st.files || [];
     const synced = files.length === 0 && st.ahead === 0 && st.behind === 0;
     dot.className = "sidebarGitDot" + (synced ? " sidebarGitDotSynced" : "");
-    const branch = st.branch || "unknown";
-    label.textContent = files.length > 0 ? `${branch} - ${files.length} changes` : `${branch} - synced`;
+    if (synced) {
+      label.textContent = "已同步到云端";
+    } else if (files.length === 0 && st.behind > 0) {
+      label.textContent = `远端有 ${st.behind} 个新版本`;
+    } else if (files.length > 0) {
+      label.textContent = `${files.length} 篇待同步`;
+    } else {
+      label.textContent = `${st.ahead} 篇待同步`;
+    }
     renderGitPanel();
   } catch (err) {
-    label.textContent = "Git error";
+    label.textContent = "同步状态异常";
     state.gitFeedback = String(err);
     state.gitFeedbackError = true;
     renderGitPanel();
+  }
+}
+
+/* ── 自动拉取云端更新 ──────────────────────────── */
+async function autoPull() {
+  if (state.pulling) return;
+  
+  if (state.gitStatus && !state.gitStatus.initialized) return;
+
+  // 正在编辑时不拉取，保护沉浸状态
+  if (state.editMode && state.dirty) return;
+
+  state.pulling = true;
+  const dot = qs("sidebar-git-dot");
+  dot.classList.add("sidebarGitDotPulsing");
+
+  try {
+    const out = await invoke("git_pull");
+    if (!out.success) {
+      await refreshGitStatus();
+      return;
+    }
+    const updated = out.stdout && !/already up to date/i.test(out.stdout);
+    if (updated) {
+      showToast("已获取云端更新");
+      await loadTree(false);
+      if (state.gitPane === "history") await openGitHistory();
+    }
+    await refreshGitStatus();
+  } catch {
+    // 网络失败：静默，圆点由 refreshGitStatus 更新为黄色
+    await refreshGitStatus();
+  } finally {
+    state.pulling = false;
+    dot.classList.remove("sidebarGitDotPulsing");
   }
 }
 
@@ -1084,6 +1292,7 @@ async function gitCommitPush() {
     state.gitEditingMessage = false;
     showGitFeedback(out || "Synced.");
     await refreshGitStatus();
+    if (state.gitPane === "history") await openGitHistory();
   } catch (err) {
     showGitFeedback(String(err), true);
   } finally {
@@ -1186,7 +1395,7 @@ function renderGitFileItem(file) {
           ${parent ? `<span class="gitFilePath">${escapeHtml(parent)}</span>` : ""}
         </div>
         <div class="gitHoverActions">
-          ${file.state !== "deleted" && file.kind !== "folder" ? `<button class="gitCircleBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}" title="打开文件">□</button>` : ""}
+          ${file.state !== "deleted" && file.kind !== "folder" ? `<button class="gitCircleBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}" title="打开文件"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg></button>` : ""}
           <button class="gitCircleBtn gitCircleBtnDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}" title="还原">↩</button>
         </div>
       </div>
@@ -1225,6 +1434,7 @@ function renderGitDiffPane() {
   const file = state.gitSelectedFile;
   if (!file) return "";
   const parent = gitParentPath(file.path);
+  const confirming = state.gitDiscardPath === file.path;
   return `
     <header class="gitDiffHeader">
       <button class="gitDiffBack" type="button" data-action="back">←</button>
@@ -1239,10 +1449,20 @@ function renderGitDiffPane() {
     </div>
     <div class="gitDiffContent">${renderGitDiffContent()}</div>
     <footer class="gitDiffFooter">
-      <div class="gitDiffNormalFooter">
-        ${file.state !== "deleted" ? `<button class="gitDiffFooterBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}">打开此笔记</button>` : ""}
-        <button class="gitDiffFooterBtn gitDiffFooterDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}">还原此文件</button>
-      </div>
+      ${confirming ? `
+        <div class="gitDiffDiscardConfirmCard">
+          <span class="gitDiffDiscardConfirmText">${escapeHtml(discardWarning(file.state, file.kind))}</span>
+          <div class="gitDiscardBtns">
+            <button class="gitDiscardCancel" type="button" data-action="cancel-discard" ${state.gitDiscarding ? "disabled" : ""}>取消</button>
+            <button class="gitDiscardOk" type="button" data-action="discard" data-path="${escapeHtml(file.path)}" ${state.gitDiscarding ? "disabled" : ""}>${state.gitDiscarding ? "…" : "确定还原"}</button>
+          </div>
+        </div>
+      ` : `
+        <div class="gitDiffNormalFooter">
+          ${file.state !== "deleted" ? `<button class="gitDiffFooterBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}">打开此笔记</button>` : ""}
+          <button class="gitDiffFooterBtn gitDiffFooterDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}">还原此文件</button>
+        </div>
+      `}
     </footer>`;
 }
 
@@ -1287,7 +1507,10 @@ function renderGitHistoryPane() {
 }
 
 function wireGitPanel() {
-  qs("btn-git-refresh-new")?.addEventListener("click", refreshGitStatus);
+  qs("btn-git-refresh-new")?.addEventListener("click", async () => {
+    await refreshGitStatus();
+    if (state.gitPane === "history") await openGitHistory();
+  });
   qs("btn-git-sync-new")?.addEventListener("click", gitCommitPush);
   qs("btn-git-init-new")?.addEventListener("click", gitInit);
   qs("btn-git-history-new")?.addEventListener("click", openGitHistory);
@@ -1371,6 +1594,12 @@ async function openGitHistory() {
 async function gitDiscard(path) {
   state.gitDiscarding = true;
   renderGitPanel();
+  // 还原的是当前打开的笔记时，丢弃编辑器内容，避免自动保存把旧内容写回
+  const isActive = path === state.activePath || state.activePath?.startsWith(path + "/");
+  if (isActive) {
+    cancelAutosave();
+    setDirty(false);
+  }
   try {
     await invoke("git_discard", { path });
     showGitFeedback("已还原。");
@@ -1379,6 +1608,12 @@ async function gitDiscard(path) {
     state.gitSelectedFile = null;
     state.gitDiff = null;
     await Promise.all([refreshGitStatus(), loadTree(false)]);
+    if (isActive) {
+      // 重新加载还原后的内容；文件被删（还原"新笔记"）则回到首页
+      const stillExists = flattenFiles(state.tree).some((f) => f.path === state.activePath);
+      if (stillExists) await loadNote(state.activePath, true);
+      else clearActiveNote();
+    }
   } catch (err) {
     showGitFeedback(String(err), true);
   } finally {
@@ -1416,7 +1651,10 @@ function switchTab(tab) {
   git.style.flexDirection = tab === "git" ? "column" : "";
 
   if (tab === "toc") renderToc();
-  if (tab === "git") refreshGitStatus();
+  if (tab === "git") {
+    renderGitPanel();
+    refreshGitStatus();
+  }
 }
 
 /* ── Sidebar + Panel visibility toggle ──────────── */
@@ -1430,7 +1668,7 @@ function togglePanel() {
   const shell = qs("shell");
   const isHidden = shell.classList.toggle("shellPanelHidden");
   const btn = qs("btn-toggle-panel");
-  btn.classList.toggle("active", !isHidden);
+  btn.classList.toggle("fellowPillActive", !isHidden);
   localStorage.setItem(PANEL_VISIBLE_KEY, isHidden ? "0" : "1");
 }
 
@@ -1511,9 +1749,9 @@ function restoreLayout() {
   const pv = localStorage.getItem(PANEL_VISIBLE_KEY);
   if (pv === "0") {
     shell.classList.add("shellPanelHidden");
-    qs("btn-toggle-panel").classList.remove("active");
+    qs("btn-toggle-panel").classList.remove("fellowPillActive");
   } else {
-    qs("btn-toggle-panel").classList.add("active");
+    qs("btn-toggle-panel").classList.add("fellowPillActive");
   }
 
   const tab = localStorage.getItem(PANEL_TAB_KEY) || "agent";
@@ -1521,9 +1759,7 @@ function restoreLayout() {
 
   const em = localStorage.getItem(EDIT_MODE_KEY);
   state.editMode = em === "1";
-  if (state.activeNote) {
-    qs("btn-toggle-mode").textContent = state.editMode ? "Preview" : "Edit";
-  }
+  updateEditButton();
 }
 
 /* ── Desktop state ───────────────────────────────── */
@@ -1531,9 +1767,9 @@ function applyDesktopState(desktop) {
   state.vaultPath = desktop.vaultPath;
   state.agentUrl = desktop.agentUrl;
   state.agentPort = desktop.agentPort;
-  const label = desktop.vaultPath.split(/[\\/]/).pop() || desktop.vaultPath;
-  qs("vault-label").textContent = label;
-  qs("vault-label").title = desktop.vaultPath;
+  qs("vault-label").textContent = vaultDisplayName(desktop.vaultPath);
+  qs("btn-vault-switcher").title = `当前笔记本路径: ${desktop.vaultPath}`;
+  rememberVault(desktop.vaultPath);
 }
 
 async function loadTree(selectFirst = false) {
@@ -1565,6 +1801,8 @@ function initKeyboard() {
 
     if (e.key === "Escape") {
       hideContextMenu();
+      toggleVaultMenu(false);
+      toggleMoreMenu(false);
       if (!qs("dialog-overlay").hidden) {
         qs("dialog-cancel").click();
       }
@@ -1574,14 +1812,22 @@ function initKeyboard() {
 
 /* ── Wire events ─────────────────────────────────── */
 function wireEvents() {
-  qs("btn-new-note").addEventListener("click", createNote);
-  qs("btn-choose-vault").addEventListener("click", chooseVault);
+  qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
   qs("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
   qs("btn-toggle-panel").addEventListener("click", togglePanel);
   qs("btn-close-panel").addEventListener("click", togglePanel);
-  qs("btn-save").addEventListener("click", saveNote);
-  qs("btn-delete").addEventListener("click", deleteActiveNote);
-  qs("btn-toggle-mode").addEventListener("click", () => setEditMode(!state.editMode));
+  qs("btn-toggle-mode").addEventListener("click", () => void setEditMode(!state.editMode));
+
+  qs("btn-more-menu").addEventListener("click", () => toggleMoreMenu());
+  qs("menu-outline").addEventListener("click", () => {
+    toggleMoreMenu(false);
+    if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
+    switchTab("toc");
+  });
+  qs("menu-delete").addEventListener("click", () => {
+    toggleMoreMenu(false);
+    deleteActiveNote();
+  });
 
   qs("btn-git-footer").addEventListener("click", () => {
     if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
@@ -1609,34 +1855,81 @@ function wireEvents() {
     }, 150);
   });
 
-  qs("btn-git-refresh").addEventListener("click", refreshGitStatus);
-  qs("btn-git-init").addEventListener("click", gitInit);
-  qs("btn-git-pull").addEventListener("click", gitPull);
-  qs("btn-git-push").addEventListener("click", gitCommitPush);
-
   document.addEventListener("click", (e) => {
     if (!qs("context-menu").hidden && !qs("context-menu").contains(e.target)) {
       hideContextMenu();
     }
+    const vaultMenu = qs("vault-menu");
+    if (!vaultMenu.hidden && !vaultMenu.contains(e.target) && !qs("btn-vault-switcher").contains(e.target)) {
+      toggleVaultMenu(false);
+    }
+    const moreMenu = qs("more-menu");
+    if (!moreMenu.hidden && !moreMenu.contains(e.target) && !qs("btn-more-menu").contains(e.target)) {
+      toggleMoreMenu(false);
+    }
   });
+
+  qs("doc-area").addEventListener("scroll", () => {
+    if (state.activeTab === "toc") updateActiveTocLink();
+  }, { passive: true });
+
+  // 窗口隐藏/关闭前尽量把未保存内容落盘
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") void flushPendingSave();
+  });
+}
+
+/* 窗口成为焦点时检查云端更新 */
+function initAutoSync() {
+  let pollId;
+
+  const onFocus = () => {
+    void autoPull();
+  };
+
+  const startPoll = () => {
+    if (pollId) clearInterval(pollId);
+    pollId = setInterval(() => { void autoPull(); }, 60_000);
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void autoPull();
+      startPoll();
+    } else {
+      if (pollId) clearInterval(pollId);
+      pollId = null;
+    }
+  });
+  window.addEventListener("focus", onFocus);
+  startPoll();
 }
 
 /* ── Boot ────────────────────────────────────────── */
 async function boot() {
-  qs("dialog-overlay").hidden = true;
-  loadExpandedState();
-  restoreLayout();
-  wireEvents();
-  initSidebarResize();
-  initPanelResize();
-  initKeyboard();
+  try {
+    qs("dialog-overlay").hidden = true;
+    loadExpandedState();
+    restoreLayout();
+    wireEvents();
+    initSidebarResize();
+    initPanelResize();
+    initKeyboard();
+  } catch (initErr) {
+    qs("vault-label").textContent = "Init error: " + String(initErr);
+    return;
+  }
 
   try {
+    await waitForTauri(6000);
     const desktop = await invoke("get_desktop_state");
     applyDesktopState(desktop);
     await Promise.all([loadTree(false), waitForAgent(), refreshGitStatus()]);
+    void autoPull();
+    initAutoSync();
   } catch (err) {
-    showToast("Startup error: " + String(err));
+    qs("vault-label").textContent = "Error: " + String(err);
+    showToast("启动失败: " + String(err));
   }
 }
 

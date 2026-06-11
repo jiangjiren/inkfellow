@@ -157,53 +157,251 @@ input, textarea { font-family: inherit; }
 .sidebarHeader {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 20px 14px 4px;
+  padding: 16px 14px 4px;
   flex-shrink: 0;
 }
 
-.title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  color: var(--notes-text-primary);
+/* ── Vault switcher ──────────────────────────────── */
+.vaultSwitcherWrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
 }
 
-.sidebarHeaderActions {
+.vaultSwitcherBtn {
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-.vaultRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 14px 2px;
-  padding: 4px 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
   border-radius: var(--notes-radius-item);
-  background: rgba(120, 120, 128, 0.06);
-  flex-shrink: 0;
-  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s ease, transform 0.1s ease;
 }
 
-.vaultRowIcon {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
+.vaultSwitcherBtn:hover { background: rgba(120, 120, 128, 0.1); }
+.vaultSwitcherBtn:active { transform: scale(0.98); }
+
+.vaultSwitcherMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.vaultSwitcherEyebrow {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--notes-text-muted);
 }
 
-.vaultRowLabel {
-  font-size: 11.5px;
-  color: var(--notes-text-secondary);
+.vaultSwitcherTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--notes-text-primary);
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+
+.vaultSwitcherTitle span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.vaultChevron {
+  width: 12px;
+  height: 12px;
+  color: var(--notes-text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.vaultSwitcherBtn[aria-expanded="true"] .vaultChevron { transform: rotate(180deg); }
+
+.vaultDropdownMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 240px;
+  padding: 6px;
+  border-radius: var(--notes-radius-card);
+  border: 1px solid var(--notes-border);
+  background: var(--notes-bg-document);
+  box-shadow: var(--notes-shadow-popover);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: vaultPopoverFade 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes vaultPopoverFade {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.vaultDropdownSectionTitle {
+  padding: 6px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--notes-text-muted);
+}
+
+.activeVaultCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--notes-radius-item);
+  background: var(--notes-accent-bg);
+}
+
+.activeVaultIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--notes-accent);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.activeVaultIcon svg { width: 16px; height: 16px; }
+
+.activeVaultInfo {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.activeVaultName {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--notes-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activeVaultPath {
+  margin: 0;
+  font-size: 9.5px;
+  color: var(--notes-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vaultDropdownDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--notes-border);
+}
+
+.recentVaultsList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vaultDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--notes-text-secondary);
+  transition: var(--notes-transition-fast);
+}
+
+.vaultDropdownItem:hover {
+  background: rgba(120, 120, 128, 0.1);
+  color: var(--notes-text-primary);
+}
+
+.dropdownItemIcon {
+  width: 14px;
+  height: 14px;
+  color: var(--notes-text-muted);
+  flex-shrink: 0;
+}
+
+.recentVaultInfo {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   flex: 1;
+}
+
+.recentVaultNameText {
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recentVaultPathText {
+  font-size: 9px;
+  color: var(--notes-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vaultDropdownItemAction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--notes-text-secondary);
+  transition: var(--notes-transition-fast);
+}
+
+.vaultDropdownItemAction:hover {
+  background: rgba(120, 120, 128, 0.1);
+  color: var(--notes-text-primary);
+}
+
+.vaultDropdownItemAction svg {
+  width: 14px;
+  height: 14px;
+  color: var(--notes-text-muted);
+  flex-shrink: 0;
 }
 
 /* Search */
@@ -522,6 +720,15 @@ input, textarea { font-family: inherit; }
 
 .sidebarGitDotSynced { background: #34c759 !important; }
 
+.sidebarGitDotPulsing {
+  animation: gitPulse 1s ease-in-out infinite;
+}
+
+@keyframes gitPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.72); opacity: 0.55; }
+}
+
 .sidebarGitLabel {
   flex: 1;
   font-size: 12px;
@@ -615,17 +822,6 @@ input, textarea { font-family: inherit; }
   align-items: center;
   gap: 5px;
   flex-shrink: 0;
-}
-
-.dirtyIndicator {
-  font-size: 11px;
-  color: #ff9500;
-  animation: dirtyPulse 2s ease-in-out infinite;
-}
-
-@keyframes dirtyPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
 }
 
 /* Document area */
@@ -1018,22 +1214,115 @@ input, textarea { font-family: inherit; }
   width: min(100%, 820px);
 }
 
-.noteTextarea {
+/* ── CodeMirror 5 编辑器（样式与 web 端对齐） ──────── */
+.cmContainer {
   flex: 1;
-  min-height: 400px;
-  width: 100%;
-  border: 0;
-  outline: 0;
-  resize: none;
-  background: transparent;
-  color: var(--notes-text-primary);
-  font-family: var(--notes-font-mono);
-  font-size: 14px;
-  line-height: 1.8;
-  tab-size: 2;
+  display: flex;
+  flex-direction: column;
 }
 
-.noteTextarea::placeholder { color: var(--notes-text-muted); }
+.cmContainer .CodeMirror {
+  flex: 1;
+  height: auto !important;
+  min-height: 400px;
+  font-family: var(--notes-font-sans) !important;
+  font-size: 16px !important;
+  line-height: 1.75 !important;
+  color: var(--notes-text-primary) !important;
+  background: transparent !important;
+  border: none !important;
+}
+
+/* 编辑器自身不滚动，由外层 docArea 统一滚动 */
+.cmContainer .CodeMirror-scroll {
+  overflow: visible !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.cmContainer .CodeMirror-sizer { margin: 0 !important; }
+
+.cmContainer .CodeMirror-cursor {
+  border-left: 1.5px solid var(--notes-text-primary);
+}
+
+.cmContainer .CodeMirror-selected {
+  background: rgba(79, 109, 245, 0.15) !important;
+}
+
+/* # 符号和 ** * 等标记：变浅，退到背景 */
+.cmContainer .cm-formatting-header,
+.cmContainer .cm-formatting-strong,
+.cmContainer .cm-formatting-em,
+.cmContainer .cm-formatting-strikethrough,
+.cmContainer .cm-formatting-code,
+.cmContainer .cm-formatting-link,
+.cmContainer .cm-formatting-image {
+  opacity: 0.35;
+  font-weight: 400 !important;
+  font-size: 0.82em;
+}
+
+/* 标题：层级递减，颜色保持正文色（覆盖 CM5 默认蓝色） */
+.cmContainer .cm-header-1 { font-size: 1.75em; font-weight: 700; line-height: 1.3;  color: var(--notes-text-primary) !important; }
+.cmContainer .cm-header-2 { font-size: 1.4em;  font-weight: 650; line-height: 1.35; color: var(--notes-text-primary) !important; }
+.cmContainer .cm-header-3 { font-size: 1.15em; font-weight: 600; line-height: 1.4;  color: var(--notes-text-primary) !important; }
+.cmContainer .cm-header-4 { font-size: 1.05em; font-weight: 600; color: var(--notes-text-primary) !important; }
+.cmContainer .cm-header-5,
+.cmContainer .cm-header-6 { font-size: 1em;    font-weight: 600; color: var(--notes-text-primary) !important; }
+
+.cmContainer .cm-strong {
+  font-weight: 700;
+  color: var(--notes-text-primary);
+}
+
+.cmContainer .cm-em {
+  font-style: italic;
+  color: var(--notes-text-primary);
+}
+
+.cmContainer .cm-strikethrough {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.cmContainer .cm-inline-code,
+.cmContainer span.cm-code {
+  font-family: var(--notes-font-mono) !important;
+  font-size: 0.88em;
+  background: rgba(120, 120, 128, 0.10);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #c7254e;
+}
+
+.cmContainer .cm-link,
+.cmContainer .cm-url {
+  color: var(--notes-accent);
+}
+
+.cmContainer .cm-url { text-decoration: underline; }
+
+.cmContainer .cm-quote {
+  color: var(--notes-text-muted);
+  font-style: italic;
+}
+
+.cmContainer .cm-hr {
+  color: var(--notes-text-muted);
+  opacity: 0.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cmContainer .CodeMirror {
+    color: #e5e5ea !important;
+  }
+  .cmContainer .cm-inline-code,
+  .cmContainer span.cm-code {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ff8080;
+  }
+}
 
 /* ── Markdown Prose Styles ───────────────────────── */
 .prose { line-height: 1.75; color: var(--notes-text-primary); }
@@ -1127,6 +1416,27 @@ input, textarea { font-family: inherit; }
   max-width: 100%;
   border-radius: var(--notes-radius-item);
   box-shadow: var(--notes-shadow-card);
+}
+
+/* 图片加载失败的视觉提示 */
+.prose img.imgBroken {
+  min-width: 80px;
+  min-height: 48px;
+  background: rgba(255, 59, 48, 0.08);
+  border: 1px dashed rgba(255, 59, 48, 0.25);
+  box-shadow: none;
+  /* 用 CSS 绘制一个简单的破损图标 */
+  position: relative;
+}
+
+.prose img.imgBroken::after {
+  content: "🖼";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  opacity: 0.4;
 }
 
 .prose table {
@@ -1513,39 +1823,6 @@ input, textarea { font-family: inherit; }
   font-size: 11.5px;
 }
 
-.gitCommitArea {
-  flex-shrink: 0;
-  padding: 12px 14px;
-  border-top: 1px solid var(--notes-border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.gitCommitInput {
-  width: 100%;
-  padding: 7px 10px;
-  border: 1px solid var(--notes-border-strong);
-  border-radius: var(--notes-radius-item);
-  background: var(--notes-bg-document);
-  color: var(--notes-text-primary);
-  font: inherit;
-  font-size: 12.5px;
-  outline: 0;
-  transition: border-color 0.15s;
-}
-
-.gitCommitInput:focus {
-  border-color: var(--notes-accent);
-  box-shadow: 0 0 0 3px var(--notes-accent-bg);
-}
-
-.gitCommitActions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
 /* ── Buttons ──────────────────────────────────────── */
 .iconButton {
   display: inline-flex;
@@ -1591,18 +1868,154 @@ input, textarea { font-family: inherit; }
 
 .iconButton:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.iconButtonDanger:hover:not(:disabled) {
-  border-color: rgba(255, 59, 48, 0.35);
-  color: #cc2d24;
-  background: rgba(255, 59, 48, 0.06);
+/* ── 编辑按钮（与 web 端 editBtn 一致） ─────────────── */
+.editBtn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #383c32;
+  padding: 0;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
 }
 
-.iconButtonPanelToggle { padding: 0 10px; }
+.editBtn svg { width: 16px; height: 16px; }
 
-.iconButtonPanelToggle.active {
-  border-color: rgba(41, 151, 255, 0.3);
-  background: rgba(41, 151, 255, 0.1);
+.editBtn:hover:not(:disabled) {
+  background: var(--notes-accent-bg);
+  border-color: var(--notes-accent);
   color: var(--notes-accent);
+}
+
+.editBtnActive {
+  background: var(--notes-accent-bg) !important;
+  border-color: var(--notes-accent) !important;
+  color: var(--notes-accent) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .editBtn {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.75);
+  }
+}
+
+/* ── 已保存提示 ─────────────────────────────────────── */
+.savedHint {
+  font-size: 12px;
+  color: var(--notes-text-muted);
+  padding: 0 6px;
+  animation: savedFadeOut 1.6s ease forwards;
+}
+
+@keyframes savedFadeOut {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ── ⋯ 更多菜单（与 web 端 moreMenu 一致） ─────────── */
+.moreMenuWrapper { position: relative; }
+
+.moreMenuDropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 148px;
+  background: var(--notes-bg-sidebar);
+  border: 1px solid var(--notes-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 4px;
+  z-index: 100;
+  animation: menuFadeIn 0.12s ease-out;
+}
+
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.moreMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--notes-text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.moreMenuItem svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--notes-text-secondary);
+}
+
+.moreMenuItem:hover { background: rgba(120, 120, 128, 0.12); }
+
+.moreMenuItemDanger { color: #c0392b; }
+.moreMenuItemDanger svg { color: #c0392b; }
+.moreMenuItemDanger:hover { background: rgba(192, 57, 43, 0.08); }
+
+.moreMenuDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--notes-border);
+}
+
+/* ── Fellow 胶囊按钮（与 web 端 fellowPill 一致） ──── */
+.fellowPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--notes-border);
+  border-radius: 15px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: var(--notes-transition-fast);
+}
+
+.fellowPill span:first-child {
+  font-size: 12px;
+  line-height: 1;
+  background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  transition: transform 0.3s ease;
+}
+
+.fellowPill:hover {
+  border-color: rgba(124, 58, 237, 0.3);
+  box-shadow: 0 3px 8px rgba(124, 58, 237, 0.08);
+  transform: translateY(-1px);
+}
+
+.fellowPill:active { transform: translateY(0); }
+
+.fellowPillActive {
+  border-color: rgba(124, 58, 237, 0.4);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.05);
 }
 
 .ghostButton {
@@ -2331,6 +2744,60 @@ input, textarea { font-family: inherit; }
 .gitDiffFooterDanger {
   border-color: rgba(255, 59, 48, 0.18);
   color: #cc2d24;
+}
+
+/* diff 页内联还原确认卡片（与 web 端一致） */
+.gitDiffDiscardConfirmCard {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gitDiffDiscardConfirmText {
+  color: #ff3b30;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.gitDiscardBtns {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.gitDiscardCancel,
+.gitDiscardOk {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.gitDiscardCancel {
+  border: 1px solid var(--notes-border);
+  background: var(--notes-bg-document);
+  color: var(--notes-text-secondary);
+}
+
+.gitDiscardCancel:hover { background: rgba(120, 120, 128, 0.1); }
+
+.gitDiscardOk {
+  border: none;
+  background: #ff3b30;
+  color: white;
+}
+
+.gitDiscardOk:hover { background: #e03228; }
+
+.gitDiscardCancel:disabled,
+.gitDiscardOk:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .gitHistoryContent {

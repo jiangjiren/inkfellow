@@ -652,6 +652,8 @@ fn ensure_git_repo(path: &Path) {
 fn run_git(path: &Path, args: &[&str]) -> Result<GitOutput, String> {
     let mut command = Command::new("git");
     command.arg("-C").arg(path);
+    // 非 ASCII 路径（中文文件名）默认会被八进制转义，关掉以输出原始 UTF-8
+    command.arg("-c").arg("core.quotepath=false");
     for arg in args {
         command.arg(arg);
     }
@@ -700,6 +702,46 @@ fn git_name_from_path(path: &str) -> String {
     path.split('/').next_back().unwrap_or(path).to_string()
 }
 
+/// 解开 git 对特殊字符路径的 C 风格引用（如 "\346\226\207.md"），
+/// 含引号包裹、八进制字节与常见转义符。未被引用的路径原样返回。
+fn unquote_git_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() < 2 || !trimmed.starts_with('"') || !trimmed.ends_with('"') {
+        return trimmed.to_string();
+    }
+
+    let inner = trimmed[1..trimmed.len() - 1].as_bytes();
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\\' && i + 1 < inner.len() {
+            let next = inner[i + 1];
+            if next.is_ascii_digit() {
+                let mut value = 0u32;
+                let mut count = 0;
+                while count < 3 && i + 1 < inner.len() && inner[i + 1].is_ascii_digit() {
+                    value = value * 8 + u32::from(inner[i + 1] - b'0');
+                    i += 1;
+                    count += 1;
+                }
+                bytes.push(value as u8);
+            } else {
+                bytes.push(match next {
+                    b'n' => b'\n',
+                    b't' => b'\t',
+                    b'r' => b'\r',
+                    other => other,
+                });
+                i += 1;
+            }
+        } else {
+            bytes.push(inner[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
 fn git_file_kind(root: &Path, relative_path: &str) -> String {
     let path = root.join(relative_to_path_buf(relative_path));
     if path.is_dir() {
@@ -732,7 +774,7 @@ fn parse_git_status_entries(root: &Path, entries: &[String]) -> Vec<GitFileStatu
                 ("modified", raw_path)
             };
 
-            let path = path.replace('\\', "/");
+            let path = unquote_git_path(path).replace('\\', "/");
             Some(GitFileStatus {
                 name: git_name_from_path(&path),
                 kind: git_file_kind(root, &path),
@@ -1236,7 +1278,7 @@ fn git_history(app: AppHandle) -> Result<Vec<GitCommitRecord>, String> {
         &[
             "log",
             "-30",
-            "--pretty=format:%h%x1f%s%x1f%an%x1f%ad",
+            "--pretty=format:%h%x1f%s%x1f%an%x1f%cd",
             "--date=format-local:%Y-%m-%d %H:%M",
         ],
     )?;

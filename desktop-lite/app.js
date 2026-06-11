@@ -871,7 +871,7 @@ async function newFolderInFolder(target) {
 }
 
 /* ── Note operations ─────────────────────────────── */
-async function loadNote(path, silent = false) {
+async function loadNote(path) {
   // 自动保存模式：切换前把未保存内容落盘
   await flushPendingSave();
 
@@ -947,7 +947,7 @@ async function createNote() {
     const note = await invoke("create_note", { folder, title });
     if (folder) state.expanded.add(folder);
     await loadTree(false);
-    await loadNote(note.path, true);
+    await loadNote(note.path);
   } catch (err) {
     showToast(String(err));
   }
@@ -1611,7 +1611,7 @@ async function gitDiscard(path) {
     if (isActive) {
       // 重新加载还原后的内容；文件被删（还原"新笔记"）则回到首页
       const stillExists = flattenFiles(state.tree).some((f) => f.path === state.activePath);
-      if (stillExists) await loadNote(state.activePath, true);
+      if (stillExists) await loadNote(state.activePath);
       else clearActiveNote();
     }
   } catch (err) {
@@ -1784,7 +1784,7 @@ async function loadTree(selectFirst = false) {
     const target = lastPath && files.find((f) => f.path === lastPath)
       ? lastPath
       : files.find((f) => /^(md|html?)$/i.test(f.extension))?.path;
-    if (target) await loadNote(target, true);
+    if (target) await loadNote(target);
   }
 }
 

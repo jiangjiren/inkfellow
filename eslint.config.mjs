@@ -16,6 +16,7 @@ const eslintConfig = defineConfig([
     "claude-chat/**",
     "desktop-bundle/**",
     "desktop-lite/marked.min.js",
+    "desktop-lite/vendor/**",
     "public/sw.js",
     "public/workbox-*.js",
     "public/swe-worker-*.js",

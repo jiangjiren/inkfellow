@@ -1780,6 +1780,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <span class="picker-option-name">Opus 4.8</span>
                 <span class="picker-option-desc">最强推理</span>
               </button>
+              <button class="picker-option model-option" data-model="claude-fable-5" data-label="Fable 5" role="option" aria-selected="false">
+                <span class="picker-option-name">Fable 5</span>
+                <span class="picker-option-desc">旗舰最强</span>
+              </button>
               <button class="picker-option model-option" data-model="claude-haiku-4-5-20251001" data-label="Haiku 4.5" role="option" aria-selected="false">
                 <span class="picker-option-name">Haiku 4.5</span>
                 <span class="picker-option-desc">极速轻量</span>
@@ -1964,6 +1968,7 @@ async function fetchHistory() {
 const CLAUDE_MODELS = [
   { model: "claude-sonnet-4-6",          label: "Sonnet 4.6", name: "Sonnet 4.6", desc: "快速均衡" },
   { model: "claude-opus-4-8",            label: "Opus 4.8",   name: "Opus 4.8",   desc: "最强推理" },
+  { model: "claude-fable-5",             label: "Fable 5",    name: "Fable 5",    desc: "旗舰最强" },
   { model: "claude-haiku-4-5-20251001",  label: "Haiku 4.5",  name: "Haiku 4.5",  desc: "极速轻量" },
 ];
 

@@ -44,10 +44,15 @@ export async function GET(request: NextRequest) {
         }, 100);
       });
 
-      // 每 20s 发一个 SSE 注释，防止 nginx/代理因空闲关闭连接
+      // 立即发一个 ping：流式响应头随首字节才 flush，不发的话 EventSource 的
+      // open 事件要等到首个心跳（最长 20s），拖慢断线重连后的补偿重载
+      controller.enqueue(encoder.encode("event: ping\ndata: {}\n\n"));
+
+      // 每 20s 发一个 ping 事件：既防止 nginx/代理因空闲关闭连接，也让客户端
+      // 能做活性看门狗（SSE 注释行对 EventSource API 不可见，必须用具名事件）
       const pingTimer = setInterval(() => {
         try {
-          controller.enqueue(encoder.encode(": ping\n\n"));
+          controller.enqueue(encoder.encode("event: ping\ndata: {}\n\n"));
         } catch {
           clearInterval(pingTimer);
         }

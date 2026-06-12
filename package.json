@@ -36,7 +36,8 @@
     "typescript": "^5"
   },
   "overrides": {
-    "postcss": "^8.5.10"
+    "postcss": "^8.5.10",
+    "serialize-javascript": "^7.0.5"
   },
   "license": "AGPL-3.0",
   "author": "Jiang Jiren <jiangjiren@hotmail.com> (WeChat: jiangjiren)"

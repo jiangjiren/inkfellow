@@ -1,32 +1,13 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import CodeMirror from "codemirror";
+import "codemirror/lib/codemirror.css";
+import "codemirror/mode/markdown/markdown";
+import "codemirror/addon/edit/continuelist";
 import styles from "./notes.module.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-const CDN_CSS = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css";
-const CDN_JS  = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js";
-const CDN_MD  = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js";
-
-function loadStyle(href: string) {
-  if (document.querySelector(`link[href="${href}"]`)) return;
-  const el = document.createElement("link");
-  el.rel = "stylesheet";
-  el.href = href;
-  document.head.appendChild(el);
-}
-
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload  = () => resolve();
-    el.onerror = reject;
-    document.head.appendChild(el);
-  });
-}
 
 interface NotesEditorProps {
   value: string;
@@ -61,38 +42,23 @@ const NotesEditor = forwardRef<NotesEditorHandle, NotesEditorProps>(
     }), []);
 
     useEffect(() => {
-      if (!containerRef.current) return;
-      let cancelled = false;
+      if (!containerRef.current || cmRef.current) return;
 
-      loadStyle(CDN_CSS);
+      const cm = (CodeMirror as any)(containerRef.current, {
+        value,
+        mode: "markdown",
+        lineWrapping: true,
+        autofocus: false,
+        indentUnit: 2,
+        tabSize: 2,
+        extraKeys: { "Enter": "newlineAndIndentContinueMarkdownList" },
+      });
 
-      async function init() {
-        await loadScript(CDN_JS);
-        await loadScript(CDN_MD);
-        if (cancelled || !containerRef.current || cmRef.current) return;
+      cm.on("change", () => { onChangeRef.current(cm.getValue()); });
+      cmRef.current = cm;
 
-        const CM = (window as any).CodeMirror;
-        if (!CM) return;
-
-        const cm = CM(containerRef.current, {
-          value,
-          mode: "markdown",
-          lineWrapping: true,
-          autofocus: false,
-          indentUnit: 2,
-          tabSize: 2,
-          extraKeys: { "Enter": "newlineAndIndentContinueMarkdownList" },
-        });
-
-        cm.on("change", () => { onChangeRef.current(cm.getValue()); });
-        cmRef.current = cm;
-
-        (cm.getInputField() as HTMLElement).focus({ preventScroll: true });
-        onReadyRef.current?.();
-      }
-
-      void init();
-      return () => { cancelled = true; };
+      (cm.getInputField() as HTMLElement).focus({ preventScroll: true });
+      onReadyRef.current?.();
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

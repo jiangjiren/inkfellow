@@ -1192,74 +1192,95 @@ function formatLastSync(iso) {
   return new Date(iso).toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-async function refreshGitStatus() {
+function renderGitStatusUI() {
   const dot = qs("sidebar-git-dot");
   const label = qs("sidebar-git-label");
-  try {
-    const st = await invoke("git_status");
-    state.gitStatus = st;
+  const st = state.gitStatus;
+  if (!st) return;
 
-    if (!st.initialized) {
-      dot.className = "sidebarGitDot";
-      label.textContent = "尚未初始化同步";
-      renderGitPanel();
-      return;
-    }
-
-    const files = st.files || [];
-    const synced = files.length === 0 && st.ahead === 0 && st.behind === 0;
-    dot.className = "sidebarGitDot" + (synced ? " sidebarGitDotSynced" : "");
-    if (synced) {
-      label.textContent = "已同步到云端";
-    } else if (files.length === 0 && st.behind > 0) {
-      label.textContent = `远端有 ${st.behind} 个新版本`;
-    } else if (files.length > 0) {
-      label.textContent = `${files.length} 篇待同步`;
-    } else {
-      label.textContent = `${st.ahead} 篇待同步`;
-    }
+  if (!st.initialized) {
+    dot.className = "sidebarGitDot";
+    label.textContent = "尚未初始化同步";
     renderGitPanel();
+    return;
+  }
+
+  const files = st.files || [];
+  const synced = files.length === 0 && st.ahead === 0 && st.behind === 0;
+  dot.className = "sidebarGitDot" + (synced ? " sidebarGitDotSynced" : "");
+  if (synced) {
+    label.textContent = "已同步到云端";
+  } else if (files.length === 0 && st.behind > 0) {
+    label.textContent = `远端有 ${st.behind} 个新版本`;
+  } else if (files.length > 0) {
+    label.textContent = `${files.length} 篇待同步`;
+  } else {
+    label.textContent = `${st.ahead} 篇待同步`;
+  }
+  renderGitPanel();
+}
+
+async function refreshGitStatus() {
+  try {
+    state.gitStatus = await invoke("git_status");
+    renderGitStatusUI();
   } catch (err) {
-    label.textContent = "同步状态异常";
+    qs("sidebar-git-label").textContent = "同步状态异常";
     state.gitFeedback = String(err);
     state.gitFeedbackError = true;
     renderGitPanel();
   }
 }
 
-/* ── 自动拉取云端更新 ──────────────────────────── */
-async function autoPull() {
-  if (state.pulling) return;
-  
+/* ── 同步引擎：触发只是入队，调度与执行在 Rust 侧 ── */
+function requestAutoPull() {
   if (state.gitStatus && !state.gitStatus.initialized) return;
-
   // 正在编辑时不拉取，保护沉浸状态
   if (state.editMode && state.dirty) return;
+  invoke("sync_request_pull", { force: false }).catch(() => {});
+}
 
-  state.pulling = true;
-  const dot = qs("sidebar-git-dot");
-  dot.classList.add("sidebarGitDotPulsing");
+async function initSyncEvents() {
+  const listen = window.__TAURI__?.event?.listen;
+  if (!listen) return;
 
-  try {
-    const out = await invoke("git_pull");
-    if (!out.success) {
-      await refreshGitStatus();
+  await listen("sync-state", async ({ payload }) => {
+    const dot = qs("sidebar-git-dot");
+
+    if (payload.phase === "pulling" || payload.phase === "syncing") {
+      dot.classList.add("sidebarGitDotPulsing");
+      if (payload.phase === "syncing") {
+        state.gitBusy = true;
+        renderGitPanel();
+      }
       return;
     }
-    const updated = out.stdout && !/already up to date/i.test(out.stdout);
-    if (updated) {
+
+    // idle：一次同步动作结束
+    dot.classList.remove("sidebarGitDotPulsing");
+    state.gitBusy = false;
+    if (payload.status) {
+      state.gitStatus = payload.status;
+      renderGitStatusUI();
+    }
+
+    if (payload.kind === "commitPush") {
+      if (payload.error) {
+        showGitFeedback(payload.error, true);
+      } else {
+        state.gitMessage = "";
+        state.gitEditingMessage = false;
+        showGitFeedback(payload.feedback || "已同步。");
+      }
+    }
+    // 自动 pull 失败保持静默：圆点黄色已经在 renderGitStatusUI 中体现
+
+    if (payload.pulledChanges) {
       showToast("已获取云端更新");
       await loadTree(false);
       if (state.gitPane === "history") await openGitHistory();
     }
-    await refreshGitStatus();
-  } catch {
-    // 网络失败：静默，圆点由 refreshGitStatus 更新为黄色
-    await refreshGitStatus();
-  } finally {
-    state.pulling = false;
-    dot.classList.remove("sidebarGitDotPulsing");
-  }
+  });
 }
 
 function showGitFeedback(msg, isError = false) {
@@ -1278,25 +1299,13 @@ async function gitCommitPush() {
   const message = state.gitMessage.trim() || "Update notes";
   state.gitBusy = true;
   renderGitPanel();
+  showGitFeedback("正在同步到云端…");
   try {
-    showGitFeedback("Checking cloud updates...");
-    const pull = await invoke("git_pull");
-    if (!pull.success) throw new Error(pull.stderr || pull.stdout || "Pull failed.");
-
-    showGitFeedback("Syncing notes to cloud...");
-    const results = await invoke("git_commit_and_push", { message });
-    const failed = results.find((r) => !r.success);
-    if (failed) throw new Error(failed.stderr || failed.stdout || "Sync failed.");
-    const out = results.map((r) => [r.stdout, r.stderr].filter(Boolean).join("\n")).join("\n").trim();
-    state.gitMessage = "";
-    state.gitEditingMessage = false;
-    showGitFeedback(out || "Synced.");
-    await refreshGitStatus();
-    if (state.gitPane === "history") await openGitHistory();
+    // 只入队，执行结果由 sync-state 事件回推
+    await invoke("sync_commit_and_push", { message });
   } catch (err) {
-    showGitFeedback(String(err), true);
-  } finally {
     state.gitBusy = false;
+    showGitFeedback(String(err), true);
     renderGitPanel();
   }
 }
@@ -1879,22 +1888,22 @@ function wireEvents() {
   });
 }
 
-/* 窗口成为焦点时检查云端更新 */
+/* 窗口成为焦点时检查云端更新；节流与退避由 Rust 侧同步引擎负责 */
 function initAutoSync() {
   let pollId;
 
   const onFocus = () => {
-    void autoPull();
+    requestAutoPull();
   };
 
   const startPoll = () => {
     if (pollId) clearInterval(pollId);
-    pollId = setInterval(() => { void autoPull(); }, 60_000);
+    pollId = setInterval(requestAutoPull, 60_000);
   };
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      void autoPull();
+      requestAutoPull();
       startPoll();
     } else {
       if (pollId) clearInterval(pollId);
@@ -1922,10 +1931,11 @@ async function boot() {
 
   try {
     await waitForTauri(6000);
+    await initSyncEvents();
     const desktop = await invoke("get_desktop_state");
     applyDesktopState(desktop);
     await Promise.all([loadTree(false), waitForAgent(), refreshGitStatus()]);
-    void autoPull();
+    requestAutoPull();
     initAutoSync();
   } catch (err) {
     qs("vault-label").textContent = "Error: " + String(err);

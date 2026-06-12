@@ -6,9 +6,13 @@ use std::fs;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, RunEvent};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
+
+/// 全局 git 互斥锁：保证同一时刻只有一个 git 子进程在 vault 上运行，
+/// 防止 autostash/rebase 与其他 git 操作并发损坏仓库状态。
+static GIT_LOCK: Mutex<()> = Mutex::new(());
 
 const EXCLUDED_DIRECTORY_NAMES: &[&str] =
     &[".git", ".obsidian", ".claude", ".claudian", "node_modules"];
@@ -23,6 +27,7 @@ const IMAGE_NOTE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "s
 struct AppState {
     processes: Mutex<Vec<Child>>,
     claude_port: u16,
+    sync_tx: Mutex<Option<mpsc::Sender<SyncJob>>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,7 +96,7 @@ struct DesktopState {
     agent_ready: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct GitOutput {
     success: bool,
     stdout: String,
@@ -99,7 +104,7 @@ struct GitOutput {
     code: Option<i32>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct GitFileStatus {
     name: String,
     path: String,
@@ -107,7 +112,7 @@ struct GitFileStatus {
     kind: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct GitStatus {
     initialized: bool,
     clean: bool,
@@ -650,6 +655,7 @@ fn ensure_git_repo(path: &Path) {
 }
 
 fn run_git(path: &Path, args: &[&str]) -> Result<GitOutput, String> {
+    let _guard = GIT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = Command::new("git");
     command.arg("-C").arg(path);
     // 非 ASCII 路径（中文文件名）默认会被八进制转义，关掉以输出原始 UTF-8
@@ -847,7 +853,7 @@ fn parse_git_diff(path: &str, raw: &str) -> GitFileDiff {
 }
 
 #[tauri::command]
-fn get_desktop_state(app: AppHandle) -> Result<DesktopState, String> {
+async fn get_desktop_state(app: AppHandle) -> Result<DesktopState, String> {
     let vault = ensure_vault_path(&app)?;
     let state = app.state::<AppState>();
     let port = state.claude_port;
@@ -860,13 +866,13 @@ fn get_desktop_state(app: AppHandle) -> Result<DesktopState, String> {
 }
 
 #[tauri::command]
-fn agent_status(app: AppHandle) -> Result<bool, String> {
+async fn agent_status(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<AppState>();
     Ok(agent_ready(state.claude_port))
 }
 
 #[tauri::command]
-fn select_and_set_vault(app: AppHandle) -> Result<DesktopState, String> {
+async fn select_and_set_vault(app: AppHandle) -> Result<DesktopState, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Select notes vault")
         .pick_folder()
@@ -878,11 +884,11 @@ fn select_and_set_vault(app: AppHandle) -> Result<DesktopState, String> {
     save_vault_path(&app, &path)?;
     ensure_git_repo(&path);
     restart_agent(&app);
-    get_desktop_state(app)
+    get_desktop_state(app).await
 }
 
 #[tauri::command]
-fn set_vault_path(app: AppHandle, path: String) -> Result<DesktopState, String> {
+async fn set_vault_path(app: AppHandle, path: String) -> Result<DesktopState, String> {
     let path_buf = PathBuf::from(path);
     if !path_buf.exists() {
         return Err("Path does not exist.".to_string());
@@ -893,11 +899,11 @@ fn set_vault_path(app: AppHandle, path: String) -> Result<DesktopState, String> 
     save_vault_path(&app, &path_buf)?;
     ensure_git_repo(&path_buf);
     restart_agent(&app);
-    get_desktop_state(app)
+    get_desktop_state(app).await
 }
 
 #[tauri::command]
-fn list_notes_tree(app: AppHandle) -> Result<TreeResponse, String> {
+async fn list_notes_tree(app: AppHandle) -> Result<TreeResponse, String> {
     let root = vault_root(&app)?;
     Ok(TreeResponse {
         root: walk_directory(&root, &root, "")?,
@@ -906,7 +912,7 @@ fn list_notes_tree(app: AppHandle) -> Result<TreeResponse, String> {
 }
 
 #[tauri::command]
-fn read_note(app: AppHandle, path: String) -> Result<NoteResponse, String> {
+async fn read_note(app: AppHandle, path: String) -> Result<NoteResponse, String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     if !is_text_note(&resolved.absolute) {
         return Err("Only Markdown and HTML files can be read as text.".to_string());
@@ -930,7 +936,7 @@ fn read_note(app: AppHandle, path: String) -> Result<NoteResponse, String> {
 }
 
 #[tauri::command]
-fn read_asset(app: AppHandle, path: String) -> Result<AssetResponse, String> {
+async fn read_asset(app: AppHandle, path: String) -> Result<AssetResponse, String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     if !is_image_note(&resolved.absolute) {
         return Err("Only image files can be previewed.".to_string());
@@ -962,18 +968,18 @@ fn read_asset(app: AppHandle, path: String) -> Result<AssetResponse, String> {
 }
 
 #[tauri::command]
-fn write_note(app: AppHandle, path: String, content: String) -> Result<NoteResponse, String> {
+async fn write_note(app: AppHandle, path: String, content: String) -> Result<NoteResponse, String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     if !is_text_note(&resolved.absolute) {
         return Err("Only Markdown and HTML files can be edited.".to_string());
     }
 
     fs::write(&resolved.absolute, content.as_bytes()).map_err(|err| err.to_string())?;
-    read_note(app, resolved.relative)
+    read_note(app, resolved.relative).await
 }
 
 #[tauri::command]
-fn create_note(app: AppHandle, folder: String, title: String) -> Result<NoteResponse, String> {
+async fn create_note(app: AppHandle, folder: String, title: String) -> Result<NoteResponse, String> {
     let clean_folder = normalize_relative_path(&folder, true)?;
     let mut clean_name = sanitize_name_segment(&title)?;
     if path_extension(Path::new(&clean_name)).is_empty() {
@@ -1005,11 +1011,11 @@ fn create_note(app: AppHandle, folder: String, title: String) -> Result<NoteResp
     };
 
     fs::write(&resolved.absolute, initial.as_bytes()).map_err(|err| err.to_string())?;
-    read_note(app, resolved.relative)
+    read_note(app, resolved.relative).await
 }
 
 #[tauri::command]
-fn create_folder(app: AppHandle, parent: String, name: String) -> Result<(), String> {
+async fn create_folder(app: AppHandle, parent: String, name: String) -> Result<(), String> {
     let clean_parent = normalize_relative_path(&parent, true)?;
     let clean_name = sanitize_name_segment(&name)?;
     let relative = if clean_parent.is_empty() {
@@ -1028,7 +1034,7 @@ fn create_folder(app: AppHandle, parent: String, name: String) -> Result<(), Str
 }
 
 #[tauri::command]
-fn rename_entry(app: AppHandle, path: String, name: String) -> Result<String, String> {
+async fn rename_entry(app: AppHandle, path: String, name: String) -> Result<String, String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     let metadata = fs::metadata(&resolved.absolute).map_err(|err| err.to_string())?;
     let clean_name = sanitize_name_segment(&name)?;
@@ -1058,7 +1064,7 @@ fn rename_entry(app: AppHandle, path: String, name: String) -> Result<String, St
 }
 
 #[tauri::command]
-fn delete_entry(app: AppHandle, path: String) -> Result<(), String> {
+async fn delete_entry(app: AppHandle, path: String) -> Result<(), String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     let metadata = fs::metadata(&resolved.absolute).map_err(|err| err.to_string())?;
     if metadata.is_dir() {
@@ -1075,7 +1081,7 @@ fn delete_entry(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn search_notes(app: AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
+async fn search_notes(app: AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
     let needle = query.trim().to_lowercase();
     if needle.len() < 2 {
         return Ok(Vec::new());
@@ -1152,9 +1158,7 @@ fn search_walk(
     Ok(())
 }
 
-#[tauri::command]
-fn git_status(app: AppHandle) -> Result<GitStatus, String> {
-    let path = ensure_vault_path(&app)?;
+fn compute_git_status(path: &Path) -> Result<GitStatus, String> {
     let initialized = path.join(".git").exists();
     if !initialized {
         return Ok(GitStatus {
@@ -1170,7 +1174,7 @@ fn git_status(app: AppHandle) -> Result<GitStatus, String> {
         });
     }
 
-    let output = run_git(&path, &["status", "--porcelain=v1", "-b"])?;
+    let output = run_git(path, &["status", "--porcelain=v1", "-b"])?;
     let raw = if output.stdout.trim().is_empty() {
         output.stderr.clone()
     } else {
@@ -1180,7 +1184,7 @@ fn git_status(app: AppHandle) -> Result<GitStatus, String> {
     let first = lines.next().unwrap_or("");
     let (branch, ahead, behind) = parse_branch_status(first);
     let entries = lines.map(|line| line.to_string()).collect::<Vec<_>>();
-    let files = parse_git_status_entries(&path, &entries);
+    let files = parse_git_status_entries(path, &entries);
     Ok(GitStatus {
         initialized: true,
         clean: files.is_empty() && ahead == 0 && behind == 0,
@@ -1189,46 +1193,27 @@ fn git_status(app: AppHandle) -> Result<GitStatus, String> {
         behind,
         entries,
         files,
-        last_sync: git_last_sync(&path),
+        last_sync: git_last_sync(path),
         raw,
     })
 }
 
-#[tauri::command]
-fn git_init(app: AppHandle) -> Result<GitOutput, String> {
-    let path = ensure_vault_path(&app)?;
-    run_git(&path, &["init"])
+fn do_git_pull(path: &Path) -> Result<GitOutput, String> {
+    run_git(path, &["pull", "--rebase", "--autostash"])
 }
 
-#[tauri::command]
-fn git_pull(app: AppHandle) -> Result<GitOutput, String> {
-    let path = ensure_vault_path(&app)?;
-    run_git(&path, &["pull", "--rebase", "--autostash"])
+fn do_git_push(path: &Path) -> Result<GitOutput, String> {
+    run_git(path, &["push"])
 }
 
-#[tauri::command]
-fn git_push(app: AppHandle) -> Result<GitOutput, String> {
-    let path = ensure_vault_path(&app)?;
-    run_git(&path, &["push"])
-}
-
-#[tauri::command]
-fn git_commit(app: AppHandle, message: String) -> Result<GitOutput, String> {
-    let path = ensure_vault_path(&app)?;
-    let add = run_git(&path, &["add", "-A"])?;
+fn do_git_commit(path: &Path, message: &str) -> Result<GitOutput, String> {
+    let add = run_git(path, &["add", "-A"])?;
     if !add.success {
         return Ok(add);
     }
 
-    let mut diff = Command::new("git");
-    diff.arg("-C")
-        .arg(&path)
-        .arg("diff")
-        .arg("--cached")
-        .arg("--quiet");
-    hide_command_window(&mut diff);
-    let diff_status = diff.status().map_err(|err| err.to_string())?;
-    if diff_status.success() {
+    let staged = run_git(path, &["diff", "--cached", "--quiet"])?;
+    if staged.success {
         return Ok(GitOutput {
             success: true,
             stdout: "No staged changes to commit.".to_string(),
@@ -1238,12 +1223,12 @@ fn git_commit(app: AppHandle, message: String) -> Result<GitOutput, String> {
     }
 
     let clean_message = if message.trim().is_empty() {
-        "Update notes".to_string()
+        "Update notes"
     } else {
-        message.trim().to_string()
+        message.trim()
     };
     run_git(
-        &path,
+        path,
         &[
             "-c",
             "user.name=Inkfellow Desktop",
@@ -1251,23 +1236,266 @@ fn git_commit(app: AppHandle, message: String) -> Result<GitOutput, String> {
             "user.email=desktop@inkfellow.local",
             "commit",
             "-m",
-            &clean_message,
+            clean_message,
         ],
     )
 }
 
+/* ── 同步引擎：单一后台 worker 串行调度所有同步动作 ── */
+
+enum SyncJob {
+    Pull { force: bool },
+    CommitPush { message: String },
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncEvent {
+    /// pulling | syncing | idle
+    phase: String,
+    /// pull | commitPush
+    kind: String,
+    pulled_changes: bool,
+    feedback: Option<String>,
+    error: Option<String>,
+    status: Option<GitStatus>,
+}
+
+fn emit_sync(app: &AppHandle, event: SyncEvent) {
+    let _ = app.emit("sync-state", event);
+}
+
+fn emit_sync_done(app: &AppHandle, kind: &str, pulled: bool, feedback: Option<String>, error: Option<String>) {
+    let status = ensure_vault_path(app)
+        .and_then(|path| compute_git_status(&path))
+        .ok();
+    emit_sync(
+        app,
+        SyncEvent {
+            phase: "idle".to_string(),
+            kind: kind.to_string(),
+            pulled_changes: pulled,
+            feedback,
+            error,
+            status,
+        },
+    );
+}
+
+fn emit_sync_phase(app: &AppHandle, phase: &str, kind: &str) {
+    emit_sync(
+        app,
+        SyncEvent {
+            phase: phase.to_string(),
+            kind: kind.to_string(),
+            pulled_changes: false,
+            feedback: None,
+            error: None,
+            status: None,
+        },
+    );
+}
+
+fn pull_brought_changes(out: &GitOutput) -> bool {
+    let stdout = out.stdout.trim();
+    !stdout.is_empty() && !stdout.to_lowercase().contains("already up to date")
+}
+
+/// 失败退避：30s 起步指数翻倍，上限 10 分钟
+fn pull_min_interval(fail_streak: u32) -> Duration {
+    let secs = 30u64.saturating_mul(1 << fail_streak.min(5));
+    Duration::from_secs(secs.min(600))
+}
+
+fn sync_worker(app: AppHandle, rx: mpsc::Receiver<SyncJob>) {
+    let mut last_pull_ok: Option<Instant> = None;
+    let mut fail_streak: u32 = 0;
+
+    while let Ok(job) = rx.recv() {
+        let Ok(vault) = ensure_vault_path(&app) else {
+            continue;
+        };
+        if !vault.join(".git").exists() {
+            continue;
+        }
+
+        match job {
+            SyncJob::Pull { force } => {
+                if !force {
+                    let throttled = last_pull_ok
+                        .map(|at| at.elapsed() < pull_min_interval(fail_streak))
+                        .unwrap_or(false);
+                    if throttled {
+                        continue;
+                    }
+                }
+
+                emit_sync_phase(&app, "pulling", "pull");
+                match do_git_pull(&vault) {
+                    Ok(out) if out.success => {
+                        fail_streak = 0;
+                        last_pull_ok = Some(Instant::now());
+                        emit_sync_done(&app, "pull", pull_brought_changes(&out), None, None);
+                    }
+                    Ok(out) => {
+                        fail_streak += 1;
+                        last_pull_ok = Some(Instant::now());
+                        let detail = if out.stderr.trim().is_empty() {
+                            out.stdout
+                        } else {
+                            out.stderr
+                        };
+                        emit_sync_done(&app, "pull", false, None, Some(detail.trim().to_string()));
+                    }
+                    Err(err) => {
+                        fail_streak += 1;
+                        last_pull_ok = Some(Instant::now());
+                        emit_sync_done(&app, "pull", false, None, Some(err));
+                    }
+                }
+            }
+            SyncJob::CommitPush { message } => {
+                emit_sync_phase(&app, "syncing", "commitPush");
+                let result = (|| -> Result<(GitOutput, Vec<GitOutput>), String> {
+                    let pull = do_git_pull(&vault)?;
+                    if !pull.success {
+                        let detail = if pull.stderr.trim().is_empty() {
+                            pull.stdout.clone()
+                        } else {
+                            pull.stderr.clone()
+                        };
+                        return Err(detail.trim().to_string());
+                    }
+                    let commit = do_git_commit(&vault, &message)?;
+                    if !commit.success {
+                        let detail = if commit.stderr.trim().is_empty() {
+                            commit.stdout.clone()
+                        } else {
+                            commit.stderr.clone()
+                        };
+                        return Err(detail.trim().to_string());
+                    }
+                    let push = do_git_push(&vault)?;
+                    if !push.success {
+                        let detail = if push.stderr.trim().is_empty() {
+                            push.stdout.clone()
+                        } else {
+                            push.stderr.clone()
+                        };
+                        return Err(detail.trim().to_string());
+                    }
+                    Ok((pull, vec![commit, push]))
+                })();
+
+                match result {
+                    Ok((pull, outputs)) => {
+                        last_pull_ok = Some(Instant::now());
+                        fail_streak = 0;
+                        let summary = outputs
+                            .iter()
+                            .map(|o| [o.stdout.trim(), o.stderr.trim()].join("\n"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .trim()
+                            .to_string();
+                        let feedback = if summary.is_empty() {
+                            "已同步。".to_string()
+                        } else {
+                            summary
+                        };
+                        emit_sync_done(
+                            &app,
+                            "commitPush",
+                            pull_brought_changes(&pull),
+                            Some(feedback),
+                            None,
+                        );
+                    }
+                    Err(err) => {
+                        emit_sync_done(&app, "commitPush", false, None, Some(err));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn start_sync_worker(app: &AppHandle) {
+    let (tx, rx) = mpsc::channel::<SyncJob>();
+    let state = app.state::<AppState>();
+    *state.sync_tx.lock().unwrap() = Some(tx);
+
+    let handle = app.clone();
+    std::thread::spawn(move || sync_worker(handle, rx));
+}
+
+fn queue_sync_job(app: &AppHandle, job: SyncJob) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let tx = state.sync_tx.lock().unwrap();
+    tx.as_ref()
+        .ok_or_else(|| "Sync engine is not running.".to_string())?
+        .send(job)
+        .map_err(|_| "Sync engine is not running.".to_string())
+}
+
 #[tauri::command]
-fn git_commit_and_push(app: AppHandle, message: String) -> Result<Vec<GitOutput>, String> {
-    let commit = git_commit(app.clone(), message)?;
+async fn sync_request_pull(app: AppHandle, force: Option<bool>) -> Result<(), String> {
+    queue_sync_job(
+        &app,
+        SyncJob::Pull {
+            force: force.unwrap_or(false),
+        },
+    )
+}
+
+#[tauri::command]
+async fn sync_commit_and_push(app: AppHandle, message: String) -> Result<(), String> {
+    queue_sync_job(&app, SyncJob::CommitPush { message })
+}
+
+#[tauri::command]
+async fn git_status(app: AppHandle) -> Result<GitStatus, String> {
+    let path = ensure_vault_path(&app)?;
+    compute_git_status(&path)
+}
+
+#[tauri::command]
+async fn git_init(app: AppHandle) -> Result<GitOutput, String> {
+    let path = ensure_vault_path(&app)?;
+    run_git(&path, &["init"])
+}
+
+#[tauri::command]
+async fn git_pull(app: AppHandle) -> Result<GitOutput, String> {
+    let path = ensure_vault_path(&app)?;
+    do_git_pull(&path)
+}
+
+#[tauri::command]
+async fn git_push(app: AppHandle) -> Result<GitOutput, String> {
+    let path = ensure_vault_path(&app)?;
+    do_git_push(&path)
+}
+
+#[tauri::command]
+async fn git_commit(app: AppHandle, message: String) -> Result<GitOutput, String> {
+    let path = ensure_vault_path(&app)?;
+    do_git_commit(&path, &message)
+}
+
+#[tauri::command]
+async fn git_commit_and_push(app: AppHandle, message: String) -> Result<Vec<GitOutput>, String> {
+    let path = ensure_vault_path(&app)?;
+    let commit = do_git_commit(&path, &message)?;
     if !commit.success {
         return Ok(vec![commit]);
     }
-    let push = git_push(app)?;
+    let push = do_git_push(&path)?;
     Ok(vec![commit, push])
 }
 
 #[tauri::command]
-fn git_history(app: AppHandle) -> Result<Vec<GitCommitRecord>, String> {
+async fn git_history(app: AppHandle) -> Result<Vec<GitCommitRecord>, String> {
     let path = ensure_vault_path(&app)?;
     if !path.join(".git").exists() {
         return Ok(Vec::new());
@@ -1309,7 +1537,7 @@ fn git_history(app: AppHandle) -> Result<Vec<GitCommitRecord>, String> {
 }
 
 #[tauri::command]
-fn git_diff(app: AppHandle, path: String) -> Result<GitFileDiff, String> {
+async fn git_diff(app: AppHandle, path: String) -> Result<GitFileDiff, String> {
     let root = ensure_vault_path(&app)?;
     let relative = normalize_relative_path(&path, false)?;
 
@@ -1342,7 +1570,7 @@ fn git_diff(app: AppHandle, path: String) -> Result<GitFileDiff, String> {
 }
 
 #[tauri::command]
-fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
+async fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
     let root = ensure_vault_path(&app)?;
     let relative = normalize_relative_path(&path, false)?;
 
@@ -1391,10 +1619,15 @@ pub fn run() {
     let claude_port = get_free_port().unwrap_or(8089);
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .manage(AppState {
             processes: Mutex::new(Vec::new()),
             claude_port,
+            sync_tx: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_desktop_state,
@@ -1418,13 +1651,16 @@ pub fn run() {
             git_commit_and_push,
             git_history,
             git_diff,
-            git_discard
+            git_discard,
+            sync_request_pull,
+            sync_commit_and_push
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             if let Ok(vault) = ensure_vault_path(&handle) {
                 ensure_git_repo(&vault);
             }
+            start_sync_worker(&handle);
             spawn_agent(&handle);
             Ok(())
         })

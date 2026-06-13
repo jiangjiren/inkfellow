@@ -278,6 +278,120 @@ function renderMarkdownContent(md) {
   return marked.parse(md, { breaks: false, gfm: true });
 }
 
+const TAG_KEYS = new Set(["tags", "tag", "aliases", "alias"]);
+
+function parseFrontMatter(content) {
+  const empty = { data: {}, body: content };
+  if (!content.startsWith("---")) return empty;
+  const firstNewline = content.indexOf("\n");
+  if (firstNewline === -1) return empty;
+
+  const rest = content.slice(firstNewline + 1);
+  const closingMatch = /^---[ \t]*$/m.exec(rest);
+  if (!closingMatch || closingMatch.index === undefined) return empty;
+
+  const yamlContent = rest.slice(0, closingMatch.index);
+  const afterClose = rest.slice(closingMatch.index + closingMatch[0].length);
+  const body = afterClose.startsWith("\n") ? afterClose.slice(1) : afterClose;
+
+  const data = {};
+  const lines = yamlContent.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim() || line.trim().startsWith("#")) { i++; continue; }
+
+    const colonIndex = line.indexOf(":");
+    if (colonIndex === -1) { i++; continue; }
+
+    const key = line.slice(0, colonIndex).trim();
+    if (!key) { i++; continue; }
+
+    const valueStr = line.slice(colonIndex + 1).trim();
+
+    if (!valueStr && i + 1 < lines.length && /^\s+-\s/.test(lines[i + 1])) {
+      const items = [];
+      i++;
+      while (i < lines.length && /^\s+-/.test(lines[i])) {
+        const item = lines[i].replace(/^\s+-\s*/, "").trim();
+        if (item) items.push(item);
+        i++;
+      }
+      data[key] = items;
+      continue;
+    }
+
+    if (!valueStr) { data[key] = null; i++; continue; }
+
+    if (valueStr === "[]") { data[key] = []; i++; continue; }
+
+    if (valueStr.startsWith("[") && valueStr.endsWith("]")) {
+      const inner = valueStr.slice(1, -1).trim();
+      data[key] = inner
+        ? inner.split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+        : [];
+      i++;
+      continue;
+    }
+
+    if (valueStr === "true") { data[key] = true; i++; continue; }
+    if (valueStr === "false") { data[key] = false; i++; continue; }
+    if (valueStr === "null" || valueStr === "~") { data[key] = null; i++; continue; }
+    if (/^-?\d+(\.\d+)?$/.test(valueStr)) { data[key] = Number(valueStr); i++; continue; }
+
+    data[key] = valueStr.replace(/^["']|["']$/g, "");
+    i++;
+  }
+
+  return { data, body };
+}
+
+function renderFrontMatterPanel(data) {
+  const entries = Object.entries(data);
+  if (entries.length === 0) return "";
+
+  const rows = entries.map(([key, value]) => {
+    const isTagField = TAG_KEYS.has(key.toLowerCase());
+    const items = Array.isArray(value) ? value : null;
+
+    let valueHtml;
+    if (value === null || value === "") {
+      valueHtml = `<span class="frontMatterEmpty">—</span>`;
+    } else if (items !== null) {
+      if (items.length === 0) {
+        valueHtml = `<span class="frontMatterEmpty">—</span>`;
+      } else if (isTagField) {
+        const tags = items
+          .map((item) => `<span class="frontMatterTag">${escapeHtml(item)}</span>`)
+          .join("");
+        valueHtml = `<span class="frontMatterTags">${tags}</span>`;
+      } else {
+        const listItems = items.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+        valueHtml = `<ul class="frontMatterList">${listItems}</ul>`;
+      }
+    } else if (typeof value === "boolean") {
+      valueHtml = `<span class="frontMatterBool">${value ? "true" : "false"}</span>`;
+    } else {
+      valueHtml = escapeHtml(String(value));
+    }
+
+    return `
+      <div class="frontMatterRow">
+        <dt class="frontMatterKey">${escapeHtml(key)}</dt>
+        <dd class="frontMatterValue">${valueHtml}</dd>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <details class="frontMatter">
+      <summary class="frontMatterLabel">Properties</summary>
+      <dl class="frontMatterGrid">${rows}</dl>
+    </details>
+  `;
+}
+
 /* ── TOC extraction ──────────────────────────────── */
 /* slug 保留中文等 Unicode 字符；重复标题追加序号保证唯一 */
 function slugifyHeading(text, seen) {
@@ -412,8 +526,10 @@ function renderDocArea() {
   } else {
     docArea.className = "docArea";
     if (ext === "md") {
-      const html = renderMarkdownContent(state.activeNote.content);
-      docArea.innerHTML = `<div class="document"><article class="prose" id="prose-content">${html}</article></div>`;
+      const { data: frontMatterData, body: markdownBody } = parseFrontMatter(state.activeNote.content);
+      const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
+      const html = renderMarkdownContent(markdownBody);
+      docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
       resolveMarkdownImages(state.activeNote.path);
     } else if (/^html?$/.test(ext)) {
@@ -667,6 +783,7 @@ function buildTreeNodes(node, container, level, isRoot) {
     label.className = "treeLabel";
     label.textContent = isRoot ? (node.name || "Vault") : node.name;
     label.title = node.path || state.vaultPath;
+    if (!isRoot) label.dataset.path = node.path;
 
     btn.append(chevron, icon, label);
     btn.addEventListener("click", () => {
@@ -714,6 +831,7 @@ function buildTreeNodes(node, container, level, isRoot) {
     const label = document.createElement("span");
     label.className = "treeLabel";
     label.textContent = stripExt(node.name);
+    label.dataset.path = node.path;
 
     btn.append(icon, label);
 
@@ -756,6 +874,13 @@ function loadExpandedState() {
 }
 
 /* ── Context menu ────────────────────────────────── */
+const MENU_ICONS = {
+  note:   `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 1.5h6L10.5 4V11.5H2V1.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 1.5V4h2.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 6.5h5M4 8.5h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>`,
+  folder: `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 3.5h4l1 1.5h6v6H1V3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+  rename: `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M8.5 2L11 4.5 4.5 11H2V8.5L8.5 2Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+  delete: `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3.5h9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M4.5 3.5V2h4v1.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M3 3.5l.6 7.5h5.8L10 3.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5 6v3.5M8 6v3.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>`,
+};
+
 function showContextMenu(e, target) {
   const menu = qs("context-menu");
   menu.replaceChildren();
@@ -764,22 +889,30 @@ function showContextMenu(e, target) {
   const items = [];
 
   if (target.kind === "file") {
-    items.push({ label: "Rename…", action: renameEntry });
-    items.push({ label: "Delete…", action: deleteEntry, danger: true });
+    items.push({ label: "重命名", icon: MENU_ICONS.rename, action: renameEntry });
+    items.push({ separator: true });
+    items.push({ label: "删除", icon: MENU_ICONS.delete, action: deleteEntry, danger: true });
   } else {
-    items.push({ label: "New note here…", action: newNoteInFolder });
-    items.push({ label: "New folder here…", action: newFolderInFolder });
+    items.push({ label: "新建笔记", icon: MENU_ICONS.note, action: newNoteInFolder });
+    items.push({ label: "新建文件夹", icon: MENU_ICONS.folder, action: newFolderInFolder });
     if (target.path) {
-      items.push({ label: "Rename…", action: renameEntry });
-      items.push({ label: "Delete…", action: deleteEntry, danger: true });
+      items.push({ separator: true });
+      items.push({ label: "重命名", icon: MENU_ICONS.rename, action: renameEntry });
+      items.push({ label: "删除", icon: MENU_ICONS.delete, action: deleteEntry, danger: true });
     }
   }
 
   for (const item of items) {
+    if (item.separator) {
+      const sep = document.createElement("div");
+      sep.className = "treeActionSep";
+      menu.appendChild(sep);
+      continue;
+    }
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "treeActionItem" + (item.danger ? " danger" : "");
-    btn.textContent = item.label;
+    btn.innerHTML = `<span class="treeActionIcon">${item.icon}</span><span>${item.label}</span>`;
     btn.addEventListener("click", () => {
       hideContextMenu();
       item.action(target);
@@ -787,16 +920,17 @@ function showContextMenu(e, target) {
     menu.appendChild(btn);
   }
 
+  // 先取消 hidden 才能量到真实尺寸；同一同步块内完成定位，绘制前不会闪烁
+  menu.hidden = false;
   const rect = e.currentTarget.getBoundingClientRect();
   let top = rect.bottom + 4;
   let left = rect.left;
-  const menuWidth = 160;
-  if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
-  if (top + 200 > window.innerHeight) top = rect.top - 4 - Math.min(items.length * 36, 160);
+  if (left + menu.offsetWidth > window.innerWidth - 8) left = window.innerWidth - menu.offsetWidth - 8;
+  if (top + menu.offsetHeight > window.innerHeight - 8) top = rect.top - 4 - menu.offsetHeight;
+  if (top < 8) top = 8;
 
   menu.style.top = `${top}px`;
   menu.style.left = `${left}px`;
-  menu.hidden = false;
 }
 
 function hideContextMenu() {
@@ -804,25 +938,74 @@ function hideContextMenu() {
   state.contextTarget = null;
 }
 
-async function renameEntry(target) {
-  const newName = await showDialog(`Rename "${target.name}"`, target.name);
-  if (!newName || newName === target.name) return;
-  try {
-    const newPath = await invoke("rename_entry", { path: target.path, name: newName });
-    if (target.path === state.activePath) {
-      state.activePath = newPath;
-      if (state.activeNote) state.activeNote = { ...state.activeNote, path: newPath, name: newName };
-      renderNoteMeta();
-    }
-    await loadTree(false);
-    showToast("Renamed.");
-  } catch (err) {
-    showToast(String(err));
+/* 属性选择器对含反斜杠的 Windows 路径转义不可靠，改用精确比较查找 */
+function findTreeLabel(path) {
+  for (const el of document.querySelectorAll(".treeLabel[data-path]")) {
+    if (el.dataset.path === path) return el;
   }
+  return null;
+}
+
+function renameEntry(target) {
+  const labelEl = findTreeLabel(target.path);
+  if (!labelEl) return;
+
+  const ext = target.kind === "file" ? extOf(target.name) : "";
+  const originalDisplay = labelEl.textContent;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "treeRenameInput";
+  input.value = originalDisplay;
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+
+  async function commit() {
+    if (settled) return;
+    settled = true;
+    input.removeEventListener("blur", commit);
+
+    const raw = input.value.trim();
+    const newName = raw ? (ext ? raw + "." + ext : raw) : target.name;
+
+    input.replaceWith(labelEl);
+
+    if (!raw || newName === target.name) return;
+    try {
+      const newPath = await invoke("rename_entry", { path: target.path, name: newName });
+      if (target.path === state.activePath) {
+        state.activePath = newPath;
+        if (state.activeNote) state.activeNote = { ...state.activeNote, path: newPath, name: newName };
+        renderNoteMeta();
+      }
+      await loadTree(false);
+      showToast("已重命名");
+    } catch (err) {
+      showToast(String(err));
+    }
+  }
+
+  function cancel() {
+    if (settled) return;
+    settled = true;
+    input.removeEventListener("blur", commit);
+    input.replaceWith(labelEl);
+  }
+
+  input.addEventListener("mousedown", (e) => e.stopPropagation());
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter")  { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
 }
 
 async function deleteEntry(target) {
-  const confirmed = await showConfirm(`Delete "${target.name}"? This cannot be undone.`);
+  const confirmed = await showConfirm(`确认删除 "${target.name}"？此操作不可撤销。`);
   if (!confirmed) return;
   const affectsActive =
     (target.kind === "file" && target.path === state.activePath) ||
@@ -838,14 +1021,14 @@ async function deleteEntry(target) {
       clearActiveNote();
     }
     await loadTree(false);
-    showToast("Deleted.");
+    showToast("已删除");
   } catch (err) {
     showToast(String(err));
   }
 }
 
 async function newNoteInFolder(target) {
-  const title = await showDialog("New note title", "Untitled");
+  const title = await showDialog("新建笔记", "无标题");
   if (!title) return;
   try {
     const note = await invoke("create_note", { folder: target.path, title });
@@ -858,13 +1041,13 @@ async function newNoteInFolder(target) {
 }
 
 async function newFolderInFolder(target) {
-  const name = await showDialog("New folder name", "New folder");
+  const name = await showDialog("新建文件夹", "新文件夹");
   if (!name) return;
   try {
     await invoke("create_folder", { parent: target.path, name });
     state.expanded.add(target.path);
     await loadTree(false);
-    showToast("Folder created.");
+    showToast("文件夹已创建");
   } catch (err) {
     showToast(String(err));
   }
@@ -964,7 +1147,7 @@ async function deleteActiveNote() {
     await invoke("delete_entry", { path: state.activeNote.path });
     clearActiveNote();
     await loadTree(false);
-    showToast("Deleted.");
+    showToast("已删除");
   } catch (err) {
     showToast(String(err));
   }

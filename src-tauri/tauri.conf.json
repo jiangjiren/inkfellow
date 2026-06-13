@@ -39,6 +39,11 @@
       "bin/node.exe",
       "../desktop-bundle/claude-chat/**/*"
     ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

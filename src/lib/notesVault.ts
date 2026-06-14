@@ -694,6 +694,94 @@ export const importVaultFiles = async (
   return { files: imported, failed };
 };
 
+export type WikiBacklinkEntry = {
+  sourcePath: string;
+  sourceName: string;
+  context: string;
+};
+
+const WIKI_LINK_RE = /(!?)\[\[([^\]]+)\]\]/g;
+const MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|mp3|wav|ogg|flac|pdf)$/i;
+
+export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBacklinkEntry[]> => {
+  const normTarget = sanitizeRelativePath(targetRelPath);
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+
+  const allMdPaths: string[] = [];
+  const collectMd = (node: NotesTreeNode) => {
+    if (node.type === "file" && node.path.endsWith(".md")) {
+      allMdPaths.push(node.path);
+    } else if (node.type === "directory") {
+      for (const child of node.children) collectMd(child);
+    }
+  };
+  collectMd(tree);
+
+  const noteStem = path.basename(normTarget, ".md").toLowerCase();
+  const pathKey = normTarget.toLowerCase().endsWith(".md")
+    ? normTarget.toLowerCase().slice(0, -3)
+    : normTarget.toLowerCase();
+
+  const results: WikiBacklinkEntry[] = [];
+
+  for (const mdPath of allMdPaths) {
+    if (mdPath === normTarget) continue; // skip self
+
+    const absPath = path.join(vaultRoot, mdPath.replace(/\//g, path.sep));
+    let content: string;
+    try {
+      content = await fs.readFile(absPath, "utf8");
+    } catch {
+      continue;
+    }
+
+    // Two-pass fence stripping: only lines inside completed fence pairs are excluded.
+    // Unclosed fences are treated as plain text (avoids silently losing content).
+    const lines = content.split("\n");
+    const codeLineSet = new Set<number>();
+    let fStart = -1, fChar = "", fLen = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (fStart === -1) {
+        const m = t.match(/^(`{3,}|~{3,})/);
+        if (m) { fStart = i; fChar = m[1][0]; fLen = m[1].length; }
+      } else {
+        const m = t.match(/^(`{3,}|~{3,})\s*$/);
+        if (m && m[1][0] === fChar && m[1].length >= fLen) {
+          for (let j = fStart; j <= i; j++) codeLineSet.add(j);
+          fStart = -1;
+        }
+      }
+    }
+    const clean = lines.map((line, i) => (codeLineSet.has(i) ? "" : line)).join("\n") + "\n";
+
+    WIKI_LINK_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = WIKI_LINK_RE.exec(clean)) !== null) {
+      const [, embedBang, inner] = match;
+      const isEmbed = embedBang === "!";
+      const targetRaw = inner.split("|")[0].split("#")[0].trim().toLowerCase();
+      if (isEmbed && MEDIA_EXT_RE.test(targetRaw)) continue;
+      if (targetRaw !== noteStem && targetRaw !== pathKey) continue;
+
+      const matchStart = match.index;
+      const lineStart = clean.lastIndexOf("\n", matchStart - 1) + 1;
+      const lineEnd = clean.indexOf("\n", matchStart);
+      const context = clean.slice(lineStart, lineEnd === -1 ? clean.length : lineEnd).trim().slice(0, 120);
+
+      results.push({
+        sourcePath: mdPath,
+        sourceName: path.basename(mdPath, ".md"),
+        context,
+      });
+      break; // one entry per source file
+    }
+  }
+
+  return results;
+};
+
 export const mapVaultError = (error: unknown) => {
   if (error instanceof VaultAccessError) {
     return {

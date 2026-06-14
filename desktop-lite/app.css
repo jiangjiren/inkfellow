@@ -23,6 +23,12 @@
   --notes-accent-warm-hover: #cd5b24;
   --notes-accent-warm-bg: rgba(196, 82, 28, 0.08);
 
+  /* Wiki Links (Brand Purple) */
+  --notes-wiki-link: #7c3aed;
+  --notes-wiki-link-hover: #6d28d9;
+  --notes-wiki-link-missing: #9e8cf0;
+  --notes-wiki-link-missing-hover: #7c3aed;
+
   --notes-bg-subtle: rgba(120, 120, 128, 0.07);
   --notes-fm-bool: #6a5f8f;
   --notes-fm-tag-text: #364826;
@@ -59,6 +65,13 @@
     --notes-accent-warm: #d05a22;
     --notes-accent-warm-hover: #e06c35;
     --notes-accent-warm-bg: rgba(208, 90, 34, 0.15);
+
+    /* Wiki Links (Brand Purple · Dark) */
+    --notes-wiki-link: #a78bfa;
+    --notes-wiki-link-hover: #c4b5fd;
+    --notes-wiki-link-missing: #7c3aed;
+    --notes-wiki-link-missing-hover: #8b5cf6;
+
     --notes-bg-subtle: rgba(255, 255, 255, 0.05);
     --notes-fm-bool: #a8a0c8;
     --notes-fm-tag-text: #9bb38a;
@@ -3075,3 +3088,112 @@ input, textarea { font-family: inherit; }
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── HTML iframe viewer ──────────────────────────── */
+.docAreaHtml {
+  background: transparent;
+}
+
+.htmlFrame {
+  display: block;
+  width: 100%;
+  min-height: calc(100vh - 44px);
+  border: 0;
+  background: transparent;
+}
+
+/* ── Nav Back / Forward buttons ─────────────────── */
+.navButtons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.navBtn {
+  min-width: 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.navBtn:disabled {
+  opacity: 0.28;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ── Wiki Links ──────────────────────────────────── */
+.prose a.wikiLink {
+  color: var(--notes-wiki-link);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(124, 58, 237, 0.22);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.prose a.wikiLink:hover {
+  color: var(--notes-wiki-link-hover);
+  border-bottom-color: var(--notes-wiki-link-hover);
+  text-decoration: none;
+}
+
+.prose a.wikiLinkMissing {
+  color: var(--notes-wiki-link-missing);
+  border-bottom: 1px dashed rgba(158, 140, 240, 0.45);
+}
+
+.prose a.wikiLinkMissing:hover {
+  color: var(--notes-wiki-link-missing-hover);
+  border-bottom-color: var(--notes-wiki-link-missing-hover);
+  text-decoration: none;
+}
+
+/* ── Backlinks Panel ─────────────────────────────── */
+.backlinksPanel {
+  margin-top: 56px;
+  padding-top: 28px;
+  border-top: 1px solid var(--notes-border);
+}
+
+.backlinksPanelTitle {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--notes-text-muted);
+  margin-bottom: 12px;
+}
+
+.backlinkItem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--notes-border);
+  border-radius: var(--notes-radius-item);
+  background: var(--notes-bg-subtle);
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.backlinkItem:hover {
+  background: rgba(124, 58, 237, 0.05);
+  border-color: rgba(124, 58, 237, 0.2);
+}
+
+.backlinkSource {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--notes-wiki-link);
+}
+
+.backlinkContext {
+  font-size: 12px;
+  color: var(--notes-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

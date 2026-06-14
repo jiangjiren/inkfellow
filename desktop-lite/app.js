@@ -22,6 +22,8 @@ const state = {
   activeNote: null,
   dirty: false,
   editMode: false,
+  navHistory: [],
+  navIndex: -1,
   expanded: new Set([""]),
   activeTab: "agent",
   searchTimer: null,
@@ -272,6 +274,189 @@ async function setEditMode(on) {
   });
 }
 
+/* ── Wiki Links ──────────────────────────────────── */
+const WIKI_MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|m4v|mp3|wav|ogg|flac|pdf)$/i;
+
+function isWikiMediaTarget(t) {
+  return WIKI_MEDIA_EXT_RE.test(t.trim());
+}
+
+/** Transform [[...]] syntax into markdown links before marked.parse(). */
+function preprocessWikiLinks(text) {
+  return text.replace(/(!?)\[\[([^\]]+)\]\]/g, (match, embed, inner) => {
+    // Parse [[target#heading|alias]]
+    const pipIdx = inner.indexOf("|");
+    let core = pipIdx !== -1 ? inner.slice(0, pipIdx) : inner;
+    const alias = pipIdx !== -1 ? inner.slice(pipIdx + 1).trim() : "";
+    const hashIdx = core.indexOf("#");
+    const target = (hashIdx !== -1 ? core.slice(0, hashIdx) : core).trim();
+    const heading = hashIdx !== -1 ? core.slice(hashIdx + 1).trim() : "";
+
+    if (embed === "!" && isWikiMediaTarget(target)) {
+      // ![[image.ext]] → standard markdown image (resolved by resolveMarkdownImages)
+      const alt = alias || target;
+      return `![${alt}](${target})`;
+    }
+
+    // Note link or note embed
+    const display = alias || (heading ? `${target} › ${heading}` : target) || match;
+    let href = "inkwell-wiki:" + encodeURIComponent(target);
+    if (heading) href += encodeURIComponent("#" + heading);
+    return `[${display}](${href})`;
+  });
+}
+
+/** Build a lowercase name/path → vault-relative path index from the current tree. */
+function buildNoteIndex() {
+  const index = new Map();
+  for (const file of flattenFiles(state.tree)) {
+    if (!file.name.endsWith(".md")) continue;
+    const nameKey = stripExt(file.name).toLowerCase();
+    if (!index.has(nameKey)) index.set(nameKey, file.path);
+    const pathKey = stripExt(file.path).toLowerCase().replace(/\\/g, "/");
+    if (!index.has(pathKey)) index.set(pathKey, file.path);
+  }
+  return index;
+}
+
+/** Wire click handlers on all inkwell-wiki: anchors after rendering. */
+function wireWikiLinks(noteIndex) {
+  const container = qs("prose-content");
+  if (!container) return;
+
+  container.querySelectorAll('a[href^="inkwell-wiki:"]').forEach((a) => {
+    const raw = a.getAttribute("href").slice("inkwell-wiki:".length);
+    const pctHash = raw.indexOf("%23");
+    const targetEnc = pctHash !== -1 ? raw.slice(0, pctHash) : raw;
+    const headingEnc = pctHash !== -1 ? raw.slice(pctHash + 3) : "";
+    const target = decodeURIComponent(targetEnc);
+    const heading = headingEnc ? decodeURIComponent(headingEnc) : "";
+    const key = target.toLowerCase().replace(/\.md$/i, "");
+    const resolvedPath = noteIndex.get(key);
+
+    a.href = "#";
+    if (resolvedPath) {
+      a.classList.add("wikiLink");
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        loadNote(resolvedPath).then(() => {
+          if (!heading) return;
+          requestAnimationFrame(() => {
+            const slug = heading.toLowerCase().trim()
+              .replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "") || "heading";
+            const el = document.getElementById(`h-${slug}`);
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        });
+      });
+    } else {
+      a.classList.add("wikiLink", "wikiLinkMissing");
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        createWikiNote(target);
+      });
+    }
+  });
+}
+
+/** Create a new note for a missing wiki link target and navigate to it. */
+async function createWikiNote(target) {
+  const folder = state.activePath ? parentFolder(state.activePath) : "";
+  // If target contains a slash, split into folder + filename
+  const slashIdx = target.lastIndexOf("/");
+  const noteName = slashIdx !== -1 ? target.slice(slashIdx + 1) : target;
+  const noteFolder = slashIdx !== -1
+    ? (folder ? `${folder}/${target.slice(0, slashIdx)}` : target.slice(0, slashIdx))
+    : folder;
+  try {
+    const note = await invoke("create_note", { folder: noteFolder, title: noteName });
+    if (noteFolder) state.expanded.add(noteFolder);
+    await loadTree(false);
+    await loadNote(note.path);
+    await setEditMode(true);
+  } catch (err) {
+    if (String(err).includes("already exists")) {
+      const safeName = noteName.replace(/\.md$/i, "");
+      const path = noteFolder ? `${noteFolder}/${safeName}.md` : `${safeName}.md`;
+      await loadNote(path);
+    } else {
+      showToast("创建笔记失败：" + err);
+    }
+  }
+}
+
+/** Append backlinks panel below the article (async). */
+async function renderBacklinksPanel(notePath) {
+  try {
+    const backlinks = await invoke("wiki_backlinks", { path: notePath });
+    // Guard: note may have changed while waiting
+    if (state.activeNote?.path !== notePath) return;
+    const container = qs("prose-content");
+    if (!container) return;
+
+    const existing = document.getElementById("backlinks-panel");
+    if (existing) existing.remove();
+    if (!backlinks || backlinks.length === 0) return;
+
+    const panel = document.createElement("div");
+    panel.id = "backlinks-panel";
+    panel.className = "backlinksPanel";
+
+    const header = document.createElement("div");
+    header.className = "backlinksPanelTitle";
+    header.textContent = `${backlinks.length} 处引用`;
+    panel.appendChild(header);
+
+    for (const link of backlinks) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "backlinkItem";
+      item.innerHTML = `<span class="backlinkSource">${escapeHtml(link.sourceName)}</span><span class="backlinkContext">${escapeHtml(link.context)}</span>`;
+      item.addEventListener("click", () => loadNote(link.sourcePath));
+      panel.appendChild(item);
+    }
+
+    container.closest(".document")?.appendChild(panel);
+  } catch {
+    // Silently ignore; backlinks are non-critical
+  }
+}
+
+/** [[ autocomplete hint function for CodeMirror (desktop). */
+function desktopWikiHint(cm) {
+  const cursor = cm.getCursor();
+  const line = cm.getLine(cursor.line);
+  const before = line.slice(0, cursor.ch);
+
+  const bracketStart = before.lastIndexOf("[[");
+  if (bracketStart === -1) return { list: [], from: cursor, to: cursor };
+
+  const afterBrackets = before.slice(bracketStart + 2);
+  if (afterBrackets.includes("]]")) return { list: [], from: cursor, to: cursor };
+
+  const files = flattenFiles(state.tree).filter((f) => f.name.endsWith(".md"));
+  const names = files.map((f) => stripExt(f.name));
+  const query = afterBrackets.toLowerCase();
+
+  const matches = names
+    .filter((name) => !query || name.toLowerCase().includes(query))
+    .sort((a, b) => {
+      if (a.toLowerCase() === query) return -1;
+      if (b.toLowerCase() === query) return 1;
+      const aS = a.toLowerCase().startsWith(query);
+      const bS = b.toLowerCase().startsWith(query);
+      if (aS && !bS) return -1;
+      if (!aS && bS) return 1;
+      return a.localeCompare(b);
+    })
+    .slice(0, 20)
+    .map((name) => ({ text: name + "]]", displayText: name }));
+
+  if (matches.length === 0) return { list: [], from: cursor, to: cursor };
+
+  return { list: matches, from: { line: cursor.line, ch: bracketStart + 2 }, to: cursor };
+}
+
 /* ── Markdown rendering ──────────────────────────── */
 function renderMarkdownContent(md) {
   if (typeof marked === "undefined") return `<pre>${escapeHtml(md)}</pre>`;
@@ -386,7 +571,7 @@ function renderFrontMatterPanel(data) {
 
   return `
     <details class="frontMatter">
-      <summary class="frontMatterLabel">Properties</summary>
+      <summary class="frontMatterLabel">笔记属性</summary>
       <dl class="frontMatterGrid">${rows}</dl>
     </details>
   `;
@@ -510,11 +695,31 @@ function renderDocArea() {
       autofocus: false,
       indentUnit: 2,
       tabSize: 2,
-      extraKeys: { Enter: "newlineAndIndentContinueMarkdownList" },
+      extraKeys: {
+        "Enter": "newlineAndIndentContinueMarkdownList",
+        "Ctrl-Space": (instance) => instance.showHint({ completeSingle: false }),
+      },
+      hintOptions: { completeSingle: false, hint: desktopWikiHint },
       // 编辑器自身不滚动（外层 docArea 统一滚动），需全量渲染行
       viewportMargin: Infinity,
     });
     state.editor = cm;
+    // [[ autocomplete trigger: check cursor context, not change.text content
+    let _wikiHintTimer = null;
+    cm.on("change", (_inst, change) => {
+      if (change.origin === "+input" || change.origin === "+delete") {
+        const cur = cm.getCursor();
+        const before = cm.getLine(cur.line).slice(0, cur.ch);
+        const open = before.lastIndexOf("[[");
+        const inWikiCtx = open !== -1 && !before.slice(open + 2).includes("]]");
+        if (inWikiCtx) {
+          clearTimeout(_wikiHintTimer);
+          _wikiHintTimer = setTimeout(() => {
+            if (!cm.state.completionActive) cm.showHint({ completeSingle: false });
+          }, 80);
+        }
+      }
+    });
     cm.on("change", () => {
       setDirty(true);
       scheduleAutosave();
@@ -528,12 +733,53 @@ function renderDocArea() {
     if (ext === "md") {
       const { data: frontMatterData, body: markdownBody } = parseFrontMatter(state.activeNote.content);
       const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
-      const html = renderMarkdownContent(markdownBody);
+      const processedMd = preprocessWikiLinks(markdownBody);
+      const html = renderMarkdownContent(processedMd);
       docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
       resolveMarkdownImages(state.activeNote.path);
+      wireWikiLinks(buildNoteIndex());
+      renderBacklinksPanel(state.activeNote.path);
     } else if (/^html?$/.test(ext)) {
-      docArea.innerHTML = `<div class="document"><article class="prose" id="prose-content">${state.activeNote.content}</article></div>`;
+      docArea.className = "docArea docAreaHtml";
+      docArea.innerHTML = `<iframe id="html-frame" class="htmlFrame"></iframe>`;
+      const frame = document.getElementById("html-frame");
+      let _htmlRo = null;
+      const _htmlResizeHandler = () => {
+        try {
+          const h = frame.contentDocument?.documentElement?.scrollHeight ?? 0;
+          frame.style.height = Math.max(h, window.innerHeight - 44) + "px";
+        } catch {}
+      };
+      frame.addEventListener("load", () => {
+        _htmlResizeHandler();
+        try {
+          _htmlRo = new frame.contentWindow.ResizeObserver(_htmlResizeHandler);
+          _htmlRo.observe(frame.contentDocument.documentElement);
+        } catch {}
+        window.addEventListener("resize", _htmlResizeHandler);
+        // 拦截 obsidian:// 链接，在应用内跳转而非打开外部 Obsidian
+        try {
+          frame.contentDocument.addEventListener("click", (e) => {
+            const link = e.target.closest("a");
+            if (!link) return;
+            const href = link.getAttribute("href") || "";
+            if (!href.startsWith("obsidian://")) return;
+            e.preventDefault();
+            try {
+              const url = new URL(href);
+              const filePath = decodeURIComponent(url.searchParams.get("file") || "");
+              if (filePath) loadNote(filePath);
+            } catch {}
+          }, true);
+        } catch {}
+      });
+      // 离开时清理
+      frame.addEventListener("unload", () => {
+        try { _htmlRo?.disconnect(); } catch {}
+        window.removeEventListener("resize", _htmlResizeHandler);
+      }, { once: true });
+      frame.srcdoc = state.activeNote.content;
     } else if (isImage) {
       docArea.innerHTML = `
         <div class="imageViewer">
@@ -671,7 +917,8 @@ async function resolveMarkdownImages(notePath) {
   const noteDir = notePath.includes("/") ? notePath.split("/").slice(0, -1).join("/") : "";
 
   for (const img of imgs) {
-    const raw = (img.getAttribute("src") || "").trim();
+    // marked.js 会对路径做 URL 编码（中文、空格等），需先解码再传给 Rust
+    const raw = decodeURIComponent((img.getAttribute("src") || "").trim());
     // 跳过外链、data URL、锚点
     if (!raw || /^(https?:|data:|#)/i.test(raw)) continue;
 
@@ -1053,10 +1300,50 @@ async function newFolderInFolder(target) {
   }
 }
 
+/* ── Navigation history ──────────────────────────── */
+function navPush(path) {
+  // Same path: don't duplicate
+  if (state.navHistory[state.navIndex] === path) return;
+  // Truncate forward history
+  state.navHistory = state.navHistory.slice(0, state.navIndex + 1);
+  state.navHistory.push(path);
+  state.navIndex = state.navHistory.length - 1;
+  // Cap at 200 entries
+  if (state.navHistory.length > 200) {
+    state.navHistory.shift();
+    state.navIndex--;
+  }
+}
+
+function updateNavButtons() {
+  const back = qs("btn-nav-back");
+  const fwd  = qs("btn-nav-forward");
+  if (back) back.disabled = state.navIndex <= 0;
+  if (fwd)  fwd.disabled  = state.navIndex >= state.navHistory.length - 1;
+}
+
+async function navBack() {
+  if (state.navIndex <= 0) return;
+  state.navIndex--;
+  updateNavButtons();
+  await loadNote(state.navHistory[state.navIndex], { skipHistory: true });
+}
+
+async function navForward() {
+  if (state.navIndex >= state.navHistory.length - 1) return;
+  state.navIndex++;
+  updateNavButtons();
+  await loadNote(state.navHistory[state.navIndex], { skipHistory: true });
+}
+
 /* ── Note operations ─────────────────────────────── */
-async function loadNote(path) {
+async function loadNote(path, opts = {}) {
   // 自动保存模式：切换前把未保存内容落盘
   await flushPendingSave();
+
+  // Push to navigation history (skip when going back/forward)
+  if (!opts.skipHistory) navPush(path);
+  updateNavButtons();
 
   const docArea = qs("doc-area");
   docArea.className = "docArea";
@@ -1803,7 +2090,7 @@ async function gitDiscard(path) {
     if (isActive) {
       // 重新加载还原后的内容；文件被删（还原"新笔记"）则回到首页
       const stillExists = flattenFiles(state.tree).some((f) => f.path === state.activePath);
-      if (stillExists) await loadNote(state.activePath);
+      if (stillExists) await loadNote(state.activePath, { skipHistory: true });
       else clearActiveNote();
     }
   } catch (err) {
@@ -2006,6 +2293,8 @@ function initKeyboard() {
 function wireEvents() {
   qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
   qs("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  qs("btn-nav-back").addEventListener("click", navBack);
+  qs("btn-nav-forward").addEventListener("click", navForward);
   qs("btn-toggle-panel").addEventListener("click", togglePanel);
   qs("btn-close-panel").addEventListener("click", togglePanel);
   qs("btn-toggle-mode").addEventListener("click", () => void setEditMode(!state.editMode));
@@ -2064,6 +2353,63 @@ function wireEvents() {
   qs("doc-area").addEventListener("scroll", () => {
     if (state.activeTab === "toc") updateActiveTocLink();
   }, { passive: true });
+
+  // 链接拦截：外部 http(s) → 系统浏览器；相对 .md → 应用内导航
+  qs("doc-area").addEventListener("click", (e) => {
+    const link = e.target.closest("a");
+    if (!link) return;
+    const rawHref = link.getAttribute("href") || "";
+    if (!rawHref || rawHref.startsWith("inkwell-wiki:")) return;
+
+    if (/^https?:\/\//i.test(rawHref)) {
+      e.preventDefault();
+      invoke("open_external_url", { url: rawHref }).catch(() => {});
+      return;
+    }
+
+    // 相对路径链接（[text](file.md) 或 [text](./subdir/file.md)）
+    if (!rawHref.startsWith("#")) {
+      // 分离 #fragment
+      const hashIdx = rawHref.indexOf("#");
+      const relPath = decodeURIComponent(hashIdx !== -1 ? rawHref.slice(0, hashIdx) : rawHref);
+      const fragment = hashIdx !== -1 ? rawHref.slice(hashIdx + 1) : "";
+
+      // 解析相对路径
+      const noteDir = state.activePath?.includes("/")
+        ? state.activePath.split("/").slice(0, -1).join("/")
+        : "";
+      const resolved = resolveRelativePath(noteDir, relPath);
+
+      // 在文件树中匹配（先精确，再忽略大小写，再补 .md 后缀）
+      const files = flattenFiles(state.tree);
+      const match =
+        files.find((f) => f.path === resolved) ||
+        files.find((f) => f.path.toLowerCase() === resolved.toLowerCase()) ||
+        files.find((f) => f.path.toLowerCase() === (resolved + ".md").toLowerCase());
+
+      if (match) {
+        e.preventDefault();
+        loadNote(match.path).then(() => {
+          if (!fragment) return;
+          requestAnimationFrame(() => {
+            const slug = fragment.toLowerCase().trim()
+              .replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "") || fragment;
+            const el = document.getElementById(`h-${slug}`) || document.getElementById(slug);
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        });
+      }
+      // 匹配不到则不拦截（浏览器默认行为，通常无操作）
+    }
+  });
+
+  // 后退/前进键盘快捷键（Alt+← / Alt+→，与 Windows/Obsidian 一致）
+  document.addEventListener("keydown", (e) => {
+    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+      if (e.key === "ArrowLeft")  { e.preventDefault(); void navBack(); }
+      if (e.key === "ArrowRight") { e.preventDefault(); void navForward(); }
+    }
+  });
 
   // 窗口隐藏/关闭前尽量把未保存内容落盘
   document.addEventListener("visibilitychange", () => {

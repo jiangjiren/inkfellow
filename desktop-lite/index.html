@@ -6,6 +6,7 @@
     <title>inkfellow</title>
     <link rel="icon" href="./icon.png?v=3" />
     <link rel="stylesheet" href="./vendor/codemirror.min.css" />
+    <link rel="stylesheet" href="./vendor/show-hint.css" />
     <link rel="stylesheet" href="./app.css?v=4" />
   </head>
   <body>
@@ -61,6 +62,14 @@
             <button id="btn-toggle-sidebar" class="iconButton" type="button" title="Toggle sidebar">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/></svg>
             </button>
+            <div class="navButtons">
+              <button id="btn-nav-back" class="iconButton navBtn" type="button" title="后退 (Alt+←)" disabled>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/></svg>
+              </button>
+              <button id="btn-nav-forward" class="iconButton navBtn" type="button" title="前进 (Alt+→)" disabled>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,3 11,8 6,13"/></svg>
+              </button>
+            </div>
             <div id="note-meta" class="noteMeta">
               <span id="note-title">选择一篇笔记</span>
             </div>
@@ -175,6 +184,7 @@
     <script src="./vendor/codemirror.min.js"></script>
     <script src="./vendor/markdown.min.js"></script>
     <script src="./vendor/continuelist.min.js"></script>
-    <script src="./app.js?v=7"></script>
+    <script src="./vendor/show-hint.js"></script>
+    <script src="./app.js?v=9"></script>
   </body>
 </html>

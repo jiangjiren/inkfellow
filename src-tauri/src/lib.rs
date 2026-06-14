@@ -1158,6 +1158,172 @@ fn search_walk(
     Ok(())
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only http/https URLs are supported".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", url.as_str()])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct WikiBacklink {
+    #[serde(rename = "sourcePath")]
+    source_path: String,
+    #[serde(rename = "sourceName")]
+    source_name: String,
+    context: String,
+}
+
+#[tauri::command]
+async fn wiki_backlinks(app: AppHandle, path: String) -> Result<Vec<WikiBacklink>, String> {
+    let root = vault_root(&app)?;
+    let path_norm = path.replace('\\', "/");
+    let note_stem = Path::new(&path_norm)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let path_key = {
+        let p = path_norm.to_lowercase();
+        if p.ends_with(".md") { p[..p.len() - 3].to_string() } else { p }
+    };
+
+    let mut backlinks = Vec::new();
+    wiki_backlink_walk(&root, &root, "", &note_stem, &path_key, &mut backlinks)?;
+    Ok(backlinks)
+}
+
+fn wiki_backlink_walk(
+    root: &Path,
+    absolute: &Path,
+    relative_path: &str,
+    note_stem: &str,
+    path_key: &str,
+    backlinks: &mut Vec<WikiBacklink>,
+) -> Result<(), String> {
+    for entry_result in fs::read_dir(absolute).map_err(|e| e.to_string())? {
+        let entry = entry_result.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let child_relative = if relative_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative_path}/{name}")
+        };
+
+        if has_excluded_segment(&child_relative) {
+            continue;
+        }
+
+        let abs_path = entry.path();
+        if file_type.is_dir() {
+            wiki_backlink_walk(root, &abs_path, &child_relative, note_stem, path_key, backlinks)?;
+            continue;
+        }
+
+        if !file_type.is_file()
+            || abs_path.extension().and_then(|e| e.to_str()) != Some("md")
+        {
+            continue;
+        }
+
+        let content = fs::read_to_string(&abs_path).unwrap_or_default();
+        let source_name = Path::new(&name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&name)
+            .to_string();
+
+        // Strip code blocks line-by-line, then scan for [[...]] links
+        let mut clean = String::with_capacity(content.len());
+        let mut in_code = false;
+        for line in content.lines() {
+            let t = line.trim();
+            if t.starts_with("```") || t.starts_with("~~~") {
+                in_code = !in_code;
+                clean.push('\n');
+            } else if !in_code {
+                clean.push_str(line);
+                clean.push('\n');
+            } else {
+                clean.push('\n');
+            }
+        }
+
+        let mut pos = 0;
+        let bytes = clean.as_bytes();
+        while pos < clean.len() {
+            let rest = &clean[pos..];
+            let Some(open_rel) = rest.find("[[") else { break };
+            let open_abs = pos + open_rel;
+            let inner_start = open_abs + 2;
+            let Some(close_rel) = clean[inner_start..].find("]]") else {
+                pos = inner_start;
+                continue;
+            };
+            let inner = &clean[inner_start..inner_start + close_rel];
+
+            let is_embed = open_abs > 0 && bytes.get(open_abs - 1) == Some(&b'!');
+
+            // Extract raw target (before | and before #)
+            let target_raw = inner.split('|').next().unwrap_or(inner);
+            let target_raw = target_raw.split('#').next().unwrap_or(target_raw).trim();
+            let target = target_raw.to_lowercase();
+
+            // Skip media embeds
+            let is_media = is_embed && matches!(
+                Path::new(&target).extension().and_then(|e| e.to_str()).unwrap_or(""),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico"
+                    | "avif" | "mp4" | "webm" | "mov" | "mp3" | "wav" | "ogg" | "flac" | "pdf"
+            );
+
+            if !is_media && (target == note_stem || target == path_key) {
+                let line_start = clean[..open_abs]
+                    .rfind('\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                let line_end = clean[open_abs..]
+                    .find('\n')
+                    .map(|i| open_abs + i)
+                    .unwrap_or(clean.len());
+                let context = clean[line_start..line_end]
+                    .trim()
+                    .chars()
+                    .take(120)
+                    .collect::<String>();
+                backlinks.push(WikiBacklink {
+                    source_path: child_relative.clone(),
+                    source_name: source_name.clone(),
+                    context,
+                });
+            }
+
+            pos = inner_start + close_rel + 2;
+        }
+    }
+    Ok(())
+}
+
 fn compute_git_status(path: &Path) -> Result<GitStatus, String> {
     let initialized = path.join(".git").exists();
     if !initialized {
@@ -1643,6 +1809,8 @@ pub fn run() {
             rename_entry,
             delete_entry,
             search_notes,
+            wiki_backlinks,
+            open_external_url,
             git_status,
             git_init,
             git_pull,

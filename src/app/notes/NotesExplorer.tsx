@@ -996,6 +996,12 @@ export default function NotesExplorer() {
   const aiStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  // ── 导航历史（前进/后退）─────────────────────────────
+  const navHistoryRef = useRef<string[]>([]);
+  const navCursorRef = useRef<number>(-1);
+  const [navCanGoBack, setNavCanGoBack] = useState(false);
+  const [navCanGoForward, setNavCanGoForward] = useState(false);
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === "open-git-tab") {
@@ -1088,6 +1094,11 @@ export default function NotesExplorer() {
 
     return index;
   }, [files]);
+
+  const noteNames = useMemo(
+    () => files.filter((f) => f.path.endsWith(".md")).map((f) => stripNoteExtension(f.name)),
+    [files],
+  );
 
   const visibleTree = useMemo(() => (tree ? filterTree(tree, searchQuery.trim()) : null), [tree, searchQuery]);
 
@@ -1431,6 +1442,20 @@ export default function NotesExplorer() {
     };
   }, [saveCurrentScrollSnapshot]);
 
+  const pushNavHistory = useCallback((p: string) => {
+    const hist = navHistoryRef.current;
+    const cur = navCursorRef.current;
+    if (hist[cur] !== p) {
+      const next = hist.slice(0, cur + 1);
+      next.push(p);
+      if (next.length > 200) next.shift();
+      navHistoryRef.current = next;
+      navCursorRef.current = next.length - 1;
+      setNavCanGoBack(navCursorRef.current > 0);
+      setNavCanGoForward(false);
+    }
+  }, []);
+
   const loadNote = useCallback(
     async (path: string, hash?: string | null, options: LoadNoteOptions = {}) => {
       // PDF / 图片：不拉文本，直接交给原生预览（见下方渲染分支）
@@ -1447,6 +1472,7 @@ export default function NotesExplorer() {
           nextUrl.searchParams.set("file", path);
           nextUrl.hash = "";
           window.history.replaceState(null, "", nextUrl);
+          pushNavHistory(path);
         }
         return;
       }
@@ -1478,6 +1504,7 @@ export default function NotesExplorer() {
           nextUrl.searchParams.set("file", payload.path);
           nextUrl.hash = hash ?? "";
           window.history.replaceState(null, "", nextUrl);
+          pushNavHistory(payload.path);
         }
 
         const scrollSnapshot = options.preserveScroll
@@ -1507,7 +1534,7 @@ export default function NotesExplorer() {
         setError(loadError instanceof Error ? loadError.message : "Failed to load note.");
       }
     },
-    [getReaderScrollSnapshot, openAncestors, restoreReaderScroll],
+    [getReaderScrollSnapshot, openAncestors, pushNavHistory, restoreReaderScroll],
   );
 
   const refreshTree = useCallback(async () => {
@@ -1716,7 +1743,6 @@ export default function NotesExplorer() {
 
     observer.observe(reader, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -2329,6 +2355,41 @@ export default function NotesExplorer() {
       void loadNote(path, hash);
     },
     [loadNote],
+  );
+
+  const handleNavBack = useCallback(() => {
+    const cur = navCursorRef.current;
+    if (cur <= 0) return;
+    navCursorRef.current = cur - 1;
+    setNavCanGoBack(navCursorRef.current > 0);
+    setNavCanGoForward(true);
+    void loadNote(navHistoryRef.current[navCursorRef.current], null, { updateHistory: false });
+  }, [loadNote]);
+
+  const handleNavForward = useCallback(() => {
+    const cur = navCursorRef.current;
+    const hist = navHistoryRef.current;
+    if (cur >= hist.length - 1) return;
+    navCursorRef.current = cur + 1;
+    setNavCanGoBack(true);
+    setNavCanGoForward(navCursorRef.current < hist.length - 1);
+    void loadNote(hist[navCursorRef.current], null, { updateHistory: false });
+  }, [loadNote]);
+
+  const handleCreateWikiNote = useCallback(
+    (noteName: string) => {
+      const folder = activePath ? getParentFolder(activePath) : "";
+      const slashIdx = noteName.lastIndexOf("/");
+      const noteTitle = slashIdx !== -1 ? noteName.slice(slashIdx + 1) : noteName;
+      const noteFolder = slashIdx !== -1
+        ? (folder ? `${folder}/${noteName.slice(0, slashIdx)}` : noteName.slice(0, slashIdx))
+        : folder;
+      setNewNoteFolder(noteFolder);
+      setNewNoteTitle(noteTitle);
+      setNewNoteError(null);
+      setNewNoteOpen(true);
+    },
+    [activePath],
   );
 
   const handleImageDownload = useCallback(async () => {
@@ -3246,6 +3307,34 @@ export default function NotesExplorer() {
                 </svg>
               </button>
             ) : null}
+            {!isDesktopGitView && (navCanGoBack || navCanGoForward) ? (
+              <>
+                <button
+                  type="button"
+                  className={styles.iconButton}
+                  onClick={handleNavBack}
+                  disabled={!navCanGoBack}
+                  aria-label="后退"
+                  title="后退"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={styles.iconButton}
+                  onClick={handleNavForward}
+                  disabled={!navCanGoForward}
+                  aria-label="前进"
+                  title="前进"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+              </>
+            ) : null}
           </div>
           {isDesktopGitView ? (
             <div className={styles.noteMeta}>
@@ -3447,6 +3536,7 @@ export default function NotesExplorer() {
               ref={editorFocusRef}
               value={editContent}
               onChange={handleEditorChange}
+              noteNames={noteNames}
               onReady={() => {
                 setEditorMinHeight(0);
                 // fix: 草稿模式下确保 CM 就绪后光标落在编辑器内
@@ -3517,6 +3607,7 @@ export default function NotesExplorer() {
                     currentPath={note.path}
                     noteIndex={noteIndex}
                     onNavigate={handleMarkdownNavigate}
+                    onCreateNote={handleCreateWikiNote}
                   />
                 </div>
               )

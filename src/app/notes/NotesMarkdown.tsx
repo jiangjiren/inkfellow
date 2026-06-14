@@ -129,6 +129,7 @@ type NotesMarkdownProps = {
   currentPath: string;
   noteIndex?: Map<string, string>;
   onNavigate?: (path: string, hash?: string | null) => void;
+  onCreateNote?: (noteName: string) => void;
   assetHrefFactory?: (path: string, currentPath: string) => string;
   allowInternalNoteLinks?: boolean;
 };
@@ -352,7 +353,11 @@ const transformObsidianSyntax = (
           const { target, heading, alias } = splitObsidianTarget(rawTarget);
           const resolvedPath = resolveNotePath(target, currentPath, noteIndex);
           const label = escapeMarkdownLabel(alias || heading || target);
-          const href = allowInternalNoteLinks && resolvedPath ? makeNoteHref(resolvedPath, heading) : "#";
+          const href = allowInternalNoteLinks && resolvedPath
+            ? makeNoteHref(resolvedPath, heading)
+            : allowInternalNoteLinks
+              ? `inkfellow-create:${encodeURIComponent(target)}`
+              : "#";
           return `[${label}](${href})`;
         });
     })
@@ -534,11 +539,57 @@ function Mermaid({ chart }: { chart: string }) {
   return <div dangerouslySetInnerHTML={{ __html: state.svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
 }
 
+type BacklinkEntry = {
+  sourcePath: string;
+  sourceName: string;
+  context: string;
+};
+
+function BacklinksPanel({ currentPath, onNavigate }: { currentPath: string; onNavigate?: (path: string) => void }) {
+  const [backlinks, setBacklinks] = useState<BacklinkEntry[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  // Component is mounted fresh per-path via key={currentPath} in parent.
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ path: currentPath });
+    fetch(`/api/notes/wiki/backlinks?${params.toString()}`, { signal: controller.signal, cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { backlinks?: BacklinkEntry[] }) => {
+        setBacklinks(data.backlinks ?? []);
+        setLoaded(true);
+      })
+      .catch(() => { /* silently ignore */ });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!loaded || backlinks.length === 0) return null;
+
+  return (
+    <div className={styles.backlinksPanel}>
+      <div className={styles.backlinksPanelTitle}>{backlinks.length} 处引用</div>
+      {backlinks.map((bl) => (
+        <button
+          key={bl.sourcePath}
+          type="button"
+          className={styles.backlinkItem}
+          onClick={() => onNavigate?.(bl.sourcePath)}
+        >
+          <span className={styles.backlinkSource}>{bl.sourceName}</span>
+          <span className={styles.backlinkContext}>{bl.context}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function NotesMarkdown({
   markdown,
   currentPath,
   noteIndex,
   onNavigate,
+  onCreateNote,
   assetHrefFactory = makeAssetHref,
   allowInternalNoteLinks = true,
 }: NotesMarkdownProps) {
@@ -569,6 +620,13 @@ export default function NotesMarkdown({
           allowInternalNoteLinks,
         );
         const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+          if (normalizedHref?.startsWith("inkfellow-create:")) {
+            event.preventDefault();
+            const noteName = decodeURIComponent(normalizedHref.slice("inkfellow-create:".length));
+            onCreateNote?.(noteName);
+            return;
+          }
+
           if (!normalizedHref?.startsWith("/?file=")) {
             return;
           }
@@ -583,12 +641,14 @@ export default function NotesMarkdown({
           onNavigate?.(file, url.hash || null);
         };
 
+        const isMissingWikiLink = normalizedHref?.startsWith("inkfellow-create:");
         return (
           <a
-            href={normalizedHref}
+            href={isMissingWikiLink ? "#" : normalizedHref}
             onClick={handleClick}
-            target={normalizedHref && isExternalHref(normalizedHref) ? "_blank" : undefined}
-            rel={normalizedHref && isExternalHref(normalizedHref) ? "noreferrer" : undefined}
+            className={isMissingWikiLink ? styles.wikiLinkMissing : undefined}
+            target={!isMissingWikiLink && normalizedHref && isExternalHref(normalizedHref) ? "_blank" : undefined}
+            rel={!isMissingWikiLink && normalizedHref && isExternalHref(normalizedHref) ? "noreferrer" : undefined}
           >
             {children}
           </a>
@@ -696,7 +756,7 @@ export default function NotesMarkdown({
         return <h6 id={slugifyHeading(textFromChildren(children))}>{children}</h6>;
       },
     }),
-    [allowInternalNoteLinks, assetHrefFactory, currentPath, onNavigate, resolvedNoteIndex],
+    [allowInternalNoteLinks, assetHrefFactory, currentPath, onCreateNote, onNavigate, resolvedNoteIndex],
   );
 
   return (
@@ -705,6 +765,9 @@ export default function NotesMarkdown({
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {renderedMarkdown}
       </ReactMarkdown>
+      {allowInternalNoteLinks && (
+        <BacklinksPanel key={currentPath} currentPath={currentPath} onNavigate={onNavigate ? (p) => onNavigate(p) : undefined} />
+      )}
     </div>
   );
 }

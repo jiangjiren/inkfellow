@@ -2801,6 +2801,71 @@
   text-decoration-color: rgba(152, 52, 24, 0.38);
 }
 
+.wikiLinkMissing {
+  color: #7c3aed !important;
+  text-decoration: underline dashed !important;
+  text-decoration-color: rgba(158, 140, 240, 0.55) !important;
+  text-underline-offset: 3px;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.wikiLinkMissing:hover {
+  opacity: 1;
+  color: #6d28d9 !important;
+}
+
+/* ── Backlinks panel ──────────────────────────────── */
+.backlinksPanel {
+  margin-top: 56px;
+  padding-top: 28px;
+  border-top: 1px solid var(--notes-border);
+}
+
+.backlinksPanelTitle {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--notes-text-muted);
+  margin-bottom: 12px;
+}
+
+.backlinkItem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--notes-border);
+  border-radius: var(--notes-radius-item);
+  background: var(--notes-bg-subtle, #f9f8f7);
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  font: inherit;
+}
+
+.backlinkItem:hover {
+  background: rgba(124, 58, 237, 0.05);
+  border-color: rgba(124, 58, 237, 0.2);
+}
+
+.backlinkSource {
+  font-size: 13px;
+  font-weight: 600;
+  color: #7c3aed;
+}
+
+.backlinkContext {
+  font-size: 12px;
+  color: var(--notes-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .markdown strong {
   color: #0f1110;
   font-weight: 720;

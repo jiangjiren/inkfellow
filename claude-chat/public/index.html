@@ -1974,6 +1974,7 @@ const CLAUDE_MODELS = [
 
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
 let _claudeAuthStatus = null; // null=checking, true=ok, false=not logged in
+let _codexAuthStatus  = null;
 
 async function checkClaudeAuth() {
   try {
@@ -1983,10 +1984,22 @@ async function checkClaudeAuth() {
   } catch {
     _claudeAuthStatus = false;
   }
-  // Re-render profile list to show updated status
   renderProfileList(_profileData);
 }
+
+async function checkCodexAuth() {
+  try {
+    const res = await fetch("api/health/codex-auth");
+    const d = await res.json().catch(() => ({}));
+    _codexAuthStatus = !!d.authenticated;
+  } catch {
+    _codexAuthStatus = false;
+  }
+  renderProfileList(_profileData);
+}
+
 checkClaudeAuth();
+checkCodexAuth();
 
 function getActiveProfile() {
   return _profileData.profiles.find(p => p.id === _profileData.activeProfileId) ?? _profileData.profiles[0] ?? null;
@@ -2101,6 +2114,10 @@ function renderProfileList(data) {
     const meta = p.provider === "claude"
       ? (_claudeAuthStatus === true  ? "✅ 会员已登录"
        : _claudeAuthStatus === false ? "⚠️ 未登录 — 请在服务器运行 claude 命令完成登录"
+       : "正在检测登录状态…")
+      : p.provider === "codex"
+      ? (_codexAuthStatus === true  ? "✅ 已登录 ChatGPT Plus"
+       : _codexAuthStatus === false ? "⚠️ 未登录 — 请打开 Codex 客户端完成登录"
        : "正在检测登录状态…")
       : metaParts.join("  ");
     const canEdit   = p.provider !== "claude";

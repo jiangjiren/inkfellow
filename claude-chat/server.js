@@ -344,7 +344,7 @@ function migrateOldFormat(old) {
   }
 
   if (isCodexAuthAvailable()) {
-    profiles.push({ id: "p_codex", name: "GPT（Codex 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
+    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
   }
   let activeProfileId = "p_claude";
   if (old.provider === "deepseek") {
@@ -371,7 +371,7 @@ function normalizeProfiles(raw) {
   }
   // 自动注入 Codex 会员 profile（如果本地已登录且列表里没有）
   if (!profiles.some(p => p.provider === "codex") && isCodexAuthAvailable()) {
-    profiles.push({ id: "p_codex", name: "GPT（Codex 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
+    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
   }
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId

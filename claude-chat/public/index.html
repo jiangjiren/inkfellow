@@ -2010,9 +2010,11 @@ function renderModelOptions(activeProfile) {
       if (!modelTiers[m]) modelTiers[m] = [];
       modelTiers[m].push(tier);
     }
+    const GPT_DESCS = { "gpt-5.5": "旗舰最强", "gpt-4.1": "快速均衡", "gpt-4.1-mini": "极速轻量", "gpt-4o": "快速均衡" };
     options = Object.entries(modelTiers).map(([model, tiers]) => {
       const shortName = model.split("/").pop() || model;
-      return { model, label: shortName, name: shortName, desc: tiers.join("/") };
+      const desc = provider === "codex" ? (GPT_DESCS[model] || model) : tiers.join("/");
+      return { model, label: shortName, name: shortName, desc };
     });
     if (!options.length) options = CLAUDE_MODELS;
   }
@@ -2065,9 +2067,11 @@ function setAuthStatus(type, text, isForm = false) {
 // ── Provider display metadata ─────────────────────────────
 const PROVIDER_COLOR = {
   claude: "#d97757", anthropic: "#c96442", deepseek: "#1a6cf6", openrouter: "#8b5cf6", minimax: "#ff6b35", custom: "#6b7280",
+  codex: "#10a37f",
 };
 const PROVIDER_LABEL = {
   claude: "Claude", anthropic: "Anthropic", deepseek: "DeepSeek", openrouter: "OpenRouter", minimax: "MiniMax", custom: "自定义",
+  codex: "GPT",
 };
 
 function providerBadge(provider) {

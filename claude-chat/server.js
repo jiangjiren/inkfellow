@@ -11,6 +11,7 @@ const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html
 import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import Anthropic from "@anthropic-ai/sdk";
+import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
 import { z } from "zod";
 
@@ -158,6 +159,7 @@ const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
+  codex:      { baseUrl: "",                                    opusModel: "gpt-5.5",                         sonnetModel: "gpt-4.1",                          haikuModel: "gpt-4.1-mini" },
 };
 const CLAUDE_COMPAT_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
@@ -192,6 +194,35 @@ function saveSession(id) {
 function clearSession() {
   sessionId = null;
   try { writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: null }), "utf8"); } catch { }
+}
+
+// ── Codex thread persistence ───────────────────────────────
+const CODEX_THREAD_FILE = join(DATA_DIR, `codex-thread-${PORT}.json`);
+let codexThreadId = null;
+try {
+  if (existsSync(CODEX_THREAD_FILE)) {
+    codexThreadId = JSON.parse(readFileSync(CODEX_THREAD_FILE, "utf8")).threadId ?? null;
+    if (codexThreadId) console.log(`Restored codex thread: ${codexThreadId}`);
+  }
+} catch { }
+
+function saveCodexThread(id) {
+  codexThreadId = id;
+  try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: id }), "utf8"); } catch { }
+}
+
+function clearCodexThread() {
+  codexThreadId = null;
+  try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: null }), "utf8"); } catch { }
+}
+
+function isCodexAuthAvailable() {
+  const authFile = join(homedir(), ".codex", "auth.json");
+  if (!existsSync(authFile)) return false;
+  try {
+    const auth = JSON.parse(readFileSync(authFile, "utf8"));
+    return !!(auth.tokens?.access_token || auth.OPENAI_API_KEY);
+  } catch { return false; }
 }
 
 // Locate the Claude Code session JSONL for a given session id. The file lives under
@@ -312,6 +343,9 @@ function migrateOldFormat(old) {
     });
   }
 
+  if (isCodexAuthAvailable()) {
+    profiles.push({ id: "p_codex", name: "GPT（Codex 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
+  }
   let activeProfileId = "p_claude";
   if (old.provider === "deepseek") {
     const match = profiles.find(p => p.provider === "deepseek" &&
@@ -329,9 +363,15 @@ function normalizeProfiles(raw) {
   // 旧格式没有 profiles 数组 → 迁移
   if (!Array.isArray(data.profiles)) return migrateOldFormat(data);
 
-  const profiles = data.profiles.map(normalizeProfile).filter(p => p.provider === "claude" || p.apiKey);
+  const profiles = data.profiles.map(normalizeProfile).filter(p =>
+    p.provider === "claude" || p.provider === "codex" || p.apiKey
+  );
   if (!profiles.some(p => p.provider === "claude")) {
     profiles.unshift({ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "" });
+  }
+  // 自动注入 Codex 会员 profile（如果本地已登录且列表里没有）
+  if (!profiles.some(p => p.provider === "codex") && isCodexAuthAvailable()) {
+    profiles.push({ id: "p_codex", name: "GPT（Codex 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
   }
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId
@@ -1586,6 +1626,12 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (url === "/api/health/codex-auth" && method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ authenticated: isCodexAuthAvailable() }));
+    return;
+  }
+
   if (url === "/api/auth-profile" && method === "PUT") {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
@@ -1608,12 +1654,12 @@ const http = createServer((req, res) => {
         } else if (payload.action === "add") {
           // 新增账号
           const profile = normalizeProfile(payload.profile ?? {});
-          if (profile.provider !== "claude" && !profile.apiKey) {
+          if (profile.provider !== "claude" && profile.provider !== "codex" && !profile.apiKey) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
             return;
           }
-          if (!profile.baseUrl && profile.provider !== "claude" && profile.provider !== "anthropic") {
+          if (!profile.baseUrl && profile.provider !== "claude" && profile.provider !== "anthropic" && profile.provider !== "codex") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Base URL 不能为空" }));
             return;
@@ -1630,12 +1676,12 @@ const http = createServer((req, res) => {
             return;
           }
           const updated = normalizeProfile({ ...target, ...payload.profile, id: target.id, provider: target.provider });
-          if (updated.provider !== "claude" && !updated.apiKey) {
+          if (updated.provider !== "claude" && updated.provider !== "codex" && !updated.apiKey) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
             return;
           }
-          if (!updated.baseUrl && updated.provider !== "claude" && updated.provider !== "anthropic") {
+          if (!updated.baseUrl && updated.provider !== "claude" && updated.provider !== "anthropic" && updated.provider !== "codex") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Base URL 不能为空" }));
             return;
@@ -1764,6 +1810,7 @@ wss.on("connection", (ws) => {
 
     if (msg.reset) {
       clearSession();
+      clearCodexThread();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       return;
     }
@@ -1811,7 +1858,7 @@ wss.on("connection", (ws) => {
     }
     const activeProfile = getActiveProfile(profileData);
 
-    if (activeProfile && activeProfile.provider !== "claude" && !activeProfile.apiKey) {
+    if (activeProfile && activeProfile.provider !== "claude" && activeProfile.provider !== "codex" && !activeProfile.apiKey) {
       send({ type: "error", text: `${activeProfile.name} 的 API Key 还没有配置，请先在账号设置里保存。` });
       send({ type: "done" });
       abortCtrl = null;
@@ -1844,6 +1891,65 @@ wss.on("connection", (ws) => {
     if (sessionId) options.resume = sessionId;
     if (!activeProfile || activeProfile.provider === "claude") {
       if (msg.model) options.model = msg.model;
+    }
+
+    // ── Codex SDK 路径 ────────────────────────────────────────
+    if (activeProfile?.provider === "codex") {
+      (async () => {
+        try {
+          const codex = new Codex();
+          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+          const threadOptions = {
+            workingDirectory: resolvedCwd,
+            approvalPolicy: "never",
+            sandboxMode: "danger-full-access",
+            reasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
+            ...(msg.model ? { model: msg.model } : {}),
+          };
+          const thread = codexThreadId
+            ? codex.resumeThread(codexThreadId, threadOptions)
+            : codex.startThread(threadOptions);
+
+          // 图片：base64 → 临时本地文件（codex-sdk 只支持 local_image）
+          const imgList = msg.images ?? (msg.image ? [msg.image] : []);
+          let input;
+          if (imgList.length > 0) {
+            const parts = [];
+            for (const img of imgList) {
+              const ext = (img.mediaType || "image/png").split("/")[1] || "png";
+              const tmpPath = join(DATA_DIR, `codex-img-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.${ext}`);
+              writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+              parts.push({ type: "local_image", path: tmpPath });
+            }
+            parts.push({ type: "text", text: msg.prompt });
+            input = parts;
+          } else {
+            input = msg.prompt;
+          }
+
+          const { events } = await thread.runStreamed(input, { signal: ac.signal });
+          for await (const ev of events) {
+            if (ev.type === "thread.started") {
+              saveCodexThread(ev.thread_id);
+            } else if (ev.type === "item.completed" && ev.item?.type === "agent_message") {
+              send({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: ev.item.text }] } });
+            } else if (ev.type === "turn.failed") {
+              throw new Error(ev.error?.message || "Codex 请求失败");
+            }
+          }
+          send({ type: "done" });
+        } catch (err) {
+          if (err?.name === "AbortError") {
+            send({ type: "stopped" });
+          } else {
+            send({ type: "error", text: String(err) });
+            send({ type: "done" });
+          }
+        } finally {
+          if (abortCtrl === ac) abortCtrl = null;
+        }
+      })();
+      return;
     }
 
     (async () => {

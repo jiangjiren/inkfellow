@@ -369,9 +369,15 @@ function normalizeProfiles(raw) {
   if (!profiles.some(p => p.provider === "claude")) {
     profiles.unshift({ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "" });
   }
-  // 自动注入 Codex 会员 profile（如果本地已登录且列表里没有）
-  if (!profiles.some(p => p.provider === "codex") && isCodexAuthAvailable()) {
-    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
+  // 注入或同步 Codex 会员 profile（强制覆盖模型字段，防止旧数据残留）
+  const CODEX_MODELS = { opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini" };
+  const existingCodex = profiles.find(p => p.provider === "codex");
+  if (isCodexAuthAvailable()) {
+    if (existingCodex) {
+      Object.assign(existingCodex, CODEX_MODELS);
+    } else {
+      profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_MODELS });
+    }
   }
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId
@@ -1898,12 +1904,12 @@ wss.on("connection", (ws) => {
       (async () => {
         try {
           const codex = new Codex();
-          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
           const threadOptions = {
             workingDirectory: resolvedCwd,
             approvalPolicy: "never",
             sandboxMode: permissionMode === "bypassPermissions" ? "danger-full-access" : "workspace-write",
-            reasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
+            modelReasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
             ...(msg.model ? { model: msg.model } : {}),
           };
           const thread = codexThreadId

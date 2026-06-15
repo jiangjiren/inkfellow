@@ -1902,7 +1902,7 @@ wss.on("connection", (ws) => {
           const threadOptions = {
             workingDirectory: resolvedCwd,
             approvalPolicy: "never",
-            sandboxMode: "danger-full-access",
+            sandboxMode: permissionMode === "bypassPermissions" ? "danger-full-access" : "workspace-write",
             reasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
             ...(msg.model ? { model: msg.model } : {}),
           };

@@ -11,6 +11,9 @@ const LAST_FILE_KEY = "inkfellow-last-file-v1";
 const EXPANDED_KEY = "inkfellow-expanded-v1";
 const PANEL_TAB_KEY = "inkfellow-panel-tab-v1";
 const EDIT_MODE_KEY = "inkfellow-edit-mode-v1";
+const IMAGE_ZOOM_MIN = 0.2;
+const IMAGE_ZOOM_MAX = 8;
+const IMAGE_ZOOM_STEP = 1.12;
 
 /* ── State ───────────────────────────────────────── */
 const state = {
@@ -43,6 +46,7 @@ const state = {
   gitHistoryLoading: false,
   gitDiscardPath: null,
   gitDiscarding: false,
+  treeRefreshTimer: null,
 };
 
 /* ── Tauri bridge ────────────────────────────────── */
@@ -463,6 +467,118 @@ function renderMarkdownContent(md) {
   return marked.parse(md, { breaks: false, gfm: true });
 }
 
+const DIFF_FLASH_BLOCK_SELECTOR = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th";
+const DIFF_LCS_CELL_LIMIT = 250000;
+
+function normalizeDiffText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function collectDiffBlocks(root = qs("doc-area")) {
+  if (!root) return [];
+  const candidates = [...root.querySelectorAll(DIFF_FLASH_BLOCK_SELECTOR)];
+  return candidates
+    .filter((el) => !candidates.some((other) => other !== el && el.contains(other)))
+    .map((el) => ({ el, text: normalizeDiffText(el.textContent) }))
+    .filter((block) => block.text.length > 0);
+}
+
+function changedNewBlockIndexes(oldValues, newValues) {
+  const changed = new Set();
+  if (newValues.length === 0) return changed;
+  if (oldValues.length === 0) {
+    newValues.forEach((_, i) => changed.add(i));
+    return changed;
+  }
+
+  let start = 0;
+  while (
+    start < oldValues.length &&
+    start < newValues.length &&
+    oldValues[start] === newValues[start]
+  ) {
+    start++;
+  }
+
+  let oldEnd = oldValues.length - 1;
+  let newEnd = newValues.length - 1;
+  while (
+    oldEnd >= start &&
+    newEnd >= start &&
+    oldValues[oldEnd] === newValues[newEnd]
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  if (newEnd < start) return changed;
+
+  const oldLen = oldEnd - start + 1;
+  const newLen = newEnd - start + 1;
+  if (oldLen <= 0) {
+    for (let i = start; i <= newEnd; i++) changed.add(i);
+    return changed;
+  }
+
+  const cells = (oldLen + 1) * (newLen + 1);
+  if (cells > DIFF_LCS_CELL_LIMIT) {
+    for (let i = start; i <= newEnd; i++) changed.add(i);
+    return changed;
+  }
+
+  const cols = newLen + 1;
+  const Table = Math.min(oldLen, newLen) > 65535 ? Uint32Array : Uint16Array;
+  const dp = new Table((oldLen + 1) * cols);
+
+  for (let i = 1; i <= oldLen; i++) {
+    const oldText = oldValues[start + i - 1];
+    for (let j = 1; j <= newLen; j++) {
+      const idx = i * cols + j;
+      if (oldText === newValues[start + j - 1]) {
+        dp[idx] = dp[(i - 1) * cols + j - 1] + 1;
+      } else {
+        dp[idx] = Math.max(dp[(i - 1) * cols + j], dp[i * cols + j - 1]);
+      }
+    }
+  }
+
+  const matchedNew = new Set();
+  let i = oldLen;
+  let j = newLen;
+  while (i > 0 && j > 0) {
+    if (oldValues[start + i - 1] === newValues[start + j - 1]) {
+      matchedNew.add(start + j - 1);
+      i--;
+      j--;
+    } else if (dp[(i - 1) * cols + j] >= dp[i * cols + j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  for (let index = start; index <= newEnd; index++) {
+    if (!matchedNew.has(index)) changed.add(index);
+  }
+  return changed;
+}
+
+function flashElement(el) {
+  if (!el) return;
+  el.classList.remove("diff-flash");
+  void el.offsetWidth;
+  el.classList.add("diff-flash");
+  el.addEventListener("animationend", () => el.classList.remove("diff-flash"), { once: true });
+}
+
+function flashChangedPreviewBlocks(oldBlockTexts) {
+  requestAnimationFrame(() => {
+    const blocks = collectDiffBlocks();
+    const changedIndexes = changedNewBlockIndexes(oldBlockTexts, blocks.map((block) => block.text));
+    changedIndexes.forEach((index) => flashElement(blocks[index]?.el));
+  });
+}
+
 const TAG_KEYS = new Set(["tags", "tag", "aliases", "alias"]);
 
 function parseFrontMatter(content) {
@@ -792,11 +908,86 @@ function renderDocArea() {
             <span>${escapeHtml(formatSize(state.activeNote.size || 0))}</span>
           </div>
         </div>`;
+      wireImageZoom();
     } else {
       docArea.innerHTML = `<div class="document"><p class="prose">无法预览此类型文件（${ext}）。</p></div>`;
     }
     docArea.addEventListener("mouseup", sendSelectionContext, { once: false });
   }
+}
+
+function wireImageZoom() {
+  const frame = document.querySelector(".imageViewerFrame");
+  const image = document.querySelector(".imageViewerImage");
+  if (!frame || !image) return;
+
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+  let dragTimer = null;
+  let dragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragStartPanX = 0;
+  let dragStartPanY = 0;
+  const applyZoom = () => {
+    if (zoom <= 1.01) {
+      panX = 0;
+      panY = 0;
+    }
+    image.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    frame.classList.toggle("imageViewerFrameZoomed", zoom > 1.01);
+    frame.classList.toggle("imageViewerFramePannable", zoom > 1.01);
+  };
+  const endDrag = () => {
+    clearTimeout(dragTimer);
+    dragTimer = null;
+    dragging = false;
+    frame.classList.remove("imageViewerFrameDragging");
+  };
+
+  frame.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? IMAGE_ZOOM_STEP : 1 / IMAGE_ZOOM_STEP;
+    zoom = clamp(zoom * factor, IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+    applyZoom();
+  }, { passive: false });
+
+  frame.addEventListener("dblclick", () => {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    image.style.transform = "";
+    frame.classList.remove("imageViewerFrameZoomed", "imageViewerFramePannable");
+  });
+
+  frame.addEventListener("pointerdown", (e) => {
+    if (zoom <= 1.01 || (e.pointerType === "mouse" && e.button !== 0)) return;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragStartPanX = panX;
+    dragStartPanY = panY;
+    clearTimeout(dragTimer);
+    dragTimer = setTimeout(() => {
+      dragging = true;
+      frame.classList.add("imageViewerFrameDragging");
+      try { frame.setPointerCapture(e.pointerId); } catch {}
+    }, 180);
+  });
+
+  frame.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    panX = dragStartPanX + (e.clientX - dragStartX);
+    panY = dragStartPanY + (e.clientY - dragStartY);
+    applyZoom();
+  });
+
+  frame.addEventListener("pointerup", endDrag);
+  frame.addEventListener("pointercancel", endDrag);
+  frame.addEventListener("pointerleave", () => {
+    if (!dragging) clearTimeout(dragTimer);
+  });
 }
 
 function recentDashboardFiles() {
@@ -1702,6 +1893,60 @@ async function refreshGitStatus() {
   }
 }
 
+const _pendingChangedPaths = new Set();
+
+function scheduleTreeRefresh(changedPaths = []) {
+  for (const p of changedPaths) _pendingChangedPaths.add(p);
+  clearTimeout(state.treeRefreshTimer);
+  state.treeRefreshTimer = setTimeout(async () => {
+    const accumulated = [..._pendingChangedPaths];
+    _pendingChangedPaths.clear();
+    try {
+      const activePath = state.activePath;
+      await loadTree(false);
+      // 精准判断：检查防抖期间所有变化路径，Windows 大小写不敏感
+      const activePathLower = activePath?.toLowerCase();
+      const activeChanged = activePath && (
+        accumulated.length === 0 ||
+        accumulated.some(p => {
+          const changed = p.toLowerCase();
+          return changed === activePathLower || activePathLower.startsWith(changed + "/");
+        })
+      );
+      if (activeChanged && !(state.editMode && state.dirty)) {
+        const stillExists = flattenFiles(state.tree)
+          .some(file => file.path.toLowerCase() === activePathLower);
+        if (!stillExists) {
+          clearActiveNote();
+          showToast("当前文件已被外部删除");
+          return;
+        }
+        try {
+          const isImage = isImageExt(extOf(activePath));
+          const command = isImage ? "read_asset" : "read_note";
+          const note = await invoke(command, { path: activePath });
+          const changed = isImage
+            ? note.updatedAt !== state.activeNote?.updatedAt ||
+              note.size !== state.activeNote?.size ||
+              note.dataUrl !== state.activeNote?.dataUrl
+            : note.content !== state.activeNote?.content;
+          if (changed) {
+            const oldBlockTexts = collectDiffBlocks().map((block) => block.text);
+            const scrollRatio = getDocScrollRatio();
+            state.activeNote = note;
+            renderDocArea();
+            applyDocScrollRatio(scrollRatio); // 同步恢复，避免浏览器画出滚动=0的中间帧
+            if (state.activeTab === "toc") renderToc();
+            flashChangedPreviewBlocks(oldBlockTexts);
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.warn("Failed to refresh file tree after vault change", err);
+    }
+  }, 300);
+}
+
 /* ── 同步引擎：触发只是入队，调度与执行在 Rust 侧 ── */
 function requestAutoPull() {
   if (state.gitStatus && !state.gitStatus.initialized) return;
@@ -1713,6 +1958,10 @@ function requestAutoPull() {
 async function initSyncEvents() {
   const listen = window.__TAURI__?.event?.listen;
   if (!listen) return;
+
+  await listen("vault-tree-changed", ({ payload }) => {
+    scheduleTreeRefresh(payload?.changedPaths ?? []);
+  });
 
   await listen("sync-state", async ({ payload }) => {
     const dot = qs("sidebar-git-dot");

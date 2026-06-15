@@ -1218,6 +1218,22 @@ input, textarea { font-family: inherit; }
   background-size: 24px 24px;
   box-shadow: var(--notes-shadow-card);
   overflow: hidden;
+  cursor: zoom-in;
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+
+.imageViewerFrameZoomed {
+  place-items: start center;
+}
+
+.imageViewerFramePannable {
+  cursor: grab;
+}
+
+.imageViewerFrameDragging {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .imageViewerImage {
@@ -1225,6 +1241,15 @@ input, textarea { font-family: inherit; }
   max-height: calc(100vh - 150px);
   object-fit: contain;
   display: block;
+  height: auto;
+  transform-origin: center center;
+  transition: transform 80ms ease-out;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.imageViewerFrameDragging .imageViewerImage {
+  transition: none;
 }
 
 .imageViewerMeta {
@@ -3197,3 +3222,8 @@ input, textarea { font-family: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* ── Diff flash (AI silent reload) ── */
+@keyframes diffFlash { 0% { background-color: rgba(250,204,21,0.35); } 100% { background-color: transparent; } }
+.diff-flash { animation: diffFlash 2.5s ease-out forwards; border-radius: 4px; }

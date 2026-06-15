@@ -91,6 +91,9 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 .typing span:nth-child(2) { animation-delay: 0.2s; }
 .typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
+.gen-chip { display: flex; align-items: center; gap: 5px; padding: 8px 0 2px; color: var(--text-dim); font-size: 11px; }
+.gen-chip-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: genPulse 1.5s ease-in-out infinite; }
+@keyframes genPulse { 0%, 100% { opacity: 0.2; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1); } }
 
 /* ── Slash popup ── */
 #input-wrap {
@@ -1868,6 +1871,7 @@ function showInlineError(text) {
 }
 
 let isGenerating = false;
+let genChipEl = null;
 let lastWsEventAt = 0; // timestamp of last event received from server, for stall detection
 let quotedText = null;
 let quotedSection = null;
@@ -2023,7 +2027,12 @@ function renderModelOptions(activeProfile) {
       if (!modelTiers[m]) modelTiers[m] = [];
       modelTiers[m].push(tier);
     }
-    const GPT_DESCS = { "gpt-5.5": "旗舰最强", "gpt-4.1": "快速均衡", "gpt-4.1-mini": "极速轻量", "gpt-4o": "快速均衡" };
+    const GPT_DESCS = {
+      "gpt-5.5": "旗舰最强",
+      "gpt-5.4": "专业推理",
+      "gpt-5.4-mini": "极速轻量",
+      "gpt-5.3-codex-spark": "实时预览",
+    };
     options = Object.entries(modelTiers).map(([model, tiers]) => {
       const shortName = model.split("/").pop() || model;
       const desc = provider === "codex" ? (GPT_DESCS[model] || model) : tiers.join("/");
@@ -2140,6 +2149,7 @@ function renderProfileList(data) {
     </button>`;
   }).join("");
   renderModelOptions(getActiveProfile());
+  requestSkillRefresh();
 }
 
 // ── Activate / delete ─────────────────────────────────────
@@ -2573,6 +2583,10 @@ function blockTypeLabel(type) {
     task_notification: "任务通知",
     status: "状态",
     refusal: "拒绝回复",
+    codex_file_change: "文件变更",
+    codex_todo_list: "任务清单",
+    codex_web_search: "网页搜索",
+    codex_error: "Codex 错误",
   };
   return labels[type] || type || "未知信息";
 }
@@ -2685,6 +2699,7 @@ function renderAssistantBlocks(body, blocks) {
 
 function setGenerating(v, notifyParent = true) {
   isGenerating = v;
+  if (!v) removeGenChip();
   sendBtn.disabled = false;
   sendBtn.classList.toggle("stopping", v);
   sendBtn.setAttribute("aria-label", v ? "停止" : "发送");
@@ -2773,7 +2788,10 @@ let ws = null;
 
 function connect() {
   ws = new WebSocket(wsUrl);
-  ws.onopen = () => { setGenerating(false, false); };
+  ws.onopen = () => {
+    setGenerating(false, false);
+    requestSkillRefresh(true);
+  };
   ws.onclose = () => {
     sendBtn.disabled = true;
     setGenerating(false, false);
@@ -2819,12 +2837,29 @@ const BUILTIN = [
 ];
 
 let slashCommands = [...BUILTIN];
+let currentSkillProvider = null;
 
 function buildCommandList(skills) {
   slashCommands = [
     ...BUILTIN,
     ...skills.map((s) => ({ name: s, desc: "", kind: "skill" })),
   ];
+}
+
+function activeSkillProvider() {
+  return getActiveProfile()?.provider === "codex" ? "codex" : "claude";
+}
+
+function requestSkillRefresh(force = false) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const provider = activeSkillProvider();
+  if (!force && provider === currentSkillProvider) return;
+  currentSkillProvider = provider;
+  ws.send(JSON.stringify({
+    type: "skills",
+    provider,
+    profileId: _profileData.activeProfileId,
+  }));
 }
 
 // ── State ─────────────────────────────────────────────────
@@ -2887,6 +2922,7 @@ let assistantEvents = []; // non-content SDK events that still explain the AI tu
 
 function resetAssistantState() {
   cleanupRunningTools();
+  removeGenChip();
   assistantEl = null; assistantTxt = ""; assistantBlocks = []; assistantRawMessages = []; assistantEvents = []; blockMap = {}; prevTurnTexts = [];
 }
 
@@ -2897,7 +2933,10 @@ function captureAssistantEvent(ev) {
   assistantEvents.push(raw);
   assistantBlocks.push(block);
   if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
-  appendAssistantBlock(assistantEl.querySelector(".msg-body"), block);
+  if (!genChipEl && isGenerating) showGenChip("");
+  const body = assistantEl.querySelector(".msg-body");
+  appendAssistantBlock(body, block);
+  reanchorGenChip();
   scrollBottom();
 }
 
@@ -2960,6 +2999,7 @@ function handleEvent(ev) {
   if (ev.type === "system" && ev.subtype === "init") {
     // ev.skills 是实际的技能列表；ev.slash_commands 是内置命令列表
     // 优先使用 ev.skills，否则回退到 ev.slash_commands（旧版 SDK 兼容）
+    if (ev.provider) currentSkillProvider = ev.provider;
     const skillList = Array.isArray(ev.skills) && ev.skills.length > 0
       ? ev.skills
       : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
@@ -2980,6 +3020,7 @@ function handleEvent(ev) {
     // New turn after tool call — tool finished, remove running state, reset indices
     if (event.type === "message_start") {
       cleanupRunningTools();
+      updateGenChip("继续处理…");
       for (const b of Object.values(blockMap)) {
         if (b.type === "text" && b.accumulated) prevTurnTexts.push(b.accumulated);
       }
@@ -2993,9 +3034,11 @@ function handleEvent(ev) {
       if (!block) return;
       const idx = event.index;
       if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+      if (!genChipEl) showGenChip("");
       const body = assistantEl.querySelector(".msg-body");
 
       if (block.type === "thinking") {
+        removeGenChip();
         const el = document.createElement("details");
         el.className = "thinking-block thinking-active";
         el.setAttribute("open", "");
@@ -3003,11 +3046,14 @@ function handleEvent(ev) {
         body.appendChild(el);
         blockMap[idx] = { el, type: "thinking", accumulated: "" };
       } else if (block.type === "text") {
+        updateGenChip("");
         const el = document.createElement("div");
         el.className = "msg-text";
         body.appendChild(el);
+        reanchorGenChip();
         blockMap[idx] = { el, type: "text", accumulated: "" };
       } else if (isToolUseType(block.type)) {
+        updateGenChip("调用工具中…");
         const el = makeToolEl({
           id: block.id,
           name: block.name,
@@ -3015,16 +3061,19 @@ function handleEvent(ev) {
           input: block.input ?? {},
         });
         body.appendChild(el);
+        reanchorGenChip();
         markToolRunning(el);
         blockMap[idx] = { el, type: block.type, accumulated: "", id: block.id };
       } else if (block.type === "web_search_tool_result" || block.type === "web_fetch_tool_result" || isToolResultType(block.type)) {
         cleanupRunningTools();
         const el = makeHistoryBlock(blockTypeLabel(block.type), block);
         body.appendChild(el);
+        reanchorGenChip();
         blockMap[idx] = { el, type: block.type, accumulated: "", raw: block };
       } else {
         const el = makeHistoryBlock(blockTypeLabel(block.type), block);
         body.appendChild(el);
+        reanchorGenChip();
         blockMap[idx] = { el, type: block.type || "unknown", accumulated: "", raw: block };
       }
       return;
@@ -3066,6 +3115,7 @@ function handleEvent(ev) {
         b.el.removeAttribute("open");
         const label = b.el.querySelector(".thinking-label");
         if (label) label.textContent = "思考过程";
+        showGenChip("整理回复中…");
       }
       if (isToolUseType(b?.type)) {
         try {
@@ -3094,12 +3144,14 @@ function handleEvent(ev) {
       removeTyping();
       assistantEl = addMessage("assistant", "");
     }
+    if (!genChipEl && isGenerating) showGenChip("");
     const body = assistantEl.querySelector(".msg-body");
     if (!assistantBlocks.some((block) => block.type === "text") && assistantTxt) {
       assistantBlocks.push({ type: "text", text: assistantTxt });
     }
     body.innerHTML = "";
     renderAssistantBlocks(body, assistantBlocks);
+    reanchorGenChip();
     markLiveToolBlocksRunning(turnBlocks);
     assistantTxt = textFromAssistantBlocks(assistantBlocks) || assistantTxt;
     scrollBottom();
@@ -3113,6 +3165,7 @@ function handleEvent(ev) {
 
   if (isToolUseType(ev.type)) {
     if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+    if (!genChipEl && isGenerating) showGenChip("调用工具中…");
     const block = {
       type: ev.type,
       id: ev.id ?? "",
@@ -3123,7 +3176,9 @@ function handleEvent(ev) {
     };
     assistantBlocks.push(block);
     const el = makeToolEl(block);
-    assistantEl.querySelector(".msg-body").appendChild(el);
+    const body = assistantEl.querySelector(".msg-body");
+    body.appendChild(el);
+    reanchorGenChip();
     markToolRunning(el);
     scrollBottom();
     return;
@@ -3132,9 +3187,12 @@ function handleEvent(ev) {
   if (isToolResultType(ev.type)) {
     cleanupRunningTools();
     if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+    if (!genChipEl && isGenerating) showGenChip("");
     const block = { type: ev.type, raw: cloneJson(ev) };
     assistantBlocks.push(block);
-    appendAssistantBlock(assistantEl.querySelector(".msg-body"), block);
+    const body = assistantEl.querySelector(".msg-body");
+    appendAssistantBlock(body, block);
+    reanchorGenChip();
     scrollBottom();
     return;
   }
@@ -3296,6 +3354,31 @@ function addTyping() {
   messagesEl.appendChild(el); scrollBottom();
 }
 function removeTyping() { document.getElementById("typing")?.remove(); }
+
+function showGenChip(text) {
+  if (!genChipEl) {
+    genChipEl = document.createElement("div");
+    genChipEl.className = "gen-chip";
+    genChipEl.innerHTML = `<span class="gen-chip-dot"></span><span class="gen-chip-label"></span>`;
+  }
+  genChipEl.querySelector(".gen-chip-label").textContent = text || "";
+  reanchorGenChip();
+}
+function updateGenChip(text) {
+  if (!genChipEl) return;
+  genChipEl.querySelector(".gen-chip-label").textContent = text || "";
+  reanchorGenChip();
+}
+function reanchorGenChip() {
+  if (!genChipEl || !assistantEl) return;
+  const body = assistantEl.querySelector(".msg-body");
+  if (body) body.appendChild(genChipEl);
+}
+function removeGenChip() {
+  genChipEl?.remove();
+  genChipEl = null;
+}
+
 function updateTypingStatus(text) {
   const el = document.querySelector("#typing .typing-status");
   if (el) el.textContent = text ? ` ${text}` : "";

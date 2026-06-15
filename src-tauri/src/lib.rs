@@ -1,4 +1,7 @@
 use base64::{engine::general_purpose, Engine as _};
+use notify::{
+    Config as NotifyConfig, Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::ffi::OsStr;
@@ -28,6 +31,7 @@ struct AppState {
     processes: Mutex<Vec<Child>>,
     claude_port: u16,
     sync_tx: Mutex<Option<mpsc::Sender<SyncJob>>>,
+    vault_watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +98,14 @@ struct DesktopState {
     agent_port: u16,
     #[serde(rename = "agentReady")]
     agent_ready: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct VaultTreeChanged {
+    #[serde(rename = "generatedAt")]
+    generated_at: u64,
+    #[serde(rename = "changedPaths")]
+    changed_paths: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -200,6 +212,85 @@ fn path_extension(value: &Path) -> String {
 fn is_note_file(value: &Path) -> bool {
     let ext = path_extension(value);
     NOTE_EXTENSIONS.iter().any(|allowed| *allowed == ext)
+}
+
+fn is_tree_change_event(event: &NotifyEvent) -> bool {
+    matches!(
+        event.kind,
+        notify::EventKind::Any
+            | notify::EventKind::Create(_)
+            | notify::EventKind::Modify(_)
+            | notify::EventKind::Remove(_)
+    )
+}
+
+fn is_vault_tree_event_path(root: &Path, path: &Path) -> bool {
+    let relative = match path.strip_prefix(root) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let relative_slash = to_slash_path(relative);
+    if has_excluded_segment(&relative_slash) {
+        return false;
+    }
+    let name = path.file_name().and_then(OsStr::to_str).unwrap_or("");
+    if name.starts_with('.') && name != ".gitkeep" {
+        return false;
+    }
+    if path.is_dir() {
+        return true;
+    }
+    let ext = path_extension(path);
+    if ext.is_empty() {
+        return true;
+    }
+    NOTE_EXTENSIONS.iter().any(|allowed| *allowed == ext)
+}
+
+fn start_vault_watcher(app: &AppHandle) -> Result<(), String> {
+    let root = vault_root(app)?;
+    let root_for_filter = root.clone();
+    let handle = app.clone();
+    let mut watcher = RecommendedWatcher::new(
+        move |result: Result<NotifyEvent, notify::Error>| {
+            let Ok(event) = result else {
+                return;
+            };
+            if !is_tree_change_event(&event) {
+                return;
+            }
+            let changed_paths: Vec<String> = event
+                .paths
+                .iter()
+                .filter(|path| is_vault_tree_event_path(&root_for_filter, path))
+                .filter_map(|path| {
+                    path.strip_prefix(&root_for_filter)
+                        .ok()
+                        .map(|rel| to_slash_path(rel))
+                })
+                .collect();
+            if changed_paths.is_empty() {
+                return;
+            }
+            let _ = handle.emit(
+                "vault-tree-changed",
+                VaultTreeChanged {
+                    generated_at: now_secs(),
+                    changed_paths,
+                },
+            );
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|err| err.to_string())?;
+
+    let state = app.state::<AppState>();
+    let mut slot = state.vault_watcher.lock().map_err(|err| err.to_string())?;
+    *slot = Some(watcher);
+    Ok(())
 }
 
 fn is_text_note(value: &Path) -> bool {
@@ -655,7 +746,9 @@ fn ensure_git_repo(path: &Path) {
 }
 
 fn run_git(path: &Path, args: &[&str]) -> Result<GitOutput, String> {
-    let _guard = GIT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = GIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut command = Command::new("git");
     command.arg("-C").arg(path);
     // 非 ASCII 路径（中文文件名）默认会被八进制转义，关掉以输出原始 UTF-8
@@ -883,6 +976,9 @@ async fn select_and_set_vault(app: AppHandle) -> Result<DesktopState, String> {
     fs::create_dir_all(&path).map_err(|err| err.to_string())?;
     save_vault_path(&app, &path)?;
     ensure_git_repo(&path);
+    if let Err(err) = start_vault_watcher(&app) {
+        eprintln!("[inkfellow] vault watcher failed: {err}");
+    }
     restart_agent(&app);
     get_desktop_state(app).await
 }
@@ -898,6 +994,9 @@ async fn set_vault_path(app: AppHandle, path: String) -> Result<DesktopState, St
     }
     save_vault_path(&app, &path_buf)?;
     ensure_git_repo(&path_buf);
+    if let Err(err) = start_vault_watcher(&app) {
+        eprintln!("[inkfellow] vault watcher failed: {err}");
+    }
     restart_agent(&app);
     get_desktop_state(app).await
 }
@@ -979,7 +1078,11 @@ async fn write_note(app: AppHandle, path: String, content: String) -> Result<Not
 }
 
 #[tauri::command]
-async fn create_note(app: AppHandle, folder: String, title: String) -> Result<NoteResponse, String> {
+async fn create_note(
+    app: AppHandle,
+    folder: String,
+    title: String,
+) -> Result<NoteResponse, String> {
     let clean_folder = normalize_relative_path(&folder, true)?;
     let mut clean_name = sanitize_name_segment(&title)?;
     if path_extension(Path::new(&clean_name)).is_empty() {
@@ -1201,7 +1304,11 @@ async fn wiki_backlinks(app: AppHandle, path: String) -> Result<Vec<WikiBacklink
         .to_lowercase();
     let path_key = {
         let p = path_norm.to_lowercase();
-        if p.ends_with(".md") { p[..p.len() - 3].to_string() } else { p }
+        if p.ends_with(".md") {
+            p[..p.len() - 3].to_string()
+        } else {
+            p
+        }
     };
 
     let mut backlinks = Vec::new();
@@ -1237,13 +1344,18 @@ fn wiki_backlink_walk(
 
         let abs_path = entry.path();
         if file_type.is_dir() {
-            wiki_backlink_walk(root, &abs_path, &child_relative, note_stem, path_key, backlinks)?;
+            wiki_backlink_walk(
+                root,
+                &abs_path,
+                &child_relative,
+                note_stem,
+                path_key,
+                backlinks,
+            )?;
             continue;
         }
 
-        if !file_type.is_file()
-            || abs_path.extension().and_then(|e| e.to_str()) != Some("md")
-        {
+        if !file_type.is_file() || abs_path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
 
@@ -1274,7 +1386,9 @@ fn wiki_backlink_walk(
         let bytes = clean.as_bytes();
         while pos < clean.len() {
             let rest = &clean[pos..];
-            let Some(open_rel) = rest.find("[[") else { break };
+            let Some(open_rel) = rest.find("[[") else {
+                break;
+            };
             let open_abs = pos + open_rel;
             let inner_start = open_abs + 2;
             let Some(close_rel) = clean[inner_start..].find("]]") else {
@@ -1291,17 +1405,33 @@ fn wiki_backlink_walk(
             let target = target_raw.to_lowercase();
 
             // Skip media embeds
-            let is_media = is_embed && matches!(
-                Path::new(&target).extension().and_then(|e| e.to_str()).unwrap_or(""),
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico"
-                    | "avif" | "mp4" | "webm" | "mov" | "mp3" | "wav" | "ogg" | "flac" | "pdf"
-            );
+            let is_media = is_embed
+                && matches!(
+                    Path::new(&target)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or(""),
+                    "png"
+                        | "jpg"
+                        | "jpeg"
+                        | "gif"
+                        | "webp"
+                        | "svg"
+                        | "bmp"
+                        | "ico"
+                        | "avif"
+                        | "mp4"
+                        | "webm"
+                        | "mov"
+                        | "mp3"
+                        | "wav"
+                        | "ogg"
+                        | "flac"
+                        | "pdf"
+                );
 
             if !is_media && (target == note_stem || target == path_key) {
-                let line_start = clean[..open_abs]
-                    .rfind('\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
+                let line_start = clean[..open_abs].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = clean[open_abs..]
                     .find('\n')
                     .map(|i| open_abs + i)
@@ -1431,7 +1561,13 @@ fn emit_sync(app: &AppHandle, event: SyncEvent) {
     let _ = app.emit("sync-state", event);
 }
 
-fn emit_sync_done(app: &AppHandle, kind: &str, pulled: bool, feedback: Option<String>, error: Option<String>) {
+fn emit_sync_done(
+    app: &AppHandle,
+    kind: &str,
+    pulled: bool,
+    feedback: Option<String>,
+    error: Option<String>,
+) {
     let status = ensure_vault_path(app)
         .and_then(|path| compute_git_status(&path))
         .ok();
@@ -1794,6 +1930,7 @@ pub fn run() {
             processes: Mutex::new(Vec::new()),
             claude_port,
             sync_tx: Mutex::new(None),
+            vault_watcher: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_desktop_state,
@@ -1827,6 +1964,9 @@ pub fn run() {
             let handle = app.handle().clone();
             if let Ok(vault) = ensure_vault_path(&handle) {
                 ensure_git_repo(&vault);
+            }
+            if let Err(err) = start_vault_watcher(&handle) {
+                eprintln!("[inkfellow] vault watcher failed: {err}");
             }
             start_sync_worker(&handle);
             spawn_agent(&handle);

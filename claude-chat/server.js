@@ -155,11 +155,13 @@ const WECHAT_MIME_BY_EXT = {
   ".zip": "application/zip",
 };
 
+const CODEX_DEFAULT_MODELS = { opusModel: "gpt-5.5", sonnetModel: "gpt-5.4", haikuModel: "gpt-5.4-mini" };
+
 const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
-  codex:      { baseUrl: "",                                    opusModel: "gpt-5.5",                         sonnetModel: "gpt-4.1",                          haikuModel: "gpt-4.1-mini" },
+  codex:      { baseUrl: "",                                    ...CODEX_DEFAULT_MODELS },
 };
 const CLAUDE_COMPAT_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
@@ -223,6 +225,102 @@ function isCodexAuthAvailable() {
     const auth = JSON.parse(readFileSync(authFile, "utf8"));
     return !!(auth.tokens?.access_token || auth.OPENAI_API_KEY);
   } catch { return false; }
+}
+
+function codexSandboxMode(permissionMode) {
+  if (permissionMode === "plan") return "read-only";
+  if (permissionMode === "bypassPermissions") return "danger-full-access";
+  return "workspace-write";
+}
+
+function codexItemText(item) {
+  if (!item) return "";
+  if (typeof item.text === "string") return item.text;
+  if (typeof item.message === "string") return item.message;
+  return "";
+}
+
+function codexToolName(item) {
+  if (!item) return "tool";
+  if (item.type === "command_execution") return "Bash";
+  if (item.type === "mcp_tool_call") return item.tool || "mcp";
+  if (item.type === "web_search") return "web_search";
+  if (item.type === "file_change") return "apply_patch";
+  return item.type || "tool";
+}
+
+function codexToolInput(item) {
+  if (!item) return {};
+  if (item.type === "command_execution") return { command: item.command || "" };
+  if (item.type === "mcp_tool_call") return item.arguments ?? {};
+  if (item.type === "web_search") return { query: item.query || "" };
+  if (item.type === "file_change") return { changes: item.changes || [], status: item.status };
+  if (item.type === "todo_list") return { items: item.items || [] };
+  return item;
+}
+
+function codexContentBlock(item) {
+  if (!item) return null;
+  const raw = item;
+  if (item.type === "agent_message") {
+    const text = codexItemText(item);
+    return text ? { type: "text", text, raw } : null;
+  }
+  if (item.type === "reasoning") {
+    const thinking = codexItemText(item);
+    return thinking ? { type: "thinking", thinking, raw } : null;
+  }
+  if (item.type === "mcp_tool_call") {
+    return {
+      type: "mcp_tool_result",
+      content: item.result?.content ?? item.result ?? item.error ?? null,
+      raw,
+    };
+  }
+  if (item.type === "command_execution") {
+    return {
+      type: "tool_result",
+      content: item.aggregated_output || "",
+      raw,
+    };
+  }
+  if (item.type === "error") {
+    return { type: "codex_error", message: item.message || "Codex item error", raw };
+  }
+  return { type: `codex_${item.type || "item"}`, raw };
+}
+
+function sendCodexItemEvent(send, eventType, item) {
+  if (!item) return;
+  if (eventType === "item.started") {
+    if (item.type === "command_execution" || item.type === "mcp_tool_call" || item.type === "web_search" || item.type === "file_change") {
+      send({
+        type: item.type === "mcp_tool_call" ? "mcp_tool_use" : "server_tool_use",
+        id: item.id ?? "",
+        name: codexToolName(item),
+        server_name: item.server ?? null,
+        input: codexToolInput(item),
+        provider: "codex",
+        raw: item,
+      });
+      return;
+    }
+    if (item.type === "reasoning") {
+      const block = codexContentBlock(item);
+      if (block) send({ type: "assistant", message: { role: "assistant", content: [block] } });
+      return;
+    }
+  }
+  if (eventType === "item.updated") {
+    if (item.type === "command_execution" || item.type === "mcp_tool_call" || item.type === "todo_list") {
+      send({ type: "tool_progress", provider: "codex", itemType: item.type, raw: item });
+    }
+    return;
+  }
+  if (eventType === "item.completed") {
+    const block = codexContentBlock(item);
+    if (block) send({ type: "assistant", message: { role: "assistant", content: [block] } });
+  }
 }
 
 // Locate the Claude Code session JSONL for a given session id. The file lives under
@@ -344,7 +442,7 @@ function migrateOldFormat(old) {
   }
 
   if (isCodexAuthAvailable()) {
-    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini", baseUrl: "" });
+    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
   }
   let activeProfileId = "p_claude";
   if (old.provider === "deepseek") {
@@ -370,13 +468,12 @@ function normalizeProfiles(raw) {
     profiles.unshift({ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "" });
   }
   // 注入或同步 Codex 会员 profile（强制覆盖模型字段，防止旧数据残留）
-  const CODEX_MODELS = { opusModel: "gpt-5.5", sonnetModel: "gpt-4.1", haikuModel: "gpt-4.1-mini" };
   const existingCodex = profiles.find(p => p.provider === "codex");
   if (isCodexAuthAvailable()) {
     if (existingCodex) {
-      Object.assign(existingCodex, CODEX_MODELS);
+      Object.assign(existingCodex, CODEX_DEFAULT_MODELS);
     } else {
-      profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_MODELS });
+      profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
     }
   }
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
@@ -505,29 +602,65 @@ function writeHistory(arr) {
 }
 
 // ── Skills preload ─────────────────────────────────────────
-// Read skill slugs from ~/.claude/skills/ directory (fast, no subprocess needed)
-function loadSkillsFromDisk() {
-  const dirs = [
+function addSkillSlugsFromDir(slugs, dir) {
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (!entry || entry.startsWith(".")) continue;
+      try {
+        // Use lstatSync so broken symlinks are counted (symlink = installed skill)
+        const st = lstatSync(join(dir, entry));
+        if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
+      } catch { /* skip */ }
+    }
+  } catch { /* dir not found */ }
+}
+
+function skillDirsForProvider(provider) {
+  if (provider === "codex") {
+    return [
+      join(homedir(), ".codex", "skills"),
+      join(homedir(), ".codex", "skills", ".system"),
+      join(homedir(), ".agents", "skills"),
+      join(DEFAULT_CWD, ".codex", "skills"),
+      join(DEFAULT_CWD, ".codex", "skills", ".system"),
+      join(DEFAULT_CWD, ".agents", "skills"),
+    ];
+  }
+  return [
     join(homedir(), ".claude", "skills"),
     join(DEFAULT_CWD, ".claude", "skills"),
   ];
+}
+
+function normalizeSkillProvider(provider) {
+  return provider === "codex" ? "codex" : "claude";
+}
+
+function loadSkillsFromDisk(provider = "claude") {
   const slugs = new Set();
-  for (const dir of dirs) {
-    try {
-      for (const entry of readdirSync(dir)) {
-        try {
-          // Use lstatSync so broken symlinks are counted (symlink = installed skill)
-          const st = lstatSync(join(dir, entry));
-          if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
-        } catch { /* skip */ }
-      }
-    } catch { /* dir not found */ }
+  for (const dir of skillDirsForProvider(normalizeSkillProvider(provider))) {
+    addSkillSlugsFromDir(slugs, dir);
   }
   return [...slugs].sort();
 }
 
-let cachedSkills = loadSkillsFromDisk();
-console.log(`Loaded ${cachedSkills.length} skills from disk`);
+const cachedSkillsByProvider = {
+  claude: loadSkillsFromDisk("claude"),
+  codex: loadSkillsFromDisk("codex"),
+};
+console.log(`Loaded ${cachedSkillsByProvider.claude.length} Claude skills and ${cachedSkillsByProvider.codex.length} Codex skills from disk`);
+
+function skillsForProvider(provider) {
+  const key = normalizeSkillProvider(provider);
+  cachedSkillsByProvider[key] = loadSkillsFromDisk(key);
+  return cachedSkillsByProvider[key];
+}
+
+function sendSkillInit(send, provider) {
+  const key = normalizeSkillProvider(provider);
+  const skills = skillsForProvider(key);
+  send({ type: "system", subtype: "init", provider: key, skills, slash_commands: skills });
+}
 
 
 // ── WeChat Bot In-Memory Session & Live Poller Loop ──────────
@@ -1801,18 +1934,28 @@ const wss = new WebSocketServer({ server: http });
 
 wss.on("connection", (ws) => {
   let abortCtrl = null;
-  // Reload skills from disk on each connection so newly installed skills appear immediately
-  const freshSkills = loadSkillsFromDisk();
-  if (freshSkills.length > 0) cachedSkills = freshSkills;
-  ws.send(JSON.stringify({ type: "system", subtype: "init", skills: cachedSkills, slash_commands: cachedSkills }));
 
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
+  // Send the persisted default first; the browser sends a profile-specific refresh
+  // after it loads its local activeProfileId.
+  sendSkillInit(send, getActiveProfile(readProfiles())?.provider);
+
   ws.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+
+    if (msg.type === "skills") {
+      const profileData = readProfiles();
+      if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
+        profileData.activeProfileId = msg.profileId;
+      }
+      const activeProfile = getActiveProfile(profileData);
+      sendSkillInit(send, activeProfile?.provider ?? msg.provider);
+      return;
+    }
 
     if (msg.reset) {
       clearSession();
@@ -1870,6 +2013,18 @@ wss.on("connection", (ws) => {
       abortCtrl = null;
       return;
     }
+    if (activeProfile?.provider === "codex" && !isCodexAuthAvailable()) {
+      send({ type: "error", text: "Codex 还没有登录，请先打开 Codex 客户端或运行 codex login 完成 ChatGPT 账号登录。" });
+      send({ type: "done" });
+      abortCtrl = null;
+      return;
+    }
+    if (activeProfile?.provider === "codex" && schedulerRequest) {
+      send({ type: "error", text: "定时任务目前需要 Claude 会员通道的 scheduler 工具。请切换到 Claude 会员后再创建、查看或修改提醒任务。" });
+      send({ type: "done" });
+      abortCtrl = null;
+      return;
+    }
 
     const resolvedCwd = resolveAllowedCwd(msg.cwd);
     const webEnv = buildAgentEnv(profileData, effort, msg.model);
@@ -1908,7 +2063,7 @@ wss.on("connection", (ws) => {
           const threadOptions = {
             workingDirectory: resolvedCwd,
             approvalPolicy: "never",
-            sandboxMode: permissionMode === "bypassPermissions" ? "danger-full-access" : "workspace-write",
+            sandboxMode: codexSandboxMode(permissionMode),
             modelReasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
             ...(msg.model ? { model: msg.model } : {}),
           };
@@ -1934,15 +2089,25 @@ wss.on("connection", (ws) => {
           }
 
           const { events } = await thread.runStreamed(input, { signal: ac.signal });
+          let codexResultSent = false;
           for await (const ev of events) {
             if (ev.type === "thread.started") {
               saveCodexThread(ev.thread_id);
-            } else if (ev.type === "item.completed" && ev.item?.type === "agent_message") {
-              send({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: ev.item.text }] } });
+              send({ type: "session", sessionId: ev.thread_id });
+            } else if (ev.type === "turn.started") {
+              send({ type: "system", subtype: "status", status: "requesting" });
+            } else if (ev.type === "item.started" || ev.type === "item.updated" || ev.type === "item.completed") {
+              sendCodexItemEvent(send, ev.type, ev.item);
+            } else if (ev.type === "turn.completed") {
+              send({ type: "result", subtype: "success", usage: ev.usage ?? null, provider: "codex" });
+              codexResultSent = true;
             } else if (ev.type === "turn.failed") {
               throw new Error(ev.error?.message || "Codex 请求失败");
+            } else if (ev.type === "error") {
+              throw new Error(ev.message || "Codex 请求失败");
             }
           }
+          if (!codexResultSent) send({ type: "result", subtype: "success", provider: "codex" });
           send({ type: "done" });
         } catch (err) {
           if (err?.name === "AbortError") {
@@ -1988,7 +2153,7 @@ wss.on("connection", (ws) => {
             const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
               ? ev.skills
               : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
-            if (skillsFromSdk.length > 0) cachedSkills = skillsFromSdk; // keep cache fresh
+            if (skillsFromSdk.length > 0) cachedSkillsByProvider["claude"] = skillsFromSdk; // keep cache fresh
             send({
               type: "system",
               subtype: "init",

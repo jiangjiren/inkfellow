@@ -83,8 +83,8 @@ function FrontMatterPanel({ data }: { data: FrontMatterData }) {
   if (entries.length === 0) return null;
 
   return (
-    <div className={styles.frontMatter}>
-      <p className={styles.frontMatterLabel}>Properties</p>
+    <details className={styles.frontMatter}>
+      <summary className={styles.frontMatterLabel}>笔记属性</summary>
       <dl className={styles.frontMatterGrid}>
         {entries.map(([key, value]) => {
           const isTagField = TAG_KEYS.has(key.toLowerCase());
@@ -120,7 +120,7 @@ function FrontMatterPanel({ data }: { data: FrontMatterData }) {
           );
         })}
       </dl>
-    </div>
+    </details>
   );
 }
 

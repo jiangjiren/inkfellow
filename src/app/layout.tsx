@@ -9,6 +9,14 @@ export const metadata: Metadata = {
   title: "inkfellow",
   description: "inkfellow — Personal knowledge base powered by LLM Wiki",
   manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "16x16" },
+      { url: "/icons/inkfellow-pwa-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/inkfellow-pwa-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",

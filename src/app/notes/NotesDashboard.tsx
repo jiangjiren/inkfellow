@@ -1,15 +1,19 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import type { NotesFileNode } from "@/lib/notesTypes";
 import styles from "./notes.module.css";
 
 interface NotesDashboardProps {
   files: NotesFileNode[];
+  /** 首页 → 对话过渡中：播放退场动画并屏蔽交互 */
+  exiting?: boolean;
   onSelectNote: (path: string) => void;
   onAskAI: (query?: string) => void;
   onQuickCapture: () => void;
 }
 
-export default function NotesDashboard({ files, onSelectNote, onAskAI, onQuickCapture }: NotesDashboardProps) {
+export default function NotesDashboard({ files, exiting = false, onSelectNote, onAskAI, onQuickCapture }: NotesDashboardProps) {
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+
   const recentFiles = useMemo(() => {
     const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif|tiff?)$/i;
     return [...files]
@@ -18,8 +22,26 @@ export default function NotesDashboard({ files, onSelectNote, onAskAI, onQuickCa
       .slice(0, 6);
   }, [files]);
 
+  // 建议提示词：第二个 chip 基于最近编辑的笔记动态生成
+  const continueTitle = recentFiles[0]?.name.replace(/\.(md|html?)$/i, "") ?? null;
+
+  const submitPrompt = useCallback(() => {
+    if (exiting) return;
+    const el = promptRef.current;
+    const text = el?.value.trim();
+    if (text) {
+      onAskAI(text);
+      if (el) {
+        el.value = "";
+        el.style.height = "auto";
+      }
+    } else {
+      onAskAI();
+    }
+  }, [exiting, onAskAI]);
+
   return (
-    <div className={styles.dashboardContainer}>
+    <div className={`${styles.dashboardContainer} ${exiting ? styles.dashboardExiting : ""}`}>
       <div className={styles.dashboardHero}>
         <p className={styles.dashboardSubtitle}>你的个人知识库，已就绪。</p>
 
@@ -27,31 +49,57 @@ export default function NotesDashboard({ files, onSelectNote, onAskAI, onQuickCa
           className={styles.dashboardSearchBox}
           onSubmit={(e) => {
             e.preventDefault();
-            const input = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
-            if (input.value.trim()) {
-              onAskAI(input.value.trim());
-              input.value = "";
-            } else {
-              onAskAI();
-            }
+            submitPrompt();
           }}
-          onClick={(e) => {
-            const input = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
-            input?.focus();
-          }}
+          onClick={() => promptRef.current?.focus()}
         >
-          <svg className={styles.dashboardSearchIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          <input
+          <textarea
+            ref={promptRef}
             name="q"
+            rows={1}
             className={styles.dashboardSearchInput}
             placeholder="有什么想写或想聊的..."
             autoComplete="off"
+            onInput={(e) => {
+              // 自适应长高：先收缩再按内容撑开，封顶 8 行左右
+              const el = e.currentTarget;
+              el.style.height = "auto";
+              el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+            }}
+            onKeyDown={(e) => {
+              // Enter 发送、Shift+Enter 换行；IME 选字时的 Enter 不触发
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submitPrompt();
+              }
+            }}
           />
-          <button type="submit" className={styles.dashboardSearchShortcut}>✦</button>
+          <button type="submit" className={styles.dashboardSendBtn} aria-label="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 19V5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          </button>
         </form>
+
+        <div className={styles.dashboardPromptChips}>
+          <button
+            type="button"
+            className={styles.dashboardPromptChip}
+            onClick={() => { if (!exiting) onAskAI("总结我本周的笔记"); }}
+          >
+            总结我本周的笔记
+          </button>
+          {continueTitle ? (
+            <button
+              type="button"
+              className={styles.dashboardPromptChip}
+              onClick={() => { if (!exiting) onAskAI(`继续写「${continueTitle}」这篇笔记`); }}
+            >
+              继续写「{continueTitle}」
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {recentFiles.length > 0 && (

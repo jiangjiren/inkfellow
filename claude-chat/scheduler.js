@@ -26,7 +26,25 @@ export function init(context) {
       if (!existsSync(ctx.WECHAT_CONFIG_FILE)) throw new Error("WeChat not connected");
       const creds = JSON.parse(readFileSync(ctx.WECHAT_CONFIG_FILE, "utf8"));
       if (!creds.token || !creds.baseUrl) throw new Error("WeChat credentials incomplete");
-      await ctx.sendWechatMessage(creds.baseUrl, creds.token, peer, text);
+      const peers = typeof ctx.resolveWechatDeliveryPeers === "function"
+        ? ctx.resolveWechatDeliveryPeers(peer)
+        : [peer];
+      let lastErr = null;
+      for (const candidate of peers) {
+        try {
+          await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text);
+          if (candidate !== peer) {
+            console.log(`[Scheduler] WeChat delivery fallback succeeded: ${String(peer).slice(0, 12)}... -> ${String(candidate).slice(0, 12)}...`);
+          }
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (candidate !== peers[peers.length - 1]) {
+            console.warn(`[Scheduler] WeChat delivery to ${String(candidate).slice(0, 12)}... failed, trying fallback: ${err.message}`);
+          }
+        }
+      }
+      throw lastErr || new Error("WeChat delivery failed");
     },
   };
 
@@ -260,8 +278,11 @@ async function _executeJob(job) {
   } catch (err) {
     status = "error";
     errorMsg = err.message;
-    console.error(`[Scheduler] Job "${job.description}" error:`, err.message);
-    await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
+    const isDeliveryError = err.message.startsWith("结果投递失败");
+    console.error(`[Scheduler] Job "${job.description}" ${isDeliveryError ? "delivery" : "execution"} error:`, err.message);
+    if (!isDeliveryError) {
+      await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
+    }
   }
 
   const durationMs = Date.now() - startMs;
@@ -300,18 +321,27 @@ async function _deliverResult(job, text) {
   }
 
   const msg = `📅 ${job.description}\n\n${text}`;
+  const failures = [];
   for (const { channel, peer } of targets) {
     const adapter = channelAdapters[channel];
     if (!adapter) {
-      console.warn(`[Scheduler] No adapter for channel "${channel}", skipping`);
+      const message = `No adapter for channel "${channel}"`;
+      console.warn(`[Scheduler] ${message}, skipping`);
+      failures.push(message);
       continue;
     }
     try {
       await adapter.send(peer, msg);
-      console.log(`[Scheduler] Delivered to ${channel}:${peer.slice(0, 12)}...`);
+      console.log(`[Scheduler] Delivered to ${channel}:${String(peer).slice(0, 12)}...`);
     } catch (err) {
-      console.error(`[Scheduler] Delivery to ${channel} failed:`, err.message);
+      const message = `Delivery to ${channel}:${String(peer).slice(0, 12)} failed: ${err.message}`;
+      console.error(`[Scheduler] ${message}`);
+      failures.push(message);
     }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`结果投递失败：${failures.join("; ")}`);
   }
 }
 

@@ -3149,6 +3149,23 @@
     border: 0 !important;
   }
 
+  /* 首页提问：对话是主任务，全屏接管（iOS 全屏 modal 风格），
+     而不是浮在已无关的首页上方的底部 sheet */
+  .assistantPanel.assistantPanelFullscreen {
+    top: 0;
+    bottom: 0;
+    height: auto;
+    min-height: 0;
+    border-radius: 0;
+    border-top: none;
+    box-shadow: none;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .assistantPanel.assistantPanelFullscreen .dashboardChatHeader {
+    flex-shrink: 0;
+  }
+
   .assistantPanelResizer {
     display: none;
   }
@@ -4639,58 +4656,104 @@
 
 .dashboardSearchBox {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   width: 100%;
   max-width: 580px;
-  height: 56px;
-  padding: 0 20px;
+  padding: 11px 12px 11px 20px;
   background: var(--notes-bg-sidebar);
   border: 1px solid var(--notes-border);
   border-radius: 28px;
-  cursor: pointer;
+  cursor: text;
   transition: all 0.2s ease;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
 }
 
-.dashboardSearchBox:hover {
+.dashboardSearchBox:hover,
+.dashboardSearchBox:focus-within {
   border-color: var(--notes-accent);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
   transform: translateY(-1px);
-}
-
-.dashboardSearchIcon {
-  width: 20px;
-  height: 20px;
-  color: var(--notes-text-muted);
-  margin-right: 12px;
 }
 
 .dashboardSearchInput {
   flex: 1;
   text-align: left;
   font-size: 15px;
+  font-family: inherit;
+  line-height: 24px;
   color: var(--notes-text-primary);
   background: transparent;
   border: none;
   outline: none;
+  resize: none;
+  padding: 4px 0;
+  margin-right: 12px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .dashboardSearchInput::placeholder {
   color: var(--notes-text-muted);
 }
 
-.dashboardSearchShortcut {
+.dashboardSendBtn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: var(--notes-bg-app);
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: var(--notes-accent);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.2s ease;
+}
+
+.dashboardSendBtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dashboardSendBtn:hover {
+  filter: brightness(1.08);
+  transform: scale(1.05);
+}
+
+.dashboardSendBtn:active {
+  transform: scale(0.96);
+}
+
+/* ── 建议提示词 chips ─────────────────────────────── */
+.dashboardPromptChips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dashboardPromptChip {
+  background: transparent;
   border: 1px solid var(--notes-border);
-  border-radius: 8px;
-  color: var(--notes-text-muted);
-  font-size: 12px;
+  border-radius: 16px;
+  padding: 6px 14px;
+  font-size: 13px;
   font-family: inherit;
+  color: var(--notes-text-secondary);
+  cursor: pointer;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+}
+
+.dashboardPromptChip:hover {
+  border-color: var(--notes-accent);
+  color: var(--notes-accent);
+  background: var(--notes-accent-bg);
 }
 
 .dashboardSection {
@@ -4799,12 +4862,15 @@
   }
   
   .dashboardSearchBox {
-    height: 52px;
-    padding: 0 16px;
+    padding: 9px 10px 9px 16px;
   }
-  
+
   .dashboardSearchInput {
     font-size: 16px; /* 防止 iOS Safari 自动放大 */
+  }
+
+  .dashboardPromptChip {
+    max-width: calc(100vw - 80px);
   }
   
   .dashboardRecentGrid {
@@ -4822,6 +4888,34 @@
   max-width: none !important;
   border-left: none !important;
   background: var(--notes-bg-app) !important;
+  animation: assistantPanelEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes assistantPanelEnter {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 首页 → 对话 原地过渡：输入框向下沉向对话输入栏的位置，
+     最近文件先淡出，对话面板再从下方浮入，保持空间连续性 ──── */
+.dashboardExiting {
+  pointer-events: none;
+}
+
+.dashboardExiting .dashboardHero {
+  animation: dashboardHeroExit 0.24s ease-in forwards;
+}
+
+.dashboardExiting .dashboardSection {
+  animation: dashboardSectionExit 0.18s ease forwards;
+}
+
+@keyframes dashboardHeroExit {
+  to { opacity: 0; transform: translateY(120px); }
+}
+
+@keyframes dashboardSectionExit {
+  to { opacity: 0; }
 }
 
 .dashboardChatHeader {

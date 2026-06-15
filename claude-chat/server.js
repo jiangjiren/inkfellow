@@ -40,14 +40,16 @@ const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
 - 定时、每天、每周、每月、每小时、工作日、提醒我、自动
 - X分钟后、X小时后、一会儿、稍后、等会
 - 查看任务、取消任务、删除任务、暂停任务、恢复任务
+- 没收到、没推送、没生效、没执行、为什么没有提醒/推送
 
 可用工具：
-- create_schedule：创建循环或一次性任务
-- list_schedules：查看当前用户的任务
+- create_schedule：创建全局循环或一次性任务
+- list_schedules：查看所有全局任务
 - delete_schedule：删除任务
 - toggle_schedule：暂停或恢复任务
 
 创建规则：
+- 定时任务是全局的，创建后不依赖当前对话会话；sourceChannel/sourcePeer 只用于任务触发后的结果投递。
 - 周期任务使用 kind="cron"，并填写 cronExpr。
 - 一次性任务使用 kind="once"，并填写 runAtMs，runAtMs 是 Unix 毫秒时间戳。
 - timezone 默认使用 Asia/Shanghai。
@@ -112,6 +114,10 @@ const WECHAT_MEDIA_DIR = join(DATA_DIR, `wechat-media-${PORT}`);
 const WECHAT_MAX_INLINE_IMAGE_BYTES = Number.parseInt(process.env.WECHAT_MAX_INLINE_IMAGE_BYTES || String(5 * 1024 * 1024), 10);
 const WECHAT_MAX_MEDIA_BYTES = Number.parseInt(process.env.WECHAT_MAX_MEDIA_BYTES || String(25 * 1024 * 1024), 10);
 mkdirSync(WECHAT_MEDIA_DIR, { recursive: true });
+
+const SCHEDULER_TROUBLESHOOT_RE = /没收到|没有收到|没推送|没有推送|没生效|不生效|未生效|没执行|没有执行|怎么.*没.*推送|怎么.*没.*提醒|有哪些.*任务|任务列表|列出.*任务|查看.*任务|查.*任务/;
+const SCHEDULER_TIME_HINT_RE = /周[一二三四五六日天]|早上|上午|中午|下午|晚上|凌晨|今晚|明天|后天|下周|[0-2]?\d\s*[:：点]\s*(?:[0-5]?\d|半)?/;
+const SCHEDULER_ACTION_HINT_RE = /提醒|推送|通知|复盘|叫我|任务/;
 
 const WECHAT_MESSAGE_ITEM_TYPE = {
   TEXT: 1,
@@ -512,6 +518,20 @@ function saveWechatHistory() {
     const obj = Object.fromEntries(wechatSenderSessions);
     writeFileSync(WECHAT_HISTORY_FILE, JSON.stringify(obj), "utf8");
   } catch { }
+}
+
+function resolveWechatDeliveryPeers(peer) {
+  const primary = String(peer || "").trim();
+  const peers = primary ? [primary] : [];
+  if (!primary || primary.endsWith("@im.wechat")) return peers;
+
+  const stablePeers = [...wechatSenderSessions.keys()]
+    .map(p => String(p || "").trim())
+    .filter(p => p.endsWith("@im.wechat"));
+  if (stablePeers.length === 1 && !peers.includes(stablePeers[0])) {
+    peers.push(stablePeers[0]);
+  }
+  return peers;
 }
 
 // 根据当前激活的账号配置构建 Anthropic SDK 客户端
@@ -1083,17 +1103,19 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
 }
 
 function hasSchedulerIntent(prompt) {
-  return SCHEDULER_INTENT_RE.test(String(prompt || ""));
+  const text = String(prompt || "");
+  return SCHEDULER_INTENT_RE.test(text)
+    || SCHEDULER_TROUBLESHOOT_RE.test(text)
+    || (SCHEDULER_TIME_HINT_RE.test(text) && SCHEDULER_ACTION_HINT_RE.test(text));
 }
 
 function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-  const isCurrentJob = job => job.sourceChannel === sourceChannel && job.sourcePeer === sourcePeer;
 
   const createScheduleTool = tool(
     "create_schedule",
-    "创建定时任务（循环或一次性）。sourceChannel 和 sourcePeer 由系统固定注入，不需要传入。",
+    "创建全局定时任务（循环或一次性）。sourceChannel 和 sourcePeer 仅用于结果投递，由系统固定注入，不需要传入。",
     {
       kind: z.enum(["once", "cron"]).describe("once=一次性任务，cron=循环任务"),
       description: z.string().describe("任务的简短描述，如：每天提醒喝水"),
@@ -1129,11 +1151,21 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
 
   const listSchedulesTool = tool(
     "list_schedules",
-    "列出当前用户的所有定时任务",
+    "列出所有全局定时任务",
     {},
     async () => {
-      const jobs = scheduler.listJobs().filter(isCurrentJob);
-      const summary = jobs.map(j => ({ id: j.id, description: j.description, cronExpr: j.cronExpr || null, runAtMs: j.runAtMs || null, enabled: j.enabled }));
+      const jobs = scheduler.listJobs();
+      const summary = jobs.map(j => ({
+        id: j.id,
+        description: j.description,
+        cronExpr: j.cronExpr || null,
+        runAtMs: j.runAtMs || null,
+        enabled: j.enabled,
+        sourceChannel: j.sourceChannel || null,
+        sourcePeer: j.sourcePeer || null,
+        lastStatus: j.state?.lastStatus || null,
+        lastRunAtMs: j.state?.lastRunAtMs || null,
+      }));
       return { content: [{ type: "text", text: JSON.stringify(summary) }] };
     }
   );
@@ -1144,8 +1176,8 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     { id: z.string().describe("要删除的任务 ID（从 list_schedules 获取）") },
     async ({ id }) => {
       const job = scheduler.listJobs().find(j => j.id === id);
-      if (!job || !isCurrentJob(job)) {
-        return { isError: true, content: [{ type: "text", text: "未找到当前用户可删除的定时任务" }] };
+      if (!job) {
+        return { isError: true, content: [{ type: "text", text: "未找到可删除的定时任务" }] };
       }
       const ok = scheduler.deleteJob(id);
       return { content: [{ type: "text", text: JSON.stringify({ ok, id }) }] };
@@ -1161,8 +1193,8 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     },
     async ({ id, enabled }) => {
       const job = scheduler.listJobs().find(j => j.id === id);
-      if (!job || !isCurrentJob(job)) {
-        return { isError: true, content: [{ type: "text", text: "未找到当前用户可操作的定时任务" }] };
+      if (!job) {
+        return { isError: true, content: [{ type: "text", text: "未找到可操作的定时任务" }] };
       }
       const ok = scheduler.toggleJob(id, enabled);
       return { content: [{ type: "text", text: JSON.stringify({ ok, id, enabled }) }] };
@@ -1345,6 +1377,7 @@ scheduler.init({
   VAULT_PATH: DEFAULT_CWD,
   WECHAT_CONFIG_FILE,
   sendWechatMessage,
+  resolveWechatDeliveryPeers,
   buildAgentEnv,
   getActiveProfile,
   readProfiles,

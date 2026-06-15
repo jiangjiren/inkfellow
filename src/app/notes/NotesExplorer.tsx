@@ -987,6 +987,9 @@ export default function NotesExplorer() {
   const activePathRef = useRef<string | null>(null);
   const noteUpdatedAtRef = useRef<string | null>(null);
   const claudeFrameRef = useRef<HTMLIFrameElement>(null);
+  // iframe 是否已 load 完：load 前 postMessage 会丢，提问先暂存到 pending，就绪后补投
+  const claudeFrameReadyRef = useRef(false);
+  const pendingClaudeAskRef = useRef<string | null>(null);
   const readerRef = useRef<HTMLElement>(null);
   const isSilentReloadRef = useRef(false);
   const syncTocRef = useRef<(() => void) | null>(null);
@@ -2959,7 +2962,27 @@ export default function NotesExplorer() {
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
   const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
-  const isDashboardChatMode = !note && isAssistantPanelOpen && !isMobileViewport && isDashboardChatActive;
+  // 首页 → 对话的退场过渡：仪表盘先做退场动画，再原地展开对话面板
+  const [isDashboardExiting, setIsDashboardExiting] = useState(false);
+  const isDashboardChatMode = !note && isAssistantPanelOpen && isDashboardChatActive && !isMobileViewport;
+  // 移动端从首页提问：对话是主任务，全屏接管而非底部 sheet。
+  // 不依赖 sheet 是否展开，否则关闭下滑动画进行中全屏类被摘掉，面板高度会跳变。
+  const isMobileDashboardChat = !note && isMobileViewport && isDashboardChatActive;
+  // 打开任何笔记即退出「首页对话」语义，避免之后回首页时残留的 active
+  // 标志让面板意外跳回全屏/居中对话模式
+  useEffect(() => {
+    if (activePath) {
+      setIsDashboardChatActive(false);
+    }
+  }, [activePath]);
+  const postAskToClaude = useCallback((text: string) => {
+    const frameWindow = claudeFrameRef.current?.contentWindow;
+    if (claudeFrameReadyRef.current && frameWindow) {
+      frameWindow.postMessage({ type: "note-ask", text }, window.location.origin);
+    } else {
+      pendingClaudeAskRef.current = text;
+    }
+  }, []);
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
   const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantSheet === 'expanded' || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
@@ -3599,7 +3622,7 @@ export default function NotesExplorer() {
 
             {noteState === "ready" && note ? (
               /\.html?$/i.test(note.path) ? (
-                <NotesHtml html={note.content} />
+                <NotesHtml html={note.content} onNavigate={handleMarkdownNavigate} />
               ) : (
                 <div data-markdown-content>
                   <NotesMarkdown
@@ -3619,23 +3642,26 @@ export default function NotesExplorer() {
 
             {treeState === "ready" && files.length > 0 && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
               <NotesDashboard
-                files={files} 
-                onSelectNote={handleSelect} 
+                files={files}
+                exiting={isDashboardExiting}
+                onSelectNote={handleSelect}
                 onAskAI={(query?: string) => {
-                  setIsDashboardChatActive(true);
+                  // 提问先投递（或暂存），让对话面板露出时回显已经就位
+                  if (query) {
+                    postAskToClaude(query);
+                  }
                   if (isMobileViewport) {
                     setMobileSidebarOpen(false);
+                    setIsDashboardChatActive(true);
                     setMobileAssistantSheet('expanded');
-                  } else {
-                    setAssistantPanelVisible(true);
-                  }
-                  if (query) {
-                    setTimeout(() => {
-                      claudeFrameRef.current?.contentWindow?.postMessage(
-                        { type: "note-ask", text: query },
-                        window.location.origin,
-                      );
-                    }, 50);
+                  } else if (!isDashboardExiting) {
+                    // 桌面端不直接切页：仪表盘先退场，再原地展开对话
+                    setIsDashboardExiting(true);
+                    window.setTimeout(() => {
+                      setIsDashboardChatActive(true);
+                      setAssistantPanelVisible(true);
+                      setIsDashboardExiting(false);
+                    }, 240);
                   }
                 }}
                 onQuickCapture={handleQuickCapture}
@@ -3890,12 +3916,12 @@ export default function NotesExplorer() {
 
       <aside
         ref={assistantPanelRef}
-        className={`${styles.assistantPanel} ${!isAssistantPanelOpen ? styles.assistantPanelHidden : ""} ${isDashboardChatMode ? styles.assistantPanelCenter : ""}`}
+        className={`${styles.assistantPanel} ${!isAssistantPanelOpen ? styles.assistantPanelHidden : ""} ${isDashboardChatMode ? styles.assistantPanelCenter : ""} ${isMobileDashboardChat ? styles.assistantPanelFullscreen : ""}`}
         aria-label="辅助面板"
         aria-hidden={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}
         inert={isMobileViewport ? mobileAssistantSheet === 'closed' : !isAssistantPanelOpen}
       >
-        {isMobileViewport && (
+        {isMobileViewport && !isMobileDashboardChat && (
           <button
             type="button"
             className={styles.mobileSheetHandle}
@@ -3936,13 +3962,19 @@ export default function NotesExplorer() {
           </>
         )}
 
-        {isDashboardChatMode && (
+        {(isDashboardChatMode || isMobileDashboardChat) && (
           <header className={styles.dashboardChatHeader}>
             <button
               className={styles.dashboardChatBackBtn}
               onClick={() => {
-                setAssistantPanelVisible(false);
-                setIsDashboardChatActive(false);
+                if (isMobileViewport) {
+                  // 只收起面板，保持全屏几何到下滑动画结束；
+                  // isDashboardChatActive 在打开笔记时统一复位
+                  setMobileAssistantSheet('closed');
+                } else {
+                  setAssistantPanelVisible(false);
+                  setIsDashboardChatActive(false);
+                }
               }}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: "18px", height: "18px" }}>
@@ -3963,6 +3995,7 @@ export default function NotesExplorer() {
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
           onLoad={() => {
+            claudeFrameReadyRef.current = true;
             // Re-send the current note context once the iframe is ready.
             // The useEffect fires when activePath changes, but the iframe may
             // still be loading at that point and miss the message.
@@ -3971,6 +4004,14 @@ export default function NotesExplorer() {
                 { type: "note-context", filePath: activePathRef.current },
                 window.location.origin,
               );
+            }
+            // 首页提问可能早于 iframe 就绪，补投暂存的问题，避免首条提问丢失
+            if (pendingClaudeAskRef.current) {
+              claudeFrameRef.current?.contentWindow?.postMessage(
+                { type: "note-ask", text: pendingClaudeAskRef.current },
+                window.location.origin,
+              );
+              pendingClaudeAskRef.current = null;
             }
           }}
         />

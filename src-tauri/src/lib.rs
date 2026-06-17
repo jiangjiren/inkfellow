@@ -1263,22 +1263,25 @@ fn search_walk(
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
+    let parsed = tauri::Url::parse(&url).map_err(|_| "Invalid URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Only http/https URLs are supported".to_string());
     }
+    let url = parsed.as_str();
+
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", url.as_str()])
+    std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn()
         .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     std::process::Command::new("open")
-        .arg(&url)
+        .arg(url)
         .spawn()
         .map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     std::process::Command::new("xdg-open")
-        .arg(&url)
+        .arg(url)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1402,12 +1405,13 @@ fn wiki_backlink_walk(
             // Extract raw target (before | and before #)
             let target_raw = inner.split('|').next().unwrap_or(inner);
             let target_raw = target_raw.split('#').next().unwrap_or(target_raw).trim();
-            let target = target_raw.to_lowercase();
+            let target = normalize_wiki_target_key(target_raw);
+            let target_for_media = target_raw.to_lowercase();
 
             // Skip media embeds
             let is_media = is_embed
                 && matches!(
-                    Path::new(&target)
+                    Path::new(&target_for_media)
                         .extension()
                         .and_then(|e| e.to_str())
                         .unwrap_or(""),
@@ -1452,6 +1456,17 @@ fn wiki_backlink_walk(
         }
     }
     Ok(())
+}
+
+fn normalize_wiki_target_key(target: &str) -> String {
+    let mut key = target
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_lowercase();
+    if key.ends_with(".md") {
+        key.truncate(key.len() - 3);
+    }
+    key
 }
 
 fn compute_git_status(path: &Path) -> Result<GitStatus, String> {

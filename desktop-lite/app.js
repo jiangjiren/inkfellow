@@ -263,7 +263,45 @@ function placeCaretAtVisibleArea() {
   cm.setCursor(pos);
 }
 
-async function setEditMode(on) {
+function normalizeEditTarget(target) {
+  if (typeof target === "number") return Number.isFinite(target) ? { line: target } : null;
+  if (!target || typeof target !== "object") return null;
+  const line = Number(target.line);
+  if (!Number.isFinite(line)) return null;
+  const normalized = { line };
+  const clientX = Number(target.clientX);
+  if (Number.isFinite(clientX)) normalized.clientX = clientX;
+  return normalized;
+}
+
+function placeCaretAtEditTarget(target) {
+  const cm = state.editor;
+  const normalized = normalizeEditTarget(target);
+  if (!cm || !normalized) return;
+
+  const firstLine = typeof cm.firstLine === "function" ? cm.firstLine() : 0;
+  const lastLine = typeof cm.lastLine === "function" ? cm.lastLine() : firstLine;
+  const line = clamp(Math.round(normalized.line), firstLine, lastLine);
+  let pos = { line, ch: 0 };
+
+  if (Number.isFinite(normalized.clientX) && typeof cm.charCoords === "function" && typeof cm.coordsChar === "function") {
+    try {
+      const lineStart = cm.charCoords({ line, ch: 0 }, "window");
+      const lineHeight = Math.max(1, (lineStart.bottom ?? lineStart.top + 20) - lineStart.top);
+      const nearClick = cm.coordsChar({ left: normalized.clientX, top: lineStart.top + lineHeight / 2 }, "window");
+      const lineText = cm.getLine(line) || "";
+      pos = { line, ch: clamp(nearClick.ch, 0, lineText.length) };
+    } catch {
+      pos = { line, ch: 0 };
+    }
+  }
+
+  cm.setCursor(pos);
+  cm.scrollIntoView(pos, 80);
+  cm.focus();
+}
+
+async function setEditMode(on, target = null) {
   const ratio = getDocScrollRatio();
   await flushPendingSave();
   state.editMode = on;
@@ -274,7 +312,11 @@ async function setEditMode(on) {
   // CodeMirror 初次渲染后高度才稳定，下一帧再校准一次
   requestAnimationFrame(() => {
     applyDocScrollRatio(ratio);
-    placeCaretAtVisibleArea();
+    if (on && target != null && state.editor) {
+      placeCaretAtEditTarget(target);
+    } else {
+      placeCaretAtVisibleArea();
+    }
   });
 }
 
@@ -462,9 +504,68 @@ function desktopWikiHint(cm) {
 }
 
 /* ── Markdown rendering ──────────────────────────── */
-function renderMarkdownContent(md) {
+// Inject data-source-line on top-level block elements so double-click can map back to editor line.
+function sourceTokenSelector(token) {
+  if (token.type === "heading") return `h${token.depth}`;
+  if (token.type === "paragraph") return "p";
+  if (token.type === "list") return token.ordered ? "ol" : "ul";
+  if (token.type === "blockquote") return "blockquote";
+  if (token.type === "code") return "pre";
+  return "";
+}
+
+function injectSourceLineAttrs(html, tokens) {
+  if (typeof document === "undefined") return html;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const elements = Array.from(template.content.children);
+  let elementIndex = 0;
+
+  for (const token of tokens) {
+    const selector = sourceTokenSelector(token);
+    if (!selector || !Number.isFinite(token._sl)) continue;
+    for (; elementIndex < elements.length; elementIndex++) {
+      const el = elements[elementIndex];
+      if (!el.matches(selector)) continue;
+      el.dataset.sourceLine = String(token._sl);
+      el.dataset.sourceEndLine = String(Number.isFinite(token._el) ? token._el : token._sl);
+      elementIndex++;
+      break;
+    }
+  }
+
+  return template.innerHTML;
+}
+
+function renderMarkdownContent(md, options = {}) {
   if (typeof marked === "undefined") return `<pre>${escapeHtml(md)}</pre>`;
-  return marked.parse(md, { breaks: false, gfm: true });
+  const lineOffset = Number.isFinite(options.lineOffset) ? options.lineOffset : 0;
+  const tokens = marked.lexer(md, { breaks: false, gfm: true });
+  let lineNum = 0;
+  for (const tok of tokens) {
+    const raw = tok.raw || "";
+    const visibleRaw = raw.replace(/\n+$/g, "");
+    tok._sl = lineOffset + lineNum;
+    tok._el = lineOffset + lineNum + (visibleRaw.match(/\n/g) || []).length;
+    lineNum += (raw.match(/\n/g) || []).length;
+  }
+  const html = marked.parser(tokens, { breaks: false, gfm: true });
+  return injectSourceLineAttrs(html, tokens);
+}
+
+function previewClickEditTarget(event, block) {
+  const startLine = parseInt(block.dataset.sourceLine, 10);
+  if (!Number.isFinite(startLine)) return null;
+
+  const endLine = parseInt(block.dataset.sourceEndLine, 10);
+  let line = startLine;
+  if (Number.isFinite(endLine) && endLine > startLine) {
+    const rect = block.getBoundingClientRect();
+    const ratio = rect.height > 0 ? clamp((event.clientY - rect.top) / rect.height, 0, 0.999) : 0;
+    line = Math.round(startLine + ratio * (endLine - startLine));
+  }
+
+  return { line, clientX: event.clientX };
 }
 
 const DIFF_FLASH_BLOCK_SELECTOR = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th";
@@ -582,7 +683,7 @@ function flashChangedPreviewBlocks(oldBlockTexts) {
 const TAG_KEYS = new Set(["tags", "tag", "aliases", "alias"]);
 
 function parseFrontMatter(content) {
-  const empty = { data: {}, body: content };
+  const empty = { data: {}, body: content, bodyStartLine: 0 };
   if (!content.startsWith("---")) return empty;
   const firstNewline = content.indexOf("\n");
   if (firstNewline === -1) return empty;
@@ -594,6 +695,9 @@ function parseFrontMatter(content) {
   const yamlContent = rest.slice(0, closingMatch.index);
   const afterClose = rest.slice(closingMatch.index + closingMatch[0].length);
   const body = afterClose.startsWith("\n") ? afterClose.slice(1) : afterClose;
+  const frontMatterText = content.slice(0, firstNewline + 1 + closingMatch.index + closingMatch[0].length);
+  const bodyStartLine =
+    (frontMatterText.match(/\n/g) || []).length + (afterClose.startsWith("\n") ? 1 : 0);
 
   const data = {};
   const lines = yamlContent.split("\n");
@@ -645,7 +749,7 @@ function parseFrontMatter(content) {
     i++;
   }
 
-  return { data, body };
+  return { data, body, bodyStartLine };
 }
 
 function renderFrontMatterPanel(data) {
@@ -847,10 +951,10 @@ function renderDocArea() {
   } else {
     docArea.className = "docArea";
     if (ext === "md") {
-      const { data: frontMatterData, body: markdownBody } = parseFrontMatter(state.activeNote.content);
+      const { data: frontMatterData, body: markdownBody, bodyStartLine } = parseFrontMatter(state.activeNote.content);
       const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
       const processedMd = preprocessWikiLinks(markdownBody);
-      const html = renderMarkdownContent(processedMd);
+      const html = renderMarkdownContent(processedMd, { lineOffset: bodyStartLine });
       docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
       resolveMarkdownImages(state.activeNote.path);
@@ -2534,6 +2638,9 @@ function initKeyboard() {
       if (!qs("dialog-overlay").hidden) {
         qs("dialog-cancel").click();
       }
+      if (state.editMode) {
+        void setEditMode(false);
+      }
     }
   });
 }
@@ -2547,6 +2654,15 @@ function wireEvents() {
   qs("btn-toggle-panel").addEventListener("click", togglePanel);
   qs("btn-close-panel").addEventListener("click", togglePanel);
   qs("btn-toggle-mode").addEventListener("click", () => void setEditMode(!state.editMode));
+
+  qs("doc-area").addEventListener("dblclick", (e) => {
+    if (state.editMode) return;
+    const ext = state.activeNote?.extension;
+    if (!ext || !/^md$/.test(ext)) return;
+    if (e.target.closest("a")) return;
+    const block = e.target.closest("[data-source-line]");
+    void setEditMode(true, block ? previewClickEditTarget(e, block) : null);
+  });
 
   qs("btn-more-menu").addEventListener("click", () => toggleMoreMenu());
   qs("menu-outline").addEventListener("click", () => {

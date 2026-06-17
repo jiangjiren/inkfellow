@@ -703,6 +703,11 @@ export type WikiBacklinkEntry = {
 const WIKI_LINK_RE = /(!?)\[\[([^\]]+)\]\]/g;
 const MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|mp3|wav|ogg|flac|pdf)$/i;
 
+const normalizeWikiTargetKey = (target: string) => {
+  const normalized = target.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  return normalized.endsWith(".md") ? normalized.slice(0, -3) : normalized;
+};
+
 export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBacklinkEntry[]> => {
   const normTarget = sanitizeRelativePath(targetRelPath);
   const vaultRoot = await getVaultRoot();
@@ -763,7 +768,8 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
       const isEmbed = embedBang === "!";
       const targetRaw = inner.split("|")[0].split("#")[0].trim().toLowerCase();
       if (isEmbed && MEDIA_EXT_RE.test(targetRaw)) continue;
-      if (targetRaw !== noteStem && targetRaw !== pathKey) continue;
+      const targetKey = normalizeWikiTargetKey(targetRaw);
+      if (targetKey !== noteStem && targetKey !== pathKey) continue;
 
       const matchStart = match.index;
       const lineStart = clean.lastIndexOf("\n", matchStart - 1) + 1;

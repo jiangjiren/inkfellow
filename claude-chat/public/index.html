@@ -2344,6 +2344,8 @@ function openAuthDialog() {
   authBackdrop.classList.add("open");
   showListView();
   void fetchProfiles();
+  checkClaudeAuth();
+  checkCodexAuth();
   if (typeof checkWechatStatus === "function") {
     stopWechatPolling();
     checkWechatStatus();

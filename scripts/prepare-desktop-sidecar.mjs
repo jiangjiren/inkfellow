@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +17,7 @@ const excludedNames = new Set([
   "session.json",
   "history.json",
   "data",
+  "node_modules",
 ]);
 
 function copyRecursive(from, to) {
@@ -54,17 +56,38 @@ function prepareNodeRuntime() {
   console.log(`[desktop] prepared Node runtime at ${path.relative(root, nodeRuntimeTarget)}`);
 }
 
+function installSidecarDependencies() {
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const hasLockfile = fs.existsSync(path.join(target, "package-lock.json"));
+  const args = hasLockfile ? ["ci", "--omit=dev"] : ["install", "--omit=dev"];
+
+  console.log(`[desktop] installing claude-chat production dependencies: ${npm} ${args.join(" ")}`);
+  const result = spawnSync(npm, args, {
+    cwd: target,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`Failed to install claude-chat production dependencies (exit ${result.status})`);
+  }
+}
+
 if (!fs.existsSync(source)) {
   throw new Error(`claude-chat source not found: ${source}`);
 }
 
-if (!fs.existsSync(path.join(source, "node_modules"))) {
-  console.warn("[desktop] claude-chat/node_modules is missing; run npm.cmd --prefix claude-chat install before packaging.");
+if (!fs.existsSync(path.join(source, "package.json"))) {
+  throw new Error(`claude-chat package.json not found: ${source}`);
 }
 
 prepareNodeRuntime();
 
 fs.rmSync(targetRoot, { recursive: true, force: true });
 copyRecursive(source, target);
+installSidecarDependencies();
 
 console.log(`[desktop] prepared claude-chat sidecar at ${path.relative(root, target)}`);

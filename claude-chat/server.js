@@ -10,7 +10,6 @@ import crypto from "node:crypto";
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import Anthropic from "@anthropic-ai/sdk";
 import * as scheduler from "./scheduler.js";
 import { z } from "zod";
 
@@ -496,7 +495,7 @@ let wechatPollingController = null;
 
 // 每个微信 sender 的对话历史（多轮上下文）
 // 结构 Map<sender, { turns: [{role, content}], lastAt: number }>
-// 使用 Anthropic SDK messages.create() 直接传结构化消息，彻底绕开 thinking signature 问题
+// 微信同样走 Claude Agent SDK query()，确保 cwd 始终是 VAULT_PATH。
 const wechatSenderSessions = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
@@ -532,31 +531,6 @@ function resolveWechatDeliveryPeers(peer) {
     peers.push(stablePeers[0]);
   }
   return peers;
-}
-
-// 根据当前激活的账号配置构建 Anthropic SDK 客户端
-// claude 会员返回 null —— OAuth token 不能直接调 API，需走 query()
-function buildAnthropicClientForWechat(profileData) {
-  const active = getActiveProfile(profileData);
-  const DEFAULT_MODEL = "claude-sonnet-4-6";
-
-  // claude 会员：OAuth token 仅供网页端使用，直接调 API 会触发 429
-  // 返回 null，调用方改走 query() 路径
-  if (!active || active.provider === "claude") return null;
-
-  // 直接 Anthropic API Key
-  if (active.provider === "anthropic") {
-    const model = active.sonnetModel || active.opusModel || DEFAULT_MODEL;
-    return { client: new Anthropic({ apiKey: active.apiKey }), model };
-  }
-
-  // 第三方兼容接口（DeepSeek / OpenRouter / custom）：Bearer token + 自定义 baseURL
-  // 模型名去掉 Claude Code 内部的 ~ 前缀
-  const model = (active.sonnetModel || active.opusModel || DEFAULT_MODEL).replace(/^~/, "");
-  return {
-    client: new Anthropic({ authToken: active.apiKey, baseURL: active.baseUrl }),
-    model,
-  };
 }
 
 function randomWechatUin() {
@@ -984,11 +958,13 @@ function formatWechatMediaSummary(mediaFiles) {
 }
 
 function buildWechatUserContent(prompt, mediaFiles, { includeImageBlocks }) {
-  const supportedImages = mediaFiles.filter(file =>
-    file.kind === "image" &&
-    Object.values(WECHAT_IMAGE_MIME_BY_EXT).includes(file.mime) &&
-    file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES
-  );
+  const supportedImages = includeImageBlocks
+    ? mediaFiles.filter(file =>
+      file.kind === "image" &&
+      Object.values(WECHAT_IMAGE_MIME_BY_EXT).includes(file.mime) &&
+      file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES
+    )
+    : [];
   const imageBlocks = includeImageBlocks
     ? supportedImages.map(file => ({
       type: "image",
@@ -1225,9 +1201,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
 
     const hasScheduler = hasSchedulerIntent(prompt);
-    const sdkClient = buildAnthropicClientForWechat(profileData);
-    const includeImageBlocks = !sdkClient || active?.provider !== "deepseek";
-    const userContent = buildWechatUserContent(prompt, mediaFiles, { includeImageBlocks });
+    const includeImageBlocks = active?.provider !== "deepseek";
     const historyPrompt = summarizeWechatHistoryPrompt(prompt, mediaFiles);
     const wechatSystemPrompt = hasScheduler
       ? `${WECHAT_OUTPUT_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`
@@ -1241,79 +1215,65 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     let wechatStallTimer = null;
     let isWechatStall = false;
     try {
-      if (sdkClient && !hasScheduler) {
-        // ── 有独立 API Key 的 provider（anthropic / deepseek / openrouter）──
-        // 用 Anthropic SDK messages.create()，传结构化消息数组
-        const { client, model } = sdkClient;
-        const messages = [
-          ...history.map(t => ({ role: t.role, content: t.content })),
-          { role: "user", content: userContent },
-        ];
-        console.log(`[WeChat Agent] messages.create (model: ${model}, history: ${history.length} turns)`);
-        const response = await client.messages.create({ model, max_tokens: 4096, system: WECHAT_OUTPUT_PROMPT, messages });
-        // 只取 text 块，过滤掉 thinking / redacted_thinking（不存 signature，不会报错）
-        finalResponse = response.content.filter(b => b.type === "text").map(b => b.text).join("");
-      } else {
-        // ── claude 会员，或需要工具能力的请求：走 Agent SDK query() ──
-        // 不使用 resume（thinking signature 问题），改用文本注入历史
-        const agentEnv = buildAgentEnv(profileData, "medium", null);
-        const wechatCwd = resolveAllowedCwd("");
-        agentEnv.PWD = wechatCwd; // 工作目录与实际 cwd 一致，避免误报为启动目录
-        let fullPrompt = prompt;
-        if (history.length > 0) {
-          const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
-          fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
-        }
-        const agentUserContent = buildWechatUserContent(fullPrompt, mediaFiles, { includeImageBlocks });
-        const extraMcpServers = hasScheduler
-          ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
-          : {};
-        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasScheduler})`);
-        const userMsg = {
-          type: "user",
-          message: { role: "user", content: agentUserContent },
-          parent_tool_use_id: null,
-        };
-        const queryAbortController = new AbortController();
-        const resetWechatStall = () => {
-          clearTimeout(wechatStallTimer);
-          wechatStallTimer = setTimeout(() => {
-            isWechatStall = true;
-            queryAbortController.abort();
-          }, STREAM_STALL_MS);
-        };
-        if (abortSignal.aborted) {
-          queryAbortController.abort();
-        } else {
-          abortSignal.addEventListener("abort", () => queryAbortController.abort(), { once: true });
-        }
-        const generator = query({
-          prompt: (async function* () { yield userMsg; })(),
-          options: {
-            cwd: wechatCwd,
-            permissionMode: "auto",
-            allowDangerouslySkipPermissions: true,
-            includePartialMessages: false,
-            env: agentEnv,
-            abortController: queryAbortController,
-            mcpServers: extraMcpServers,
-            systemPrompt: { type: "preset", preset: "claude_code", append: wechatSystemPrompt },
-            ...(hasScheduler ? {
-              disallowedTools: ["Bash"],
-            } : {}),
-          },
-        });
-        resetWechatStall();
-        for await (const ev of generator) {
-          resetWechatStall();
-          if (ev.type === "assistant") {
-            const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-            if (text) finalResponse = text;
-          }
-          if (ev.type === "result" && ev.subtype === "success" && ev.result) finalResponse = ev.result;
-        }
-        clearTimeout(wechatStallTimer);
+      // 微信对话必须和网页 AI 面板一致走 Agent SDK query()。buildAgentEnv 会把
+      // Anthropic/DeepSeek/OpenRouter/custom profile 转成 Claude Code 兼容环境变量。
+      const agentEnv = buildAgentEnv(profileData, "medium", null);
+      const wechatCwd = resolveAllowedCwd("");
+      agentEnv.PWD = wechatCwd; // 工作目录与实际 cwd 一致，避免误报为启动目录
+      let fullPrompt = prompt;
+      if (history.length > 0) {
+        const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
+        fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
       }
+      const agentUserContent = buildWechatUserContent(fullPrompt, mediaFiles, { includeImageBlocks });
+      const extraMcpServers = hasScheduler
+        ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
+        : {};
+      console.log(`[WeChat Agent] query() via Agent SDK (cwd: ${wechatCwd}, history: ${history.length} turns, scheduler: ${hasScheduler})`);
+      const userMsg = {
+        type: "user",
+        message: { role: "user", content: agentUserContent },
+        parent_tool_use_id: null,
+      };
+      const queryAbortController = new AbortController();
+      const resetWechatStall = () => {
+        clearTimeout(wechatStallTimer);
+        wechatStallTimer = setTimeout(() => {
+          isWechatStall = true;
+          queryAbortController.abort();
+        }, STREAM_STALL_MS);
+      };
+      if (abortSignal.aborted) {
+        queryAbortController.abort();
+      } else {
+        abortSignal.addEventListener("abort", () => queryAbortController.abort(), { once: true });
+      }
+      const generator = query({
+        prompt: (async function* () { yield userMsg; })(),
+        options: {
+          cwd: wechatCwd,
+          permissionMode: "auto",
+          allowDangerouslySkipPermissions: true,
+          includePartialMessages: false,
+          env: agentEnv,
+          abortController: queryAbortController,
+          mcpServers: extraMcpServers,
+          systemPrompt: { type: "preset", preset: "claude_code", append: wechatSystemPrompt },
+          ...(hasScheduler ? {
+            disallowedTools: ["Bash"],
+          } : {}),
+        },
+      });
+      resetWechatStall();
+      for await (const ev of generator) {
+        resetWechatStall();
+        if (ev.type === "assistant") {
+          const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+          if (text) finalResponse = text;
+        }
+        if (ev.type === "result" && ev.subtype === "success" && ev.result) finalResponse = ev.result;
+      }
+      clearTimeout(wechatStallTimer);
     } catch (err) {
       if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
       if (err?.name === "AbortError" && isWechatStall) {

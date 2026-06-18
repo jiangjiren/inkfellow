@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
 import { z } from "zod";
 
@@ -27,6 +28,7 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 // We use event-interval (not total duration) so long but active tasks (multi-tool,
 // compaction, slow thinking) are never killed — only truly frozen streams are.
 const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
+const MAX_AGENT_RUN_MS = 8 * 60_000; // hard cap even if the stream keeps emitting retries/status
 
 const htmlPath   = join(__dirname, "public/index.html");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
@@ -159,10 +161,13 @@ const WECHAT_MIME_BY_EXT = {
   ".zip": "application/zip",
 };
 
+const CODEX_DEFAULT_MODELS = { opusModel: "gpt-5.5", sonnetModel: "gpt-5.4", haikuModel: "gpt-5.4-mini" };
+
 const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
+  codex:      { baseUrl: "",                                    ...CODEX_DEFAULT_MODELS },
 };
 const CLAUDE_COMPAT_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
@@ -197,6 +202,165 @@ function saveSession(id) {
 function clearSession() {
   sessionId = null;
   try { writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: null }), "utf8"); } catch { }
+}
+
+// ── Codex thread persistence ───────────────────────────────
+const CODEX_THREAD_FILE = join(DATA_DIR, `codex-thread-${PORT}.json`);
+let codexThreadId = null;
+try {
+  if (existsSync(CODEX_THREAD_FILE)) {
+    codexThreadId = JSON.parse(readFileSync(CODEX_THREAD_FILE, "utf8")).threadId ?? null;
+    if (codexThreadId) console.log(`Restored codex thread: ${codexThreadId}`);
+  }
+} catch { }
+
+function saveCodexThread(id) {
+  codexThreadId = id;
+  try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: id }), "utf8"); } catch { }
+}
+
+function clearCodexThread() {
+  codexThreadId = null;
+  try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: null }), "utf8"); } catch { }
+}
+
+function clearAllSessions() {
+  clearSession();
+  clearCodexThread();
+}
+
+function setProviderSession(provider, id) {
+  if (provider === "codex") {
+    clearSession();
+    saveCodexThread(id);
+  } else {
+    clearCodexThread();
+    saveSession(id);
+  }
+}
+
+function isPersistedCodexThread(id) {
+  if (!id) return false;
+  const sessionsDir = join(homedir(), ".codex", "sessions");
+  try {
+    return readdirSync(sessionsDir, { recursive: true })
+      .some(entry => {
+        const name = basename(String(entry));
+        return name.startsWith("rollout-") && name.endsWith(`${id}.jsonl`);
+      });
+  } catch {
+    return false;
+  }
+}
+
+function resolveSessionProvider(provider, id) {
+  if (provider === "codex" || provider === "claude") return provider;
+  return isPersistedCodexThread(id) ? "codex" : "claude";
+}
+
+function isCodexAuthAvailable() {
+  const authFile = join(homedir(), ".codex", "auth.json");
+  if (!existsSync(authFile)) return false;
+  try {
+    const auth = JSON.parse(readFileSync(authFile, "utf8"));
+    return !!(auth.tokens?.access_token || auth.OPENAI_API_KEY);
+  } catch { return false; }
+}
+
+function codexSandboxMode(permissionMode) {
+  if (permissionMode === "plan") return "read-only";
+  if (permissionMode === "bypassPermissions") return "danger-full-access";
+  return "workspace-write";
+}
+
+function codexItemText(item) {
+  if (!item) return "";
+  if (typeof item.text === "string") return item.text;
+  if (typeof item.message === "string") return item.message;
+  return "";
+}
+
+function codexToolName(item) {
+  if (!item) return "tool";
+  if (item.type === "command_execution") return "Bash";
+  if (item.type === "mcp_tool_call") return item.tool || "mcp";
+  if (item.type === "web_search") return "web_search";
+  if (item.type === "file_change") return "apply_patch";
+  return item.type || "tool";
+}
+
+function codexToolInput(item) {
+  if (!item) return {};
+  if (item.type === "command_execution") return { command: item.command || "" };
+  if (item.type === "mcp_tool_call") return item.arguments ?? {};
+  if (item.type === "web_search") return { query: item.query || "" };
+  if (item.type === "file_change") return { changes: item.changes || [], status: item.status };
+  if (item.type === "todo_list") return { items: item.items || [] };
+  return item;
+}
+
+function codexContentBlock(item) {
+  if (!item) return null;
+  const raw = item;
+  if (item.type === "agent_message") {
+    const text = codexItemText(item);
+    return text ? { type: "text", text, raw } : null;
+  }
+  if (item.type === "reasoning") {
+    const thinking = codexItemText(item);
+    return thinking ? { type: "thinking", thinking, raw } : null;
+  }
+  if (item.type === "mcp_tool_call") {
+    return {
+      type: "mcp_tool_result",
+      content: item.result?.content ?? item.result ?? item.error ?? null,
+      raw,
+    };
+  }
+  if (item.type === "command_execution") {
+    return {
+      type: "tool_result",
+      content: item.aggregated_output || "",
+      raw,
+    };
+  }
+  if (item.type === "error") {
+    return { type: "codex_error", message: item.message || "Codex item error", raw };
+  }
+  return { type: `codex_${item.type || "item"}`, raw };
+}
+
+function sendCodexItemEvent(send, eventType, item) {
+  if (!item) return;
+  if (eventType === "item.started") {
+    if (item.type === "command_execution" || item.type === "mcp_tool_call" || item.type === "web_search" || item.type === "file_change") {
+      send({
+        type: item.type === "mcp_tool_call" ? "mcp_tool_use" : "server_tool_use",
+        id: item.id ?? "",
+        name: codexToolName(item),
+        server_name: item.server ?? null,
+        input: codexToolInput(item),
+        provider: "codex",
+        raw: item,
+      });
+      return;
+    }
+    if (item.type === "reasoning") {
+      const block = codexContentBlock(item);
+      if (block) send({ type: "assistant", message: { role: "assistant", content: [block] } });
+      return;
+    }
+  }
+  if (eventType === "item.updated") {
+    if (item.type === "command_execution" || item.type === "mcp_tool_call" || item.type === "todo_list") {
+      send({ type: "tool_progress", provider: "codex", itemType: item.type, raw: item });
+    }
+    return;
+  }
+  if (eventType === "item.completed") {
+    const block = codexContentBlock(item);
+    if (block) send({ type: "assistant", message: { role: "assistant", content: [block] } });
+  }
 }
 
 // Locate the Claude Code session JSONL for a given session id. The file lives under
@@ -317,6 +481,9 @@ function migrateOldFormat(old) {
     });
   }
 
+  if (isCodexAuthAvailable()) {
+    profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
+  }
   let activeProfileId = "p_claude";
   if (old.provider === "deepseek") {
     const match = profiles.find(p => p.provider === "deepseek" &&
@@ -334,9 +501,20 @@ function normalizeProfiles(raw) {
   // 旧格式没有 profiles 数组 → 迁移
   if (!Array.isArray(data.profiles)) return migrateOldFormat(data);
 
-  const profiles = data.profiles.map(normalizeProfile).filter(p => p.provider === "claude" || p.apiKey);
+  const profiles = data.profiles.map(normalizeProfile).filter(p =>
+    p.provider === "claude" || p.provider === "codex" || p.apiKey
+  );
   if (!profiles.some(p => p.provider === "claude")) {
     profiles.unshift({ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "" });
+  }
+  // 注入或同步 Codex 会员 profile（强制覆盖模型字段，防止旧数据残留）
+  const existingCodex = profiles.find(p => p.provider === "codex");
+  if (isCodexAuthAvailable()) {
+    if (existingCodex) {
+      Object.assign(existingCodex, CODEX_DEFAULT_MODELS);
+    } else {
+      profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
+    }
   }
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId
@@ -465,28 +643,65 @@ function writeHistory(arr) {
 
 // ── Skills preload ─────────────────────────────────────────
 // Read skill slugs from ~/.claude/skills/ directory (fast, no subprocess needed)
-function loadSkillsFromDisk() {
-  const dirs = [
+function addSkillSlugsFromDir(slugs, dir) {
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (!entry || entry.startsWith(".")) continue;
+      try {
+        // Use lstatSync so broken symlinks are counted (symlink = installed skill)
+        const st = lstatSync(join(dir, entry));
+        if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
+      } catch { /* skip */ }
+    }
+  } catch { /* dir not found */ }
+}
+
+function skillDirsForProvider(provider) {
+  if (provider === "codex") {
+    return [
+      join(homedir(), ".codex", "skills"),
+      join(homedir(), ".codex", "skills", ".system"),
+      join(homedir(), ".agents", "skills"),
+      join(DEFAULT_CWD, ".codex", "skills"),
+      join(DEFAULT_CWD, ".codex", "skills", ".system"),
+      join(DEFAULT_CWD, ".agents", "skills"),
+    ];
+  }
+  return [
     join(homedir(), ".claude", "skills"),
     join(DEFAULT_CWD, ".claude", "skills"),
   ];
+}
+
+function normalizeSkillProvider(provider) {
+  return provider === "codex" ? "codex" : "claude";
+}
+
+function loadSkillsFromDisk(provider = "claude") {
   const slugs = new Set();
-  for (const dir of dirs) {
-    try {
-      for (const entry of readdirSync(dir)) {
-        try {
-          // Use lstatSync so broken symlinks are counted (symlink = installed skill)
-          const st = lstatSync(join(dir, entry));
-          if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
-        } catch { /* skip */ }
-      }
-    } catch { /* dir not found */ }
+  for (const dir of skillDirsForProvider(normalizeSkillProvider(provider))) {
+    addSkillSlugsFromDir(slugs, dir);
   }
   return [...slugs].sort();
 }
 
-let cachedSkills = loadSkillsFromDisk();
-console.log(`Loaded ${cachedSkills.length} skills from disk`);
+const cachedSkillsByProvider = {
+  claude: loadSkillsFromDisk("claude"),
+  codex: loadSkillsFromDisk("codex"),
+};
+console.log(`Loaded ${cachedSkillsByProvider.claude.length} Claude skills and ${cachedSkillsByProvider.codex.length} Codex skills from disk`);
+
+function skillsForProvider(provider) {
+  const key = normalizeSkillProvider(provider);
+  cachedSkillsByProvider[key] = loadSkillsFromDisk(key);
+  return cachedSkillsByProvider[key];
+}
+
+function sendSkillInit(send, provider) {
+  const key = normalizeSkillProvider(provider);
+  const skills = skillsForProvider(key);
+  send({ type: "system", subtype: "init", provider: key, skills, slash_commands: skills });
+}
 
 
 // ── WeChat Bot In-Memory Session & Live Poller Loop ──────────
@@ -1552,6 +1767,12 @@ const http = createServer((req, res) => {
   // ── Claude subscription auth status ──────────────────────────
   // Run `claude auth status` — the only reliable way to check login state,
   // since credentials may be stored in the system keychain rather than a file.
+  if (url === "/api/health/codex-auth" && method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ authenticated: isCodexAuthAvailable() }));
+    return;
+  }
+
   if (url === "/api/health/claude-auth" && method === "GET") {
     let stdout = "";
     let stderr = "";
@@ -1601,6 +1822,11 @@ const http = createServer((req, res) => {
         } else if (payload.action === "add") {
           // 新增账号
           const profile = normalizeProfile(payload.profile ?? {});
+          if (profile.provider === "codex") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Codex 会员账号由本机登录状态自动管理，不能手动添加" }));
+            return;
+          }
           if (profile.provider !== "claude" && !profile.apiKey) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
@@ -1622,6 +1848,11 @@ const http = createServer((req, res) => {
             res.end(JSON.stringify({ error: "账号不存在" }));
             return;
           }
+          if (target.provider === "codex") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Codex 会员账号由本机登录状态自动管理，不能编辑" }));
+            return;
+          }
           const updated = normalizeProfile({ ...target, ...payload.profile, id: target.id, provider: target.provider });
           if (updated.provider !== "claude" && !updated.apiKey) {
             res.writeHead(400, { "Content-Type": "application/json" });
@@ -1639,7 +1870,7 @@ const http = createServer((req, res) => {
           // 删除账号（不能删 Claude 会员 / 不能删到空）
           const id = String(payload.profileId ?? "");
           const target = current.profiles.find(p => p.id === id);
-          if (!target || target.provider === "claude") {
+          if (!target || target.provider === "claude" || target.provider === "codex") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "该账号不能删除" }));
             return;
@@ -1658,7 +1889,7 @@ const http = createServer((req, res) => {
 
         const changed = JSON.stringify(current) !== JSON.stringify(next);
         writeProfiles(next);
-        if (changed) clearSession();
+        if (changed) clearAllSessions();
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, resetSession: changed, data: toPublicProfiles(next) }));
@@ -1742,26 +1973,42 @@ const wss = new WebSocketServer({ server: http });
 
 wss.on("connection", (ws) => {
   let abortCtrl = null;
-  // Reload skills from disk on each connection so newly installed skills appear immediately
-  const freshSkills = loadSkillsFromDisk();
-  if (freshSkills.length > 0) cachedSkills = freshSkills;
-  ws.send(JSON.stringify({ type: "system", subtype: "init", skills: cachedSkills, slash_commands: cachedSkills }));
 
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
+  // Send the persisted default first; the browser sends a profile-specific refresh
+  // after it loads its local activeProfileId.
+  sendSkillInit(send, getActiveProfile(readProfiles())?.provider);
+
   ws.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
+    if (msg.type === "skills") {
+      const profileData = readProfiles();
+      if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
+        profileData.activeProfileId = msg.profileId;
+      }
+      const activeProfile = getActiveProfile(profileData);
+      sendSkillInit(send, activeProfile?.provider ?? msg.provider);
+      return;
+    }
+
     if (msg.reset) {
-      clearSession();
+      clearAllSessions();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       return;
     }
 
-    if (msg.setSession != null) { saveSession(String(msg.setSession)); return; }
+    if (msg.setSession != null) {
+      const id = String(msg.setSession);
+      const provider = resolveSessionProvider(msg.sessionProvider, id);
+      setProviderSession(provider, id);
+      send({ type: "session", sessionId: id, provider });
+      return;
+    }
 
     if (msg.stop) {
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
@@ -1804,8 +2051,20 @@ wss.on("connection", (ws) => {
     }
     const activeProfile = getActiveProfile(profileData);
 
-    if (activeProfile && activeProfile.provider !== "claude" && !activeProfile.apiKey) {
+    if (activeProfile && activeProfile.provider !== "claude" && activeProfile.provider !== "codex" && !activeProfile.apiKey) {
       send({ type: "error", text: `${activeProfile.name} 的 API Key 还没有配置，请先在账号设置里保存。` });
+      send({ type: "done" });
+      abortCtrl = null;
+      return;
+    }
+    if (activeProfile?.provider === "codex" && !isCodexAuthAvailable()) {
+      send({ type: "error", text: "Codex 还没有登录，请先打开 Codex 客户端或运行 codex login 完成 ChatGPT 账号登录。" });
+      send({ type: "done" });
+      abortCtrl = null;
+      return;
+    }
+    if (activeProfile?.provider === "codex" && schedulerRequest) {
+      send({ type: "error", text: "定时任务目前需要 Claude 会员通道的 scheduler 工具。请切换到 Claude 会员后再创建、查看或修改提醒任务。" });
       send({ type: "done" });
       abortCtrl = null;
       return;
@@ -1839,6 +2098,104 @@ wss.on("connection", (ws) => {
       if (msg.model) options.model = msg.model;
     }
 
+    // ── Codex SDK 路径 ────────────────────────────────────────
+    if (activeProfile?.provider === "codex") {
+      (async () => {
+        let stallTimer = null;
+        let isTimeoutAbort = false;
+        const tempImagePaths = [];
+        const resetStall = () => {
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(() => {
+            isTimeoutAbort = true;
+            ac.abort();
+          }, STREAM_STALL_MS);
+        };
+        const hardTimer = setTimeout(() => {
+          isTimeoutAbort = true;
+          ac.abort();
+        }, MAX_AGENT_RUN_MS);
+        try {
+          const codex = new Codex();
+          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+          const threadOptions = {
+            workingDirectory: resolvedCwd,
+            skipGitRepoCheck: true,
+            approvalPolicy: "never",
+            sandboxMode: codexSandboxMode(permissionMode),
+            modelReasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
+            ...(msg.model ? { model: msg.model } : {}),
+          };
+          const thread = codexThreadId
+            ? codex.resumeThread(codexThreadId, threadOptions)
+            : codex.startThread(threadOptions);
+
+          // 图片：base64 → 临时本地文件（codex-sdk 只支持 local_image）
+          const imgList = msg.images ?? (msg.image ? [msg.image] : []);
+          let input;
+          if (imgList.length > 0) {
+            const parts = [];
+            for (const img of imgList) {
+              const subtype = (img.mediaType || "image/png").split("/")[1] || "png";
+              const ext = subtype.toLowerCase().split(/[;+]/)[0].replace(/[^a-z0-9]/g, "").slice(0, 12) || "png";
+              const tmpPath = join(DATA_DIR, `codex-img-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.${ext}`);
+              writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+              tempImagePaths.push(tmpPath);
+              parts.push({ type: "local_image", path: tmpPath });
+            }
+            parts.push({ type: "text", text: msg.prompt });
+            input = parts;
+          } else {
+            input = msg.prompt;
+          }
+
+          resetStall();
+          const { events } = await thread.runStreamed(input, { signal: ac.signal });
+          let codexResultSent = false;
+          for await (const ev of events) {
+            resetStall();
+            if (ev.type === "thread.started") {
+              saveCodexThread(ev.thread_id);
+              send({ type: "session", sessionId: ev.thread_id, provider: "codex" });
+            } else if (ev.type === "turn.started") {
+              send({ type: "system", subtype: "status", status: "requesting" });
+            } else if (ev.type === "item.started" || ev.type === "item.updated" || ev.type === "item.completed") {
+              sendCodexItemEvent(send, ev.type, ev.item);
+            } else if (ev.type === "turn.completed") {
+              send({ type: "result", subtype: "success", usage: ev.usage ?? null, provider: "codex" });
+              codexResultSent = true;
+            } else if (ev.type === "turn.failed") {
+              throw new Error(ev.error?.message || "Codex 请求失败");
+            } else if (ev.type === "error") {
+              throw new Error(ev.message || "Codex 请求失败");
+            }
+          }
+          if (!codexResultSent) send({ type: "result", subtype: "success", provider: "codex" });
+          send({ type: "done" });
+        } catch (err) {
+          if (err?.name === "AbortError") {
+            if (isTimeoutAbort) {
+              send({ type: "error", text: "Codex 响应超时，请稍后重新发送消息。" });
+              send({ type: "done" });
+            } else {
+              send({ type: "stopped" });
+            }
+          } else {
+            send({ type: "error", text: String(err) });
+            send({ type: "done" });
+          }
+        } finally {
+          clearTimeout(stallTimer);
+          clearTimeout(hardTimer);
+          for (const tempPath of tempImagePaths) {
+            try { unlinkSync(tempPath); } catch { }
+          }
+          if (abortCtrl === ac) abortCtrl = null;
+        }
+      })();
+      return;
+    }
+
     (async () => {
       let stallTimer = null;
       let isStallAbort = false;
@@ -1849,8 +2206,7 @@ wss.on("connection", (ws) => {
       };
       // Hard cap: api_retry loops reset the stall timer indefinitely; this ensures
       // the request always terminates even when the SDK retries for minutes on end.
-      const MAX_QUERY_MS = 8 * 60_000;
-      const hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_QUERY_MS);
+      const hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
 
       // Run one query() to completion, forwarding all events to the client.
       const runQuery = async (promptMsg, queryOptions) => {
@@ -1864,12 +2220,12 @@ wss.on("connection", (ws) => {
           if (!(ev.type === "system" && ev.subtype === "api_retry")) resetStall();
           if (ev.type === "system" && ev.subtype === "init") {
             saveSession(ev.session_id);
-            send({ type: "session", sessionId: ev.session_id });
+            send({ type: "session", sessionId: ev.session_id, provider: "claude" });
             // ev.skills = skill slugs only; ev.slash_commands = skills + built-in names
             const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
               ? ev.skills
               : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
-            if (skillsFromSdk.length > 0) cachedSkills = skillsFromSdk; // keep cache fresh
+            if (skillsFromSdk.length > 0) cachedSkillsByProvider["claude"] = skillsFromSdk; // keep cache fresh
             send({
               type: "system",
               subtype: "init",

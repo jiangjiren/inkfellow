@@ -2001,6 +2001,13 @@ export default function NotesExplorer() {
     setIsEditing(false);
   }, [isEditing, isDirty, handleSave, handleEditStart]);
 
+  /** 双击正文进入编辑模式（点链接/交互元素时不触发；.html 笔记不可编辑） */
+  const handleReaderDoubleClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
+    if (isEditing || !note || /\.html?$/i.test(note.path)) return;
+    if ((e.target as HTMLElement).closest("a, button, input, textarea, select, [contenteditable]")) return;
+    handleEditStart();
+  }, [isEditing, note, handleEditStart]);
+
   /** 切换笔记前自动保存未提交的修改 */
   const flushEditBeforeSwitch = useCallback(async () => {
     if (skipNextFlushRef.current) {
@@ -3290,7 +3297,7 @@ export default function NotesExplorer() {
         </div>
       </div>
 
-      <section className={`${styles.reader} ${isDashboardChatMode ? styles.readerHidden : ""} ${isDesktopGitView ? styles.readerGitMode : ""}`} ref={readerRef}>
+      <section className={`${styles.reader} ${isDashboardChatMode ? styles.readerHidden : ""} ${isDesktopGitView ? styles.readerGitMode : ""}`} ref={readerRef} onDoubleClick={handleReaderDoubleClick}>
         <header className={`${styles.readerHeader} ${isScrolled ? styles.readerHeaderScrolled : ""}`}>
           <div className={styles.readerActions}>
             <button
@@ -3559,6 +3566,7 @@ export default function NotesExplorer() {
               ref={editorFocusRef}
               value={editContent}
               onChange={handleEditorChange}
+              onExit={handleEditToggle}
               noteNames={noteNames}
               onReady={() => {
                 setEditorMinHeight(0);

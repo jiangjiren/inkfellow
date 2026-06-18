@@ -15,6 +15,8 @@ interface NotesEditorProps {
   value: string;
   onChange: (value: string) => void;
   onReady?: () => void;
+  /** 在编辑器内按 Esc 时触发（退出编辑模式）；补全弹窗打开时 Esc 仍优先关弹窗 */
+  onExit?: () => void;
   noteNames?: string[];
 }
 
@@ -49,15 +51,17 @@ function makeWikiHint(noteNames: string[]) {
 }
 
 const NotesEditor = forwardRef<NotesEditorHandle, NotesEditorProps>(
-  function NotesEditor({ value, onChange, onReady, noteNames = [] }, ref) {
+  function NotesEditor({ value, onChange, onReady, onExit, noteNames = [] }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const cmRef        = useRef<any>(null);
     const onChangeRef  = useRef(onChange);
     const onReadyRef   = useRef(onReady);
+    const onExitRef    = useRef(onExit);
     const noteNamesRef = useRef(noteNames);
 
     useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
     useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+    useEffect(() => { onExitRef.current = onExit; }, [onExit]);
     useEffect(() => { noteNamesRef.current = noteNames; }, [noteNames]);
 
     // 向父组件暴露 focus()
@@ -84,6 +88,9 @@ const NotesEditor = forwardRef<NotesEditorHandle, NotesEditorProps>(
         extraKeys: {
           "Enter": "newlineAndIndentContinueMarkdownList",
           "Ctrl-Space": (instance: any) => instance.showHint({ completeSingle: false }),
+          // 补全弹窗打开时让 show-hint 先吃掉 Esc（关弹窗）；否则退出编辑模式
+          "Esc": (instance: any) =>
+            instance.state.completionActive ? (CodeMirror as any).Pass : onExitRef.current?.(),
         },
         hintOptions: {
           completeSingle: false,

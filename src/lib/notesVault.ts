@@ -509,6 +509,7 @@ export const updateMarkdownNote = async (relativePath: string, content: string) 
     content,
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
+    aliases: extractFrontMatterAliases(content),
   };
 };
 
@@ -542,7 +543,254 @@ export const createMarkdownNote = async (relativePath: string, content = "") => 
     content,
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
+    aliases: extractFrontMatterAliases(content),
   };
+};
+
+const stripMarkdownExtension = (value: string) => value.replace(/\.md$/i, "");
+
+const transformOutsideInlineCode = (
+  content: string,
+  transform: (plainText: string) => string,
+) => {
+  const openerPattern = /`+/g;
+  let cursor = 0;
+  let output = "";
+  let opener: RegExpExecArray | null;
+
+  while ((opener = openerPattern.exec(content)) !== null) {
+    const closeIndex = content.indexOf(opener[0], opener.index + opener[0].length);
+    if (closeIndex === -1 || content.slice(opener.index, closeIndex).includes("\n")) break;
+    output += transform(content.slice(cursor, opener.index));
+    output += content.slice(opener.index, closeIndex + opener[0].length);
+    cursor = closeIndex + opener[0].length;
+    openerPattern.lastIndex = cursor;
+  }
+
+  return output + transform(content.slice(cursor));
+};
+
+const maskInlineCode = (content: string) => {
+  const openerPattern = /`+/g;
+  let cursor = 0;
+  let output = "";
+  let opener: RegExpExecArray | null;
+
+  while ((opener = openerPattern.exec(content)) !== null) {
+    const closeIndex = content.indexOf(opener[0], opener.index + opener[0].length);
+    if (closeIndex === -1 || content.slice(opener.index, closeIndex).includes("\n")) break;
+    output += content.slice(cursor, opener.index);
+    output += content
+      .slice(opener.index, closeIndex + opener[0].length)
+      .replace(/[^\n]/g, " ");
+    cursor = closeIndex + opener[0].length;
+    openerPattern.lastIndex = cursor;
+  }
+
+  return output + content.slice(cursor);
+};
+
+const rewriteWikiLinksForRename = (
+  content: string,
+  sourceOldPath: string,
+  sourceCurrentPath: string,
+  oldPath: string,
+  nextPath: string,
+  kind: "file" | "folder",
+  oldFilePaths: string[],
+) => {
+  const oldPathKey = stripMarkdownExtension(oldPath).toLocaleLowerCase();
+  const oldBasename = path.posix.basename(oldPathKey);
+  const basenameMatches = oldFilePaths.filter(
+    (candidate) => path.posix.basename(stripMarkdownExtension(candidate)).toLocaleLowerCase() === oldBasename,
+  );
+  const oldFilePathSet = new Set(oldFilePaths.map((candidate) => candidate.toLocaleLowerCase()));
+  const sourceOldDirectory = path.posix.dirname(sourceOldPath);
+  const sourceCurrentDirectory = path.posix.dirname(sourceCurrentPath);
+  let changed = false;
+
+  const mapWikiResolvedPath = (resolved: string) => {
+    const normalized = stripMarkdownExtension(resolved).replace(/^\/+/, "");
+    const normalizedLower = normalized.toLocaleLowerCase();
+    if (kind === "file") {
+      return normalizedLower === oldPathKey ? stripMarkdownExtension(nextPath) : null;
+    }
+    const oldFolder = oldPath.replace(/\/+$/, "");
+    const oldFolderLower = oldFolder.toLocaleLowerCase();
+    if (normalizedLower === oldFolderLower) return nextPath;
+    if (!normalizedLower.startsWith(`${oldFolderLower}/`)) return null;
+    return `${nextPath}${normalized.slice(oldFolder.length)}`;
+  };
+
+  const mapFilePath = (resolved: string) => {
+    const normalized = path.posix.normalize(resolved.replace(/^\/+/, ""));
+    const normalizedLower = normalized.toLocaleLowerCase();
+    if (kind === "file") {
+      return normalizedLower === oldPath.toLocaleLowerCase() ? nextPath : null;
+    }
+    const oldFolder = oldPath.replace(/\/+$/, "");
+    const oldFolderLower = oldFolder.toLocaleLowerCase();
+    if (normalizedLower === oldFolderLower) return nextPath;
+    if (!normalizedLower.startsWith(`${oldFolderLower}/`)) return null;
+    return `${nextPath}${normalized.slice(oldFolder.length)}`;
+  };
+
+  const rewriteWikiLinks = (part: string) =>
+    part.replace(WIKI_LINK_RE, (match, embed: string, inner: string) => {
+      const pipeIndex = inner.indexOf("|");
+      const coreWithFragment = pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner;
+      const aliasSuffix = pipeIndex >= 0 ? inner.slice(pipeIndex) : "";
+      const hashIndex = coreWithFragment.indexOf("#");
+      const rawTarget = (hashIndex >= 0 ? coreWithFragment.slice(0, hashIndex) : coreWithFragment).trim();
+      const fragmentSuffix = hashIndex >= 0 ? coreWithFragment.slice(hashIndex) : "";
+      if (!rawTarget) return match;
+
+      const decodedTarget = decodeLoose(rawTarget).replace(/\\/g, "/").replace(/^\/+/, "");
+      const targetWithoutExt = stripMarkdownExtension(decodedTarget);
+      const candidates = [
+        targetWithoutExt,
+        path.posix.normalize(
+          path.posix.join(sourceOldDirectory === "." ? "" : sourceOldDirectory, targetWithoutExt),
+        ),
+      ];
+      if (!targetWithoutExt.includes("/") && basenameMatches.length === 1) {
+        candidates.push(stripMarkdownExtension(basenameMatches[0]));
+      }
+
+      let mapped: string | null = null;
+      for (const candidate of candidates) {
+        mapped = mapWikiResolvedPath(candidate);
+        if (mapped) break;
+      }
+      if (!mapped) return match;
+
+      const usedPath = decodedTarget.includes("/") || kind === "folder";
+      const nextTargetBase = usedPath ? mapped : path.posix.basename(mapped);
+      const mappedMarkdownFile = kind === "file"
+        ? /\.md$/i.test(nextPath)
+        : /\.md$/i.test(rawTarget);
+      const nextTarget = mappedMarkdownFile && /\.md$/i.test(rawTarget)
+        ? `${stripMarkdownExtension(nextTargetBase)}.md`
+        : nextTargetBase;
+      changed = true;
+      return `${embed}[[${nextTarget}${fragmentSuffix}${aliasSuffix}]]`;
+    });
+
+  const rewriteMarkdownLinks = (part: string) =>
+    part.replace(
+      /(?<!!)(\[[^\]]*\]\()(<[^>\n]+>|[^)\s]+)(\s+(?:"[^"]*"|'[^']*'))?(\))/g,
+      (
+        match,
+        prefix: string,
+        rawDestination: string,
+        titleSuffix = "",
+        close: string,
+      ) => {
+        const wrapped = rawDestination.startsWith("<") && rawDestination.endsWith(">");
+        const href = wrapped ? rawDestination.slice(1, -1) : rawDestination;
+        if (!href || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
+          return match;
+        }
+
+        const suffixIndexCandidates = [href.indexOf("#"), href.indexOf("?")].filter((index) => index >= 0);
+        const suffixIndex = suffixIndexCandidates.length > 0 ? Math.min(...suffixIndexCandidates) : -1;
+        const rawTarget = suffixIndex >= 0 ? href.slice(0, suffixIndex) : href;
+        const hrefSuffix = suffixIndex >= 0 ? href.slice(suffixIndex) : "";
+        const decodedTarget = decodeLoose(rawTarget).replace(/\\/g, "/");
+        const rootRelative = decodedTarget.startsWith("/");
+        const resolvedOldTarget = path.posix.normalize(
+          rootRelative
+            ? decodedTarget.replace(/^\/+/, "")
+            : path.posix.join(
+                sourceOldDirectory === "." ? "" : sourceOldDirectory,
+                decodedTarget,
+              ),
+        );
+
+        if (!oldFilePathSet.has(resolvedOldTarget.toLocaleLowerCase())) return match;
+        const mappedTarget = mapFilePath(resolvedOldTarget) ?? resolvedOldTarget;
+        const sourceMoved = sourceOldDirectory !== sourceCurrentDirectory;
+        if (!sourceMoved && mappedTarget === resolvedOldTarget) return match;
+
+        let nextTarget = rootRelative
+          ? `/${mappedTarget}`
+          : path.posix.relative(
+              sourceCurrentDirectory === "." ? "" : sourceCurrentDirectory,
+              mappedTarget,
+            );
+        if (!nextTarget) nextTarget = path.posix.basename(mappedTarget);
+        if (!rootRelative && decodedTarget.startsWith("./") && !nextTarget.startsWith(".")) {
+          nextTarget = `./${nextTarget}`;
+        }
+        nextTarget = wrapped
+          ? nextTarget.replace(/#/g, "%23").replace(/\?/g, "%3F")
+          : encodeURI(nextTarget).replace(/#/g, "%23").replace(/\?/g, "%3F");
+
+        const destination = wrapped ? `<${nextTarget}${hrefSuffix}>` : `${nextTarget}${hrefSuffix}`;
+        if (destination === rawDestination) return match;
+        changed = true;
+        return `${prefix}${destination}${titleSuffix}${close}`;
+      },
+    );
+
+  const rewritePart = (part: string) =>
+    transformOutsideInlineCode(part, (plainText) =>
+      rewriteMarkdownLinks(rewriteWikiLinks(plainText)));
+
+  const fencedBlockPattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+  const nextContent = content
+    .split(fencedBlockPattern)
+    .map((part, index) => index % 2 === 1 ? part : rewritePart(part))
+    .join("");
+  return { content: nextContent, changed };
+};
+
+const updateWikiLinksAfterRename = async (
+  vaultRoot: string,
+  oldPath: string,
+  nextPath: string,
+  kind: "file" | "folder",
+  oldFilePaths: string[],
+) => {
+  const tree = await walkDirectory(vaultRoot, "");
+  const currentMarkdownPaths: string[] = [];
+  const collect = (node: NotesTreeNode) => {
+    if (node.type === "file" && /\.md$/i.test(node.path)) {
+      currentMarkdownPaths.push(node.path);
+    } else if (node.type === "directory") {
+      for (const child of node.children) collect(child);
+    }
+  };
+  collect(tree);
+
+  let updatedFiles = 0;
+  for (const currentPath of currentMarkdownPaths) {
+    const sourceOldPath = kind === "folder" && currentPath.startsWith(`${nextPath}/`)
+      ? `${oldPath}${currentPath.slice(nextPath.length)}`
+      : currentPath === nextPath
+        ? oldPath
+        : currentPath;
+    const absolutePath = path.join(vaultRoot, currentPath.replace(/\//g, path.sep));
+    try {
+      const content = await fs.readFile(absolutePath, "utf8");
+      const rewritten = rewriteWikiLinksForRename(
+        content,
+        sourceOldPath,
+        currentPath,
+        oldPath,
+        nextPath,
+        kind,
+        oldFilePaths,
+      );
+      if (rewritten.changed) {
+        await fs.writeFile(absolutePath, rewritten.content, "utf8");
+        updatedFiles++;
+      }
+    } catch {
+      // A broken/unreadable note should not roll back an otherwise successful rename.
+    }
+  }
+  return updatedFiles;
 };
 
 export const renameVaultEntry = async (
@@ -585,12 +833,31 @@ export const renameVaultEntry = async (
     if (err instanceof VaultAccessError) throw err;
   }
 
+  const oldTree = await walkDirectory(vaultRoot, "");
+  const oldFilePaths: string[] = [];
+  const collectOldFiles = (node: NotesTreeNode) => {
+    if (node.type === "file") {
+      oldFilePaths.push(node.path);
+    } else if (node.type === "directory") {
+      for (const child of node.children) collectOldFiles(child);
+    }
+  };
+  collectOldFiles(oldTree);
+
   await fs.rename(absolutePath, nextAbsolutePath);
+  const updatedLinks = await updateWikiLinksAfterRename(
+    vaultRoot,
+    resolvedPath,
+    nextRelativePath,
+    actualKind,
+    oldFilePaths,
+  );
   return {
     oldPath: resolvedPath,
     path: nextRelativePath,
     name: cleanName,
     kind: actualKind,
+    updatedLinks,
   };
 };
 
@@ -700,12 +967,85 @@ export type WikiBacklinkEntry = {
   context: string;
 };
 
+export type WikiIndexEntry = {
+  path: string;
+  aliases: string[];
+};
+
 const WIKI_LINK_RE = /(!?)\[\[([^\]]+)\]\]/g;
 const MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|mp3|wav|ogg|flac|pdf)$/i;
 
 const normalizeWikiTargetKey = (target: string) => {
   const normalized = target.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
   return normalized.endsWith(".md") ? normalized.slice(0, -3) : normalized;
+};
+
+const extractFrontMatterAliases = (content: string): string[] => {
+  if (!content.startsWith("---")) return [];
+  const firstNewline = content.indexOf("\n");
+  if (firstNewline === -1) return [];
+  const rest = content.slice(firstNewline + 1);
+  const closing = /^---[ \t]*\r?$/m.exec(rest);
+  if (!closing || closing.index === undefined) return [];
+  const frontMatter = rest.slice(0, closing.index);
+  const lines = frontMatter.split("\n");
+  const aliases: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^\s*(aliases?|别名)\s*:\s*(.*)$/i);
+    if (!match) continue;
+    const inline = match[2].trim();
+    if (inline.startsWith("[") && inline.endsWith("]")) {
+      aliases.push(...inline.slice(1, -1).split(","));
+      continue;
+    }
+    if (inline) {
+      aliases.push(inline);
+      continue;
+    }
+    while (i + 1 < lines.length && /^\s+-\s+/.test(lines[i + 1])) {
+      aliases.push(lines[++i].replace(/^\s+-\s+/, ""));
+    }
+  }
+
+  return [...new Set(aliases
+    .map((alias) => alias.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean))];
+};
+
+export const getWikiIndex = async (): Promise<WikiIndexEntry[]> => {
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  const markdownPaths: string[] = [];
+  const collectMarkdown = (node: NotesTreeNode) => {
+    if (node.type === "file" && /\.md$/i.test(node.path)) {
+      markdownPaths.push(node.path);
+    } else if (node.type === "directory") {
+      for (const child of node.children) collectMarkdown(child);
+    }
+  };
+  collectMarkdown(tree);
+
+  // 限制并发，避免大型 vault 同时打开成千上万文件触发 EMFILE。此函数会在文件树
+  // 每次变化时被调用，无上限的 Promise.all 在小内存机上风险尤其高。
+  const entries: WikiIndexEntry[] = new Array(markdownPaths.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < markdownPaths.length) {
+      const index = cursor++;
+      const notePath = markdownPaths[index];
+      try {
+        const content = await fs.readFile(path.join(vaultRoot, notePath.replace(/\//g, path.sep)), "utf8");
+        entries[index] = { path: notePath, aliases: extractFrontMatterAliases(content) };
+      } catch {
+        entries[index] = { path: notePath, aliases: [] };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(16, markdownPaths.length) }, () => worker()),
+  );
+  return entries;
 };
 
 export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBacklinkEntry[]> => {
@@ -715,7 +1055,7 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
 
   const allMdPaths: string[] = [];
   const collectMd = (node: NotesTreeNode) => {
-    if (node.type === "file" && node.path.endsWith(".md")) {
+    if (node.type === "file" && /\.md$/i.test(node.path)) {
       allMdPaths.push(node.path);
     } else if (node.type === "directory") {
       for (const child of node.children) collectMd(child);
@@ -727,6 +1067,10 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
   const pathKey = normTarget.toLowerCase().endsWith(".md")
     ? normTarget.toLowerCase().slice(0, -3)
     : normTarget.toLowerCase();
+  const targetAliases = await fs.readFile(path.join(vaultRoot, normTarget.replace(/\//g, path.sep)), "utf8")
+    .then(extractFrontMatterAliases)
+    .catch(() => []);
+  const targetKeys = new Set([noteStem, pathKey, ...targetAliases.map(normalizeWikiTargetKey)]);
 
   const results: WikiBacklinkEntry[] = [];
 
@@ -759,29 +1103,55 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
         }
       }
     }
-    const clean = lines.map((line, i) => (codeLineSet.has(i) ? "" : line)).join("\n") + "\n";
+    const clean = maskInlineCode(
+      lines.map((line, i) => (codeLineSet.has(i) ? "" : line)).join("\n") + "\n",
+    );
+    const contextForIndex = (matchStart: number) => {
+      const lineStart = clean.lastIndexOf("\n", matchStart - 1) + 1;
+      const lineEnd = clean.indexOf("\n", matchStart);
+      return clean.slice(lineStart, lineEnd === -1 ? clean.length : lineEnd).trim().slice(0, 120);
+    };
 
     WIKI_LINK_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
+    let foundContext: string | null = null;
     while ((match = WIKI_LINK_RE.exec(clean)) !== null) {
       const [, embedBang, inner] = match;
       const isEmbed = embedBang === "!";
       const targetRaw = inner.split("|")[0].split("#")[0].trim().toLowerCase();
       if (isEmbed && MEDIA_EXT_RE.test(targetRaw)) continue;
       const targetKey = normalizeWikiTargetKey(targetRaw);
-      if (targetKey !== noteStem && targetKey !== pathKey) continue;
+      if (!targetKeys.has(targetKey)) continue;
+      foundContext = contextForIndex(match.index);
+      break;
+    }
 
-      const matchStart = match.index;
-      const lineStart = clean.lastIndexOf("\n", matchStart - 1) + 1;
-      const lineEnd = clean.indexOf("\n", matchStart);
-      const context = clean.slice(lineStart, lineEnd === -1 ? clean.length : lineEnd).trim().slice(0, 120);
+    // Standard Markdown links to .md files also count as backlinks in Obsidian.
+    if (!foundContext) {
+      const markdownLinkRe = /(?<!!)\[[^\]]*\]\((<?[^)\s>]+>?)(?:\s+["'][^"']*["'])?\)/g;
+      let markdownMatch: RegExpExecArray | null;
+      while ((markdownMatch = markdownLinkRe.exec(clean)) !== null) {
+        const href = decodeLoose(markdownMatch[1].replace(/^<|>$/g, ""));
+        if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) continue;
+        const target = href.split("#")[0].replace(/\\/g, "/");
+        if (!/\.md$/i.test(target)) continue;
+        const sourceDirectory = path.posix.dirname(mdPath);
+        const candidates = [
+          normalizeWikiTargetKey(target),
+          normalizeWikiTargetKey(path.posix.normalize(path.posix.join(sourceDirectory === "." ? "" : sourceDirectory, target))),
+        ];
+        if (!candidates.includes(pathKey)) continue;
+        foundContext = contextForIndex(markdownMatch.index);
+        break;
+      }
+    }
 
+    if (foundContext) {
       results.push({
         sourcePath: mdPath,
         sourceName: path.basename(mdPath, ".md"),
-        context,
+        context: foundContext,
       });
-      break; // one entry per source file
     }
   }
 

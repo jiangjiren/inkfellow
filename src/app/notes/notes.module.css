@@ -2824,6 +2824,20 @@
   text-decoration-color: rgba(152, 52, 24, 0.38);
 }
 
+.wikiLink {
+  color: var(--notes-accent) !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--notes-accent-bg) 68%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--notes-accent-bg) 68%, transparent);
+}
+
+.wikiLink:hover {
+  color: #983418 !important;
+  background: color-mix(in srgb, #983418 9%, transparent);
+}
+
 .wikiLinkMissing {
   color: #7c3aed !important;
   text-decoration: underline dashed !important;
@@ -2836,6 +2850,53 @@
 .wikiLinkMissing:hover {
   opacity: 1;
   color: #6d28d9 !important;
+}
+
+.blockAnchor {
+  position: relative;
+  top: -72px;
+  visibility: hidden;
+}
+
+.noteEmbed {
+  display: block;
+  margin: 18px 0;
+  border: 1px solid color-mix(in srgb, var(--notes-accent) 22%, var(--notes-border));
+  border-radius: var(--notes-radius-card);
+  background: color-mix(in srgb, var(--notes-bg-document) 94%, var(--notes-accent-bg));
+  box-shadow: var(--notes-shadow-card);
+  overflow: hidden;
+}
+
+.noteEmbedHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--notes-border);
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.noteEmbedBody {
+  padding: 4px 18px 14px;
+}
+
+.noteEmbedBody .markdown {
+  font-size: 0.95em;
+}
+
+.noteEmbedState {
+  margin: 12px 0 2px;
+  color: var(--notes-text-muted);
+  font-size: 12px;
 }
 
 /* ── Backlinks panel ──────────────────────────────── */
@@ -4033,6 +4094,33 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.cmContainer :global(.CodeMirror-hints) {
+  z-index: 1000;
+  min-width: 220px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 5px;
+  border: 1px solid var(--notes-border);
+  border-radius: 10px;
+  background: var(--notes-bg-document);
+  box-shadow: var(--notes-shadow-popover);
+  font-family: var(--notes-font-sans);
+  font-size: 13px;
+}
+
+.cmContainer :global(.CodeMirror-hint) {
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--notes-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmContainer :global(li.CodeMirror-hint-active) {
+  color: var(--notes-accent-contrast, #fff);
+  background: var(--notes-accent, #4f6df5);
 }
 
 /* ── CodeMirror 5 基础覆盖 ─────────────────────────── */

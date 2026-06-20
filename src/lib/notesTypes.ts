@@ -28,4 +28,5 @@ export type NotesFileResponse = {
   content: string;
   size: number;
   updatedAt: string;
+  aliases?: string[];
 };

@@ -18,7 +18,7 @@ const parseFrontMatter = (content: string): { data: FrontMatterData; body: strin
   if (firstNewline === -1) return empty;
 
   const rest = content.slice(firstNewline + 1);
-  const closingMatch = /^---[ \t]*$/m.exec(rest);
+  const closingMatch = /^---[ \t]*\r?$/m.exec(rest);
   if (!closingMatch || closingMatch.index === undefined) return empty;
 
   const yamlContent = rest.slice(0, closingMatch.index);
@@ -132,6 +132,9 @@ type NotesMarkdownProps = {
   onCreateNote?: (noteName: string) => void;
   assetHrefFactory?: (path: string, currentPath: string) => string;
   allowInternalNoteLinks?: boolean;
+  showBacklinks?: boolean;
+  showFrontMatter?: boolean;
+  embedAncestors?: string[];
 };
 
 type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
@@ -197,11 +200,13 @@ const splitObsidianTarget = (rawTarget: string) => {
   const [targetWithHeading, alias] = rawTarget.split("|");
   const hashIndex = targetWithHeading.indexOf("#");
   const target = hashIndex >= 0 ? targetWithHeading.slice(0, hashIndex).trim() : targetWithHeading.trim();
-  const heading = hashIndex >= 0 ? targetWithHeading.slice(hashIndex + 1).trim() : "";
+  const fragment = hashIndex >= 0 ? targetWithHeading.slice(hashIndex + 1).trim() : "";
 
   return {
     target,
-    heading,
+    fragment,
+    heading: fragment.startsWith("^") ? "" : fragment,
+    blockId: fragment.startsWith("^") ? fragment.slice(1) : "",
     alias: alias?.trim() || "",
   };
 };
@@ -235,10 +240,17 @@ const resolveNotePath = (
   return null;
 };
 
-const makeNoteHref = (path: string, heading?: string) => {
+const makeFragmentHash = (fragment?: string) => {
+  if (!fragment) return "";
+  const targetId = fragment.startsWith("^")
+    ? `block-${fragment.slice(1)}`
+    : slugifyHeading(fragment);
+  return targetId ? `#${encodeURIComponent(targetId)}` : "";
+};
+
+const makeNoteHref = (path: string, fragment?: string) => {
   const params = new URLSearchParams({ file: path });
-  const hash = heading ? `#${encodeURIComponent(slugifyHeading(heading))}` : "";
-  return `/?${params.toString()}${hash}`;
+  return `/?${params.toString()}${makeFragmentHash(fragment)}`;
 };
 
 const makeAssetHref = (path: string, currentPath: string) => {
@@ -328,40 +340,182 @@ const substituteLatexMath = (text: string) =>
     return replaced.includes("\\") ? match : replaced;
   });
 
+const WIKI_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+const WIKI_ATTACHMENT_EXT_RE = /\.(mp4|webm|mov|m4v|mp3|wav|ogg|flac|pdf)$/i;
+const EMBED_MARKER_RE = /@@INKFELLOW_NOTE_EMBED_(\d+)@@/g;
+
+type NoteEmbed = {
+  path: string;
+  fragment: string;
+  label: string;
+};
+
+type RenderPart =
+  | { type: "markdown"; value: string }
+  | { type: "embed"; embed: NoteEmbed };
+
+const transformOutsideInlineCode = (
+  content: string,
+  transform: (plainText: string) => string,
+) => {
+  const openerPattern = /`+/g;
+  let cursor = 0;
+  let output = "";
+  let opener: RegExpExecArray | null;
+
+  while ((opener = openerPattern.exec(content)) !== null) {
+    const closeIndex = content.indexOf(opener[0], opener.index + opener[0].length);
+    if (closeIndex === -1 || content.slice(opener.index, closeIndex).includes("\n")) break;
+    output += transform(content.slice(cursor, opener.index));
+    output += content.slice(opener.index, closeIndex + opener[0].length);
+    cursor = closeIndex + opener[0].length;
+    openerPattern.lastIndex = cursor;
+  }
+
+  return output + transform(content.slice(cursor));
+};
+
 const transformObsidianSyntax = (
   markdown: string,
   currentPath: string,
   noteIndex: Map<string, string>,
   assetHrefFactory: (path: string, currentPath: string) => string,
   allowInternalNoteLinks: boolean,
-) => {
+): RenderPart[] => {
+  const embeds: NoteEmbed[] = [];
   const fencedBlockPattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
-  return markdown
+  const transformed = markdown
     .split(fencedBlockPattern)
     .map((part, index) => {
       if (index % 2 === 1) {
         return part;
       }
 
-      return substituteLatexMath(part)
-        .replace(/!\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
-          const { target, alias } = splitObsidianTarget(rawTarget);
-          const label = escapeMarkdownLabel(alias || target);
-          return `![${label}](${assetHrefFactory(target, currentPath)})`;
-        })
-        .replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
-          const { target, heading, alias } = splitObsidianTarget(rawTarget);
-          const resolvedPath = resolveNotePath(target, currentPath, noteIndex);
-          const label = escapeMarkdownLabel(alias || heading || target);
-          const href = allowInternalNoteLinks && resolvedPath
-            ? makeNoteHref(resolvedPath, heading)
-            : allowInternalNoteLinks
-              ? `inkfellow-create:${encodeURIComponent(target)}`
-              : "#";
-          return `[${label}](${href})`;
-        });
+      return transformOutsideInlineCode(part, (plainText) => {
+        const withStandaloneBlockIds = plainText.replace(
+          /(^|\n)[ \t]*\^([A-Za-z0-9-]+)[ \t]*(?=\r?\n|$)/g,
+          (_match, prefix: string, blockId: string) =>
+            `${prefix}[\u200B](inkfellow-block:${encodeURIComponent(blockId)})`,
+        );
+        const withBlockIds = withStandaloneBlockIds.replace(
+          /(^|\n)([^\n]*?\S)[ \t]+\^([A-Za-z0-9-]+)[ \t]*(?=\r?\n|$)/g,
+          (_match, prefix: string, line: string, blockId: string) =>
+            `${prefix}${line} [\u200B](inkfellow-block:${encodeURIComponent(blockId)})`,
+        );
+
+        return substituteLatexMath(withBlockIds)
+          .replace(/!\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
+            const { target, fragment, alias } = splitObsidianTarget(rawTarget);
+            const label = escapeMarkdownLabel(alias || fragment || target);
+            if (WIKI_IMAGE_EXT_RE.test(target)) {
+              return `![${label}](${assetHrefFactory(target, currentPath)})`;
+            }
+
+            const resolvedPath = resolveNotePath(target, currentPath, noteIndex);
+            if (WIKI_ATTACHMENT_EXT_RE.test(target)) {
+              return allowInternalNoteLinks && resolvedPath
+                ? `[${label}](${makeNoteHref(resolvedPath)})`
+                : label;
+            }
+            if (resolvedPath && !/\.md$/i.test(resolvedPath)) {
+              return allowInternalNoteLinks
+                ? `[${label}](${makeNoteHref(resolvedPath)})`
+                : label;
+            }
+            if (!allowInternalNoteLinks || !resolvedPath) {
+              return allowInternalNoteLinks
+                ? `[${label}](inkfellow-create:${encodeURIComponent(target)})`
+                : label;
+            }
+            const embedIndex = embeds.push({
+              path: resolvedPath,
+              fragment,
+              label: alias || fragment || target,
+            }) - 1;
+            return `\n\n@@INKFELLOW_NOTE_EMBED_${embedIndex}@@\n\n`;
+          })
+          .replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
+            const { target, fragment, heading, blockId, alias } = splitObsidianTarget(rawTarget);
+            const resolvedPath = resolveNotePath(target, currentPath, noteIndex);
+            const label = escapeMarkdownLabel(alias || heading || blockId || target);
+            const href = allowInternalNoteLinks && resolvedPath
+              ? makeNoteHref(resolvedPath, fragment)
+              : allowInternalNoteLinks
+                ? `inkfellow-create:${encodeURIComponent(target)}`
+                : "#";
+            return `[${label}](${href})`;
+          });
+      });
     })
     .join("");
+
+  const parts: RenderPart[] = [];
+  let lastIndex = 0;
+  EMBED_MARKER_RE.lastIndex = 0;
+  let marker: RegExpExecArray | null;
+  while ((marker = EMBED_MARKER_RE.exec(transformed)) !== null) {
+    if (marker.index > lastIndex) {
+      parts.push({ type: "markdown", value: transformed.slice(lastIndex, marker.index) });
+    }
+    const embed = embeds[Number(marker[1])];
+    if (embed) parts.push({ type: "embed", embed });
+    lastIndex = marker.index + marker[0].length;
+  }
+  if (lastIndex < transformed.length) {
+    parts.push({ type: "markdown", value: transformed.slice(lastIndex) });
+  }
+  return parts.length > 0 ? parts : [{ type: "markdown", value: transformed }];
+};
+
+const extractEmbeddedMarkdown = (markdown: string, fragment: string) => {
+  if (!fragment) return markdown;
+  const body = parseFrontMatter(markdown).body;
+  const lines = body.split("\n");
+
+  if (fragment.startsWith("^")) {
+    const blockId = fragment.slice(1);
+    const escapedBlockId = blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const inlinePattern = new RegExp(`[ \\t]+\\^${escapedBlockId}[ \\t]*\\r?$`);
+    const standalonePattern = new RegExp(`^[ \\t]*\\^${escapedBlockId}[ \\t]*\\r?$`);
+
+    for (let i = 0; i < lines.length; i++) {
+      if (inlinePattern.test(lines[i])) {
+        return lines[i].replace(inlinePattern, "");
+      }
+      if (standalonePattern.test(lines[i])) {
+        let blockEnd = i - 1;
+        while (blockEnd >= 0 && !lines[blockEnd].trim()) blockEnd--;
+        if (blockEnd < 0) return `> 找不到块引用 ^${blockId}`;
+        let start = blockEnd;
+        while (start > 0 && lines[start - 1].trim()) start--;
+        return lines.slice(start, blockEnd + 1).join("\n");
+      }
+    }
+    return `> 找不到块引用 ^${blockId}`;
+  }
+
+  const targetHeading = slugifyHeading(fragment);
+  let start = -1;
+  let level = 7;
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (match && slugifyHeading(match[2]) === targetHeading) {
+      start = i;
+      level = match[1].length;
+      break;
+    }
+  }
+  if (start === -1) return `> 找不到标题“${fragment}”`;
+
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,6})\s+/);
+    if (match && match[1].length <= level) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
 };
 
 function CodeBlock({ className, children }: { className?: string; children: ReactNode }) {
@@ -539,6 +693,85 @@ function Mermaid({ chart }: { chart: string }) {
   return <div dangerouslySetInnerHTML={{ __html: state.svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
 }
 
+function EmbeddedNote({
+  embed,
+  noteIndex,
+  onNavigate,
+  onCreateNote,
+  assetHrefFactory,
+  allowInternalNoteLinks,
+  ancestors,
+}: {
+  embed: NoteEmbed;
+  noteIndex: Map<string, string>;
+  onNavigate?: (path: string, hash?: string | null) => void;
+  onCreateNote?: (noteName: string) => void;
+  assetHrefFactory: (path: string, currentPath: string) => string;
+  allowInternalNoteLinks: boolean;
+  ancestors: string[];
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const embedKey = `${embed.path}#${embed.fragment}`;
+  const isCycle = ancestors.includes(embedKey);
+
+  useEffect(() => {
+    if (isCycle) return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ path: embed.path });
+    fetch(`/api/notes/file?${params.toString()}`, { signal: controller.signal, cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to load embedded note");
+        return response.json() as Promise<{ content: string }>;
+      })
+      .then((note) => setContent(extractEmbeddedMarkdown(note.content, embed.fragment)))
+      .catch((error: unknown) => {
+        if ((error as { name?: string })?.name !== "AbortError") setFailed(true);
+      });
+    return () => controller.abort();
+  }, [embed.fragment, embed.path, isCycle]);
+
+  const openEmbed = () => onNavigate?.(embed.path, makeFragmentHash(embed.fragment) || null);
+  if (isCycle) {
+    return (
+      <aside className={styles.noteEmbed}>
+        <button type="button" className={styles.noteEmbedHeader} onClick={openEmbed}>
+          {embed.label} · 循环嵌入
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className={styles.noteEmbed}>
+      <button type="button" className={styles.noteEmbedHeader} onClick={openEmbed}>
+        <span>{embed.label}</span>
+        <span aria-hidden="true">↗</span>
+      </button>
+      <div className={styles.noteEmbedBody}>
+        {failed ? (
+          <p className={styles.noteEmbedState}>嵌入内容加载失败</p>
+        ) : content === null ? (
+          <p className={styles.noteEmbedState}>正在加载嵌入内容…</p>
+        ) : (
+          <NotesMarkdown
+            markdown={content}
+            currentPath={embed.path}
+            noteIndex={noteIndex}
+            onNavigate={onNavigate}
+            onCreateNote={onCreateNote}
+            assetHrefFactory={assetHrefFactory}
+            allowInternalNoteLinks={allowInternalNoteLinks}
+            showBacklinks={false}
+            showFrontMatter={false}
+            embedAncestors={[...ancestors, embedKey]}
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
+
 type BacklinkEntry = {
   sourcePath: string;
   sourceName: string;
@@ -592,14 +825,21 @@ export default function NotesMarkdown({
   onCreateNote,
   assetHrefFactory = makeAssetHref,
   allowInternalNoteLinks = true,
+  showBacklinks = true,
+  showFrontMatter = true,
+  embedAncestors,
 }: NotesMarkdownProps) {
   const resolvedNoteIndex = useMemo(() => noteIndex ?? new Map<string, string>(), [noteIndex]);
+  const resolvedEmbedAncestors = useMemo(
+    () => embedAncestors ?? [`${currentPath}#`],
+    [currentPath, embedAncestors],
+  );
   const { data: frontMatterData, body: markdownBody } = useMemo(
     () => parseFrontMatter(markdown),
     [markdown],
   );
 
-  const renderedMarkdown = useMemo(
+  const renderedParts = useMemo(
     () => transformObsidianSyntax(
       markdownBody,
       currentPath,
@@ -613,6 +853,10 @@ export default function NotesMarkdown({
   const components = useMemo<Components>(
     () => ({
       a({ href, children }) {
+        if (href?.startsWith("inkfellow-block:")) {
+          const blockId = decodeURIComponent(href.slice("inkfellow-block:".length));
+          return <span id={`block-${blockId}`} className={styles.blockAnchor} aria-hidden="true" />;
+        }
         const normalizedHref = normalizeMarkdownLink(
           href,
           currentPath,
@@ -642,11 +886,12 @@ export default function NotesMarkdown({
         };
 
         const isMissingWikiLink = normalizedHref?.startsWith("inkfellow-create:");
+        const isWikiLink = normalizedHref?.startsWith("/?file=");
         return (
           <a
             href={isMissingWikiLink ? "#" : normalizedHref}
             onClick={handleClick}
-            className={isMissingWikiLink ? styles.wikiLinkMissing : undefined}
+            className={isMissingWikiLink ? styles.wikiLinkMissing : isWikiLink ? styles.wikiLink : undefined}
             target={!isMissingWikiLink && normalizedHref && isExternalHref(normalizedHref) ? "_blank" : undefined}
             rel={!isMissingWikiLink && normalizedHref && isExternalHref(normalizedHref) ? "noreferrer" : undefined}
           >
@@ -663,6 +908,14 @@ export default function NotesMarkdown({
         if (!normalizedSrc) {
           return null;
         }
+        const dimensionMatch = alt?.match(/^(\d+)(?:x(\d+))?$/);
+        const imageStyle = dimensionMatch
+          ? {
+              width: `${Number(dimensionMatch[1])}px`,
+              height: dimensionMatch[2] ? `${Number(dimensionMatch[2])}px` : undefined,
+              objectFit: dimensionMatch[2] ? "contain" as const : undefined,
+            }
+          : undefined;
         function handleDownload(e: MouseEvent) {
           e.preventDefault();
           e.stopPropagation();
@@ -687,7 +940,12 @@ export default function NotesMarkdown({
         }
         return (
           <span className={styles.imageFrame}>
-            <img src={normalizedSrc} alt={alt ?? ""} loading="lazy" />
+            <img
+              src={normalizedSrc}
+              alt={dimensionMatch ? "" : alt ?? ""}
+              loading="lazy"
+              style={imageStyle}
+            />
             <button
               type="button"
               className={styles.imageDownloadBtn}
@@ -761,11 +1019,24 @@ export default function NotesMarkdown({
 
   return (
     <div className={styles.markdown}>
-      <FrontMatterPanel data={frontMatterData} />
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {renderedMarkdown}
-      </ReactMarkdown>
-      {allowInternalNoteLinks && (
+      {showFrontMatter && <FrontMatterPanel data={frontMatterData} />}
+      {renderedParts.map((part, index) => part.type === "markdown" ? (
+        <ReactMarkdown key={`markdown-${index}`} remarkPlugins={[remarkGfm]} components={components}>
+          {part.value}
+        </ReactMarkdown>
+      ) : (
+        <EmbeddedNote
+          key={`embed-${index}-${part.embed.path}-${part.embed.fragment}`}
+          embed={part.embed}
+          noteIndex={resolvedNoteIndex}
+          onNavigate={onNavigate}
+          onCreateNote={onCreateNote}
+          assetHrefFactory={assetHrefFactory}
+          allowInternalNoteLinks={allowInternalNoteLinks}
+          ancestors={resolvedEmbedAncestors}
+        />
+      ))}
+      {allowInternalNoteLinks && showBacklinks && (
         <BacklinksPanel key={currentPath} currentPath={currentPath} onNavigate={onNavigate ? (p) => onNavigate(p) : undefined} />
       )}
     </div>

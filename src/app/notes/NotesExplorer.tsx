@@ -764,6 +764,7 @@ interface TauriWindow {
 
 export default function NotesExplorer() {
   const [tree, setTree] = useState<NotesDirectoryNode | null>(null);
+  const [wikiAliases, setWikiAliases] = useState<Map<string, string[]>>(new Map());
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
   const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
@@ -1079,14 +1080,51 @@ export default function NotesExplorer() {
 
   const files = useMemo(() => (tree ? collectFiles(tree) : []), [tree]);
 
+  const refreshWikiIndex = useCallback(async () => {
+    try {
+      const response = await fetch("/api/notes/wiki/index", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { entries?: Array<{ path: string; aliases: string[] }> };
+      setWikiAliases(new Map((payload.entries ?? []).map((entry) => [entry.path, entry.aliases])));
+    } catch {
+      // Alias resolution is additive; filename/path links continue working if this request fails.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (files.length > 0) void refreshWikiIndex();
+  }, [files, refreshWikiIndex]);
+
+  const assistantVaultNotes = useMemo(
+    () => files
+      .filter((file) => /\.(md|html?)$/i.test(file.path))
+      .map((file) => ({
+        path: file.path,
+        title: stripNoteExtension(file.name),
+        aliases: wikiAliases.get(file.path) ?? [],
+      })),
+    [files, wikiAliases],
+  );
+
+  const postVaultNotesToClaude = useCallback(() => {
+    if (!claudeFrameReadyRef.current) return;
+    claudeFrameRef.current?.contentWindow?.postMessage(
+      { type: "vault-notes", notes: assistantVaultNotes },
+      window.location.origin,
+    );
+  }, [assistantVaultNotes]);
+
+  useEffect(() => {
+    postVaultNotesToClaude();
+  }, [postVaultNotesToClaude]);
+
   const noteIndex = useMemo(() => {
     const index = new Map<string, string>();
 
+    // 第一趟只登记真实路径/文件名：保证真实笔记名优先于任何别名（与 Obsidian 一致），
+    // 否则遍历靠前的笔记的别名会遮蔽后面笔记的真实文件名。
     for (const file of files) {
-      const pathWithoutExtension = stripNoteExtension(file.path);
-      const basename = stripNoteExtension(file.name);
-      const keys = [file.path, pathWithoutExtension, basename];
-
+      const keys = [file.path, stripNoteExtension(file.path), stripNoteExtension(file.name)];
       for (const key of keys) {
         const normalizedKey = normalizeIndexKey(key);
         if (normalizedKey && !index.has(normalizedKey)) {
@@ -1095,13 +1133,38 @@ export default function NotesExplorer() {
       }
     }
 
-    return index;
-  }, [files]);
+    // 第二趟登记别名，只填补尚未被真实文件名占用的键。
+    for (const file of files) {
+      for (const alias of wikiAliases.get(file.path) ?? []) {
+        const normalizedAlias = normalizeIndexKey(alias);
+        if (normalizedAlias && !index.has(normalizedAlias)) {
+          index.set(normalizedAlias, file.path);
+        }
+      }
+    }
 
-  const noteNames = useMemo(
-    () => files.filter((f) => f.path.endsWith(".md")).map((f) => stripNoteExtension(f.name)),
-    [files],
-  );
+    return index;
+  }, [files, wikiAliases]);
+
+  const noteNames = useMemo(() => {
+    const markdownFiles = files.filter((file) => /\.md$/i.test(file.path));
+    const basenameCounts = new Map<string, number>();
+
+    for (const file of markdownFiles) {
+      const key = stripNoteExtension(file.name).normalize("NFKC").toLocaleLowerCase();
+      basenameCounts.set(key, (basenameCounts.get(key) ?? 0) + 1);
+    }
+
+    return markdownFiles.flatMap((file) => {
+      const basename = stripNoteExtension(file.name);
+      const key = basename.normalize("NFKC").toLocaleLowerCase();
+      // 同名笔记使用相对路径消歧；普通笔记仍保持简洁文件名。
+      const primaryName = (basenameCounts.get(key) ?? 0) > 1
+        ? stripNoteExtension(file.path)
+        : basename;
+      return [primaryName, ...(wikiAliases.get(file.path) ?? [])];
+    });
+  }, [files, wikiAliases]);
 
   const visibleTree = useMemo(() => (tree ? filterTree(tree, searchQuery.trim()) : null), [tree, searchQuery]);
 
@@ -1902,8 +1965,15 @@ export default function NotesExplorer() {
       body: JSON.stringify({ path, content: body }),
     });
     if (!res.ok) throw new Error("保存失败");
-    const saved = (await res.json()) as { updatedAt: string; content: string };
+    const saved = (await res.json()) as { updatedAt: string; content: string; aliases?: string[] };
     setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
+    if (saved.aliases) {
+      setWikiAliases((prev) => {
+        const next = new Map(prev);
+        next.set(path, saved.aliases ?? []);
+        return next;
+      });
+    }
     noteUpdatedAtRef.current = saved.updatedAt;
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1600);
@@ -1976,8 +2046,15 @@ export default function NotesExplorer() {
           body: JSON.stringify({ path, content: value }),
         });
         if (!res.ok) return;
-        const saved = (await res.json()) as { updatedAt: string; content: string };
+        const saved = (await res.json()) as { updatedAt: string; content: string; aliases?: string[] };
         setNote((prev) => prev ? { ...prev, content: saved.content, updatedAt: saved.updatedAt } : prev);
+        if (saved.aliases) {
+          setWikiAliases((prev) => {
+            const next = new Map(prev);
+            next.set(path, saved.aliases ?? []);
+            return next;
+          });
+        }
         noteUpdatedAtRef.current = saved.updatedAt;
         setSavedFlash(true);
         setTimeout(() => setSavedFlash(false), 1600);
@@ -2609,12 +2686,10 @@ export default function NotesExplorer() {
     setRenameError(null);
     try {
       const currentPath = activePathRef.current;
-      const nextActivePath = currentPath
-        ? replaceMovedPath(currentPath, renameTarget.path, nextPath, renameTarget.kind)
-        : null;
-      if (currentPath && nextActivePath !== currentPath) {
-        await flushEditBeforeSwitch();
-      }
+      // 重命名前先落盘当前编辑内容：服务端会改写指向被重命名笔记的双链，未保存的
+      // 草稿若不先 flush，链接改写会基于旧的磁盘版本，保存时把改写覆盖回去。
+      // 当前笔记本身未移动时，改写后的磁盘内容由 /api/notes/watch 的 SSE 自动重载。
+      await flushEditBeforeSwitch();
 
       const res = await fetch(renameTarget.kind === "file" ? "/api/notes/file" : "/api/notes/folder", {
         method: "PATCH",
@@ -3989,7 +4064,7 @@ export default function NotesExplorer() {
                 <line x1="19" y1="12" x2="5" y2="12" />
                 <polyline points="12 19 5 12 12 5" />
               </svg>
-              <span>返回仪表盘</span>
+              <span>返回首页</span>
             </button>
           </header>
         )}
@@ -3998,7 +4073,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=6${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=7${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
@@ -4013,6 +4088,7 @@ export default function NotesExplorer() {
                 window.location.origin,
               );
             }
+            postVaultNotesToClaude();
             // 首页提问可能早于 iframe 就绪，补投暂存的问题，避免首条提问丢失
             if (pendingClaudeAskRef.current) {
               claudeFrameRef.current?.contentWindow?.postMessage(

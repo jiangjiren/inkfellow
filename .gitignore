@@ -49,6 +49,7 @@ public/swe-worker-*.js.map
 
 # Tauri desktop app (local build only)
 /src-tauri/
+/desktop-bundle/
 /public/loading.html
 /scripts/cleanup-standalone.js
 

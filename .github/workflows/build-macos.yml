@@ -13,10 +13,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -44,7 +44,7 @@ jobs:
         run: npx -y @tauri-apps/cli build --config src-tauri/tauri.conf.mac.json
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: inkfellow-macos-arm64
           path: src-tauri/target/release/bundle/dmg/*.dmg

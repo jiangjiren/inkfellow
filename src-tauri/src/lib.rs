@@ -13,6 +13,9 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
+#[cfg(target_os = "windows")]
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
 /// 全局 git 互斥锁：保证同一时刻只有一个 git 子进程在 vault 上运行，
 /// 防止 autostash/rebase 与其他 git 操作并发损坏仓库状态。
 static GIT_LOCK: Mutex<()> = Mutex::new(());
@@ -594,6 +597,163 @@ fn hide_command_window(command: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 fn hide_command_window(_command: &mut Command) {}
 
+#[derive(Debug, PartialEq)]
+struct ProxyEnvironment {
+    http_proxy: String,
+    https_proxy: String,
+    no_proxy: String,
+}
+
+fn normalize_http_proxy_endpoint(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some(value.to_string());
+    }
+    if lower.contains("://") {
+        return None;
+    }
+
+    Some(format!("http://{value}"))
+}
+
+fn parse_windows_proxy_server(
+    proxy_server: &str,
+    proxy_override: &str,
+) -> Option<ProxyEnvironment> {
+    let mut http_proxy = None;
+    let mut https_proxy = None;
+
+    if proxy_server.contains('=') {
+        for entry in proxy_server.split(';') {
+            let Some((kind, endpoint)) = entry.split_once('=') else {
+                continue;
+            };
+            match kind.trim().to_ascii_lowercase().as_str() {
+                "http" => http_proxy = normalize_http_proxy_endpoint(endpoint),
+                "https" => https_proxy = normalize_http_proxy_endpoint(endpoint),
+                _ => {}
+            }
+        }
+    } else {
+        let endpoint = normalize_http_proxy_endpoint(proxy_server)?;
+        http_proxy = Some(endpoint.clone());
+        https_proxy = Some(endpoint);
+    }
+
+    let http_proxy = http_proxy.or_else(|| https_proxy.clone())?;
+    let https_proxy = https_proxy.unwrap_or_else(|| http_proxy.clone());
+    let mut no_proxy = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+
+    for entry in proxy_override.split(';').map(str::trim) {
+        if entry.is_empty() || entry.eq_ignore_ascii_case("<local>") || entry.contains("://") {
+            continue;
+        }
+        if !no_proxy
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(entry))
+        {
+            no_proxy.push(entry.to_string());
+        }
+    }
+
+    Some(ProxyEnvironment {
+        http_proxy,
+        https_proxy,
+        no_proxy: no_proxy.join(","),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_proxy() -> Option<ProxyEnvironment> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let settings = hkcu
+        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings")
+        .ok()?;
+    let enabled = settings.get_value::<u32, _>("ProxyEnable").unwrap_or(0);
+    if enabled == 0 {
+        return None;
+    }
+
+    let proxy_server = settings.get_value::<String, _>("ProxyServer").ok()?;
+    let proxy_override = settings
+        .get_value::<String, _>("ProxyOverride")
+        .unwrap_or_default();
+    parse_windows_proxy_server(&proxy_server, &proxy_override)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_proxy() -> Option<ProxyEnvironment> {
+    None
+}
+
+fn env_var_is_set(keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
+}
+
+fn configure_proxy_environment(command: &mut Command) {
+    let has_http_proxy = env_var_is_set(&["http_proxy", "HTTP_PROXY"]);
+    let has_https_proxy = env_var_is_set(&["https_proxy", "HTTPS_PROXY"]);
+    let mut detected_no_proxy = None;
+
+    if !has_http_proxy && !has_https_proxy {
+        if let Some(proxy) = windows_system_proxy() {
+            command
+                .env("http_proxy", &proxy.http_proxy)
+                .env("HTTP_PROXY", &proxy.http_proxy)
+                .env("https_proxy", &proxy.https_proxy)
+                .env("HTTPS_PROXY", &proxy.https_proxy);
+            detected_no_proxy = Some(proxy.no_proxy);
+
+            eprintln!(
+                "[inkfellow] AI sidecar using Windows system proxy: {}",
+                proxy.https_proxy
+            );
+        }
+    }
+
+    if !env_var_is_set(&["no_proxy", "NO_PROXY"]) {
+        let no_proxy = detected_no_proxy.unwrap_or_else(|| "localhost,127.0.0.1,::1".to_string());
+        command
+            .env("no_proxy", &no_proxy)
+            .env("NO_PROXY", &no_proxy);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_system_proxy_watcher(app: AppHandle) {
+    if env_var_is_set(&["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"]) {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let mut previous = windows_system_proxy();
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            let current = windows_system_proxy();
+            if current == previous {
+                continue;
+            }
+
+            previous = current;
+            eprintln!("[inkfellow] Windows system proxy changed; restarting AI sidecar");
+            restart_agent(&app);
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_system_proxy_watcher(_app: AppHandle) {}
+
 fn get_free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
@@ -611,20 +771,25 @@ fn workspace_root() -> PathBuf {
 }
 
 fn get_node_path(app: &AppHandle) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let node_bin = "node.exe";
+    #[cfg(not(target_os = "windows"))]
+    let node_bin = "node";
+
     if let Ok(res_dir) = app.path().resource_dir() {
-        let bundled = res_dir.join("bin").join("node.exe");
+        let bundled = res_dir.join("bin").join(node_bin);
         if bundled.exists() {
             return bundled;
         }
     }
 
     let root = workspace_root();
-    let installed_bundled = root.join("bin").join("node.exe");
+    let installed_bundled = root.join("bin").join(node_bin);
     if installed_bundled.exists() {
         return installed_bundled;
     }
 
-    let local_bundled = root.join("src-tauri").join("bin").join("node.exe");
+    let local_bundled = root.join("src-tauri").join("bin").join(node_bin);
     if local_bundled.exists() {
         return local_bundled;
     }
@@ -710,7 +875,9 @@ fn spawn_agent(app: &AppHandle) {
         .env("DESKTOP_MODE", "true")
         .env("CLAUDE_PERMISSION_MODE", "auto")
         .env("CLAUDE_CHAT_DATA_DIR", &data_dir)
-        .env("CLAUDE_CHAT_AUTH_PROFILE_FILE", &auth_profile_file);
+        .env("CLAUDE_CHAT_AUTH_PROFILE_FILE", &auth_profile_file)
+        .env("NODE_COMPILE_CACHE", data_dir.join("node-compile-cache"));
+    configure_proxy_environment(&mut command);
     hide_command_window(&mut command);
 
     match command.spawn() {
@@ -1985,6 +2152,7 @@ pub fn run() {
             }
             start_sync_worker(&handle);
             spawn_agent(&handle);
+            start_system_proxy_watcher(handle);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1995,4 +2163,33 @@ pub fn run() {
             kill_processes(app_handle);
         }
     });
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test]
+    fn parses_single_windows_proxy_for_both_protocols() {
+        let proxy =
+            parse_windows_proxy_server("127.0.0.1:10809", "<local>;localhost;127.*;192.168.*")
+                .unwrap();
+
+        assert_eq!(proxy.http_proxy, "http://127.0.0.1:10809");
+        assert_eq!(proxy.https_proxy, "http://127.0.0.1:10809");
+        assert_eq!(proxy.no_proxy, "localhost,127.0.0.1,::1,127.*,192.168.*");
+    }
+
+    #[test]
+    fn parses_protocol_specific_windows_proxy() {
+        let proxy = parse_windows_proxy_server(
+            "http=127.0.0.1:8080;https=https://proxy.example:8443;socks=127.0.0.1:1080",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(proxy.http_proxy, "http://127.0.0.1:8080");
+        assert_eq!(proxy.https_proxy, "https://proxy.example:8443");
+        assert_eq!(proxy.no_proxy, "localhost,127.0.0.1,::1");
+    }
 }

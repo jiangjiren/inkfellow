@@ -9,7 +9,12 @@ const root = path.resolve(__dirname, "..");
 const source = path.join(root, "claude-chat");
 const targetRoot = path.join(root, "desktop-bundle");
 const target = path.join(targetRoot, "claude-chat");
-const nodeRuntimeTarget = path.join(root, "src-tauri", "bin", "node.exe");
+const nodeRuntimeTarget = path.join(
+  root,
+  "src-tauri",
+  "bin",
+  process.platform === "win32" ? "node.exe" : "node"
+);
 
 const excludedNames = new Set([
   ".env",
@@ -42,17 +47,19 @@ function copyRecursive(from, to) {
 }
 
 function prepareNodeRuntime() {
-  if (process.platform !== "win32") {
-    return;
-  }
-
   const nodeRuntimeSource = process.execPath;
-  if (!nodeRuntimeSource.toLowerCase().endsWith("node.exe")) {
-    throw new Error(`Cannot locate Windows node.exe from current runtime: ${nodeRuntimeSource}`);
+
+  if (process.platform === "win32") {
+    if (!nodeRuntimeSource.toLowerCase().endsWith("node.exe")) {
+      throw new Error(`Cannot locate Windows node.exe from current runtime: ${nodeRuntimeSource}`);
+    }
   }
 
   fs.mkdirSync(path.dirname(nodeRuntimeTarget), { recursive: true });
   fs.copyFileSync(nodeRuntimeSource, nodeRuntimeTarget);
+  if (process.platform !== "win32") {
+    fs.chmodSync(nodeRuntimeTarget, 0o755);
+  }
   console.log(`[desktop] prepared Node runtime at ${path.relative(root, nodeRuntimeTarget)}`);
 }
 

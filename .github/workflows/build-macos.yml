@@ -1,0 +1,51 @@
+name: Build macOS
+
+on:
+  # 手动触发
+  workflow_dispatch:
+  # 或者推送到这两个分支时自动触发（按需保留）
+  # push:
+  #   branches: [desktop-lite, main]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest   # macOS 14，Apple Silicon (arm64)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install claude-chat npm dependencies
+        run: npm ci
+        working-directory: claude-chat
+
+      - name: Build macOS DMG
+        # beforeBuildCommand (npm run desktop:prepare) 会：
+        #   1. 把当前运行脚本的 node 二进制复制到 src-tauri/bin/node
+        #   2. 把 claude-chat 目录复制并安装生产依赖到 desktop-bundle/
+        # 然后 Tauri 用 tauri.conf.mac.json（targets: dmg）打包
+        run: npx -y @tauri-apps/cli build --config src-tauri/tauri.conf.mac.json
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inkfellow-macos-arm64
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 30

@@ -30,6 +30,8 @@ const state = {
   expanded: new Set([""]),
   activeTab: "agent",
   searchTimer: null,
+  searchRequestId: 0,
+  savePromise: null,
   contextTarget: null,
   gitStatus: null,
   gitPane: "main",
@@ -216,7 +218,10 @@ function cancelAutosave() {
 /* 切换笔记/模式前把未保存内容落盘，避免丢失 */
 async function flushPendingSave() {
   cancelAutosave();
-  if (state.dirty) await saveNote();
+  while (state.dirty) {
+    if (!(await saveNote())) return false;
+  }
+  return true;
 }
 
 /* 保存成功后短暂显示"已保存"（与 web 端一致） */
@@ -303,7 +308,7 @@ function placeCaretAtEditTarget(target) {
 
 async function setEditMode(on, target = null) {
   const ratio = getDocScrollRatio();
-  await flushPendingSave();
+  if (!(await flushPendingSave())) return;
   state.editMode = on;
   updateEditButton();
   localStorage.setItem(EDIT_MODE_KEY, on ? "1" : "0");
@@ -1634,7 +1639,7 @@ async function navForward() {
 /* ── Note operations ─────────────────────────────── */
 async function loadNote(path, opts = {}) {
   // 自动保存模式：切换前把未保存内容落盘
-  await flushPendingSave();
+  if (!(await flushPendingSave())) return;
 
   // Push to navigation history (skip when going back/forward)
   if (!opts.skipHistory) navPush(path);
@@ -1675,33 +1680,51 @@ function clearActiveNote() {
 }
 
 async function saveNote() {
-  if (!state.activeNote || !state.dirty || state.saving) return;
-  cancelAutosave();
-  const savedPath = state.activeNote.path;
-  const content = state.editor ? state.editor.getValue() : state.activeNote.content;
-  state.saving = true;
-  try {
-    const note = await invoke("write_note", { path: savedPath, content });
-    // 保存期间笔记可能已被切换，仅在仍是当前笔记时更新状态
-    if (state.activeNote?.path === savedPath) {
-      state.activeNote = note;
-      if (state.editor && state.editor.getValue() !== content) {
-        // 保存期间又有新输入，保持 dirty 并等待下一轮自动保存
-        setDirty(true);
-        scheduleAutosave();
-      } else {
-        setDirty(false);
-        flashSavedHint();
+  if (!state.activeNote || !state.dirty) return true;
+  if (state.savePromise) return await state.savePromise;
+
+  const savePromise = (async () => {
+    cancelAutosave();
+    const savedPath = state.activeNote.path;
+    const content = state.editor ? state.editor.getValue() : state.activeNote.content;
+    state.saving = true;
+    try {
+      const note = await invoke("write_note", { path: savedPath, content });
+      // 保存期间笔记可能已被切换，仅在仍是当前笔记时更新状态
+      if (state.activeNote?.path === savedPath) {
+        state.activeNote = note;
+        if (state.editor && state.editor.getValue() !== content) {
+          // 保存期间又有新输入，保持 dirty 并等待下一轮自动保存
+          setDirty(true);
+          scheduleAutosave();
+        } else {
+          setDirty(false);
+          flashSavedHint();
+        }
       }
+      await loadTree(false);
+      if (state.activeTab === "toc") renderToc();
+      return true;
+    } catch (err) {
+      showToast(String(err));
+      if (state.activeNote?.path === savedPath && state.dirty) scheduleAutosave();
+      return false;
+    } finally {
+      state.saving = false;
     }
-    await loadTree(false);
-    if (state.activeTab === "toc") renderToc();
-  } catch (err) {
-    showToast(String(err));
-    scheduleAutosave();
+  })();
+
+  state.savePromise = savePromise;
+  try {
+    return await savePromise;
   } finally {
-    state.saving = false;
+    if (state.savePromise === savePromise) state.savePromise = null;
   }
+}
+
+async function goHome() {
+  if (!(await flushPendingSave())) return;
+  clearActiveNote();
 }
 
 async function createNote() {
@@ -1764,6 +1787,14 @@ function rememberVault(path) {
   } catch {}
 }
 
+function removeRecentVault(path) {
+  try {
+    const list = getRecentVaults().filter((p) => p !== path);
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(list));
+    renderVaultMenu();
+  } catch {}
+}
+
 function toggleVaultMenu(force) {
   const menu = qs("vault-menu");
   const btn = qs("btn-vault-switcher");
@@ -1794,13 +1825,18 @@ function renderVaultMenu() {
       <div class="vaultDropdownSectionTitle">最近使用</div>
       <div class="recentVaultsList">
         ${recents.map((path) => `
-          <button type="button" class="vaultDropdownItem" role="menuitem" data-vault-path="${escapeHtml(path)}">
-            <svg class="dropdownItemIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/></svg>
-            <span class="recentVaultInfo">
-              <span class="recentVaultNameText">${escapeHtml(vaultDisplayName(path))}</span>
-              <span class="recentVaultPathText">${escapeHtml(vaultDisplayPath(path))}</span>
-            </span>
-          </button>`).join("")}
+          <div class="vaultDropdownItemWrap" role="none">
+            <button type="button" class="vaultDropdownItem" role="menuitem" data-vault-path="${escapeHtml(path)}">
+              <svg class="dropdownItemIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/></svg>
+              <span class="recentVaultInfo">
+                <span class="recentVaultNameText">${escapeHtml(vaultDisplayName(path))}</span>
+                <span class="recentVaultPathText">${escapeHtml(vaultDisplayPath(path))}</span>
+              </span>
+            </button>
+            <button type="button" class="vaultRemoveBtn" role="menuitem" data-remove-vault="${escapeHtml(path)}" title="从最近列表移除" aria-label="从最近列表移除 ${escapeHtml(vaultDisplayName(path))}">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>`).join("")}
       </div>` : ""}
     <div class="vaultDropdownDivider"></div>
     <button type="button" id="btn-choose-vault" class="vaultDropdownItemAction" role="menuitem">
@@ -1810,6 +1846,9 @@ function renderVaultMenu() {
 
   menu.querySelectorAll("[data-vault-path]").forEach((el) => {
     el.addEventListener("click", () => switchToVault(el.getAttribute("data-vault-path")));
+  });
+  menu.querySelectorAll("[data-remove-vault]").forEach((el) => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); removeRecentVault(el.getAttribute("data-remove-vault")); });
   });
   qs("btn-choose-vault").addEventListener("click", chooseVault);
 }
@@ -1844,16 +1883,43 @@ async function chooseVault() {
 }
 
 /* ── Search ──────────────────────────────────────── */
-async function runSearch(query) {
+function clearSearch() {
+  const input = qs("search-input");
   const box = qs("search-results");
+  const sidebar = qs("sidebar");
+  clearTimeout(state.searchTimer);
+  state.searchTimer = null;
+  state.searchRequestId++;
+  input.value = "";
+  qs("btn-search-clear").hidden = true;
+  box.hidden = true;
+  box.replaceChildren();
+  sidebar.classList.remove("searchActive");
+}
+
+async function runSearch(query, requestId) {
+  const box = qs("search-results");
+  const sidebar = qs("sidebar");
+  if (requestId !== state.searchRequestId) return;
   if (query.trim().length < 2) {
     box.hidden = true;
     box.replaceChildren();
+    sidebar.classList.remove("searchActive");
     return;
   }
+  sidebar.classList.add("searchActive");
   try {
     const hits = await invoke("search_notes", { query });
+    if (requestId !== state.searchRequestId) return;
     box.replaceChildren();
+    if (hits.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "searchEmpty";
+      empty.textContent = "没有找到相关笔记";
+      box.appendChild(empty);
+      box.hidden = false;
+      return;
+    }
     for (const hit of hits) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1867,14 +1933,16 @@ async function runSearch(query) {
       btn.append(title, snippet);
       btn.addEventListener("click", () => {
         loadNote(hit.path);
-        qs("search-input").value = "";
-        box.hidden = true;
-        box.replaceChildren();
+        clearSearch();
       });
       box.appendChild(btn);
     }
-    box.hidden = hits.length === 0;
+    box.hidden = false;
   } catch (err) {
+    if (requestId !== state.searchRequestId) return;
+    box.hidden = true;
+    box.replaceChildren();
+    sidebar.classList.remove("searchActive");
     showToast(String(err));
   }
 }
@@ -2600,7 +2668,7 @@ function applyDesktopState(desktop) {
   state.agentUrl = desktop.agentUrl;
   state.agentPort = desktop.agentPort;
   qs("vault-label").textContent = vaultDisplayName(desktop.vaultPath);
-  qs("btn-vault-switcher").title = `当前笔记本路径: ${desktop.vaultPath}`;
+  qs("btn-vault-switcher").title = `切换笔记本（当前: ${desktop.vaultPath}）`;
   rememberVault(desktop.vaultPath);
 }
 
@@ -2631,6 +2699,13 @@ function initKeyboard() {
       saveNote();
     }
 
+    if (mod && e.key === "f") {
+      e.preventDefault();
+      const input = qs("search-input");
+      input.focus();
+      input.select();
+    }
+
     if (e.key === "Escape") {
       hideContextMenu();
       toggleVaultMenu(false);
@@ -2641,6 +2716,11 @@ function initKeyboard() {
       if (state.editMode) {
         void setEditMode(false);
       }
+      const input = qs("search-input");
+      if (document.activeElement === input || !qs("search-results").hidden) {
+        clearSearch();
+        input.blur();
+      }
     }
   });
 }
@@ -2648,6 +2728,7 @@ function initKeyboard() {
 /* ── Wire events ─────────────────────────────────── */
 function wireEvents() {
   qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
+  qs("btn-home").addEventListener("click", () => { void goHome(); });
   qs("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
   qs("btn-nav-back").addEventListener("click", navBack);
   qs("btn-nav-forward").addEventListener("click", navForward);
@@ -2689,14 +2770,29 @@ function wireEvents() {
   qs("search-input").addEventListener("input", (e) => {
     clearTimeout(state.searchTimer);
     const q = e.target.value;
-    state.searchTimer = setTimeout(() => runSearch(q), 220);
+    const requestId = ++state.searchRequestId;
+    qs("btn-search-clear").hidden = q.length === 0;
+    if (q.trim().length < 2) {
+      void runSearch(q, requestId);
+      return;
+    }
+    state.searchTimer = setTimeout(() => {
+      state.searchTimer = null;
+      void runSearch(q, requestId);
+    }, 220);
+  });
+
+  qs("btn-search-clear").addEventListener("click", () => {
+    clearSearch();
+    qs("search-input").focus();
   });
 
   qs("search-input").addEventListener("blur", () => {
     setTimeout(() => {
       const box = qs("search-results");
-      if (!box.matches(":focus-within")) {
-        box.hidden = true;
+      const search = qs("search-input").closest(".search");
+      if (!box.matches(":focus-within") && !search.matches(":focus-within")) {
+        if (qs("search-input").value === "") clearSearch();
       }
     }, 150);
   });

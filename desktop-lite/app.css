@@ -152,6 +152,9 @@ input, textarea { font-family: inherit; }
 
 .shell.shellSidebarHidden .sidebarResizer { display: none; }
 
+/* Home button: 始终显示 */
+#btn-home { display: flex; }
+
 .sidebarResizer {
   position: relative;
   z-index: 3;
@@ -210,24 +213,6 @@ input, textarea { font-family: inherit; }
 .vaultSwitcherBtn:hover { background: rgba(120, 120, 128, 0.1); }
 .vaultSwitcherBtn:active { transform: scale(0.98); }
 
-.vaultSwitcherMain {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-
-.vaultSwitcherEyebrow {
-  margin: 0;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--notes-text-muted);
-}
-
 .vaultSwitcherTitle {
   display: flex;
   align-items: center;
@@ -256,6 +241,38 @@ input, textarea { font-family: inherit; }
 }
 
 .vaultSwitcherBtn[aria-expanded="true"] .vaultChevron { transform: rotate(180deg); }
+
+.vaultDropdownItemWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.vaultDropdownItemWrap .vaultDropdownItem { flex: 1; padding-right: 26px; }
+
+.vaultRemoveBtn {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  color: var(--notes-text-muted);
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  pointer-events: none;
+}
+.vaultDropdownItemWrap:hover .vaultRemoveBtn,
+.vaultDropdownItemWrap:focus-within .vaultRemoveBtn { opacity: 1; pointer-events: auto; }
+.vaultRemoveBtn:hover { background: rgba(120, 120, 128, 0.12); color: var(--notes-text-primary); }
+.vaultRemoveBtn:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: 1px;
+}
 
 .vaultDropdownMenu {
   position: absolute;
@@ -329,7 +346,7 @@ input, textarea { font-family: inherit; }
 
 .activeVaultPath {
   margin: 0;
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--notes-text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -392,7 +409,7 @@ input, textarea { font-family: inherit; }
 }
 
 .recentVaultPathText {
-  font-size: 9px;
+  font-size: 10.5px;
   color: var(--notes-text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -482,6 +499,23 @@ input, textarea { font-family: inherit; }
 .search input::placeholder { color: var(--notes-text-muted); opacity: 0.8; }
 .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
 
+.searchClearBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(120, 120, 128, 0.18);
+  color: var(--notes-text-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.searchClearBtn:hover { background: rgba(120, 120, 128, 0.32); color: var(--notes-text-primary); }
+
 /* Search results */
 .searchResults {
   margin: 0 8px;
@@ -493,6 +527,26 @@ input, textarea { font-family: inherit; }
   flex-shrink: 0;
   max-height: 280px;
   overflow-y: auto;
+}
+
+/* Search active: results fill remaining space, tree hidden */
+.sidebar.searchActive .treePanel { display: none; }
+.sidebar.searchActive .searchResults {
+  flex: 1;
+  max-height: none;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  background: var(--notes-bg-sidebar);
+}
+
+.searchEmpty {
+  margin: 0;
+  padding: 32px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--notes-text-muted);
 }
 
 .searchHit {
@@ -510,6 +564,7 @@ input, textarea { font-family: inherit; }
 }
 
 .searchHit:last-child { border-bottom: 0; }
+.sidebar.searchActive .searchHit:hover { background: var(--notes-bg-subtle); }
 .searchHit:hover { background: var(--notes-accent-bg); }
 
 .searchHitTitle {

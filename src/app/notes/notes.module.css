@@ -5307,7 +5307,8 @@
   flex-shrink: 0;
 }
 
-.vaultSwitcherBtn[aria-expanded="true"] .vaultChevron {
+.vaultSwitcherBtn[aria-expanded="true"] .vaultChevron,
+.vaultSwitcherChevronBtnOpen .vaultChevron {
   transform: rotate(180deg);
 }
 
@@ -5494,4 +5495,117 @@
   width: 14px;
   height: 14px;
   color: var(--notes-text-muted);
+}
+
+/* Sidebar home button (non-Tauri mode) */
+.sidebarHomeBtn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  margin-left: -8px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--notes-transition-fast);
+}
+
+.sidebarHomeBtn:hover {
+  background: var(--notes-bg-hover);
+}
+
+/* Vault switcher: split name (home) + chevron (dropdown) */
+.vaultSwitcherBtnGroup {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-left: -8px;
+}
+
+.vaultSwitcherNameBtn {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 4px 6px 8px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px 0 0 8px;
+  transition: background var(--notes-transition-fast);
+}
+
+.vaultSwitcherNameBtn:hover {
+  background: var(--notes-bg-hover);
+}
+
+.vaultSwitcherChevronBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  flex-shrink: 0;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 0 8px 8px 0;
+  transition: background var(--notes-transition-fast);
+}
+
+.vaultSwitcherChevronBtn:hover {
+  background: var(--notes-bg-hover);
+}
+
+.vaultSwitcherChevronBtnOpen .vaultChevron {
+  transform: rotate(180deg);
+}
+
+/* Recent vault item: wrapper + hover remove button */
+.vaultDropdownItemWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.vaultDropdownItemWrap .vaultDropdownItem {
+  flex: 1;
+  padding-right: 26px;
+}
+
+.vaultRemoveBtn {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  color: var(--notes-text-muted);
+  transition: opacity var(--notes-transition-fast), background var(--notes-transition-fast), color var(--notes-transition-fast);
+  pointer-events: none;
+}
+
+.vaultDropdownItemWrap:hover .vaultRemoveBtn,
+.vaultDropdownItemWrap:focus-within .vaultRemoveBtn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.vaultRemoveBtn:hover {
+  background: var(--notes-bg-hover);
+  color: var(--notes-text-primary);
+}
+
+.vaultRemoveBtn:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: 1px;
 }

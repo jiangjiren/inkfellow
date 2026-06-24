@@ -838,6 +838,16 @@ export default function NotesExplorer() {
     }
   }, [isTauri, tauriWin, vaultPath]);
 
+  const handleRemoveRecentVault = useCallback((path: string) => {
+    try {
+      const stored = localStorage.getItem("recent_vaults");
+      const list: string[] = stored ? JSON.parse(stored) : [];
+      const newList = list.filter((p) => p !== path);
+      setRecentVaults(newList);
+      localStorage.setItem("recent_vaults", JSON.stringify(newList));
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     if (isTauri && tauriWin) {
       const invoke = tauriWin.__TAURI_INTERNALS__?.invoke || tauriWin.__TAURI__?.core?.invoke;
@@ -3004,26 +3014,35 @@ export default function NotesExplorer() {
         <div className={styles.sidebarHeader}>
           {showTauri ? (
             <div className={styles.vaultSwitcherWrapper}>
-              <button
-                ref={vaultButtonRef}
-                type="button"
-                className={styles.vaultSwitcherBtn}
-                onClick={() => setVaultMenuOpen((open) => !open)}
-                aria-expanded={vaultMenuOpen}
-                title={`当前笔记本路径: ${vaultPath || "未设置"}`}
-              >
-                <div className={styles.vaultSwitcherMain}>
-                  <p className={styles.vaultSwitcherEyebrow}>
-                    {process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}
-                  </p>
-                  <h1 className={styles.vaultSwitcherTitle}>
-                    <span>{vaultName}</span>
-                    <svg className={styles.vaultChevron} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="m6 9 6 6 6-6" />
-                    </svg>
-                  </h1>
-                </div>
-              </button>
+              <div className={styles.vaultSwitcherBtnGroup}>
+                <button
+                  type="button"
+                  className={styles.vaultSwitcherNameBtn}
+                  onClick={() => { setVaultMenuOpen(false); goHome(); }}
+                  title="回到首页"
+                >
+                  <div className={styles.vaultSwitcherMain}>
+                    <p className={styles.vaultSwitcherEyebrow}>
+                      {process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}
+                    </p>
+                    <h1 className={styles.vaultSwitcherTitle}>
+                      <span>{vaultName}</span>
+                    </h1>
+                  </div>
+                </button>
+                <button
+                  ref={vaultButtonRef}
+                  type="button"
+                  className={`${styles.vaultSwitcherChevronBtn} ${vaultMenuOpen ? styles.vaultSwitcherChevronBtnOpen : ""}`}
+                  onClick={() => setVaultMenuOpen((open) => !open)}
+                  aria-expanded={vaultMenuOpen}
+                  title="切换笔记本"
+                >
+                  <svg className={styles.vaultChevron} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </button>
+              </div>
 
               {vaultMenuOpen ? (
                 <div ref={vaultMenuRef} className={styles.vaultDropdownMenu} role="menu">
@@ -3052,21 +3071,35 @@ export default function NotesExplorer() {
                           if (path === vaultPath) return null;
                           const name = path.split(/[/\\]/).filter(Boolean).pop() || "未命名";
                           return (
-                            <button
-                              key={path}
-                              type="button"
-                              className={styles.vaultDropdownItem}
-                              onClick={() => handleSwitchToVault(path)}
-                              role="menuitem"
-                            >
-                              <svg className={styles.dropdownItemIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
-                              </svg>
-                              <div className={styles.recentVaultInfo}>
-                                <span className={styles.recentVaultNameText}>{name}</span>
-                                <span className={styles.recentVaultPathText}>{getDisplayPath(path)}</span>
-                              </div>
-                            </button>
+                            <div key={path} className={styles.vaultDropdownItemWrap} role="none">
+                              <button
+                                type="button"
+                                className={styles.vaultDropdownItem}
+                                onClick={() => handleSwitchToVault(path)}
+                                role="menuitem"
+                              >
+                                <svg className={styles.dropdownItemIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+                                </svg>
+                                <div className={styles.recentVaultInfo}>
+                                  <span className={styles.recentVaultNameText}>{name}</span>
+                                  <span className={styles.recentVaultPathText}>{getDisplayPath(path)}</span>
+                                </div>
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.vaultRemoveBtn}
+                                onClick={(e) => { e.stopPropagation(); handleRemoveRecentVault(path); }}
+                                role="menuitem"
+                                aria-label={`从最近列表移除 ${name}`}
+                                title="从最近列表移除"
+                              >
+                                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <line x1="18" y1="6" x2="6" y2="18" />
+                                  <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                              </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -3089,10 +3122,10 @@ export default function NotesExplorer() {
               ) : null}
             </div>
           ) : (
-            <div>
+            <button type="button" className={styles.sidebarHomeBtn} onClick={goHome} title="回到首页">
               <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
               <h1 className={styles.title}>知识库</h1>
-            </div>
+            </button>
           )}
           {!showTauri && <span className={styles.counter}>{files.length} 篇</span>}
           <div className={styles.sidebarActions}>
@@ -3293,7 +3326,7 @@ export default function NotesExplorer() {
                 <span className={styles.sidebarToggleBadge} aria-hidden="true" />
               )}
             </button>
-            {!isDesktopGitView && (activePath || isDraft) ? (
+            {!isDesktopGitView && (activePath || isDraft) && (isMobileViewport || isDesktopSidebarHidden) ? (
               <button
                 type="button"
                 className={`${styles.iconButton} ${styles.homeBtn}`}

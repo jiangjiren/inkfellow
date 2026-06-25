@@ -33,6 +33,7 @@ const IMAGE_NOTE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "s
 struct AppState {
     processes: Mutex<Vec<Child>>,
     claude_port: u16,
+    agent_token: String,
     sync_tx: Mutex<Option<mpsc::Sender<SyncJob>>>,
     vault_watcher: Mutex<Option<RecommendedWatcher>>,
 }
@@ -101,6 +102,8 @@ struct DesktopState {
     agent_port: u16,
     #[serde(rename = "agentReady")]
     agent_ready: bool,
+    #[serde(rename = "agentToken")]
+    agent_token: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -873,6 +876,7 @@ fn spawn_agent(app: &AppHandle) {
         .env("HOST", "127.0.0.1")
         .env("VAULT_PATH", &vault)
         .env("DESKTOP_MODE", "true")
+        .env("DESKTOP_AGENT_TOKEN", &state.agent_token)
         .env("CLAUDE_PERMISSION_MODE", "auto")
         .env("CLAUDE_CHAT_DATA_DIR", &data_dir)
         .env("CLAUDE_CHAT_AUTH_PROFILE_FILE", &auth_profile_file)
@@ -1122,6 +1126,7 @@ async fn get_desktop_state(app: AppHandle) -> Result<DesktopState, String> {
         agent_url: format!("http://127.0.0.1:{port}"),
         agent_port: port,
         agent_ready: agent_ready(port),
+        agent_token: state.agent_token.clone(),
     })
 }
 
@@ -2101,6 +2106,7 @@ async fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let claude_port = get_free_port().unwrap_or(8089);
+    let agent_token = uuid::Uuid::new_v4().to_string();
 
     let app = tauri::Builder::default()
         .plugin(
@@ -2111,6 +2117,7 @@ pub fn run() {
         .manage(AppState {
             processes: Mutex::new(Vec::new()),
             claude_port,
+            agent_token,
             sync_tx: Mutex::new(None),
             vault_watcher: Mutex::new(None),
         })

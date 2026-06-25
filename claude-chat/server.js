@@ -18,6 +18,7 @@ import { z } from "zod";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
 const HOST = process.env.HOST || "127.0.0.1";
+const DESKTOP_AGENT_TOKEN = process.env.DESKTOP_AGENT_TOKEN || "";
 const DEFAULT_CWD = resolve(process.env.VAULT_PATH || process.cwd());
 const PERMISSION_MODES = new Set(["plan", "acceptEdits", "auto", "bypassPermissions"]);
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -1538,6 +1539,17 @@ const http = createServer((req, res) => {
   const queryParams = new URLSearchParams((req.url ?? "/").split("?")[1] ?? "");
   const method = req.method?.toUpperCase() ?? "GET";
 
+  // Desktop pages are only usable by the Tauri host that started this sidecar.
+  if (
+    DESKTOP_AGENT_TOKEN
+    && queryParams.get("desktop") === "1"
+    && queryParams.get("token") !== DESKTOP_AGENT_TOKEN
+  ) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Forbidden");
+    return;
+  }
+
   // ── WeChat Settings API ──
   if (url === "/api/wechat/status" && method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1930,7 +1942,19 @@ const http = createServer((req, res) => {
 
 // ── WebSocket ─────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server: http });
+const wss = new WebSocketServer({ noServer: true });
+
+http.on("upgrade", (req, socket, head) => {
+  const params = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`).searchParams;
+  if (DESKTOP_AGENT_TOKEN && params.get("token") !== DESKTOP_AGENT_TOKEN) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
+});
 
 wss.on("connection", (ws) => {
   let abortCtrl = null;

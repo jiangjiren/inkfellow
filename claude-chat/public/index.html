@@ -95,7 +95,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 .gen-chip-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: genPulse 1.5s ease-in-out infinite; }
 @keyframes genPulse { 0%, 100% { opacity: 0.2; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1); } }
 
-/* ── Slash popup ── */
+/* ── Composer popup: slash commands + note mentions ── */
 #input-wrap {
   position: relative;
   flex-shrink: 0;
@@ -185,6 +185,15 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   background: rgba(26, 122, 63, 0.08);
   color: var(--green);
   border: 1px solid rgba(26, 122, 63, 0.15);
+}
+.slash-badge.note {
+  background: rgba(146, 96, 10, 0.08);
+  color: var(--yellow);
+  border: 1px solid rgba(146, 96, 10, 0.16);
+}
+.mention-item .slash-cmd {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 560;
 }
 
 /* ── Composer ── */
@@ -306,6 +315,62 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   flex-shrink: 0;
   opacity: 0.55;
   font-weight: 500;
+}
+
+/* explicitly attached vault notes */
+#mention-chips {
+  display: none;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 10px 0;
+}
+#mention-chips.visible { display: flex; }
+.mention-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 5px 4px 8px;
+  border: 1px solid rgba(26,108,246,0.18);
+  border-radius: 999px;
+  background: rgba(26,108,246,0.055);
+  color: var(--accent);
+}
+.mention-context-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.72;
+}
+.mention-context-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 550;
+}
+.mention-context-remove {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.5;
+}
+.mention-context-remove:hover {
+  background: rgba(26,108,246,0.1);
+  opacity: 1;
 }
 
 #ctx-path {
@@ -569,7 +634,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   transition: background 0.12s;
 }
 .img-thumb-del:hover { background: var(--red); }
-#btn-attach {
+#btn-attach, #btn-mention {
   flex-shrink: 0;
   width: 26px; height: 26px;
   border-radius: 6px;
@@ -581,7 +646,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   place-items: center;
   transition: background 0.15s, color 0.15s;
 }
-#btn-attach:hover { background: var(--bg3); color: var(--text); }
+#btn-attach:hover, #btn-mention:hover { background: var(--bg3); color: var(--text); }
+#btn-mention span { font-size: 14px; font-weight: 400; line-height: 1; }
 
 /* ── Chat header ── */
 #chat-header {
@@ -1717,9 +1783,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     </div>
   </section>
   <div id="input-wrap">
-    <div id="slash-popup" role="listbox" aria-label="命令列表"></div>
+    <div id="slash-popup" role="listbox" aria-label="输入建议"></div>
     <div id="composer">
       <div id="image-chip"></div>
+      <div id="mention-chips" aria-label="已选择的笔记上下文"></div>
       <div id="quote-chip">
         <span id="quote-label">引用</span>
         <span id="quote-text"></span>
@@ -1736,11 +1803,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </div>
       <div id="prompt-row">
         <input type="file" id="file-input" accept="image/*" style="display:none" />
-        <textarea id="prompt" rows="1" placeholder="发消息给 Claude… (/ 调用 skill)"></textarea>
+        <textarea id="prompt" rows="1" placeholder="发消息给 Fellow…（@ 引用笔记，/ 调用 skill）"></textarea>
       </div>
       <div id="input-toolbar">
         <button id="btn-attach" title="附加图片（或直接粘贴）" aria-label="附加图片">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button id="btn-mention" title="引用笔记（输入 @ 亦可）" aria-label="引用笔记">
+          <span aria-hidden="true">@</span>
         </button>
         <div id="permission-picker">
           <button id="permission-btn" class="toolbar-picker-btn" aria-label="选择权限模式" aria-haspopup="listbox">
@@ -1851,6 +1921,46 @@ const rateLimitLabel = document.getElementById("rate-limit-label");
 const quoteChip    = document.getElementById("quote-chip");
 const quoteTextEl  = document.getElementById("quote-text");
 const quoteLinesEl = document.getElementById("quote-lines");
+const mentionChipsEl = document.getElementById("mention-chips");
+const pageParams = new URLSearchParams(location.search);
+const configuredParentOrigin = pageParams.get("parentOrigin");
+const configuredParentToken = pageParams.get("token");
+const isDesktopEmbed = pageParams.get("desktop") === "1";
+let referrerOrigin = null;
+try {
+  referrerOrigin = document.referrer ? new URL(document.referrer).origin : null;
+} catch {}
+// 宿主窗口（desktop-lite）的 origin 因运行模式而异，且端口会变：
+//   - dev：    http://127.0.0.1:1430（Tauri dev server）
+//   - 打包后： tauri://localhost 或 http(s)://tauri.localhost
+// 无法靠固定字符串识别，先限定为本机来源，再用 sidecar 校验过的随机 token
+// 认证真实桌面宿主。
+function isLocalHostOrigin(origin) {
+  if (!origin) return false;
+  if (origin === "null") return true; // 自定义协议下的 opaque origin
+  try {
+    const { protocol, hostname } = new URL(origin);
+    if (protocol === "tauri:") return true;
+    return hostname === "tauri.localhost"
+      || hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+const parentOrigin = (() => {
+  if (isDesktopEmbed) {
+    if (isLocalHostOrigin(configuredParentOrigin)) return configuredParentOrigin;
+    // 非本机来源一律拒绝；显式报错而非静默失效，便于第一时间定位。
+    console.error(
+      "[desktop] parentOrigin 非本机来源，parent↔iframe 通信已禁用：",
+      configuredParentOrigin,
+    );
+    return null;
+  }
+  return referrerOrigin === location.origin ? referrerOrigin : null;
+})();
 const settingsBtn   = document.getElementById("btn-settings");
 const authDialog    = document.getElementById("auth-dialog");
 const authBackdrop  = document.getElementById("auth-backdrop");
@@ -1920,6 +2030,20 @@ function clearImages() {
 document.getElementById("btn-attach").addEventListener("click", () => {
   fileInput.value = "";
   fileInput.click();
+});
+
+document.getElementById("btn-mention").addEventListener("click", () => {
+  promptEl.focus();
+  const start = promptEl.selectionStart ?? promptEl.value.length;
+  const end = promptEl.selectionEnd ?? start;
+  const before = promptEl.value.slice(0, start);
+  const previousCharacter = before.slice(-1);
+  const needsSpace = before.length > 0 && !/[\s([{"'“‘，。！？、；：]/u.test(previousCharacter);
+  const insert = needsSpace ? " @" : "@";
+  promptEl.value = before + insert + promptEl.value.slice(end);
+  const caret = start + insert.length;
+  promptEl.setSelectionRange(caret, caret);
+  promptEl.dispatchEvent(new Event("input"));
 });
 
 fileInput.addEventListener("change", () => {
@@ -2707,14 +2831,14 @@ function setGenerating(v, notifyParent = true) {
   sendBtn.setAttribute("aria-label", v ? "停止" : "发送");
   iconSend.style.display = v ? "none" : "";
   iconStop.style.display = v ? "" : "none";
-  if (notifyParent && window.parent && window.parent !== window) {
-    window.parent.postMessage({ type: "ai-generating-state", isGenerating: v }, "*");
-  }
+  if (notifyParent) postParentMessage({ type: "ai-generating-state", isGenerating: v });
 }
 
 // ── Note context (injected by parent via postMessage) ─────
 let currentNoteFile = null;
 let noteContextEnabled = true;
+let vaultNotes = [];
+const selectedMentionNotes = new Map();
 
 function renderNoteContext() {
   if (!currentNoteFile) {
@@ -2729,7 +2853,94 @@ function renderNoteContext() {
   ctxToggle.title = noteContextEnabled ? "不发送当前笔记上下文" : "发送当前笔记上下文";
 }
 
+function normalizeMentionSearch(value) {
+  return String(value ?? "").normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+function normalizeVaultNotes(notes) {
+  const seen = new Set();
+  const normalized = [];
+  for (const candidate of Array.isArray(notes) ? notes : []) {
+    if (!candidate || typeof candidate.path !== "string" || typeof candidate.title !== "string") continue;
+    // 路径必须原样保留：文件名在 macOS/Linux 可含前后空格，trim 会指向错误文件、
+    // 甚至与其他路径碰撞去重。只对标题/搜索词做规整。
+    const path = candidate.path;
+    const title = candidate.title.trim();
+    if (!path.trim() || !title || seen.has(path)) continue;
+    seen.add(path);
+    normalized.push({
+      path,
+      title,
+      searchTitle: normalizeMentionSearch(title),
+      searchPath: normalizeMentionSearch(path.replace(/\.(md|html?)$/i, "")),
+    });
+  }
+  return normalized;
+}
+
+function renderMentionChips() {
+  const notes = [...selectedMentionNotes.values()];
+  mentionChipsEl.classList.toggle("visible", notes.length > 0);
+  mentionChipsEl.innerHTML = notes.map((note) => `
+    <span class="mention-context-chip" title="${escapeAttr(note.path)}">
+      <svg class="mention-context-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="mention-context-title">${escapeHtml(note.title)}</span>
+      <button type="button" class="mention-context-remove" data-path="${escapeAttr(note.path)}" aria-label="移除笔记 ${escapeAttr(note.title)}">×</button>
+    </span>
+  `).join("");
+}
+
+function clearMentionNotes() {
+  selectedMentionNotes.clear();
+  renderMentionChips();
+}
+
+mentionChipsEl.addEventListener("click", (e) => {
+  const removeButton = e.target.closest(".mention-context-remove");
+  if (!removeButton) return;
+  selectedMentionNotes.delete(removeButton.dataset.path);
+  renderMentionChips();
+  promptEl.focus();
+});
+
+function postParentMessage(message) {
+  if (window.parent === window || !parentOrigin) return false;
+  try {
+    // Opaque custom-protocol origins cannot be named as a postMessage target.
+    // The payload is non-sensitive, and the destination is still window.parent only.
+    const payload = isDesktopEmbed
+      ? { ...message, __token: configuredParentToken }
+      : message;
+    window.parent.postMessage(payload, parentOrigin === "null" ? "*" : parentOrigin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedParentMessage(event) {
+  if (window.parent === window || event.source !== window.parent) return false;
+  if (!parentOrigin || event.origin !== parentOrigin) return false;
+  // 桌面嵌入额外要求 sidecar 校验过的会话 token：sandbox iframe 可把 origin 伪造成 "null"
+  // 冒充本机宿主，仅凭 Origin 挡不住；token 由宿主经 query 注入、跨域不可读，攻击者
+  // 无法伪造。非桌面（同源 web 嵌入）已由同源 Origin 保证，无需 token。
+  if (isDesktopEmbed) {
+    return Boolean(configuredParentToken) && event.data?.__token === configuredParentToken;
+  }
+  return true;
+}
+
 window.addEventListener("message", (e) => {
+  if (!isTrustedParentMessage(e)) return;
+  if (e.data?.type === "vault-notes") {
+    vaultNotes = normalizeVaultNotes(e.data.notes);
+    for (const path of selectedMentionNotes.keys()) {
+      const refreshed = vaultNotes.find((note) => note.path === path);
+      if (refreshed) selectedMentionNotes.set(path, refreshed);
+      else selectedMentionNotes.delete(path);
+    }
+    renderMentionChips();
+  }
   if (e.data?.type === "note-context" && e.data.filePath) {
     const isNewFile = currentNoteFile !== e.data.filePath;
     currentNoteFile = e.data.filePath;
@@ -2781,11 +2992,14 @@ document.getElementById("quote-dismiss").addEventListener("click", () => {
 });
 
 // ── WebSocket ─────────────────────────────────────────────
-const urlParams = new URLSearchParams(location.search);
+const urlParams = pageParams;
 const wsPort = urlParams.get('wsPort');
-const wsUrl = wsPort 
-  ? `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.hostname}:${wsPort}/`
-  : `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${location.pathname}`;
+const wsTokenQuery = isDesktopEmbed && configuredParentToken
+  ? `?token=${encodeURIComponent(configuredParentToken)}`
+  : "";
+const wsUrl = wsPort
+  ? `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.hostname}:${wsPort}/${wsTokenQuery}`
+  : `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${location.pathname}${wsTokenQuery}`;
 let ws = null;
 
 function connect() {
@@ -2793,8 +3007,10 @@ function connect() {
   ws.onopen = () => {
     setGenerating(false, false);
     requestSkillRefresh(true);
+    postParentMessage({ type: "agent-ready" });
   };
   ws.onclose = () => {
+    postParentMessage({ type: "agent-not-ready" });
     sendBtn.disabled = true;
     setGenerating(false, false);
     setTimeout(connect, 3000);
@@ -3388,9 +3604,10 @@ function updateTypingStatus(text) {
 function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
 
-// ── Slash popup ───────────────────────────────────────────
+// ── Composer popup: slash commands + @ note mentions ─────
 let popupItems  = [];
 let activeIndex = -1;
+let popupMode = null;
 
 function getSlashQuery() {
   const val = promptEl.value;
@@ -3401,7 +3618,17 @@ function getSlashQuery() {
   return afterSlash.toLowerCase();
 }
 
-function renderPopup(query) {
+function highlightPopupMatch(value, query) {
+  const text = String(value);
+  if (!query) return escapeHtml(text);
+  const index = text.toLocaleLowerCase().indexOf(String(query).toLocaleLowerCase());
+  if (index < 0) return escapeHtml(text);
+  return escapeHtml(text.slice(0, index))
+    + `<em>${escapeHtml(text.slice(index, index + query.length))}</em>`
+    + escapeHtml(text.slice(index + query.length));
+}
+
+function renderSlashPopup(query) {
   const matches = slashCommands.filter((c) =>
     query === "" || c.name.toLowerCase().includes(query)
   );
@@ -3410,6 +3637,7 @@ function renderPopup(query) {
 
   popupItems = matches;
   activeIndex = 0;
+  popupMode = "slash";
 
   const builtins = matches.filter((c) => c.kind === "builtin");
   const skills   = matches.filter((c) => c.kind === "skill");
@@ -3419,9 +3647,7 @@ function renderPopup(query) {
     if (!items.length) return "";
     let html = `<div class="slash-header">${label}</div>`;
     for (const c of items) {
-      const highlighted = query
-        ? c.name.replace(new RegExp(`(${query})`, "i"), "<em>$1</em>")
-        : c.name;
+      const highlighted = highlightPopupMatch(c.name, query);
       const badge = c.kind === "builtin"
         ? `<span class="slash-badge builtin">内置</span>`
         : `<span class="slash-badge skill">skill</span>`;
@@ -3438,6 +3664,56 @@ function renderPopup(query) {
     renderGroup("内置命令", builtins) +
     renderGroup("Skills", skills);
 
+  popupEl.setAttribute("aria-label", "命令列表");
+  popupEl.classList.add("open");
+}
+
+function getMentionQuery() {
+  const cursor = promptEl.selectionStart ?? promptEl.value.length;
+  const beforeCursor = promptEl.value.slice(0, cursor);
+  const mentionStart = beforeCursor.lastIndexOf("@");
+  if (mentionStart < 0) return null;
+  if (mentionStart > 0 && !/[\s([{"'“‘，。！？、；：]/u.test(beforeCursor[mentionStart - 1])) return null;
+
+  const query = beforeCursor.slice(mentionStart + 1);
+  if (query.includes("\n") || query.length > 80) return null;
+  return { query, start: mentionStart, end: cursor };
+}
+
+function mentionScore(note, query) {
+  if (!query) return 4;
+  if (note.searchTitle === query) return 0;
+  if (note.searchTitle.startsWith(query)) return 1;
+  if (note.searchPath.startsWith(query)) return 2;
+  return 3;
+}
+
+function renderMentionPopup(mention) {
+  const query = normalizeMentionSearch(mention.query);
+  const matches = vaultNotes
+    .filter((note) => !selectedMentionNotes.has(note.path))
+    .filter((note) => !query
+      || note.searchTitle.includes(query)
+      || note.searchPath.includes(query))
+    .sort((a, b) => mentionScore(a, query) - mentionScore(b, query)
+      || a.title.localeCompare(b.title, "zh-CN"))
+    .slice(0, 20);
+
+  if (matches.length === 0) { hidePopup(); return; }
+
+  popupItems = matches;
+  activeIndex = 0;
+  popupMode = "mention";
+  popupEl.innerHTML = `
+    <div class="slash-header">添加笔记上下文</div>
+    ${matches.map((note, index) => `
+      <button class="slash-item mention-item${index === 0 ? " active" : ""}" data-i="${index}" role="option">
+        <span class="slash-cmd">${highlightPopupMatch(note.title, mention.query)}</span>
+        <span class="slash-desc" title="${escapeAttr(note.path)}">${escapeHtml(note.path)}</span>
+        <span class="slash-badge note">笔记</span>
+      </button>
+    `).join("")}`;
+  popupEl.setAttribute("aria-label", "笔记列表");
   popupEl.classList.add("open");
 }
 
@@ -3445,6 +3721,7 @@ function hidePopup() {
   popupEl.classList.remove("open");
   popupItems = [];
   activeIndex = -1;
+  popupMode = null;
 }
 
 function setActive(i) {
@@ -3457,6 +3734,21 @@ function setActive(i) {
 function selectItem(i) {
   const item = popupItems[i];
   if (!item) return;
+  if (popupMode === "mention") {
+    const range = getMentionQuery();
+    if (!range) {
+      hidePopup();
+      return;
+    }
+    selectedMentionNotes.set(item.path, item);
+    promptEl.setRangeText("", range.start, range.end, "end");
+    promptEl.style.height = "36px";
+    promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
+    renderMentionChips();
+    hidePopup();
+    promptEl.focus();
+    return;
+  }
   // /clear is handled locally; everything else is sent to claude
   if (item.name === "clear") {
     saveCurrentConversation();
@@ -3464,6 +3756,7 @@ function selectItem(i) {
     messageLog = []; currentConvId = null; currentSessionId = null;
     promptEl.value = "";
     promptEl.style.height = "36px";
+    clearMentionNotes();
     hidePopup();
     ws?.send(JSON.stringify({ reset: true }));
     return;
@@ -3482,16 +3775,30 @@ popupEl.addEventListener("mousedown", (e) => {
 });
 
 // ── Input events ──────────────────────────────────────────
-promptEl.addEventListener("input", () => {
+function updateComposerPopup() {
   promptEl.style.height = "36px";
   promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
 
-  const query = getSlashQuery();
-  if (query !== null) renderPopup(query);
+  const mention = getMentionQuery();
+  if (mention && vaultNotes.length > 0) {
+    renderMentionPopup(mention);
+    return;
+  }
+  const slashQuery = getSlashQuery();
+  if (slashQuery !== null) renderSlashPopup(slashQuery);
   else hidePopup();
+}
+
+promptEl.addEventListener("input", updateComposerPopup);
+promptEl.addEventListener("click", updateComposerPopup);
+promptEl.addEventListener("keyup", (e) => {
+  if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key)) {
+    updateComposerPopup();
+  }
 });
 
 promptEl.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
   if (popupEl.classList.contains("open")) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -3537,20 +3844,25 @@ function send() {
     messageLog = []; currentConvId = null; currentSessionId = null;
     promptEl.value = "";
     promptEl.style.height = "36px";
+    clearMentionNotes();
     ws.send(JSON.stringify({ reset: true }));
     hidePopup();
     return;
   }
 
   hidePopup();
+  const mentionedNotes = [...selectedMentionNotes.values()];
   if (!currentConvId) currentConvId = genId();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
   // If a previous request froze without a done/stopped event, assistantEl still
   // points to the old AI message element. Clear it so the upcoming response is
   // appended after this new user message, not inside the old AI bubble.
   resetAssistantState();
-  addMessage("user", text, imagePreviewUrls);
-  messageLog.push({ role: "user", text, cost: null });
+  const displayText = mentionedNotes.length > 0
+    ? `${text}\n\n引用笔记：${mentionedNotes.map((note) => `@${note.title}`).join(" · ")}`
+    : text;
+  addMessage("user", displayText, imagePreviewUrls);
+  messageLog.push({ role: "user", text: displayText, cost: null });
   promptEl.value = "";
   promptEl.style.height = "36px";
   addTyping();
@@ -3559,6 +3871,13 @@ function send() {
 
   const parts = [];
   if (currentNoteFile && noteContextEnabled) parts.push(`当前查看的文件：${currentNoteFile}`);
+  if (mentionedNotes.length > 0) {
+    parts.push(
+      "用户指定以下 vault 笔记作为本轮上下文。请优先读取这些文件，并基于其中内容回答：\n"
+      + mentionedNotes.map((note) => `- ${JSON.stringify(note.path)}`).join("\n"),
+    );
+    clearMentionNotes();
+  }
   if (quotedText) {
     const sectionHint = quotedSection ? `（「${quotedSection}」章节）` : "";
     let anchor = "";
@@ -3669,7 +3988,7 @@ function send() {
   }
 
   labelBtn.addEventListener("click", () => {
-    window.parent.postMessage({ type: "open-git-tab" }, "*");
+    postParentMessage({ type: "open-git-tab" });
   });
   syncBtn.addEventListener("click", () => void handleSync());
 
@@ -3917,6 +4236,7 @@ async function deleteConversation(id) {
 
 async function loadConversation(conv) {
   await saveCurrentConversation();
+  clearMentionNotes();
   // 列表接口只返回摘要，点击时按需拉取完整内容
   if (!conv.messages) {
     try {
@@ -3951,6 +4271,7 @@ async function loadConversation(conv) {
 
 async function startNewConversation() {
   await saveCurrentConversation();
+  clearMentionNotes();
   messagesEl.innerHTML = "";
   messageLog = [];
   currentConvId = null;

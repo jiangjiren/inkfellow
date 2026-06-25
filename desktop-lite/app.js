@@ -49,6 +49,9 @@ const state = {
   gitDiscardPath: null,
   gitDiscarding: false,
   treeRefreshTimer: null,
+  vaultNotesSignature: null,
+  agentReady: false,
+  agentToken: null,
 };
 
 /* ── Tauri bridge ────────────────────────────────── */
@@ -1166,14 +1169,8 @@ function wireDashboard() {
     if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
     switchTab("agent");
     setTimeout(() => {
-      const frame = qs("agent-frame");
-      try {
-        frame.contentWindow?.postMessage(
-          text ? { type: "note-ask", text } : { type: "note-ask" },
-          "*",
-        );
-      } catch {}
-      if (input) input.value = "";
+      const accepted = postAgentMessage(text ? { type: "note-ask", text } : { type: "note-ask" });
+      if (accepted && input) input.value = "";
     }, 120);
   });
 
@@ -1948,17 +1945,64 @@ async function runSearch(query, requestId) {
 }
 
 /* ── Agent ───────────────────────────────────────── */
-function sendNoteContext() {
-  const frame = qs("agent-frame");
-  if (!frame.contentWindow || !state.activePath) return;
+function agentOrigin() {
   try {
-    frame.contentWindow.postMessage({ type: "note-context", filePath: state.activePath }, "*");
-  } catch {}
+    return new URL(state.agentUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+const pendingAgentMessages = [];
+
+function postAgentMessage(message) {
+  const frame = qs("agent-frame");
+  const targetOrigin = agentOrigin();
+  // iframe 未就绪时其 origin 仍是宿主窗口，精确 targetOrigin 会被浏览器拒绝并刷红
+  // console；此时入队（设上限防堆积），待 iframe 内部 WebSocket 就绪后统一补发。
+  if (!state.agentReady || !frame.contentWindow || !targetOrigin) {
+    if (pendingAgentMessages.length >= 100) return false;
+    pendingAgentMessages.push(message);
+    return true;
+  }
+  try {
+    // 附带由 Rust 与 sidecar 共享的会话 token，供 iframe 校验真实桌面宿主。
+    frame.contentWindow.postMessage({ ...message, __token: state.agentToken }, targetOrigin);
+    return true;
+  } catch {
+    if (pendingAgentMessages.length >= 100) return false;
+    pendingAgentMessages.push(message);
+    return true;
+  }
+}
+
+function flushAgentMessages() {
+  if (!state.agentReady) return;
+  const queued = pendingAgentMessages.splice(0);
+  for (const message of queued) postAgentMessage(message);
+}
+
+function sendNoteContext() {
+  if (!state.activePath) return;
+  postAgentMessage({ type: "note-context", filePath: state.activePath });
+}
+
+function sendVaultNotes(force = false) {
+  if (!state.tree) return;
+  const notes = flattenFiles(state.tree)
+    .filter((file) => /^(md|html?)$/i.test(file.extension || extOf(file.name)))
+    .map((file) => ({
+      path: file.path,
+      title: stripExt(file.name),
+    }));
+  const signature = JSON.stringify([state.vaultPath, notes]);
+  if (!force && signature === state.vaultNotesSignature) return;
+  if (postAgentMessage({ type: "vault-notes", notes })) {
+    state.vaultNotesSignature = signature;
+  }
 }
 
 function sendSelectionContext() {
-  const frame = qs("agent-frame");
-  if (!frame.contentWindow) return;
   let text = "";
   if (state.editor && state.editor.hasFocus()) {
     text = state.editor.getSelection().trim();
@@ -1966,13 +2010,9 @@ function sendSelectionContext() {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) text = sel.toString().trim();
   }
-  try {
-    if (text) {
-      frame.contentWindow.postMessage({ type: "note-selection", text }, "*");
-    } else {
-      frame.contentWindow.postMessage({ type: "note-selection-clear" }, "*");
-    }
-  } catch {}
+  postAgentMessage(text
+    ? { type: "note-selection", text }
+    : { type: "note-selection-clear" });
 }
 
 async function waitForAgent() {
@@ -1982,9 +2022,15 @@ async function waitForAgent() {
       if (ready) {
         // Extra 800ms: TCP port open doesn't mean HTTP server is ready
         await new Promise((r) => setTimeout(r, 800));
-        const url = `${state.agentUrl}/?desktop=1&wsPort=${state.agentPort}`;
+        const url = new URL("/", state.agentUrl);
+        url.searchParams.set("desktop", "1");
+        url.searchParams.set("wsPort", String(state.agentPort));
+        url.searchParams.set("parentOrigin", window.location.origin);
+        if (!state.agentToken) throw new Error("Missing desktop agent token.");
+        url.searchParams.set("token", state.agentToken);
         const frame = qs("agent-frame");
-        frame.src = url;
+        state.agentReady = false;
+        frame.src = url.toString();
         return;
       }
     } catch {}
@@ -2664,9 +2710,15 @@ function restoreLayout() {
 
 /* ── Desktop state ───────────────────────────────── */
 function applyDesktopState(desktop) {
+  if (state.vaultPath !== desktop.vaultPath) {
+    state.vaultNotesSignature = null;
+    pendingAgentMessages.length = 0;
+    state.agentReady = false;
+  }
   state.vaultPath = desktop.vaultPath;
   state.agentUrl = desktop.agentUrl;
   state.agentPort = desktop.agentPort;
+  state.agentToken = desktop.agentToken;
   qs("vault-label").textContent = vaultDisplayName(desktop.vaultPath);
   qs("btn-vault-switcher").title = `切换笔记本（当前: ${desktop.vaultPath}）`;
   rememberVault(desktop.vaultPath);
@@ -2676,6 +2728,7 @@ async function loadTree(selectFirst = false) {
   const response = await invoke("list_notes_tree");
   state.tree = response.root;
   renderTree();
+  sendVaultNotes();
   if (!state.activeNote) renderDocArea();
 
   if (selectFirst && !state.activePath) {
@@ -2765,7 +2818,20 @@ function wireEvents() {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
 
-  qs("agent-frame").addEventListener("load", sendNoteContext);
+  window.addEventListener("message", (event) => {
+    const frame = qs("agent-frame");
+    if (event.source !== frame.contentWindow || event.origin !== agentOrigin()) return;
+    if (!state.agentToken || event.data?.__token !== state.agentToken) return;
+    if (event.data?.type === "agent-not-ready") {
+      state.agentReady = false;
+      return;
+    }
+    if (event.data?.type !== "agent-ready") return;
+    state.agentReady = true;
+    flushAgentMessages();
+    sendNoteContext();
+    sendVaultNotes(true);
+  });
 
   qs("search-input").addEventListener("input", (e) => {
     clearTimeout(state.searchTimer);

@@ -95,7 +95,7 @@ const DATA_DIR = process.env.CLAUDE_CHAT_DATA_DIR || join(__dirname, "data");
 mkdirSync(DATA_DIR, { recursive: true });
 
 // 启动时自动迁移旧位置的 per-PORT 文件
-for (const name of [`session-${PORT}.json`, `history-${PORT}.json`,
+for (const name of [`session-${PORT}.json`, `history-${PORT}.json`, "history.json",
                      `wechat-bot-${PORT}.json`, `wechat-bot-${PORT}.sync.json`,
                      `wechat-history-${PORT}.json`, `active-profile-${PORT}.json`]) {
   const oldPath = join(__dirname, name);
@@ -563,7 +563,10 @@ export function buildAgentEnv(profileData, effort, requestedModel) {
 }
 
 // ── Server-side history ────────────────────────────────────
-const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(DATA_DIR, `history-${PORT}.json`);
+const CUSTOM_HISTORY_FILE = Boolean(process.env.CLAUDE_CHAT_HISTORY_FILE);
+const HISTORY_FILE = process.env.CLAUDE_CHAT_HISTORY_FILE || join(DATA_DIR, "history.json");
+const LEGACY_HISTORY_FILE_RE = /^history-\d+\.json$/;
+const HISTORY_MIGRATION_MARKER = join(DATA_DIR, ".history-port-migration-v2");
 const MAX_SERVER_HISTORY = 100;
 
 export function resolveAllowedCwd(requestedCwd) {
@@ -591,16 +594,98 @@ function resolvePublicFile(urlPath) {
   return filePath;
 }
 
-function readHistory() {
+function readHistoryFile(filePath) {
   try {
-    if (existsSync(HISTORY_FILE)) return JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+    if (!existsSync(filePath)) return [];
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
   } catch { }
   return [];
 }
 
-function writeHistory(arr) {
-  try { writeFileSync(HISTORY_FILE, JSON.stringify(arr), "utf8"); } catch { }
+function historyMessageCount(item) {
+  return Array.isArray(item?.messages) ? item.messages.length : 0;
 }
+
+function historyTime(item) {
+  const value = Date.parse(item?.date ?? "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function isHistoryItem(item) {
+  return item && typeof item === "object" && typeof item.id === "string" && item.id.trim();
+}
+
+function shouldReplaceHistoryItem(current, next) {
+  if (!current) return true;
+  const currentMessages = historyMessageCount(current);
+  const nextMessages = historyMessageCount(next);
+  if (nextMessages !== currentMessages) return nextMessages > currentMessages;
+  return historyTime(next) >= historyTime(current);
+}
+
+function mergeHistoryRecords(...groups) {
+  const byId = new Map();
+  for (const group of groups) {
+    for (const item of group) {
+      if (!isHistoryItem(item)) continue;
+      const current = byId.get(item.id);
+      if (shouldReplaceHistoryItem(current, item)) byId.set(item.id, item);
+    }
+  }
+  return [...byId.values()]
+    .sort((a, b) => historyTime(b) - historyTime(a));
+}
+
+function writeJsonFile(filePath, value) {
+  try {
+    const tmp = `${filePath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(value), "utf8");
+    renameSync(tmp, filePath);
+  } catch { }
+}
+
+function migrateLegacyHistoryFiles() {
+  if (CUSTOM_HISTORY_FILE) return;
+
+  const canonical = readHistoryFile(HISTORY_FILE);
+  const legacyGroups = [];
+  const sourceFiles = [];
+
+  try {
+    for (const name of readdirSync(DATA_DIR).sort()) {
+      if (!LEGACY_HISTORY_FILE_RE.test(name)) continue;
+      const filePath = join(DATA_DIR, name);
+      const records = readHistoryFile(filePath);
+      if (records.length === 0) continue;
+      legacyGroups.push(records);
+      sourceFiles.push(name);
+    }
+  } catch { }
+
+  if (legacyGroups.length === 0) {
+    if (!existsSync(HISTORY_FILE)) writeJsonFile(HISTORY_FILE, []);
+    return;
+  }
+
+  const merged = mergeHistoryRecords(canonical, ...legacyGroups);
+  writeJsonFile(HISTORY_FILE, merged);
+  writeJsonFile(HISTORY_MIGRATION_MARKER, {
+    migratedAt: new Date().toISOString(),
+    sourceFiles,
+    conversations: merged.length,
+  });
+}
+
+function readHistory() {
+  return readHistoryFile(HISTORY_FILE);
+}
+
+function writeHistory(arr) {
+  writeJsonFile(HISTORY_FILE, arr);
+}
+
+migrateLegacyHistoryFiles();
 
 // ── Skills preload ─────────────────────────────────────────
 function addSkillSlugsFromDir(slugs, dir) {

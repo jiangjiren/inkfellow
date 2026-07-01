@@ -26,20 +26,24 @@ export function init(context) {
       if (!existsSync(ctx.WECHAT_CONFIG_FILE)) throw new Error("WeChat not connected");
       const creds = JSON.parse(readFileSync(ctx.WECHAT_CONFIG_FILE, "utf8"));
       if (!creds.token || !creds.baseUrl) throw new Error("WeChat credentials incomplete");
-      const peers = typeof ctx.resolveWechatDeliveryPeers === "function"
-        ? ctx.resolveWechatDeliveryPeers(peer)
-        : [peer];
+      const targets = typeof ctx.resolveWechatDeliveryTargets === "function"
+        ? ctx.resolveWechatDeliveryTargets(peer)
+        : (typeof ctx.resolveWechatDeliveryPeers === "function"
+          ? ctx.resolveWechatDeliveryPeers(peer).map(candidate => ({ peer: candidate }))
+          : [{ peer }]);
       let lastErr = null;
-      for (const candidate of peers) {
+      for (const target of targets) {
+        const candidate = typeof target === "string" ? target : target.peer;
+        const contextToken = typeof target === "object" ? target.contextToken : undefined;
         try {
-          await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text);
+          await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text, contextToken, creds.botId || "");
           if (candidate !== peer) {
             console.log(`[Scheduler] WeChat delivery fallback succeeded: ${String(peer).slice(0, 12)}... -> ${String(candidate).slice(0, 12)}...`);
           }
           return;
         } catch (err) {
           lastErr = err;
-          if (candidate !== peers[peers.length - 1]) {
+          if (target !== targets[targets.length - 1]) {
             console.warn(`[Scheduler] WeChat delivery to ${String(candidate).slice(0, 12)}... failed, trying fallback: ${err.message}`);
           }
         }

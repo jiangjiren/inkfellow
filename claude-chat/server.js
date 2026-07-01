@@ -114,6 +114,7 @@ const WECHAT_CDN_BASE_URL = process.env.WECHAT_CDN_BASE_URL || "https://novac2c.
 const WECHAT_MEDIA_DIR = join(DATA_DIR, `wechat-media-${PORT}`);
 const WECHAT_MAX_INLINE_IMAGE_BYTES = Number.parseInt(process.env.WECHAT_MAX_INLINE_IMAGE_BYTES || String(5 * 1024 * 1024), 10);
 const WECHAT_MAX_MEDIA_BYTES = Number.parseInt(process.env.WECHAT_MAX_MEDIA_BYTES || String(25 * 1024 * 1024), 10);
+const WECHAT_MAX_TEXT_CHARS = Number.parseInt(process.env.WECHAT_MAX_TEXT_CHARS || "1800", 10);
 mkdirSync(WECHAT_MEDIA_DIR, { recursive: true });
 
 const SCHEDULER_TROUBLESHOOT_RE = /没收到|没有收到|没推送|没有推送|没生效|不生效|未生效|没执行|没有执行|怎么.*没.*推送|怎么.*没.*提醒|有哪些.*任务|任务列表|列出.*任务|查看.*任务|查.*任务/;
@@ -708,20 +709,43 @@ function sendSkillInit(send, provider) {
 const activeWechatLogins = new Map();
 let wechatPollingController = null;
 
-// 每个微信 sender 的对话历史（多轮上下文）
-// 结构 Map<sender, { turns: [{role, content}], lastAt: number }>
+// 每个微信 sender 的对话历史（多轮上下文）和最近一次可用的会话投递 token。
+// 结构 Map<sender, { turns: [{role, content}], lastAt: number, contextToken?: string }>
 // 微信同样走 Claude Agent SDK query()，确保 cwd 始终是 VAULT_PATH。
 const wechatSenderSessions = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
 const WECHAT_HISTORY_FILE = join(DATA_DIR, `wechat-history-${PORT}.json`);
 
+function normalizeWechatSessionEntry(entry = {}) {
+  const lastAt = Number(entry?.lastAt);
+  const lastContextAtMs = Number(entry?.lastContextAtMs);
+  return {
+    turns: Array.isArray(entry?.turns) ? entry.turns : [],
+    lastAt: Number.isFinite(lastAt) ? lastAt : 0,
+    contextToken: typeof entry?.contextToken === "string" && entry.contextToken ? entry.contextToken : undefined,
+    lastContextAtMs: Number.isFinite(lastContextAtMs) ? lastContextAtMs : undefined,
+  };
+}
+
+function rememberWechatContext(sender, contextToken) {
+  const cleanSender = String(sender || "").trim();
+  if (!cleanSender || !contextToken) return;
+  const current = normalizeWechatSessionEntry(wechatSenderSessions.get(cleanSender));
+  wechatSenderSessions.set(cleanSender, {
+    ...current,
+    contextToken,
+    lastContextAtMs: Date.now(),
+  });
+  saveWechatHistory();
+}
+
 // 启动时从文件恢复历史
 try {
   if (existsSync(WECHAT_HISTORY_FILE)) {
     const raw = JSON.parse(readFileSync(WECHAT_HISTORY_FILE, "utf8"));
     for (const [sender, entry] of Object.entries(raw)) {
-      wechatSenderSessions.set(sender, entry);
+      wechatSenderSessions.set(sender, normalizeWechatSessionEntry(entry));
     }
     console.log(`[WeChat] Restored history for ${wechatSenderSessions.size} senders.`);
   }
@@ -734,10 +758,9 @@ function saveWechatHistory() {
   } catch { }
 }
 
-function resolveWechatDeliveryPeers(peer) {
+function resolveWechatDeliveryTargets(peer) {
   const primary = String(peer || "").trim();
   const peers = primary ? [primary] : [];
-  if (!primary || primary.endsWith("@im.wechat")) return peers;
 
   const stablePeers = [...wechatSenderSessions.keys()]
     .map(p => String(p || "").trim())
@@ -745,7 +768,15 @@ function resolveWechatDeliveryPeers(peer) {
   if (stablePeers.length === 1 && !peers.includes(stablePeers[0])) {
     peers.push(stablePeers[0]);
   }
-  return peers;
+
+  return peers.map(p => {
+    const session = normalizeWechatSessionEntry(wechatSenderSessions.get(p));
+    return { peer: p, contextToken: session.contextToken };
+  });
+}
+
+function resolveWechatDeliveryPeers(peer) {
+  return resolveWechatDeliveryTargets(peer).map(target => target.peer);
 }
 
 function randomWechatUin() {
@@ -772,8 +803,26 @@ async function requestWechat(baseUrl, token, endpoint, body = {}) {
       base_info: { channel_version: "2.4.3", bot_agent: "inkfellow-wechat" }
     })
   });
-  if (!res.ok) throw new Error(`WeChat Gateway HTTP ${res.status}`);
-  return res.json();
+  const responseText = await res.text();
+  if (!res.ok) {
+    throw new Error(`WeChat Gateway HTTP ${res.status}: ${responseText.slice(0, 200)}`);
+  }
+
+  let data = {};
+  if (responseText.trim()) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      throw new Error(`WeChat Gateway returned non-JSON response: ${responseText.slice(0, 200)}`);
+    }
+  }
+
+  const code = data.ret ?? data.errcode ?? data.code;
+  if (code !== undefined && Number(code) !== 0) {
+    const message = data.errmsg || data.message || data.error || JSON.stringify(data).slice(0, 200);
+    throw new Error(`WeChat Gateway API error ${code}: ${message}`);
+  }
+  return data;
 }
 
 function aesEcbPaddedSize(plaintextSize) {
@@ -995,11 +1044,11 @@ async function uploadWechatMediaFile(baseUrl, token, toUser, filePath) {
   };
 }
 
-async function sendWechatItem(baseUrl, token, toUser, item, contextToken = undefined) {
+async function sendWechatItem(baseUrl, token, toUser, item, contextToken = undefined, fromUserId = "") {
   const clientId = `inkfellow-wechat-${crypto.randomUUID()}`;
   await requestWechat(baseUrl, token, "ilink/bot/sendmessage", {
     msg: {
-      from_user_id: "",
+      from_user_id: fromUserId || "",
       to_user_id: toUser,
       client_id: clientId,
       message_type: 2, // MessageType.BOT
@@ -1010,11 +1059,48 @@ async function sendWechatItem(baseUrl, token, toUser, item, contextToken = undef
   });
 }
 
-async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = undefined) {
-  await sendWechatItem(baseUrl, token, toUser, {
-    type: WECHAT_MESSAGE_ITEM_TYPE.TEXT,
-    text_item: { text: text }
-  }, contextToken);
+function getWechatTextChunkSize() {
+  return Number.isFinite(WECHAT_MAX_TEXT_CHARS) && WECHAT_MAX_TEXT_CHARS >= 500
+    ? WECHAT_MAX_TEXT_CHARS
+    : 1800;
+}
+
+function splitWechatText(text) {
+  const maxChars = getWechatTextChunkSize();
+  const safeMax = Math.max(200, maxChars - 24);
+  const value = String(text ?? "");
+  if (value.length <= maxChars) return [value];
+
+  const chunks = [];
+  let current = "";
+  for (const line of value.split("\n")) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length <= safeMax) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) chunks.push(current);
+    let rest = line;
+    while (rest.length > safeMax) {
+      chunks.push(rest.slice(0, safeMax));
+      rest = rest.slice(safeMax);
+    }
+    current = rest;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = undefined, fromUserId = "") {
+  const chunks = splitWechatText(text);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkText = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n${chunks[i]}` : chunks[i];
+    await sendWechatItem(baseUrl, token, toUser, {
+      type: WECHAT_MESSAGE_ITEM_TYPE.TEXT,
+      text_item: { text: chunkText }
+    }, contextToken, fromUserId);
+  }
 }
 
 function extractWechatOutboundMediaRefs(text) {
@@ -1208,6 +1294,7 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   const sender = msg.from_user_id;
   const contextToken = msg.context_token;
   if (!sender) return;
+  rememberWechatContext(sender, contextToken);
 
   const textParts = extractWechatTextParts(msg);
   const mediaItems = (msg.item_list || []).filter(item =>
@@ -1235,7 +1322,9 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
 
   // 用户主动开启新对话
   if (mediaFiles.length === 0 && /^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
-    wechatSenderSessions.delete(sender);
+    const current = normalizeWechatSessionEntry(wechatSenderSessions.get(sender));
+    wechatSenderSessions.set(sender, { ...current, turns: [], lastAt: Date.now() });
+    saveWechatHistory();
     sendWechatMessage(baseUrl, token, sender, "已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
     return;
   }
@@ -1410,9 +1499,9 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     console.log(`[WeChat Agent] Active profile: ${active ? active.name : "none"} (provider: ${active ? active.provider : "none"})`);
 
     // 取出该 sender 的对话历史，超时则清除重新开始
-    const sessionEntry = wechatSenderSessions.get(sender);
+    const sessionEntry = normalizeWechatSessionEntry(wechatSenderSessions.get(sender));
     const isExpired = sessionEntry && (Date.now() - sessionEntry.lastAt >= WECHAT_SESSION_TTL_MS);
-    if (isExpired) wechatSenderSessions.delete(sender);
+    if (isExpired) wechatSenderSessions.set(sender, { ...sessionEntry, turns: [] });
     const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
 
     const hasScheduler = hasSchedulerIntent(prompt);
@@ -1517,7 +1606,14 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
           { role: "assistant", content: finalResponse.trim() },
         ];
         if (newTurns.length > WECHAT_MAX_HISTORY_TURNS * 2) newTurns.splice(0, 2);
-        wechatSenderSessions.set(sender, { turns: newTurns, lastAt: Date.now() });
+        const current = normalizeWechatSessionEntry(wechatSenderSessions.get(sender));
+        wechatSenderSessions.set(sender, {
+          ...current,
+          turns: newTurns,
+          lastAt: Date.now(),
+          contextToken: contextToken || current.contextToken,
+          lastContextAtMs: contextToken ? Date.now() : current.lastContextAtMs,
+        });
         saveWechatHistory();
       } catch (err) {
         console.error("[WeChat Agent] Failed to send message to WeChat:", err.message);
@@ -1552,6 +1648,7 @@ scheduler.init({
   VAULT_PATH: DEFAULT_CWD,
   WECHAT_CONFIG_FILE,
   sendWechatMessage,
+  resolveWechatDeliveryTargets,
   resolveWechatDeliveryPeers,
   buildAgentEnv,
   getActiveProfile,

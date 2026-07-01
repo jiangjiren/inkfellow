@@ -195,6 +195,27 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-weight: 560;
 }
+.mention-popup-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.mention-popup-retry {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.mention-popup-retry:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Composer ── */
 #input-wrap {
@@ -1786,7 +1807,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     <div id="slash-popup" role="listbox" aria-label="输入建议"></div>
     <div id="composer">
       <div id="image-chip"></div>
-      <div id="mention-chips" aria-label="已选择的笔记上下文"></div>
+      <div id="mention-chips" aria-label="已选择的文件上下文"></div>
       <div id="quote-chip">
         <span id="quote-label">引用</span>
         <span id="quote-text"></span>
@@ -1803,13 +1824,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </div>
       <div id="prompt-row">
         <input type="file" id="file-input" accept="image/*" style="display:none" />
-        <textarea id="prompt" rows="1" placeholder="发消息给 Fellow…（@ 引用笔记，/ 调用 skill）"></textarea>
+        <textarea id="prompt" rows="1" placeholder="发消息给 Fellow…（@ 引用文件，/ 调用 skill）"></textarea>
       </div>
       <div id="input-toolbar">
         <button id="btn-attach" title="附加图片（或直接粘贴）" aria-label="附加图片">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
-        <button id="btn-mention" title="引用笔记（输入 @ 亦可）" aria-label="引用笔记">
+        <button id="btn-mention" title="引用文件（输入 @ 亦可）" aria-label="引用文件">
           <span aria-hidden="true">@</span>
         </button>
         <div id="permission-picker">
@@ -1839,14 +1860,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <div style="flex:1"></div>
         <div id="model-picker">
           <button id="model-btn" class="toolbar-picker-btn" aria-label="选择模型" aria-haspopup="listbox">
-            <span id="model-label">Sonnet 4.6</span>
+            <span id="model-label">Sonnet 5</span>
             <span id="effort-label-inline" class="effort-inline">标准</span>
             <svg width="7" height="7" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 5.3L4 2.8l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <div id="model-dropdown" class="picker-dropdown" role="listbox" aria-label="模型列表">
             <div class="model-view">
-              <button class="picker-option model-option active" data-model="claude-sonnet-4-6" data-label="Sonnet 4.6" role="option" aria-selected="true">
-                <span class="picker-option-name">Sonnet 4.6</span>
+              <button class="picker-option model-option active" data-model="claude-sonnet-5" data-label="Sonnet 5" role="option" aria-selected="true">
+                <span class="picker-option-name">Sonnet 5</span>
                 <span class="picker-option-desc">快速均衡</span>
               </button>
               <button class="picker-option model-option" data-model="claude-opus-4-8" data-label="Opus 4.8" role="option" aria-selected="false">
@@ -1856,10 +1877,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
               <button class="picker-option model-option" data-model="claude-fable-5" data-label="Fable 5" role="option" aria-selected="false">
                 <span class="picker-option-name">Fable 5</span>
                 <span class="picker-option-desc">旗舰最强</span>
-              </button>
-              <button class="picker-option model-option" data-model="claude-haiku-4-5-20251001" data-label="Haiku 4.5" role="option" aria-selected="false">
-                <span class="picker-option-name">Haiku 4.5</span>
-                <span class="picker-option-desc">极速轻量</span>
               </button>
               <div class="picker-divider"></div>
               <button id="effort-nav-btn" class="picker-option picker-option-nav">
@@ -1993,7 +2010,7 @@ document.getElementById("btn-attach").addEventListener("click", () => {
   fileInput.click();
 });
 
-// @ 按钮：在光标处插入 @ 并复用现有的笔记引用弹窗（与手输 @ 同一条路径）
+// @ 按钮：在光标处插入 @ 并复用现有的文件引用弹窗（与手输 @ 同一条路径）
 document.getElementById("btn-mention").addEventListener("click", () => {
   promptEl.focus();
   const start = promptEl.selectionStart ?? promptEl.value.length;
@@ -2058,10 +2075,9 @@ async function fetchHistory() {
 
 // ── Auth: 账号配置列表 ────────────────────────────────────────
 const CLAUDE_MODELS = [
-  { model: "claude-sonnet-4-6",          label: "Sonnet 4.6", name: "Sonnet 4.6", desc: "快速均衡" },
+  { model: "claude-sonnet-5",            label: "Sonnet 5",   name: "Sonnet 5",   desc: "快速均衡" },
   { model: "claude-opus-4-8",            label: "Opus 4.8",   name: "Opus 4.8",   desc: "最强推理" },
   { model: "claude-fable-5",             label: "Fable 5",    name: "Fable 5",    desc: "旗舰最强" },
-  { model: "claude-haiku-4-5-20251001",  label: "Haiku 4.5",  name: "Haiku 4.5",  desc: "极速轻量" },
 ];
 
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
@@ -2315,7 +2331,7 @@ const addErrorEl      = document.getElementById("add-error");
 const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "", namePlaceholder: "OpenRouter" },
   minimax:    { baseUrl: "https://api.minimaxi.com/anthropic", opusModel: "MiniMax-M3",                      sonnetModel: "MiniMax-M3",                       haikuModel: "MiniMax-M3",                    keyPlaceholder: "",    namePlaceholder: "MiniMax" },
@@ -2833,11 +2849,17 @@ function setGenerating(v, notifyParent = true) {
   }
 }
 
-// ── Note context (injected by parent via postMessage) ─────
+// ── Note context + mentionable vault files ────────────────
 let currentNoteFile = null;
 let noteContextEnabled = true;
-let vaultNotes = [];
-const selectedMentionNotes = new Map();
+let mentionEntries = [];
+let mentionIndexState = "idle";
+let mentionIndexPromise = null;
+let mentionIndexLoadedAt = 0;
+let mentionIndexError = null;
+const MENTION_INDEX_TTL_MS = 60_000;
+const MENTION_INDEX_TIMEOUT_MS = 10_000;
+const selectedMentionFiles = new Map();
 
 function renderNoteContext() {
   if (!currentNoteFile) {
@@ -2856,10 +2878,10 @@ function normalizeMentionSearch(value) {
   return String(value ?? "").normalize("NFKC").trim().toLocaleLowerCase();
 }
 
-function normalizeVaultNotes(notes) {
+function normalizeMentionEntries(entries) {
   const seen = new Set();
   const normalized = [];
-  for (const candidate of Array.isArray(notes) ? notes : []) {
+  for (const candidate of Array.isArray(entries) ? entries : []) {
     if (!candidate || typeof candidate.path !== "string" || typeof candidate.title !== "string") continue;
     const path = candidate.path.trim();
     const title = candidate.title.trim();
@@ -2874,49 +2896,92 @@ function normalizeVaultNotes(notes) {
       path,
       title,
       aliases,
+      kind: ["markdown", "html", "pdf", "image"].includes(candidate.kind) ? candidate.kind : "markdown",
       searchTitle: normalizeMentionSearch(title),
-      searchPath: normalizeMentionSearch(path.replace(/\.(md|html?)$/i, "")),
+      searchPath: normalizeMentionSearch(path.replace(/\.[^/.]+$/i, "")),
       searchAliases: aliases.map(normalizeMentionSearch),
     });
   }
   return normalized;
 }
 
+function reconcileSelectedMentionFiles() {
+  for (const path of selectedMentionFiles.keys()) {
+    const refreshed = mentionEntries.find((entry) => entry.path === path);
+    if (refreshed) selectedMentionFiles.set(path, refreshed);
+    else selectedMentionFiles.delete(path);
+  }
+  renderMentionChips();
+}
+
+function loadMentionIndex({ force = false } = {}) {
+  const isFresh = mentionIndexState === "ready"
+    && Date.now() - mentionIndexLoadedAt < MENTION_INDEX_TTL_MS;
+  if (!force && isFresh) return Promise.resolve();
+  if (mentionIndexPromise) return mentionIndexPromise;
+
+  const hasUsableEntries = mentionIndexState === "ready";
+  if (!hasUsableEntries) mentionIndexState = "loading";
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), MENTION_INDEX_TIMEOUT_MS);
+  const requestUrl = `/api/notes/mentions?ts=${Date.now()}`;
+  mentionIndexPromise = fetch(requestUrl, {
+    cache: "no-store",
+    credentials: "same-origin",
+    signal: controller.signal,
+  })
+    .then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || `文件索引加载失败：${response.status}`);
+      mentionEntries = normalizeMentionEntries(payload?.entries);
+      mentionIndexState = "ready";
+      mentionIndexLoadedAt = Date.now();
+      mentionIndexError = null;
+      reconcileSelectedMentionFiles();
+    })
+    .catch((error) => {
+      const normalizedError = error?.name === "AbortError"
+        ? new Error("文件索引加载超时，请重试")
+        : error;
+      if (!hasUsableEntries) {
+        mentionIndexState = "error";
+        mentionIndexError = normalizedError?.message || "文件索引加载失败";
+      }
+      throw normalizedError;
+    })
+    .finally(() => {
+      window.clearTimeout(timeoutId);
+      mentionIndexPromise = null;
+    });
+  return mentionIndexPromise;
+}
+
 function renderMentionChips() {
-  const notes = [...selectedMentionNotes.values()];
-  mentionChipsEl.classList.toggle("visible", notes.length > 0);
-  mentionChipsEl.innerHTML = notes.map((note) => `
-    <span class="mention-context-chip" title="${escapeAttr(note.path)}">
+  const files = [...selectedMentionFiles.values()];
+  mentionChipsEl.classList.toggle("visible", files.length > 0);
+  mentionChipsEl.innerHTML = files.map((file) => `
+    <span class="mention-context-chip" title="${escapeAttr(file.path)}">
       <svg class="mention-context-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span class="mention-context-title">${escapeHtml(note.title)}</span>
-      <button type="button" class="mention-context-remove" data-path="${escapeAttr(note.path)}" aria-label="移除笔记 ${escapeAttr(note.title)}">×</button>
+      <span class="mention-context-title">${escapeHtml(file.title)}</span>
+      <button type="button" class="mention-context-remove" data-path="${escapeAttr(file.path)}" aria-label="移除文件 ${escapeAttr(file.title)}">×</button>
     </span>
   `).join("");
 }
 
-function clearMentionNotes() {
-  selectedMentionNotes.clear();
+function clearMentionFiles() {
+  selectedMentionFiles.clear();
   renderMentionChips();
 }
 
 mentionChipsEl.addEventListener("click", (e) => {
   const removeBtn = e.target.closest(".mention-context-remove");
   if (!removeBtn) return;
-  selectedMentionNotes.delete(removeBtn.dataset.path);
+  selectedMentionFiles.delete(removeBtn.dataset.path);
   renderMentionChips();
   promptEl.focus();
 });
 
 window.addEventListener("message", (e) => {
-  if (e.data?.type === "vault-notes") {
-    vaultNotes = normalizeVaultNotes(e.data.notes);
-    for (const path of selectedMentionNotes.keys()) {
-      const refreshed = vaultNotes.find((note) => note.path === path);
-      if (refreshed) selectedMentionNotes.set(path, refreshed);
-      else selectedMentionNotes.delete(path);
-    }
-    renderMentionChips();
-  }
   if (e.data?.type === "note-context" && e.data.filePath) {
     const isNewFile = currentNoteFile !== e.data.filePath;
     currentNoteFile = e.data.filePath;
@@ -3582,6 +3647,8 @@ let popupItems  = [];
 let activeIndex = -1;
 let popupMode = null;
 let activeMentionRange = null;
+let composerPopupRevision = 0;
+const MENTION_KIND_LABELS = { markdown: "MD", html: "HTML", pdf: "PDF", image: "图片" };
 
 function getSlashQuery() {
   const val = promptEl.value;
@@ -3666,10 +3733,25 @@ function mentionScore(note, query) {
   return 4;
 }
 
+function renderMentionState(mention, message, { retry = false } = {}) {
+  popupItems = [];
+  activeIndex = -1;
+  popupMode = "mention-state";
+  activeMentionRange = mention;
+  popupEl.innerHTML = `
+    <div class="slash-header">添加文件上下文</div>
+    <div class="mention-popup-state">
+      <span>${escapeHtml(message)}</span>
+      ${retry ? '<button type="button" class="mention-popup-retry">重试</button>' : ""}
+    </div>`;
+  popupEl.setAttribute("aria-label", "文件引用状态");
+  popupEl.classList.add("open");
+}
+
 function renderMentionPopup(mention) {
   const query = normalizeMentionSearch(mention.query);
-  const matches = vaultNotes
-    .filter((note) => !selectedMentionNotes.has(note.path))
+  const matches = mentionEntries
+    .filter((note) => !selectedMentionFiles.has(note.path))
     .filter((note) => !query
       || note.searchTitle.includes(query)
       || note.searchPath.includes(query)
@@ -3678,31 +3760,71 @@ function renderMentionPopup(mention) {
       || a.title.localeCompare(b.title, "zh-CN"))
     .slice(0, 20);
 
-  if (matches.length === 0) { hidePopup(); return; }
+  if (matches.length === 0) {
+    renderMentionState(mention, query ? "未找到匹配文件" : "没有可引用的文件");
+    return;
+  }
 
   popupItems = matches;
   activeIndex = 0;
   popupMode = "mention";
   activeMentionRange = mention;
   popupEl.innerHTML = `
-    <div class="slash-header">添加笔记上下文</div>
+    <div class="slash-header">添加文件上下文</div>
     ${matches.map((note, index) => `
       <button class="slash-item mention-item${index === 0 ? " active" : ""}" data-i="${index}" role="option">
         <span class="slash-cmd">${highlightPopupMatch(note.title, mention.query)}</span>
         <span class="slash-desc" title="${escapeAttr(note.path)}">${escapeHtml(note.path)}</span>
-        <span class="slash-badge note">笔记</span>
+        <span class="slash-badge note">${MENTION_KIND_LABELS[note.kind]}</span>
       </button>
     `).join("")}`;
-  popupEl.setAttribute("aria-label", "笔记列表");
+  popupEl.setAttribute("aria-label", "文件列表");
   popupEl.classList.add("open");
 }
 
 function hidePopup() {
+  composerPopupRevision += 1;
   popupEl.classList.remove("open");
   popupItems = [];
   activeIndex = -1;
   popupMode = null;
   activeMentionRange = null;
+}
+
+function loadAndRenderMentionIndex(mention, { force = false, showLoading = true } = {}) {
+  const revision = ++composerPopupRevision;
+  if (showLoading) {
+    renderMentionState(mention, force ? "正在重新加载文件…" : "正在加载文件…");
+  }
+  let request;
+  try {
+    request = loadMentionIndex({ force });
+  } catch (error) {
+    if (showLoading && revision === composerPopupRevision) {
+      renderMentionState(
+        getMentionQuery() ?? mention,
+        error?.message || "文件索引加载失败",
+        { retry: true },
+      );
+    }
+    return;
+  }
+  void request
+    .then(() => {
+      if (revision === composerPopupRevision) {
+        renderMentionPopup(getMentionQuery() ?? mention);
+      }
+    })
+    .catch((error) => {
+      if (!showLoading) return;
+      if (revision === composerPopupRevision) {
+        renderMentionState(
+          getMentionQuery() ?? mention,
+          error?.message || "文件索引加载失败",
+          { retry: true },
+        );
+      }
+    });
 }
 
 function setActive(i) {
@@ -3718,7 +3840,7 @@ function selectItem(i) {
   if (popupMode === "mention") {
     const range = activeMentionRange;
     if (!range) return;
-    selectedMentionNotes.set(item.path, item);
+    selectedMentionFiles.set(item.path, item);
     promptEl.setRangeText("", range.start, range.end, "end");
     promptEl.style.height = "36px";
     promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
@@ -3734,7 +3856,7 @@ function selectItem(i) {
     messageLog = []; currentConvId = null; currentSessionId = null; currentSessionProvider = null;
     promptEl.value = "";
     promptEl.style.height = "36px";
-    clearMentionNotes();
+    clearMentionFiles();
     hidePopup();
     ws?.send(JSON.stringify({ reset: true }));
     return;
@@ -3748,6 +3870,14 @@ function selectItem(i) {
 
 // click on popup item
 popupEl.addEventListener("mousedown", (e) => {
+  const retryBtn = e.target.closest(".mention-popup-retry");
+  if (retryBtn) {
+    e.preventDefault();
+    const mention = getMentionQuery();
+    if (!mention) return;
+    loadAndRenderMentionIndex(mention, { force: true });
+    return;
+  }
   const btn = e.target.closest(".slash-item");
   if (btn) { e.preventDefault(); selectItem(Number(btn.dataset.i)); }
 });
@@ -3758,8 +3888,19 @@ promptEl.addEventListener("input", () => {
   promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
 
   const mention = getMentionQuery();
-  if (mention && vaultNotes.length > 0) {
-    renderMentionPopup(mention);
+  if (mention) {
+    if (mentionIndexState === "ready") {
+      renderMentionPopup(mention);
+      if (Date.now() - mentionIndexLoadedAt >= MENTION_INDEX_TTL_MS) {
+        loadAndRenderMentionIndex(mention, { showLoading: false });
+      }
+      return;
+    }
+    if (mentionIndexState === "error") {
+      renderMentionState(mention, mentionIndexError || "文件索引加载失败", { retry: true });
+      return;
+    }
+    loadAndRenderMentionIndex(mention);
     return;
   }
   const slashQuery = getSlashQuery();
@@ -3814,22 +3955,22 @@ function send() {
     messageLog = []; currentConvId = null; currentSessionId = null; currentSessionProvider = null;
     promptEl.value = "";
     promptEl.style.height = "36px";
-    clearMentionNotes();
+    clearMentionFiles();
     ws.send(JSON.stringify({ reset: true }));
     hidePopup();
     return;
   }
 
   hidePopup();
-  const mentionedNotes = [...selectedMentionNotes.values()];
+  const mentionedFiles = [...selectedMentionFiles.values()];
   if (!currentConvId) currentConvId = genId();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
   // If a previous request froze without a done/stopped event, assistantEl still
   // points to the old AI message element. Clear it so the upcoming response is
   // appended after this new user message, not inside the old AI bubble.
   resetAssistantState();
-  const displayText = mentionedNotes.length > 0
-    ? `${text}\n\n引用笔记：${mentionedNotes.map((note) => `@${note.title}`).join(" · ")}`
+  const displayText = mentionedFiles.length > 0
+    ? `${text}\n\n引用文件：${mentionedFiles.map((file) => `@${file.title}`).join(" · ")}`
     : text;
   addMessage("user", displayText, imagePreviewUrls);
   messageLog.push({ role: "user", text: displayText, cost: null });
@@ -3841,12 +3982,12 @@ function send() {
 
   const parts = [];
   if (currentNoteFile && noteContextEnabled) parts.push(`当前查看的文件：${currentNoteFile}`);
-  if (mentionedNotes.length > 0) {
+  if (mentionedFiles.length > 0) {
     parts.push(
-      "用户指定以下 vault 笔记作为本轮上下文。请优先读取这些文件，并基于其中内容回答：\n"
-      + mentionedNotes.map((note) => `- ${JSON.stringify(note.path)}`).join("\n"),
+      "用户指定以下 vault 文件作为本轮上下文。请优先读取这些文件，并基于其中内容回答：\n"
+      + mentionedFiles.map((file) => `- ${JSON.stringify(file.path)}`).join("\n"),
     );
-    clearMentionNotes();
+    clearMentionFiles();
   }
   if (quotedText) {
     const sectionHint = quotedSection ? `（「${quotedSection}」章节）` : "";
@@ -4017,7 +4158,7 @@ sendBtn.addEventListener("click", () => {
 });
 
 // ── Header pickers ───────────────────────────────────────
-let selectedModel = "claude-sonnet-4-6";
+let selectedModel = "claude-sonnet-5";
 const permissionModeDefaultVersion = "auto-default-v1";
 if (
   localStorage.getItem("permissionModeDefaultVersion") !== permissionModeDefaultVersion &&
@@ -4206,7 +4347,7 @@ async function deleteConversation(id) {
 
 async function loadConversation(conv) {
   await saveCurrentConversation();
-  clearMentionNotes();
+  clearMentionFiles();
   // 列表接口只返回摘要，点击时按需拉取完整内容
   if (!conv.messages) {
     try {
@@ -4258,7 +4399,7 @@ async function loadConversation(conv) {
 
 async function startNewConversation() {
   await saveCurrentConversation();
-  clearMentionNotes();
+  clearMentionFiles();
   messagesEl.innerHTML = "";
   messageLog = [];
   currentConvId = null;

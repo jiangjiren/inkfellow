@@ -2,8 +2,11 @@ import { promises as fs, readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import path from "path";
 import type {
+  MentionEntry,
+  MentionEntryKind,
   NotesDirectoryNode,
   NotesFileNode,
+  NotesSearchHit,
   NotesTreeNode,
 } from "@/lib/notesTypes";
 
@@ -287,6 +290,113 @@ export const readVaultDocument = async (relativePath: string) => {
 export const getNotesTree = async () => {
   const vaultRoot = await getVaultRoot();
   return walkDirectory(vaultRoot, "");
+};
+
+const SEARCH_RESULT_LIMIT = 80;
+const SEARCH_CONCURRENCY = 12;
+
+const makeSearchSnippet = (content: string, normalizedQuery: string) => {
+  const matchingLine = content
+    .split(/\r?\n/)
+    .find((line) => line.normalize("NFKC").toLocaleLowerCase().includes(normalizedQuery));
+
+  return matchingLine
+    ? Array.from(matchingLine.trim().replace(/\s+/g, " ")).slice(0, 180).join("")
+    : "";
+};
+
+export const searchNotes = async (query: string): Promise<NotesSearchHit[]> => {
+  const trimmedQuery = query.trim();
+  if (trimmedQuery.length < 2 && !/[^\u0000-\u007f]/.test(trimmedQuery)) {
+    return [];
+  }
+  if (Array.from(trimmedQuery).length > 200) {
+    throw new VaultAccessError("Search query is too long.");
+  }
+
+  const normalizedQuery = trimmedQuery.normalize("NFKC").toLocaleLowerCase();
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  const textFiles: NotesFileNode[] = [];
+
+  const collectTextFiles = (node: NotesTreeNode) => {
+    if (node.type === "file") {
+      if (isMarkdownPath(node.path) || isHtmlPath(node.path)) {
+        textFiles.push(node);
+      }
+      return;
+    }
+    for (const child of node.children) {
+      collectTextFiles(child);
+    }
+  };
+  collectTextFiles(tree);
+
+  const rankedHits: Array<NotesSearchHit & { score: number }> = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < textFiles.length && rankedHits.length < SEARCH_RESULT_LIMIT) {
+      const file = textFiles[cursor++];
+      const normalizedName = file.name.normalize("NFKC").toLocaleLowerCase();
+      const normalizedPath = file.path.normalize("NFKC").toLocaleLowerCase();
+      const normalizedStem = path.basename(file.name, path.extname(file.name))
+        .normalize("NFKC")
+        .toLocaleLowerCase();
+      const nameOrPathMatch =
+        normalizedName.includes(normalizedQuery) || normalizedPath.includes(normalizedQuery);
+      const absolutePath = path.join(vaultRoot, file.path.replace(/\//g, path.sep));
+
+      let content = "";
+      try {
+        content = await fs.readFile(absolutePath, "utf8");
+      } catch {
+        if (!nameOrPathMatch) {
+          continue;
+        }
+      }
+
+      const snippet = makeSearchSnippet(content, normalizedQuery);
+      if (!nameOrPathMatch && !snippet) {
+        continue;
+      }
+
+      let score = 3;
+      if (normalizedStem === normalizedQuery || normalizedPath === normalizedQuery) {
+        score = 0;
+      } else if (
+        normalizedStem.startsWith(normalizedQuery) ||
+        normalizedPath.startsWith(normalizedQuery)
+      ) {
+        score = 1;
+      } else if (nameOrPathMatch) {
+        score = 2;
+      }
+
+      rankedHits.push({
+        path: file.path,
+        name: file.name,
+        snippet,
+        score,
+      });
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(SEARCH_CONCURRENCY, textFiles.length) }, () => worker()),
+  );
+
+  return rankedHits
+    .sort((left, right) =>
+      left.score - right.score ||
+      left.name.localeCompare(right.name, "zh-Hans", { numeric: true, sensitivity: "base" }) ||
+      left.path.localeCompare(right.path, "zh-Hans", { numeric: true, sensitivity: "base" }),
+    )
+    .slice(0, SEARCH_RESULT_LIMIT)
+    .map((hit) => ({
+      path: hit.path,
+      name: hit.name,
+      snippet: hit.snippet,
+    }));
 };
 
 // 结构指纹：收集所有节点路径并哈希。只反映「有哪些文件/文件夹」，
@@ -1013,9 +1123,10 @@ const extractFrontMatterAliases = (content: string): string[] => {
     .filter(Boolean))];
 };
 
-export const getWikiIndex = async (): Promise<WikiIndexEntry[]> => {
-  const vaultRoot = await getVaultRoot();
-  const tree = await walkDirectory(vaultRoot, "");
+const buildWikiIndex = async (
+  vaultRoot: string,
+  tree: NotesDirectoryNode,
+): Promise<WikiIndexEntry[]> => {
   const markdownPaths: string[] = [];
   const collectMarkdown = (node: NotesTreeNode) => {
     if (node.type === "file" && /\.md$/i.test(node.path)) {
@@ -1046,6 +1157,52 @@ export const getWikiIndex = async (): Promise<WikiIndexEntry[]> => {
     Array.from({ length: Math.min(16, markdownPaths.length) }, () => worker()),
   );
   return entries;
+};
+
+export const getWikiIndex = async (): Promise<WikiIndexEntry[]> => {
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  return buildWikiIndex(vaultRoot, tree);
+};
+
+const getMentionEntryKind = (relativePath: string): MentionEntryKind | null => {
+  if (isMarkdownPath(relativePath)) return "markdown";
+  if (isHtmlPath(relativePath)) return "html";
+  if (isPdfPath(relativePath)) return "pdf";
+  if (isImagePath(relativePath)) return "image";
+  return null;
+};
+
+export const getMentionIndex = async (): Promise<MentionEntry[]> => {
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  const aliasesByPath = new Map(
+    (await buildWikiIndex(vaultRoot, tree)).map((entry) => [entry.path, entry.aliases]),
+  );
+  const entries: MentionEntry[] = [];
+
+  const collectEntries = (node: NotesTreeNode) => {
+    if (node.type === "directory") {
+      for (const child of node.children) collectEntries(child);
+      return;
+    }
+
+    const kind = getMentionEntryKind(node.path);
+    if (!kind) return;
+    const extension = path.posix.extname(node.name);
+    entries.push({
+      path: node.path,
+      title: extension ? node.name.slice(0, -extension.length) : node.name,
+      aliases: aliasesByPath.get(node.path) ?? [],
+      kind,
+    });
+  };
+  collectEntries(tree);
+
+  return entries.sort((left, right) =>
+    left.title.localeCompare(right.title, "zh-Hans", { numeric: true, sensitivity: "base" }) ||
+    left.path.localeCompare(right.path, "zh-Hans", { numeric: true, sensitivity: "base" }),
+  );
 };
 
 export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBacklinkEntry[]> => {

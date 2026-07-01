@@ -137,6 +137,7 @@
   border-radius: 8px;
   background: rgba(120, 120, 128, 0.09);
   padding: 7px 10px;
+  flex-shrink: 0;
   transition: var(--notes-transition-fast);
 }
 
@@ -182,6 +183,93 @@
 .search input::placeholder {
   color: var(--notes-text-muted);
   opacity: 0.8;
+}
+
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.searchClear {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(120, 120, 128, 0.14);
+  color: var(--notes-text-muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.searchClear:hover,
+.searchClear:focus-visible {
+  background: rgba(120, 120, 128, 0.24);
+  color: var(--notes-text-primary);
+  outline: none;
+}
+
+.searchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.searchResultState {
+  padding: 14px 12px;
+  color: var(--notes-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.searchResultError {
+  color: var(--notes-danger, #c43d3d);
+}
+
+.searchHit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.searchHit:hover,
+.searchHitActive {
+  background: var(--notes-accent-bg);
+}
+
+.searchHit:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: -2px;
+}
+
+.searchHitTitle {
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchHitMeta {
+  color: var(--notes-text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .treePanel {

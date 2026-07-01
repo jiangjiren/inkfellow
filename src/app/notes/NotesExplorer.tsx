@@ -6,6 +6,8 @@ import type {
   NotesDirectoryNode,
   NotesFileNode,
   NotesFileResponse,
+  NotesSearchHit,
+  NotesSearchResponse,
   NotesTreeNode,
   NotesTreeResponse,
 } from "@/lib/notesTypes";
@@ -77,6 +79,10 @@ type TreeActionTarget = {
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const stripNoteExtension = (value: string) => value.replace(/\.(md|html?)$/i, "");
+const isSearchQueryReady = (value: string) => {
+  const trimmed = value.trim();
+  return trimmed.length >= 2 || /[^\u0000-\u007f]/.test(trimmed);
+};
 const getParentFolder = (filePath: string) => filePath.includes("/") ? filePath.split("/").slice(0, -1).join("/") : "";
 const sanitizeEntryName = (value: string) => value.trim().replace(/[/\\:*?"<>|]/g, "-");
 const replaceMovedPath = (currentPath: string, oldPath: string, nextPath: string, kind: TreeActionTarget["kind"]) => {
@@ -871,6 +877,11 @@ export default function NotesExplorer() {
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<NotesSearchHit[]>([]);
+  const [searchState, setSearchState] = useState<LoadState>("idle");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [treeState, setTreeState] = useState<LoadState>("idle");
   const [noteState, setNoteState] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -1095,29 +1106,6 @@ export default function NotesExplorer() {
     if (files.length > 0) void refreshWikiIndex();
   }, [files, refreshWikiIndex]);
 
-  const assistantVaultNotes = useMemo(
-    () => files
-      .filter((file) => /\.(md|html?)$/i.test(file.path))
-      .map((file) => ({
-        path: file.path,
-        title: stripNoteExtension(file.name),
-        aliases: wikiAliases.get(file.path) ?? [],
-      })),
-    [files, wikiAliases],
-  );
-
-  const postVaultNotesToClaude = useCallback(() => {
-    if (!claudeFrameReadyRef.current) return;
-    claudeFrameRef.current?.contentWindow?.postMessage(
-      { type: "vault-notes", notes: assistantVaultNotes },
-      window.location.origin,
-    );
-  }, [assistantVaultNotes]);
-
-  useEffect(() => {
-    postVaultNotesToClaude();
-  }, [postVaultNotesToClaude]);
-
   const noteIndex = useMemo(() => {
     const index = new Map<string, string>();
 
@@ -1166,7 +1154,61 @@ export default function NotesExplorer() {
     });
   }, [files, wikiAliases]);
 
-  const visibleTree = useMemo(() => (tree ? filterTree(tree, searchQuery.trim()) : null), [tree, searchQuery]);
+  const normalizedSearchQuery = searchQuery.trim();
+  const shouldSearchNotes = isSearchQueryReady(normalizedSearchQuery);
+  const visibleTree = useMemo(
+    () => (tree ? filterTree(tree, normalizedSearchQuery) : null),
+    [tree, normalizedSearchQuery],
+  );
+
+  useEffect(() => {
+    if (!shouldSearchNotes) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: normalizedSearchQuery });
+        const response = await fetch(`/api/notes/search?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const body = (await response.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(body?.error ?? `搜索失败：${response.status}`);
+        }
+
+        const payload = (await response.json()) as NotesSearchResponse;
+        setSearchResults(payload.hits);
+        setSearchState("ready");
+        setSearchError(null);
+        setActiveSearchIndex(payload.hits.length > 0 ? 0 : -1);
+      } catch (searchRequestError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSearchResults([]);
+        setSearchState("error");
+        setSearchError(searchRequestError instanceof Error ? searchRequestError.message : "搜索失败");
+        setActiveSearchIndex(-1);
+      }
+    }, 220);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [normalizedSearchQuery, searchQuery, shouldSearchNotes]);
+
+  useEffect(() => {
+    if (activeSearchIndex < 0) {
+      return;
+    }
+    document
+      .getElementById(`notes-search-result-${activeSearchIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeSearchIndex]);
 
   // fix: 避免草稿态每次按键都重新遍历文件树
   const captureFolderOptions = useMemo(() => {
@@ -2437,6 +2479,22 @@ export default function NotesExplorer() {
     [isMobileViewport, loadNote, flushEditBeforeSwitch],
   );
 
+  const clearSearch = useCallback(() => {
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchState("idle");
+    setSearchError(null);
+    setActiveSearchIndex(-1);
+  }, []);
+
+  const handleSearchResultSelect = useCallback(
+    (path: string) => {
+      clearSearch();
+      handleSelect(path);
+    },
+    [clearSearch, handleSelect],
+  );
+
   const handleMarkdownNavigate = useCallback(
     (path: string, hash?: string | null) => {
       void loadNote(path, hash);
@@ -3241,50 +3299,160 @@ export default function NotesExplorer() {
           onChange={(event) => void handleImportFiles(event.currentTarget.files)}
         />
 
-        <label className={styles.search}>
+        <div className={styles.search} role="search">
           <span className={styles.searchIcon} aria-hidden="true" />
           <input
+            ref={searchInputRef}
+            type="search"
             value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="搜索文件"
-            aria-label="搜索文件"
+            onChange={(event) => {
+              const value = event.target.value;
+              setSearchQuery(value);
+              setSearchResults([]);
+              setSearchError(null);
+              setActiveSearchIndex(-1);
+              setSearchState(isSearchQueryReady(value) ? "loading" : "idle");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && searchQuery) {
+                event.preventDefault();
+                clearSearch();
+                return;
+              }
+              if (!shouldSearchNotes || searchResults.length === 0) {
+                return;
+              }
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveSearchIndex((current) => (current + 1) % searchResults.length);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveSearchIndex((current) =>
+                  current <= 0 ? searchResults.length - 1 : current - 1,
+                );
+                return;
+              }
+              if (event.key === "Enter") {
+                event.preventDefault();
+                const hit = searchResults[activeSearchIndex] ?? searchResults[0];
+                if (hit) {
+                  handleSearchResultSelect(hit.path);
+                }
+              }
+            }}
+            placeholder="搜索文件和正文"
+            aria-label="搜索文件和正文"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls={shouldSearchNotes ? "notes-search-results" : undefined}
+            aria-expanded={shouldSearchNotes}
+            aria-activedescendant={
+              shouldSearchNotes && activeSearchIndex >= 0
+                ? `notes-search-result-${activeSearchIndex}`
+                : undefined
+            }
           />
-        </label>
+          {searchQuery ? (
+            <button
+              type="button"
+              className={styles.searchClear}
+              onClick={() => {
+                clearSearch();
+                searchInputRef.current?.focus();
+              }}
+              aria-label="清空搜索"
+              title="清空搜索"
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
 
         <div className={styles.treePanel}>
-          {treeState === "loading" ? (
-            <div className={styles.sidebarState}>正在读取文件树...</div>
-          ) : null}
-          {treeState === "error" ? (
-            <div className={styles.sidebarState}>{error ?? "文件树加载失败"}</div>
-          ) : null}
-          {visibleTree ? (
-            <TreeItem
-              node={visibleTree}
-              level={0}
-              activePath={activePath}
-              expandedFolders={expandedFolders}
-              searchQuery={searchQuery.trim()}
-              activeMenuPath={treeMenuTarget?.path ?? null}
-              isMobileViewport={isMobileViewport}
-              renamingTarget={renameTarget}
-              renameValue={renameName}
-              renameError={renameError}
-              onToggle={handleToggle}
-              onSelect={handleSelect}
-              onOpenMenu={handleOpenTreeMenu}
-              onCloseMenu={() => setTreeMenuTarget(null)}
-              onCreateNote={(folder) => openNewNote(folder)}
-              onCreateFolder={(folder) => openNewFolder(folder)}
-              onImport={handleStartImport}
-              onRename={handleOpenRename}
-              onDelete={handleOpenDelete}
-              onDownload={handleDownloadPath}
-              onRenameValueChange={setRenameName}
-              onRenameCommit={handleRenameTarget}
-              onRenameCancel={handleRenameCancel}
-            />
-          ) : null}
+          {shouldSearchNotes ? (
+            <div
+              id="notes-search-results"
+              className={styles.searchResults}
+              role="listbox"
+              aria-label="搜索结果"
+              aria-live="polite"
+            >
+              {searchState === "loading" ? (
+                <div className={styles.searchResultState}>正在搜索…</div>
+              ) : null}
+              {searchState === "error" ? (
+                <div className={`${styles.searchResultState} ${styles.searchResultError}`}>
+                  {searchError ?? "搜索失败"}
+                </div>
+              ) : null}
+              {searchState === "ready" && searchResults.length === 0 ? (
+                <div className={styles.searchResultState}>未找到匹配内容</div>
+              ) : null}
+              {searchResults.map((hit, index) => {
+                const folderLabel = getParentFolder(hit.path).split("/").filter(Boolean).pop() ?? "";
+                const meta = [folderLabel, hit.snippet].filter(Boolean).join(" · ");
+                return (
+                  <button
+                    key={hit.path}
+                    id={`notes-search-result-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeSearchIndex}
+                    className={`${styles.searchHit} ${
+                      index === activeSearchIndex ? styles.searchHitActive : ""
+                    }`}
+                    onMouseEnter={() => setActiveSearchIndex(index)}
+                    onClick={() => handleSearchResultSelect(hit.path)}
+                    title={hit.path}
+                  >
+                    <span className={styles.searchHitTitle}>{stripNoteExtension(hit.name)}</span>
+                    {meta ? <span className={styles.searchHitMeta}>{meta}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <>
+              {treeState === "loading" ? (
+                <div className={styles.sidebarState}>正在读取文件树...</div>
+              ) : null}
+              {treeState === "error" ? (
+                <div className={styles.sidebarState}>{error ?? "文件树加载失败"}</div>
+              ) : null}
+              {visibleTree ? (
+                <TreeItem
+                  node={visibleTree}
+                  level={0}
+                  activePath={activePath}
+                  expandedFolders={expandedFolders}
+                  searchQuery={searchQuery.trim()}
+                  activeMenuPath={treeMenuTarget?.path ?? null}
+                  isMobileViewport={isMobileViewport}
+                  renamingTarget={renameTarget}
+                  renameValue={renameName}
+                  renameError={renameError}
+                  onToggle={handleToggle}
+                  onSelect={handleSelect}
+                  onOpenMenu={handleOpenTreeMenu}
+                  onCloseMenu={() => setTreeMenuTarget(null)}
+                  onCreateNote={(folder) => openNewNote(folder)}
+                  onCreateFolder={(folder) => openNewFolder(folder)}
+                  onImport={handleStartImport}
+                  onRename={handleOpenRename}
+                  onDelete={handleOpenDelete}
+                  onDownload={handleDownloadPath}
+                  onRenameValueChange={setRenameName}
+                  onRenameCommit={handleRenameTarget}
+                  onRenameCancel={handleRenameCancel}
+                />
+              ) : null}
+              {treeState === "ready" && normalizedSearchQuery && !visibleTree ? (
+                <div className={styles.sidebarState}>无匹配文件</div>
+              ) : null}
+            </>
+          )}
         </div>
 
         {/* 大纲：桌面端常驻左栏的可折叠段，仅在打开笔记且有目录时出现 */}
@@ -4073,7 +4241,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=7${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=9${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
@@ -4088,7 +4256,6 @@ export default function NotesExplorer() {
                 window.location.origin,
               );
             }
-            postVaultNotesToClaude();
             // 首页提问可能早于 iframe 就绪，补投暂存的问题，避免首条提问丢失
             if (pendingClaudeAskRef.current) {
               claudeFrameRef.current?.contentWindow?.postMessage(

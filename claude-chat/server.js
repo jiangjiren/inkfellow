@@ -159,7 +159,7 @@ const WECHAT_MIME_BY_EXT = {
 const CODEX_DEFAULT_MODELS = { opusModel: "gpt-5.5", sonnetModel: "gpt-5.4", haikuModel: "gpt-5.4-mini" };
 
 const PROVIDER_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-4-6",                haikuModel: "claude-haiku-4-5-20251001" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-4-8",                 sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
   codex:      { baseUrl: "",                                    ...CODEX_DEFAULT_MODELS },
@@ -783,7 +783,7 @@ function saveWechatHistory() {
 // claude 会员返回 null —— OAuth token 不能直接调 API，需走 query()
 function buildAnthropicClientForWechat(profileData) {
   const active = getActiveProfile(profileData);
-  const DEFAULT_MODEL = "claude-sonnet-4-6";
+  const DEFAULT_MODEL = "claude-sonnet-5";
 
   // claude 会员：OAuth token 仅供网页端使用，直接调 API 会触发 429
   // 返回 null，调用方改走 query() 路径

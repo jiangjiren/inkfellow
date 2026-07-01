@@ -7,7 +7,7 @@
     <link rel="icon" href="./icon.png?v=3" />
     <link rel="stylesheet" href="./vendor/codemirror.min.css" />
     <link rel="stylesheet" href="./vendor/show-hint.css" />
-    <link rel="stylesheet" href="./app.css?v=4" />
+    <link rel="stylesheet" href="./app.css?v=5" />
   </head>
   <body>
     <div id="shell" class="shell">
@@ -142,12 +142,19 @@
         </div>
 
         <!-- Fellow (agent iframe) -->
-        <iframe
-          id="agent-frame"
-          class="assistantPanelFrame"
-          title="inkfellow Fellow"
-          allow="clipboard-read; clipboard-write"
-        ></iframe>
+        <div id="agent-panel" class="assistantPanelAgent">
+          <iframe
+            id="agent-frame"
+            class="assistantPanelFrame"
+            title="inkfellow Fellow"
+            allow="clipboard-read; clipboard-write"
+          ></iframe>
+          <div id="agent-loading" class="assistantPanelLoading" role="status" aria-live="polite">
+            <div class="assistantPanelLoadingMark" aria-hidden="true">✦</div>
+            <div class="assistantPanelLoadingTitle">Fellow 正在启动</div>
+            <div id="agent-loading-detail" class="assistantPanelLoadingDetail">正在连接本地 AI 服务...</div>
+          </div>
+        </div>
 
         <!-- Outline (TOC) -->
         <div id="toc-panel" class="articleToc" hidden>
@@ -188,6 +195,6 @@
     <script src="./vendor/markdown.min.js"></script>
     <script src="./vendor/continuelist.min.js"></script>
     <script src="./vendor/show-hint.js"></script>
-    <script src="./app.js?v=9"></script>
+    <script src="./app.js?v=11"></script>
   </body>
 </html>

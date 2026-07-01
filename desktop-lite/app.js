@@ -1955,6 +1955,13 @@ function agentOrigin() {
 
 const pendingAgentMessages = [];
 
+function setAgentLoading(visible, detail = "") {
+  const loading = qs("agent-loading");
+  if (!loading) return;
+  if (detail) qs("agent-loading-detail").textContent = detail;
+  loading.hidden = !visible;
+}
+
 function postAgentMessage(message) {
   const frame = qs("agent-frame");
   const targetOrigin = agentOrigin();
@@ -2016,12 +2023,11 @@ function sendSelectionContext() {
 }
 
 async function waitForAgent() {
+  setAgentLoading(true, "正在启动本地 AI 服务...");
   for (let i = 0; i < 120; i++) {
     try {
       const ready = await invoke("agent_status");
       if (ready) {
-        // Extra 800ms: TCP port open doesn't mean HTTP server is ready
-        await new Promise((r) => setTimeout(r, 800));
         const url = new URL("/", state.agentUrl);
         url.searchParams.set("desktop", "1");
         url.searchParams.set("wsPort", String(state.agentPort));
@@ -2030,12 +2036,14 @@ async function waitForAgent() {
         url.searchParams.set("token", state.agentToken);
         const frame = qs("agent-frame");
         state.agentReady = false;
+        setAgentLoading(true, "正在打开 Fellow...");
         frame.src = url.toString();
         return;
       }
     } catch {}
-    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => setTimeout(r, i < 60 ? 100 : 350));
   }
+  setAgentLoading(true, "Fellow 启动超时，请重启应用或查看日志。");
 }
 
 /* ── Git ─────────────────────────────────────────── */
@@ -2586,11 +2594,11 @@ function switchTab(tab) {
     btn.classList.toggle("assistantPanelTabActive", btn.dataset.tab === tab);
   });
 
-  const frame = qs("agent-frame");
+  const agent = qs("agent-panel");
   const toc = qs("toc-panel");
   const git = qs("git-panel");
 
-  frame.classList.toggle("assistantPanelFrameHidden", tab !== "agent");
+  agent.classList.toggle("assistantPanelFrameHidden", tab !== "agent");
   toc.hidden = tab !== "toc";
   git.hidden = tab !== "git";
   git.style.display = tab === "git" ? "flex" : "";
@@ -2824,10 +2832,12 @@ function wireEvents() {
     if (!state.agentToken || event.data?.__token !== state.agentToken) return;
     if (event.data?.type === "agent-not-ready") {
       state.agentReady = false;
+      setAgentLoading(true, "Fellow 连接已断开，正在重连...");
       return;
     }
     if (event.data?.type !== "agent-ready") return;
     state.agentReady = true;
+    setAgentLoading(false);
     flushAgentMessages();
     sendNoteContext();
     sendVaultNotes(true);

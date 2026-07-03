@@ -29,6 +29,8 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 // compaction, slow thinking) are never killed — only truly frozen streams are.
 const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
 const MAX_AGENT_RUN_MS = 8 * 60_000; // hard cap even if the stream keeps emitting retries/status
+const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
+const USAGE_LIMIT_QUERY_TIMEOUT_MS = 12_000;
 
 const htmlPath   = join(__dirname, "public/index.html");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
@@ -600,6 +602,161 @@ export function buildAgentEnv(profileData, effort, requestedModel) {
   if (active.provider === "openrouter") env.CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK = "1";
 
   return env;
+}
+
+function clampPercent(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeUsageWindow(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const utilizationRaw = raw.utilization ?? raw.percent ?? raw.used_percent;
+  const utilizationNum = typeof utilizationRaw === "number" ? utilizationRaw : Number(utilizationRaw);
+  const usedPercent = clampPercent(utilizationNum <= 1 ? utilizationNum * 100 : utilizationNum);
+  return {
+    usedPercent,
+    remainingPercent: usedPercent == null ? null : clampPercent(100 - usedPercent),
+    resetAt: raw.resets_at ?? raw.resetsAt ?? raw.reset_at ?? null,
+  };
+}
+
+async function getClaudeSubscriptionLimits() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), USAGE_LIMIT_QUERY_TIMEOUT_MS);
+  let usageQuery = null;
+  try {
+    async function* emptyPrompt() {}
+    usageQuery = query({
+      prompt: emptyPrompt(),
+      options: {
+        cwd: DEFAULT_CWD,
+        abortController: controller,
+        env: buildAgentEnv({ activeProfileId: "p_claude", profiles: [{ id: "p_claude", provider: "claude" }] }),
+      },
+    });
+    const usage = await usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+    const rateLimits = usage?.rate_limits ?? null;
+    return {
+      provider: "claude",
+      status: usage?.rate_limits_available && rateLimits ? "ok" : "unavailable",
+      authenticated: true,
+      available: usage?.rate_limits_available === true && !!rateLimits,
+      subscriptionType: usage?.subscription_type ?? null,
+      fiveHour: normalizeUsageWindow(rateLimits?.five_hour),
+      week: normalizeUsageWindow(rateLimits?.seven_day),
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    return {
+      provider: "claude",
+      status: controller.signal.aborted ? "timeout" : "error",
+      authenticated: false,
+      available: false,
+      message: controller.signal.aborted ? "Claude 额度查询超时" : String(err?.message || err),
+      updatedAt: new Date().toISOString(),
+    };
+  } finally {
+    clearTimeout(timeout);
+    try { usageQuery?.close?.(); } catch { }
+    try { controller.abort(); } catch { }
+  }
+}
+
+function readCodexSubscriptionAuth() {
+  const authFile = join(homedir(), ".codex", "auth.json");
+  if (!existsSync(authFile)) {
+    return { ok: false, status: "unauthenticated", message: "Codex 未登录" };
+  }
+  try {
+    const auth = JSON.parse(readFileSync(authFile, "utf8"));
+    if (auth.auth_mode && auth.auth_mode !== "chatgpt") {
+      return { ok: false, status: "unavailable", message: "Codex 当前不是 ChatGPT OAuth 登录模式" };
+    }
+    const accessToken = auth.tokens?.access_token;
+    if (!accessToken) {
+      return { ok: false, status: "unauthenticated", message: "Codex OAuth access_token 不存在" };
+    }
+    return { ok: true, accessToken, accountId: auth.tokens?.account_id ?? null };
+  } catch (err) {
+    return { ok: false, status: "error", message: `Codex auth.json 解析失败：${String(err?.message || err)}` };
+  }
+}
+
+async function queryCodexSubscriptionLimits() {
+  const auth = readCodexSubscriptionAuth();
+  if (!auth.ok) {
+    return {
+      provider: "codex",
+      status: auth.status,
+      authenticated: false,
+      available: false,
+      message: auth.message,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), USAGE_LIMIT_QUERY_TIMEOUT_MS);
+  try {
+    const headers = {
+      Authorization: `Bearer ${auth.accessToken}`,
+      "User-Agent": "codex-cli",
+      Accept: "application/json",
+    };
+    if (auth.accountId) headers["ChatGPT-Account-Id"] = auth.accountId;
+
+    const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+      headers,
+      signal: controller.signal,
+    });
+
+    if (resp.status === 401 || resp.status === 403) {
+      return {
+        provider: "codex",
+        status: "expired",
+        authenticated: true,
+        available: false,
+        message: `Codex OAuth 已失效，请重新登录（HTTP ${resp.status}）`,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return {
+        provider: "codex",
+        status: "error",
+        authenticated: true,
+        available: false,
+        message: `Codex 额度查询失败（HTTP ${resp.status}）：${text.slice(0, 300)}`,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    const body = await resp.json();
+    const rateLimit = body?.rate_limit ?? null;
+    return {
+      provider: "codex",
+      status: rateLimit ? "ok" : "unavailable",
+      authenticated: true,
+      available: !!rateLimit,
+      planType: body?.plan_type ?? null,
+      fiveHour: normalizeUsageWindow(rateLimit?.primary_window),
+      week: normalizeUsageWindow(rateLimit?.secondary_window),
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    return {
+      provider: "codex",
+      status: controller.signal.aborted ? "timeout" : "error",
+      authenticated: true,
+      available: false,
+      message: controller.signal.aborted ? "Codex 额度查询超时" : String(err?.message || err),
+      updatedAt: new Date().toISOString(),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ── Server-side history ────────────────────────────────────
@@ -1861,6 +2018,24 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (url === "/api/usage-limits" && method === "GET") {
+    (async () => {
+      const [claude, codex] = await Promise.all([
+        getClaudeSubscriptionLimits(),
+        queryCodexSubscriptionLimits(),
+      ]);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        providers: { claude, codex },
+      }));
+    })().catch((err) => {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: String(err?.message || err) }));
+    });
+    return;
+  }
+
   // ── Claude subscription auth status ──────────────────────────
   // Run `claude auth status` — the only reliable way to check login state,
   // since credentials may be stored in the system keychain rather than a file.
@@ -2068,11 +2243,109 @@ const http = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: http });
 
+function normalizeAskUserQuestions(input) {
+  const rawQuestions = Array.isArray(input?.questions) ? input.questions : [];
+  return rawQuestions.slice(0, 4).map((raw, index) => {
+    const question = typeof raw?.question === "string" && raw.question.trim()
+      ? raw.question.trim()
+      : `Question ${index + 1}`;
+    const header = typeof raw?.header === "string" && raw.header.trim()
+      ? raw.header.trim().slice(0, 24)
+      : `Q${index + 1}`;
+    const options = Array.isArray(raw?.options) ? raw.options.slice(0, 4).map((opt, optIndex) => ({
+      label: typeof opt?.label === "string" && opt.label.trim() ? opt.label.trim() : `Option ${optIndex + 1}`,
+      description: typeof opt?.description === "string" ? opt.description.trim() : "",
+      ...(typeof opt?.preview === "string" ? { preview: opt.preview } : {}),
+    })).filter(opt => opt.label) : [];
+    return {
+      question,
+      header,
+      options,
+      multiSelect: raw?.multiSelect === true,
+    };
+  }).filter(q => q.question && q.options.length >= 2);
+}
+
+function makeAbortError(message) {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
 wss.on("connection", (ws) => {
   let abortCtrl = null;
+  let pendingAskUserQuestion = null;
 
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  };
+
+  const clearPendingAskUserQuestion = (reason = "cancelled") => {
+    if (!pendingAskUserQuestion) return;
+    const pending = pendingAskUserQuestion;
+    pendingAskUserQuestion = null;
+    pending.cleanup?.();
+    pending.reject(makeAbortError(reason));
+    send({ type: "ask_user_question_cancelled", requestId: pending.requestId, reason });
+  };
+
+  const waitForAskUserQuestionAnswer = (input, context = {}) => {
+    const questions = normalizeAskUserQuestions(input);
+    if (questions.length === 0) {
+      return Promise.reject(new Error("AskUserQuestion 请求格式无效：缺少 questions/options"));
+    }
+    clearPendingAskUserQuestion("新的澄清问题已替换上一条问题");
+
+    const requestId = crypto.randomUUID();
+    send({
+      type: "ask_user_question",
+      requestId,
+      toolUseID: context.toolUseID ?? null,
+      questions,
+    });
+
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        if (pendingAskUserQuestion?.requestId !== requestId) return;
+        pendingAskUserQuestion = null;
+        reject(makeAbortError("用户输入已取消"));
+        send({ type: "ask_user_question_cancelled", requestId, reason: "aborted" });
+      };
+      const signal = context.signal;
+      if (signal?.aborted) {
+        reject(makeAbortError("用户输入已取消"));
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      pendingAskUserQuestion = {
+        requestId,
+        questions,
+        cleanup: () => signal?.removeEventListener("abort", onAbort),
+        reject,
+        resolve: (payload = {}) => {
+          if (pendingAskUserQuestion?.requestId !== requestId) return;
+          pendingAskUserQuestion = null;
+          signal?.removeEventListener("abort", onAbort);
+          const rawAnswers = payload && typeof payload.answers === "object" && payload.answers !== null
+            ? payload.answers
+            : {};
+          const answers = {};
+          for (const question of questions) {
+            const raw = rawAnswers[question.question];
+            const value = Array.isArray(raw)
+              ? raw.map(v => String(v ?? "").trim()).filter(Boolean).join(", ")
+              : String(raw ?? "").trim();
+            if (value) answers[question.question] = value;
+          }
+          const response = typeof payload.response === "string" ? payload.response.trim() : "";
+          if (Object.keys(answers).length === 0 && !response) {
+            reject(new Error("未收到有效回答"));
+            return;
+          }
+          resolve({ questions, answers, response });
+        },
+      };
+    });
   };
 
   // Send the persisted default first; the browser sends a profile-specific refresh
@@ -2093,7 +2366,22 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "ask_user_question_response") {
+      if (!pendingAskUserQuestion || msg.requestId !== pendingAskUserQuestion.requestId) {
+        send({ type: "ask_user_question_error", requestId: msg.requestId ?? null, text: "这个问题已过期，请重新发起请求。" });
+        return;
+      }
+      pendingAskUserQuestion.resolve(msg);
+      return;
+    }
+
+    if (msg.type === "ask_user_question_cancel") {
+      clearPendingAskUserQuestion("用户取消了澄清问题");
+      return;
+    }
+
     if (msg.reset) {
+      clearPendingAskUserQuestion("会话已重置");
       clearAllSessions();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       return;
@@ -2108,12 +2396,14 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.stop) {
+      clearPendingAskUserQuestion("用户停止了生成");
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       else send({ type: "stopped" });
       return;
     }
 
     // Cancel any in-flight query before starting a new one
+    clearPendingAskUserQuestion("新的请求已开始");
     if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
 
     const schedulerRequest = hasSchedulerIntent(msg.prompt);
@@ -2295,15 +2585,113 @@ wss.on("connection", (ws) => {
 
     (async () => {
       let stallTimer = null;
+      let hardTimer = null;
       let isStallAbort = false;
+      let waitingForUserInput = false;
       // Stall watchdog: resets on each SDK event. Catches truly frozen streams.
       const resetStall = () => {
+        if (waitingForUserInput) return;
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
       };
+      const resetHardTimer = () => {
+        if (waitingForUserInput) return;
+        clearTimeout(hardTimer);
+        hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
+      };
+      const pauseForUserInput = () => {
+        waitingForUserInput = true;
+        clearTimeout(stallTimer);
+        clearTimeout(hardTimer);
+      };
+      const resumeAfterUserInput = () => {
+        waitingForUserInput = false;
+        if (!ac.signal.aborted) {
+          resetStall();
+          resetHardTimer();
+        }
+      };
       // Hard cap: api_retry loops reset the stall timer indefinitely; this ensures
       // the request always terminates even when the SDK retries for minutes on end.
-      const hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
+      resetHardTimer();
+
+      const collectAskUserQuestionInput = async (input, context = {}) => {
+        pauseForUserInput();
+        try {
+          const answer = await waitForAskUserQuestionAnswer(input, context);
+          const updatedInput = {
+            ...input,
+            questions: answer.questions,
+          };
+          if (answer.response && Object.keys(answer.answers).length === 0) {
+            updatedInput.response = answer.response;
+          } else {
+            updatedInput.answers = answer.answers;
+          }
+          return updatedInput;
+        } finally {
+          resumeAfterUserInput();
+        }
+      };
+
+      options.hooks = {
+        ...(options.hooks ?? {}),
+        PreToolUse: [
+          ...((options.hooks?.PreToolUse) ?? []),
+          {
+            matcher: ASK_USER_QUESTION_TOOL,
+            hooks: [async (hookInput, toolUseID, hookContext = {}) => {
+              if (hookInput?.tool_name !== ASK_USER_QUESTION_TOOL) return {};
+              const existingInput = hookInput.tool_input && typeof hookInput.tool_input === "object"
+                ? hookInput.tool_input
+                : {};
+              if (existingInput.answers || existingInput.response) {
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "allow",
+                    updatedInput: existingInput,
+                  },
+                };
+              }
+              const updatedInput = await collectAskUserQuestionInput(existingInput, {
+                signal: hookContext.signal,
+                toolUseID: hookInput.tool_use_id ?? toolUseID,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "allow",
+                  updatedInput,
+                },
+              };
+            }],
+          },
+        ],
+      };
+
+      options.canUseTool = async (toolName, input, context = {}) => {
+        if (toolName !== ASK_USER_QUESTION_TOOL) {
+          return {
+            behavior: "deny",
+            message: `Web UI 当前只处理 ${ASK_USER_QUESTION_TOOL} 澄清问题，不会自动批准 ${toolName}。请切换到合适的权限模式后重试。`,
+          };
+        }
+
+        if (input?.answers || input?.response) {
+          return {
+            behavior: "allow",
+            updatedInput: input,
+            decisionClassification: "user_temporary",
+          };
+        }
+
+        return {
+          behavior: "allow",
+          updatedInput: await collectAskUserQuestionInput(input, context),
+          decisionClassification: "user_temporary",
+        };
+      };
 
       // Run one query() to completion, forwarding all events to the client.
       const runQuery = async (promptMsg, queryOptions) => {
@@ -2395,12 +2783,14 @@ wss.on("connection", (ws) => {
       } finally {
         clearTimeout(stallTimer);
         clearTimeout(hardTimer);
+        clearPendingAskUserQuestion("请求已结束");
         if (abortCtrl === ac) abortCtrl = null;
       }
     })();
   });
 
   ws.on("close", () => {
+    clearPendingAskUserQuestion("连接已关闭");
     if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
   });
 });

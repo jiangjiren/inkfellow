@@ -118,6 +118,213 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 }
 #slash-popup.open { display: block; }
 
+#ask-user-question {
+  display: none;
+  margin: 0 0 8px;
+  background: #fff;
+  border: 1px solid rgba(26,108,246,0.18);
+  border-radius: 10px;
+  box-shadow: 0 -6px 24px rgba(26,108,246,0.08), 0 2px 8px rgba(0,0,0,0.06);
+  overflow: hidden;
+  max-height: min(44vh, 380px);
+}
+#ask-user-question.open {
+  display: flex;
+  flex-direction: column;
+}
+.ask-question-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(26,108,246,0.1);
+  background: rgba(26,108,246,0.04);
+}
+.ask-question-mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.ask-question-title {
+  min-width: 0;
+  flex: 1;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ask-question-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+.ask-question-close:hover { background: rgba(26,108,246,0.08); color: var(--text); }
+.ask-question-body {
+  overflow-y: auto;
+  padding: 10px 11px 11px;
+}
+.ask-question-item {
+  padding: 0 0 11px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.ask-question-item:last-child {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+.ask-question-meta {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(26,108,246,0.08);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-question-text {
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.ask-question-hint {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+.ask-options {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ask-option {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+.ask-option:hover {
+  border-color: rgba(26,108,246,0.32);
+  background: rgba(26,108,246,0.04);
+}
+.ask-option.selected {
+  border-color: rgba(26,108,246,0.55);
+  background: rgba(26,108,246,0.08);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ask-option-label {
+  display: block;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.ask-option-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.ask-custom-row {
+  display: none;
+  margin-top: 6px;
+}
+.ask-custom-row.open { display: block; }
+.ask-custom-input {
+  width: 100%;
+  min-height: 34px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 7px 9px;
+  border: 1px solid rgba(26,108,246,0.24);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  outline: none;
+}
+.ask-custom-input:focus {
+  border-color: rgba(26,108,246,0.5);
+  box-shadow: 0 0 0 3px rgba(26,108,246,0.08);
+}
+.ask-question-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 11px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.ask-question-status {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ask-question-submit {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--text);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+.ask-question-submit:disabled {
+  background: #d0cdc9;
+  cursor: default;
+}
+.ask-question-submit:not(:disabled):hover { background: #3a3835; }
+@media (max-width: 420px) {
+  #ask-user-question { max-height: min(52vh, 420px); }
+  .ask-question-head,
+  .ask-question-body,
+  .ask-question-actions { padding-left: 9px; padding-right: 9px; }
+}
+
 .slash-header {
   padding: 6px 12px 4px;
   font-size: 10px;
@@ -761,43 +968,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   gap: 2px;
   min-width: max-content;
 }
-#rate-limit-chip {
-  display: none;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 13px;
-  border: 1px solid rgba(138,134,128,0.18);
-  background: rgba(138,134,128,0.07);
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-#rate-limit-chip.visible { display: inline-flex; }
-#rate-limit-chip.available {
-  border-color: rgba(26,122,63,0.18);
-  background: rgba(26,122,63,0.07);
-  color: var(--green);
-}
-#rate-limit-chip.warning {
-  border-color: rgba(146,96,10,0.24);
-  background: rgba(146,96,10,0.08);
-  color: var(--yellow);
-}
-#rate-limit-chip.critical {
-  border-color: rgba(192,57,43,0.22);
-  background: rgba(192,57,43,0.08);
-  color: var(--red);
-}
-#rate-limit-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.8;
-}
 .header-btn {
   width: 30px;
   height: 30px;
@@ -1012,18 +1182,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .picker-option-desc { font-size: 10.5px; color: var(--text-dim); }
 @media (max-width: 360px) {
-  #rate-limit-chip { padding: 0 6px; font-size: 10.5px; }
-  #rate-limit-dot { display: none; }
   .picker-btn {
     height: 25px;
     padding: 0 6px;
     font-size: 11px;
     max-width: 96px;
   }
-}
-@media (max-width: 300px) {
-  #rate-limit-chip { width: 28px; padding: 0; justify-content: center; }
-  #rate-limit-label { display: none; }
 }
 .history-head {
   display: flex;
@@ -1313,6 +1477,54 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.auth-limit-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(26,122,63,0.18);
+  background: rgba(26,122,63,0.07);
+  color: var(--green);
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.auth-limit-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-limit-clock {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.78;
+}
+.auth-limit-badge.warning {
+  border-color: rgba(146,96,10,0.22);
+  background: rgba(146,96,10,0.08);
+  color: var(--yellow);
+}
+.auth-limit-badge.critical {
+  border-color: rgba(192,57,43,0.2);
+  background: rgba(192,57,43,0.08);
+  color: var(--red);
+}
+.auth-limit-badge.muted {
+  border-color: rgba(138,134,128,0.18);
+  background: rgba(138,134,128,0.07);
+  color: var(--text-dim);
+  font-weight: 600;
 }
 
 /* 右侧操作按钮组 */
@@ -1632,10 +1844,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 <div id="app">
   <header id="chat-header">
     <div id="header-actions">
-      <div id="rate-limit-chip" aria-live="polite">
-        <span id="rate-limit-dot"></span>
-        <span id="rate-limit-label"></span>
-      </div>
       <button id="btn-settings" class="header-btn" title="账号设置" aria-label="账号设置">
         <svg width="17" height="17" viewBox="3 3 18 18" fill="currentColor" aria-hidden="true">
           <path fill-rule="evenodd" d="M10.45 6.2L9.93 4.27L14.07 4.27L13.55 6.2A6 6 0 0 1 16.24 7.76L17.66 6.34L19.73 9.93L17.8 10.45A6 6 0 0 1 17.8 13.55L19.73 14.07L17.66 17.66L16.24 16.24A6 6 0 0 1 13.55 17.8L14.07 19.73L9.93 19.73L10.45 17.8A6 6 0 0 1 7.76 16.24L6.34 17.66L4.27 14.07L6.2 13.55A6 6 0 0 1 6.2 10.45L4.27 9.93L6.34 6.34L7.76 7.76A6 6 0 0 1 10.45 6.2ZM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0Z"/>
@@ -1805,6 +2013,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </section>
   <div id="input-wrap">
     <div id="slash-popup" role="listbox" aria-label="输入建议"></div>
+    <div id="ask-user-question" role="region" aria-live="polite" aria-label="Claude 提问"></div>
     <div id="composer">
       <div id="image-chip"></div>
       <div id="mention-chips" aria-label="已选择的文件上下文"></div>
@@ -1930,11 +2139,10 @@ const messagesEl  = document.getElementById("messages");
 const promptEl    = document.getElementById("prompt");
 const sendBtn     = document.getElementById("send");
 const popupEl     = document.getElementById("slash-popup");
+const askUserQuestionEl = document.getElementById("ask-user-question");
 const contextChip = document.getElementById("context-chip");
 const ctxPathEl   = document.getElementById("ctx-path");
 const ctxToggle   = document.getElementById("ctx-toggle");
-const rateLimitChip  = document.getElementById("rate-limit-chip");
-const rateLimitLabel = document.getElementById("rate-limit-label");
 const quoteChip    = document.getElementById("quote-chip");
 const quoteTextEl  = document.getElementById("quote-text");
 const quoteLinesEl = document.getElementById("quote-lines");
@@ -1959,6 +2167,7 @@ function showInlineError(text) {
 }
 
 let isGenerating = false;
+let isAwaitingAskUserQuestion = false;
 let genChipEl = null;
 let lastWsEventAt = 0; // timestamp of last event received from server, for stall detection
 let quotedText = null;
@@ -2083,6 +2292,9 @@ const CLAUDE_MODELS = [
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
 let _claudeAuthStatus = null; // null=checking, true=ok, false=not logged in
 let _codexAuthStatus  = null;
+let _providerUsageLimits = { claude: { status: "idle" }, codex: { status: "idle" } };
+let _usageLimitsRequestSeq = 0;
+let _usageLimitsTimer = null;
 
 async function checkClaudeAuth() {
   try {
@@ -2192,6 +2404,202 @@ function escapeHtml(value) {
   return String(value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
+// ── AskUserQuestion panel ─────────────────────────────────
+let pendingAskUserQuestion = null;
+
+function normalizeAskUserQuestions(input) {
+  const questions = Array.isArray(input?.questions) ? input.questions : input;
+  return (Array.isArray(questions) ? questions : []).slice(0, 4).map((raw, index) => {
+    const options = Array.isArray(raw?.options) ? raw.options.slice(0, 4).map((opt, optIndex) => ({
+      label: String(opt?.label || `选项 ${optIndex + 1}`).trim(),
+      description: String(opt?.description || "").trim(),
+    })).filter(opt => opt.label) : [];
+    return {
+      question: String(raw?.question || `问题 ${index + 1}`).trim(),
+      header: String(raw?.header || `问题 ${index + 1}`).trim().slice(0, 18),
+      options,
+      multiSelect: raw?.multiSelect === true,
+    };
+  }).filter(q => q.question && q.options.length > 0);
+}
+
+function clearAskUserQuestion() {
+  pendingAskUserQuestion = null;
+  isAwaitingAskUserQuestion = false;
+  askUserQuestionEl.classList.remove("open");
+  askUserQuestionEl.innerHTML = "";
+}
+
+function askQuestionHasAnswer(index) {
+  const state = pendingAskUserQuestion;
+  if (!state) return false;
+  if (state.customSelected[index]) return !!state.customValues[index]?.trim();
+  return state.selections[index]?.size > 0;
+}
+
+function updateAskUserQuestionUi() {
+  const state = pendingAskUserQuestion;
+  if (!state) return;
+  askUserQuestionEl.querySelectorAll(".ask-option").forEach((button) => {
+    const qIndex = Number(button.dataset.q);
+    const optIndex = button.dataset.option != null ? Number(button.dataset.option) : null;
+    const selected = button.dataset.other === "true"
+      ? state.customSelected[qIndex]
+      : state.selections[qIndex]?.has(optIndex);
+    button.classList.toggle("selected", !!selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
+  askUserQuestionEl.querySelectorAll(".ask-custom-row").forEach((row) => {
+    const qIndex = Number(row.dataset.q);
+    row.classList.toggle("open", !!state.customSelected[qIndex]);
+  });
+  const answered = state.questions.filter((_, index) => askQuestionHasAnswer(index)).length;
+  const submit = askUserQuestionEl.querySelector(".ask-question-submit");
+  if (submit) submit.disabled = answered !== state.questions.length;
+  const status = askUserQuestionEl.querySelector(".ask-question-status");
+  if (status) status.textContent = answered === state.questions.length
+    ? "可以继续"
+    : `还需回答 ${state.questions.length - answered} 个问题`;
+}
+
+function renderAskUserQuestion(ev) {
+  const questions = normalizeAskUserQuestions(ev.questions ?? ev.input?.questions);
+  if (!questions.length) return;
+  pendingAskUserQuestion = {
+    requestId: ev.requestId,
+    questions,
+    selections: questions.map(() => new Set()),
+    customSelected: questions.map(() => false),
+    customValues: questions.map(() => ""),
+  };
+  isAwaitingAskUserQuestion = true;
+  hidePopup();
+  updateTypingStatus("等待你的选择…");
+  if (isGenerating && !genChipEl) showGenChip("等待你的选择…");
+  else updateGenChip("等待你的选择…");
+
+  askUserQuestionEl.innerHTML = `
+    <div class="ask-question-head">
+      <span class="ask-question-mark">?</span>
+      <span class="ask-question-title">Claude 需要你确认几个选项</span>
+      <button type="button" class="ask-question-close" data-ask-cancel title="取消" aria-label="取消澄清问题">×</button>
+    </div>
+    <div class="ask-question-body">
+      ${questions.map((q, qIndex) => `
+        <section class="ask-question-item" data-q="${qIndex}">
+          <span class="ask-question-meta">${escapeHtml(q.header || `问题 ${qIndex + 1}`)}</span>
+          <div class="ask-question-text">${escapeHtml(q.question)}</div>
+          ${q.multiSelect ? '<div class="ask-question-hint">可选择多个选项</div>' : ""}
+          <div class="ask-options">
+            ${q.options.map((opt, optIndex) => `
+              <button type="button" class="ask-option" data-q="${qIndex}" data-option="${optIndex}" aria-pressed="false">
+                <span class="ask-option-label">${escapeHtml(opt.label)}</span>
+                ${opt.description ? `<span class="ask-option-desc">${escapeHtml(opt.description)}</span>` : ""}
+              </button>
+            `).join("")}
+            <button type="button" class="ask-option" data-q="${qIndex}" data-other="true" aria-pressed="false">
+              <span class="ask-option-label">其他</span>
+              <span class="ask-option-desc">输入自己的答案</span>
+            </button>
+          </div>
+          <div class="ask-custom-row" data-q="${qIndex}">
+            <textarea class="ask-custom-input" data-q="${qIndex}" rows="1" placeholder="输入自定义回答"></textarea>
+          </div>
+        </section>
+      `).join("")}
+    </div>
+    <div class="ask-question-actions">
+      <span class="ask-question-status"></span>
+      <button type="button" class="ask-question-submit" disabled>继续</button>
+    </div>`;
+  askUserQuestionEl.classList.add("open");
+  updateAskUserQuestionUi();
+  scrollBottom();
+}
+
+function buildAskUserQuestionAnswers() {
+  const state = pendingAskUserQuestion;
+  if (!state) return null;
+  const answers = {};
+  state.questions.forEach((question, qIndex) => {
+    if (state.customSelected[qIndex]) {
+      const custom = state.customValues[qIndex]?.trim();
+      if (custom) answers[question.question] = custom;
+      return;
+    }
+    const labels = [...state.selections[qIndex]]
+      .sort((a, b) => a - b)
+      .map((optIndex) => question.options[optIndex]?.label)
+      .filter(Boolean);
+    if (labels.length) answers[question.question] = question.multiSelect ? labels.join(", ") : labels[0];
+  });
+  return answers;
+}
+
+function submitAskUserQuestion() {
+  const state = pendingAskUserQuestion;
+  if (!state || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!state.questions.every((_, index) => askQuestionHasAnswer(index))) {
+    updateAskUserQuestionUi();
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "ask_user_question_response",
+    requestId: state.requestId,
+    answers: buildAskUserQuestionAnswers(),
+  }));
+  clearAskUserQuestion();
+  updateTypingStatus("继续处理…");
+  updateGenChip("继续处理…");
+}
+
+askUserQuestionEl.addEventListener("click", (e) => {
+  const state = pendingAskUserQuestion;
+  if (!state) return;
+  if (e.target.closest("[data-ask-cancel]")) {
+    ws?.send(JSON.stringify({ type: "ask_user_question_cancel", requestId: state.requestId }));
+    clearAskUserQuestion();
+    return;
+  }
+  const submit = e.target.closest(".ask-question-submit");
+  if (submit) {
+    submitAskUserQuestion();
+    return;
+  }
+  const option = e.target.closest(".ask-option");
+  if (!option) return;
+  const qIndex = Number(option.dataset.q);
+  if (!Number.isInteger(qIndex) || !state.questions[qIndex]) return;
+  if (option.dataset.other === "true") {
+    state.customSelected[qIndex] = !state.customSelected[qIndex];
+    if (state.customSelected[qIndex]) state.selections[qIndex].clear();
+    updateAskUserQuestionUi();
+    askUserQuestionEl.querySelector(`.ask-custom-input[data-q="${qIndex}"]`)?.focus();
+    return;
+  }
+  const optIndex = Number(option.dataset.option);
+  if (!Number.isInteger(optIndex)) return;
+  state.customSelected[qIndex] = false;
+  if (state.questions[qIndex].multiSelect) {
+    if (state.selections[qIndex].has(optIndex)) state.selections[qIndex].delete(optIndex);
+    else state.selections[qIndex].add(optIndex);
+  } else {
+    state.selections[qIndex].clear();
+    state.selections[qIndex].add(optIndex);
+  }
+  updateAskUserQuestionUi();
+});
+
+askUserQuestionEl.addEventListener("input", (e) => {
+  const state = pendingAskUserQuestion;
+  const input = e.target.closest(".ask-custom-input");
+  if (!state || !input) return;
+  const qIndex = Number(input.dataset.q);
+  if (!Number.isInteger(qIndex)) return;
+  state.customValues[qIndex] = input.value;
+  updateAskUserQuestionUi();
+});
+
 // ── Status indicator ──────────────────────────────────────
 let _statusHideTimer = null;
 let _formStatusHideTimer = null;
@@ -2222,6 +2630,131 @@ function providerBadge(provider) {
   const c = PROVIDER_COLOR[provider] ?? PROVIDER_COLOR.custom;
   const l = PROVIDER_LABEL[provider] ?? provider;
   return `<span style="font-size:9.5px;font-weight:650;letter-spacing:.04em;padding:1px 5px;border-radius:3px;background:${c}1a;color:${c};border:1px solid ${c}30;flex-shrink:0">${escapeHtml(l)}</span>`;
+}
+
+function normalizeLimitPercent(value) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function usageWindowFromRateLimitInfo(info) {
+  if (!info) return null;
+  const used = info.utilization == null
+    ? (info.status === "rejected" ? 100 : null)
+    : normalizeLimitPercent(info.utilization <= 1 ? info.utilization * 100 : info.utilization);
+  return {
+    usedPercent: used,
+    remainingPercent: used == null ? null : normalizeLimitPercent(100 - used),
+    resetAt: info.resetsAt ?? null,
+  };
+}
+
+function mergeClaudeRateLimitInfo(info) {
+  if (!info?.rateLimitType) return;
+  const current = _providerUsageLimits.claude || {};
+  const next = {
+    ...current,
+    provider: "claude",
+    status: "ok",
+    authenticated: true,
+    available: true,
+    updatedAt: new Date().toISOString(),
+  };
+  if (info.rateLimitType === "five_hour") next.fiveHour = usageWindowFromRateLimitInfo(info);
+  if (info.rateLimitType === "seven_day") next.week = usageWindowFromRateLimitInfo(info);
+  _providerUsageLimits = { ..._providerUsageLimits, claude: next };
+  if (authDialog.classList.contains("open")) renderProfileList(_profileData);
+}
+
+const LIMIT_CLOCK_ICON = '<svg class="auth-limit-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>';
+
+function renderLimitWindow(label, win, resetFormat = "hm") {
+  const remaining = win?.remainingPercent == null ? "--" : `${win.remainingPercent}%`;
+  const resetIn = formatResetCountdown(win?.resetAt, resetFormat);
+  return `${escapeHtml(label)} 剩${escapeHtml(remaining)}${resetIn ? ` ${LIMIT_CLOCK_ICON}${escapeHtml(resetIn)}` : ""}`;
+}
+
+function renderLimitTooltipWindow(label, win) {
+  if (!win) return "";
+  const parts = [];
+  if (win.usedPercent != null) parts.push(`已用 ${win.usedPercent}%`);
+  if (win.resetAt) parts.push(`${formatResetTime(win.resetAt)} 重置`);
+  return parts.length ? `${label}：${parts.join("，")}` : "";
+}
+
+function limitBadgeClass(limit) {
+  const values = [limit?.fiveHour?.remainingPercent, limit?.week?.remainingPercent]
+    .filter(v => typeof v === "number");
+  if (!values.length) return "muted";
+  const min = Math.min(...values);
+  if (min <= 10) return "critical";
+  if (min <= 25) return "warning";
+  return "";
+}
+
+function renderProviderLimitSummary(provider) {
+  if (provider !== "claude" && provider !== "codex") return "";
+  const limit = _providerUsageLimits[provider];
+  if (!limit || limit.status === "idle" || limit.status === "loading") {
+    return `<span class="auth-limit-badge muted" title="正在读取实时额度">额度检测中…</span>`;
+  }
+  if (provider === "codex" && !limit.available) {
+    return `<span class="auth-limit-badge muted" title="${escapeAttr(limit.message || "Codex 暂未提供可查询的会员额度接口")}">额度不可查询</span>`;
+  }
+  if (!limit.available) {
+    const title = limit.message || (limit.authenticated === false ? "未登录或无法读取会员额度" : "当前账号未返回会员额度");
+    return `<span class="auth-limit-badge muted" title="${escapeAttr(title)}">额度暂不可用</span>`;
+  }
+  const tooltipParts = [
+    renderLimitTooltipWindow("5小时", limit.fiveHour),
+    renderLimitTooltipWindow("本周", limit.week),
+  ].filter(Boolean);
+  const title = tooltipParts.length ? tooltipParts.join("；") : "会员实时额度";
+  const html = `${renderLimitWindow("5h", limit.fiveHour, "hm")} · ${renderLimitWindow("周", limit.week, "dh")}`;
+  return `<span class="auth-limit-badge ${limitBadgeClass(limit)}" title="${escapeAttr(title)}"><span class="auth-limit-text">${html}</span></span>`;
+}
+
+async function checkProviderUsageLimits({ silent = false } = {}) {
+  const seq = ++_usageLimitsRequestSeq;
+  if (!silent) {
+    _providerUsageLimits = {
+      claude: { status: "loading" },
+      codex: { status: "loading" },
+    };
+    renderProfileList(_profileData);
+  }
+  try {
+    const res = await fetch("api/usage-limits", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (seq !== _usageLimitsRequestSeq) return;
+    if (!res.ok) throw new Error(data.error || "额度查询失败");
+    _providerUsageLimits = {
+      claude: data.providers?.claude ?? { status: "unavailable", available: false },
+      codex: data.providers?.codex ?? { status: "unsupported", available: false },
+    };
+  } catch (err) {
+    if (seq !== _usageLimitsRequestSeq) return;
+    const message = String(err?.message || err || "额度查询失败");
+    _providerUsageLimits = {
+      claude: { status: "error", available: false, message },
+      codex: { status: "error", available: false, message },
+    };
+  }
+  renderProfileList(_profileData);
+}
+
+function startUsageLimitPolling() {
+  stopUsageLimitPolling();
+  void checkProviderUsageLimits();
+  _usageLimitsTimer = setInterval(() => {
+    if (authDialog.classList.contains("open")) void checkProviderUsageLimits({ silent: true });
+  }, 60_000);
+}
+
+function stopUsageLimitPolling() {
+  if (_usageLimitsTimer) clearInterval(_usageLimitsTimer);
+  _usageLimitsTimer = null;
 }
 
 // ── Render profile list ────────────────────────────────────
@@ -2266,6 +2799,7 @@ function renderProfileList(data) {
         <span class="auth-profile-meta" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
           ${providerBadge(p.provider)}
           <span style="opacity:.65;font-size:10.5px">${escapeHtml(meta)}</span>
+          ${renderProviderLimitSummary(p.provider)}
         </span>
       </span>
       ${actions}
@@ -2481,6 +3015,7 @@ function openAuthDialog() {
   void fetchProfiles();
   checkClaudeAuth();
   checkCodexAuth();
+  startUsageLimitPolling();
   if (typeof checkWechatStatus === "function") {
     stopWechatPolling();
     checkWechatStatus();
@@ -2490,6 +3025,7 @@ function openAuthDialog() {
 function closeAuthDialog() {
   authDialog.classList.remove("open");
   authBackdrop.classList.remove("open");
+  stopUsageLimitPolling();
 }
 
 settingsBtn.addEventListener("click", (e) => {
@@ -3048,6 +3584,7 @@ function connect() {
   };
   ws.onclose = () => {
     sendBtn.disabled = true;
+    clearAskUserQuestion();
     setGenerating(false, false);
     setTimeout(connect, 3000);
   };
@@ -3062,7 +3599,7 @@ connect();
 // events for longer than the server-side threshold plus a generous buffer.
 const CLIENT_STALL_MS = 240_000; // 4 min — server kills at 3, so this only fires if WS is dead
 function checkClientStall() {
-  if (isGenerating && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
+  if (isGenerating && !isAwaitingAskUserQuestion && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
     showInlineError("连接已断开，请重新发送消息。");
     setGenerating(false);
     removeTyping();
@@ -3194,50 +3731,66 @@ function captureAssistantEvent(ev) {
   scrollBottom();
 }
 
-function formatResetTime(value) {
+function parseResetDate(value) {
   if (!value) return "";
-  const ms = value < 10_000_000_000 ? value * 1000 : value;
+  const numeric = typeof value === "number" ? value : Number(value);
+  const ms = Number.isFinite(numeric)
+    ? (numeric < 10_000_000_000 ? numeric * 1000 : numeric)
+    : value;
   const date = new Date(ms);
-  if (Number.isNaN(date.getTime())) return "";
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatResetCountdown(value, format = "hm") {
+  const date = parseResetDate(value);
+  if (!date) return "";
+  const diffMs = date.getTime() - Date.now();
+  if (format === "dh") {
+    if (diffMs <= 0) return "0d0h";
+    const totalHours = Math.max(1, Math.ceil(diffMs / 3_600_000));
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    return `${days}d${hours}h`;
+  }
+  if (diffMs <= 0) return "0h00min";
+  const totalMinutes = Math.max(1, Math.ceil(diffMs / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h${String(minutes).padStart(2, "0")}min`;
+}
+
+function formatResetTime(value) {
+  const date = parseResetDate(value);
+  if (!date) return "";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function hideRateLimit() {
-  rateLimitLabel.textContent = "";
-  rateLimitChip.title = "";
-  rateLimitChip.classList.remove("visible", "available", "warning", "critical");
-}
-
 function updateRateLimit(info) {
-  if (!info || info.rateLimitType !== "five_hour") {
-    hideRateLimit();
-    return;
-  }
-  if (info.utilization == null) {
-    if (info.status !== "rejected") {
-      hideRateLimit();
-      return;
-    }
-    rateLimitLabel.textContent = "5小时 已用尽";
-    rateLimitChip.title = "Claude 5 小时额度已用尽";
-    rateLimitChip.classList.add("visible", "critical");
-    rateLimitChip.classList.remove("available", "warning");
-    return;
-  }
-  const usedPercent = info.utilization <= 1 ? info.utilization * 100 : info.utilization;
-  const remaining = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
-  rateLimitLabel.textContent = `5小时 ${remaining}%`;
-  const reset = formatResetTime(info.resetsAt);
-  const statusText = info.status === "rejected" ? "已用尽" : info.status === "allowed_warning" ? "接近上限" : "可用";
-  rateLimitChip.title = `Claude 5 小时额度：剩余约 ${remaining}%${reset ? `，${reset} 重置` : ""}（${statusText}）`;
-  rateLimitChip.classList.add("visible", "available");
-  rateLimitChip.classList.toggle("warning", remaining <= 25 && remaining > 10);
-  rateLimitChip.classList.toggle("critical", remaining <= 10 || info.status === "rejected");
+  if (info) mergeClaudeRateLimitInfo(info);
 }
 
 // ── Event handling ────────────────────────────────────────
 function handleEvent(ev) {
   lastWsEventAt = Date.now();
+
+  if (ev.type === "ask_user_question") {
+    renderAskUserQuestion(ev);
+    return;
+  }
+
+  if (ev.type === "ask_user_question_cancelled") {
+    if (!pendingAskUserQuestion || pendingAskUserQuestion.requestId === ev.requestId) {
+      clearAskUserQuestion();
+      updateGenChip("已取消");
+    }
+    return;
+  }
+
+  if (ev.type === "ask_user_question_error") {
+    if (!pendingAskUserQuestion || pendingAskUserQuestion.requestId === ev.requestId) clearAskUserQuestion();
+    showInlineError(ev.text || "问题已过期，请重新发送消息。");
+    return;
+  }
 
   if (ev.type === "system" && ev.subtype === "api_retry") {
     updateTypingStatus(`API 繁忙，正在重试 (${ev.attempt}/${ev.max_retries})…`);
@@ -3469,12 +4022,14 @@ function handleEvent(ev) {
   }
 
   if (ev.type === "done" || ev.type === "stopped") {
+    clearAskUserQuestion();
     resetAssistantState();
     setGenerating(false); removeTyping();
     return;
   }
 
   if (ev.type === "error") {
+    clearAskUserQuestion();
     cleanupRunningTools();
     showInlineError(ev.text?.trim() || "发生错误");
     setGenerating(false); removeTyping();
@@ -3852,6 +4407,7 @@ function selectItem(i) {
   // /clear is handled locally; everything else is sent to claude
   if (item.name === "clear") {
     saveCurrentConversation();
+    clearAskUserQuestion();
     messagesEl.innerHTML = "";
     messageLog = []; currentConvId = null; currentSessionId = null; currentSessionProvider = null;
     promptEl.value = "";
@@ -3951,6 +4507,7 @@ function send() {
 
   if (text === "/clear") {
     saveCurrentConversation();
+    clearAskUserQuestion();
     messagesEl.innerHTML = "";
     messageLog = []; currentConvId = null; currentSessionId = null; currentSessionProvider = null;
     promptEl.value = "";
@@ -3962,6 +4519,7 @@ function send() {
   }
 
   hidePopup();
+  clearAskUserQuestion();
   const mentionedFiles = [...selectedMentionFiles.values()];
   if (!currentConvId) currentConvId = genId();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
@@ -4150,6 +4708,7 @@ else _appEl.style.height = "";
 sendBtn.addEventListener("click", () => {
   if (isGenerating) {
     ws?.send(JSON.stringify({ stop: true }));
+    clearAskUserQuestion();
     setGenerating(false);
     removeTyping();
   } else {
@@ -4347,6 +4906,7 @@ async function deleteConversation(id) {
 
 async function loadConversation(conv) {
   await saveCurrentConversation();
+  clearAskUserQuestion();
   clearMentionFiles();
   // 列表接口只返回摘要，点击时按需拉取完整内容
   if (!conv.messages) {
@@ -4399,6 +4959,7 @@ async function loadConversation(conv) {
 
 async function startNewConversation() {
   await saveCurrentConversation();
+  clearAskUserQuestion();
   clearMentionFiles();
   messagesEl.innerHTML = "";
   messageLog = [];

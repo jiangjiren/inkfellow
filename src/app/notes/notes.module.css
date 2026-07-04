@@ -184,6 +184,139 @@
   opacity: 0.8;
 }
 
+.searchSpinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--notes-border);
+  border-top-color: var(--notes-accent);
+  border-radius: 999px;
+  animation: searchSpin 0.75s linear infinite;
+}
+
+.searchClear {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--notes-text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.searchClear:hover,
+.searchClear:focus-visible {
+  background: rgba(120, 120, 128, 0.24);
+  color: var(--notes-text-primary);
+  outline: none;
+}
+
+.searchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 6px 8px 8px;
+  max-height: 210px;
+  overflow: auto;
+  border: 1px solid var(--notes-border);
+  border-radius: 8px;
+  background: var(--notes-bg-document);
+}
+
+.searchResultState {
+  padding: 14px 12px;
+  color: var(--notes-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.searchResults[aria-busy="true"] .searchResultState {
+  position: relative;
+  padding-top: 18px;
+}
+
+.searchResults[aria-busy="true"] .searchResultState::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent, var(--notes-accent), transparent)
+    0 0 / 45% 100% no-repeat,
+    rgba(120, 120, 128, 0.14);
+  animation: searchLoadingSweep 1s ease-in-out infinite;
+}
+
+.searchResultError {
+  color: var(--notes-danger, #dc3545);
+}
+
+@keyframes searchSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes searchLoadingSweep {
+  from {
+    background-position: -45% 0, 0 0;
+  }
+
+  to {
+    background-position: 145% 0, 0 0;
+  }
+}
+
+.searchHit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.searchHit:hover,
+.searchHitActive {
+  background: var(--notes-accent-bg);
+}
+
+.searchHit:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: -2px;
+}
+
+.searchHitTitle {
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchHitMeta {
+  color: var(--notes-text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .treePanel {
   flex: 1;
   min-height: 0;

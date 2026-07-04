@@ -870,6 +870,7 @@ fn spawn_agent(app: &AppHandle) {
 
     let mut command = Command::new(&node_path);
     command
+        .arg("--use-env-proxy")
         .arg(&server_js)
         .current_dir(&chat_dir)
         .env("PORT", claude_port.to_string())

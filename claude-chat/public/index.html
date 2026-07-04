@@ -118,6 +118,136 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 }
 #slash-popup.open { display: block; }
 
+#ask-user-question {
+  display: none;
+  margin: 0 0 8px;
+  max-height: min(44vh, 380px);
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(26,108,246,0.18);
+  border-radius: 12px;
+  box-shadow: 0 -6px 24px rgba(0,0,0,0.08);
+}
+#ask-user-question.open {
+  display: flex;
+  flex-direction: column;
+}
+.ask-question-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ask-question-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(26,108,246,0.1);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+}
+.ask-question-title {
+  flex: 1;
+  font-weight: 650;
+  font-size: 12.5px;
+}
+.ask-question-close {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.ask-question-close:hover { background: rgba(0,0,0,0.06); color: var(--text); }
+.ask-question-body {
+  padding: 10px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ask-question-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ask-question-meta {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.ask-question-text {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ask-question-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.ask-options {
+  display: grid;
+  gap: 6px;
+}
+.ask-option {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ask-option:hover,
+.ask-option.selected {
+  border-color: rgba(26,108,246,0.35);
+  background: rgba(26,108,246,0.07);
+}
+.ask-option-label { font-size: 12.5px; font-weight: 600; }
+.ask-option-desc { font-size: 11px; color: var(--text-dim); line-height: 1.35; }
+.ask-custom-row { display: none; }
+.ask-custom-row.open { display: block; }
+.ask-custom-input {
+  width: 100%;
+  min-height: 34px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  background: #fff;
+}
+.ask-question-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.ask-question-status { color: var(--text-dim); font-size: 11px; }
+.ask-question-submit {
+  border: 0;
+  border-radius: 8px;
+  background: var(--text);
+  color: #fff;
+  padding: 7px 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ask-question-submit:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .slash-header {
   padding: 6px 12px 4px;
   font-size: 10px;
@@ -1295,6 +1425,47 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 
 /* 右侧操作按钮组 */
+.auth-limit-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border: 1px solid rgba(26,122,63,0.18);
+  background: rgba(26,122,63,0.07);
+  color: var(--green);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+.auth-limit-text {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.auth-limit-clock {
+  width: 11px;
+  height: 11px;
+  opacity: 0.78;
+}
+.auth-limit-badge.warning {
+  border-color: rgba(146,96,10,0.22);
+  background: rgba(146,96,10,0.08);
+  color: var(--yellow);
+}
+.auth-limit-badge.critical {
+  border-color: rgba(192,57,43,0.2);
+  background: rgba(192,57,43,0.08);
+  color: var(--red);
+}
+.auth-limit-badge.muted {
+  border-color: rgba(138,134,128,0.18);
+  background: rgba(138,134,128,0.07);
+  color: var(--text-dim);
+}
+
 .auth-profile-actions {
   display: flex;
   align-items: center;
@@ -1784,6 +1955,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </section>
   <div id="input-wrap">
     <div id="slash-popup" role="listbox" aria-label="输入建议"></div>
+    <div id="ask-user-question" role="region" aria-live="polite" aria-label="Agent clarification"></div>
     <div id="composer">
       <div id="image-chip"></div>
       <div id="mention-chips" aria-label="已选择的笔记上下文"></div>
@@ -1909,6 +2081,7 @@ const messagesEl  = document.getElementById("messages");
 const promptEl    = document.getElementById("prompt");
 const sendBtn     = document.getElementById("send");
 const popupEl     = document.getElementById("slash-popup");
+const askUserQuestionEl = document.getElementById("ask-user-question");
 const contextChip = document.getElementById("context-chip");
 const ctxPathEl   = document.getElementById("ctx-path");
 const ctxToggle   = document.getElementById("ctx-toggle");
@@ -1977,6 +2150,7 @@ function showInlineError(text) {
 }
 
 let isGenerating = false;
+let isAwaitingAskUserQuestion = false;
 let genChipEl = null;
 let lastWsEventAt = 0; // timestamp of last event received from server, for stall detection
 let quotedText = null;
@@ -2190,6 +2364,201 @@ function escapeHtml(value) {
 }
 
 // ── Status indicator ──────────────────────────────────────
+let pendingAskUserQuestion = null;
+
+function normalizeAskUserQuestions(input) {
+  const questions = Array.isArray(input?.questions) ? input.questions : input;
+  return (Array.isArray(questions) ? questions : []).slice(0, 4).map((raw, index) => {
+    const options = Array.isArray(raw?.options) ? raw.options.slice(0, 4).map((opt, optIndex) => ({
+      label: String(opt?.label || `Option ${optIndex + 1}`).trim(),
+      description: String(opt?.description || "").trim(),
+    })).filter(opt => opt.label) : [];
+    return {
+      question: String(raw?.question || `Question ${index + 1}`).trim(),
+      header: String(raw?.header || `Q${index + 1}`).trim().slice(0, 18),
+      options,
+      multiSelect: raw?.multiSelect === true,
+    };
+  }).filter(q => q.question && q.options.length > 0);
+}
+
+function clearAskUserQuestion() {
+  pendingAskUserQuestion = null;
+  isAwaitingAskUserQuestion = false;
+  askUserQuestionEl.classList.remove("open");
+  askUserQuestionEl.innerHTML = "";
+}
+
+function askQuestionHasAnswer(index) {
+  const state = pendingAskUserQuestion;
+  if (!state) return false;
+  if (state.customSelected[index]) return !!state.customValues[index]?.trim();
+  return state.selections[index]?.size > 0;
+}
+
+function updateAskUserQuestionUi() {
+  const state = pendingAskUserQuestion;
+  if (!state) return;
+  askUserQuestionEl.querySelectorAll(".ask-option").forEach((button) => {
+    const qIndex = Number(button.dataset.q);
+    const optIndex = button.dataset.option != null ? Number(button.dataset.option) : null;
+    const selected = button.dataset.other === "true"
+      ? state.customSelected[qIndex]
+      : state.selections[qIndex]?.has(optIndex);
+    button.classList.toggle("selected", !!selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
+  askUserQuestionEl.querySelectorAll(".ask-custom-row").forEach((row) => {
+    const qIndex = Number(row.dataset.q);
+    row.classList.toggle("open", !!state.customSelected[qIndex]);
+  });
+  const answered = state.questions.filter((_, index) => askQuestionHasAnswer(index)).length;
+  const submit = askUserQuestionEl.querySelector(".ask-question-submit");
+  if (submit) submit.disabled = answered !== state.questions.length;
+  const status = askUserQuestionEl.querySelector(".ask-question-status");
+  if (status) status.textContent = answered === state.questions.length
+    ? "Ready to continue"
+    : `${state.questions.length - answered} unanswered`;
+}
+
+function renderAskUserQuestion(ev) {
+  const questions = normalizeAskUserQuestions(ev.questions ?? ev.input?.questions);
+  if (!questions.length) return;
+  pendingAskUserQuestion = {
+    requestId: ev.requestId,
+    questions,
+    selections: questions.map(() => new Set()),
+    customSelected: questions.map(() => false),
+    customValues: questions.map(() => ""),
+  };
+  isAwaitingAskUserQuestion = true;
+  hidePopup();
+  updateTypingStatus("Waiting for your choice...");
+  if (isGenerating && !genChipEl) showGenChip("Waiting for your choice...");
+  else updateGenChip("Waiting for your choice...");
+
+  askUserQuestionEl.innerHTML = `
+    <div class="ask-question-head">
+      <span class="ask-question-mark">?</span>
+      <span class="ask-question-title">The agent needs your input</span>
+      <button type="button" class="ask-question-close" data-ask-cancel title="Cancel" aria-label="Cancel clarification">×</button>
+    </div>
+    <div class="ask-question-body">
+      ${questions.map((q, qIndex) => `
+        <section class="ask-question-item" data-q="${qIndex}">
+          <span class="ask-question-meta">${escapeHtml(q.header || `Q${qIndex + 1}`)}</span>
+          <div class="ask-question-text">${escapeHtml(q.question)}</div>
+          ${q.multiSelect ? '<div class="ask-question-hint">Multiple selections allowed</div>' : ""}
+          <div class="ask-options">
+            ${q.options.map((opt, optIndex) => `
+              <button type="button" class="ask-option" data-q="${qIndex}" data-option="${optIndex}" aria-pressed="false">
+                <span class="ask-option-label">${escapeHtml(opt.label)}</span>
+                ${opt.description ? `<span class="ask-option-desc">${escapeHtml(opt.description)}</span>` : ""}
+              </button>
+            `).join("")}
+            <button type="button" class="ask-option" data-q="${qIndex}" data-other="true" aria-pressed="false">
+              <span class="ask-option-label">Other</span>
+              <span class="ask-option-desc">Type a custom answer</span>
+            </button>
+          </div>
+          <div class="ask-custom-row" data-q="${qIndex}">
+            <textarea class="ask-custom-input" data-q="${qIndex}" rows="1" placeholder="Custom answer"></textarea>
+          </div>
+        </section>
+      `).join("")}
+    </div>
+    <div class="ask-question-actions">
+      <span class="ask-question-status"></span>
+      <button type="button" class="ask-question-submit" disabled>Continue</button>
+    </div>`;
+  askUserQuestionEl.classList.add("open");
+  updateAskUserQuestionUi();
+  scrollBottom();
+}
+
+function buildAskUserQuestionAnswers() {
+  const state = pendingAskUserQuestion;
+  if (!state) return null;
+  const answers = {};
+  state.questions.forEach((question, qIndex) => {
+    if (state.customSelected[qIndex]) {
+      const custom = state.customValues[qIndex]?.trim();
+      if (custom) answers[question.question] = custom;
+      return;
+    }
+    const labels = [...state.selections[qIndex]]
+      .sort((a, b) => a - b)
+      .map((optIndex) => question.options[optIndex]?.label)
+      .filter(Boolean);
+    if (labels.length) answers[question.question] = question.multiSelect ? labels.join(", ") : labels[0];
+  });
+  return answers;
+}
+
+function submitAskUserQuestion() {
+  const state = pendingAskUserQuestion;
+  if (!state || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!state.questions.every((_, index) => askQuestionHasAnswer(index))) {
+    updateAskUserQuestionUi();
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "ask_user_question_response",
+    requestId: state.requestId,
+    answers: buildAskUserQuestionAnswers(),
+  }));
+  clearAskUserQuestion();
+  updateTypingStatus("Continuing...");
+  updateGenChip("Continuing...");
+}
+
+askUserQuestionEl.addEventListener("click", (e) => {
+  const state = pendingAskUserQuestion;
+  if (!state) return;
+  if (e.target.closest("[data-ask-cancel]")) {
+    ws?.send(JSON.stringify({ type: "ask_user_question_cancel", requestId: state.requestId }));
+    clearAskUserQuestion();
+    return;
+  }
+  const submit = e.target.closest(".ask-question-submit");
+  if (submit) {
+    submitAskUserQuestion();
+    return;
+  }
+  const option = e.target.closest(".ask-option");
+  if (!option) return;
+  const qIndex = Number(option.dataset.q);
+  if (!Number.isInteger(qIndex) || !state.questions[qIndex]) return;
+  if (option.dataset.other === "true") {
+    state.customSelected[qIndex] = !state.customSelected[qIndex];
+    if (state.customSelected[qIndex]) state.selections[qIndex].clear();
+    updateAskUserQuestionUi();
+    askUserQuestionEl.querySelector(`.ask-custom-input[data-q="${qIndex}"]`)?.focus();
+    return;
+  }
+  const optIndex = Number(option.dataset.option);
+  if (!Number.isInteger(optIndex)) return;
+  state.customSelected[qIndex] = false;
+  if (state.questions[qIndex].multiSelect) {
+    if (state.selections[qIndex].has(optIndex)) state.selections[qIndex].delete(optIndex);
+    else state.selections[qIndex].add(optIndex);
+  } else {
+    state.selections[qIndex].clear();
+    state.selections[qIndex].add(optIndex);
+  }
+  updateAskUserQuestionUi();
+});
+
+askUserQuestionEl.addEventListener("input", (e) => {
+  const state = pendingAskUserQuestion;
+  const input = e.target.closest(".ask-custom-input");
+  if (!state || !input) return;
+  const qIndex = Number(input.dataset.q);
+  if (!Number.isInteger(qIndex)) return;
+  state.customValues[qIndex] = input.value;
+  updateAskUserQuestionUi();
+});
+
 let _statusHideTimer = null;
 let _formStatusHideTimer = null;
 function setAuthStatus(type, text, isForm = false) {
@@ -2222,6 +2591,117 @@ function providerBadge(provider) {
 }
 
 // ── Render profile list ────────────────────────────────────
+let _providerUsageLimits = {
+  claude: { status: "idle" },
+  codex: { status: "idle" },
+};
+let _usageLimitsTimer = null;
+let _usageLimitsRequestSeq = 0;
+
+const LIMIT_CLOCK_ICON = '<svg class="auth-limit-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>';
+
+function formatLimitReset(resetAt, mode = "hm") {
+  if (!resetAt) return "";
+  const date = new Date(resetAt);
+  if (Number.isNaN(date.getTime())) return "";
+  const diff = date.getTime() - Date.now();
+  if (diff <= 0) return "soon";
+  const minutes = Math.ceil(diff / 60_000);
+  if (mode === "dh") {
+    let days = Math.floor(minutes / (24 * 60));
+    let hours = Math.ceil((minutes - days * 24 * 60) / 60);
+    if (hours >= 24) {
+      days += 1;
+      hours = 0;
+    }
+    return `${days}d${hours}h`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes - hours * 60;
+  return `${hours}h${mins}min`;
+}
+
+function renderLimitWindow(label, win, resetFormat = "hm") {
+  if (!win || win.usedPercent == null) return `${label}: --`;
+  const reset = formatLimitReset(win.resetAt, resetFormat);
+  return `${label}: 剩${win.remainingPercent ?? Math.max(0, 100 - win.usedPercent)}%${reset ? `/${reset}` : ""}`;
+}
+
+function renderLimitTooltipWindow(label, win) {
+  if (!win || win.usedPercent == null) return "";
+  const reset = win.resetAt ? new Date(win.resetAt).toLocaleString() : "";
+  return `${label} used ${win.usedPercent}%${reset ? `, resets ${reset}` : ""}`;
+}
+
+function limitBadgeClass(limit) {
+  const windows = [limit?.fiveHour, limit?.week].filter(Boolean);
+  const minRemaining = Math.min(...windows.map(win => win.remainingPercent ?? 100));
+  if (minRemaining <= 10) return "critical";
+  if (minRemaining <= 25) return "warning";
+  return "";
+}
+
+function renderProviderUsageLimit(provider) {
+  if (provider !== "claude" && provider !== "codex") return "";
+  const limit = _providerUsageLimits[provider];
+  if (!limit || limit.status === "idle" || limit.status === "loading") {
+    return `<span class="auth-limit-badge muted" title="Reading live usage limits">${LIMIT_CLOCK_ICON}<span class="auth-limit-text">checking</span></span>`;
+  }
+  if (!limit.available) {
+    const title = limit.message || (limit.authenticated === false ? "Not logged in or usage is unavailable" : "Usage limits unavailable");
+    return `<span class="auth-limit-badge muted" title="${escapeAttr(title)}">${LIMIT_CLOCK_ICON}<span class="auth-limit-text">unavailable</span></span>`;
+  }
+  const tooltipParts = [
+    renderLimitTooltipWindow("5h", limit.fiveHour),
+    renderLimitTooltipWindow("week", limit.week),
+  ].filter(Boolean);
+  const title = tooltipParts.length ? tooltipParts.join("; ") : "Live subscription usage";
+  const html = `${renderLimitWindow("5h", limit.fiveHour, "hm")} · ${renderLimitWindow("week", limit.week, "dh")}`;
+  return `<span class="auth-limit-badge ${limitBadgeClass(limit)}" title="${escapeAttr(title)}">${LIMIT_CLOCK_ICON}<span class="auth-limit-text">${html}</span></span>`;
+}
+
+async function checkProviderUsageLimits({ silent = false } = {}) {
+  const seq = ++_usageLimitsRequestSeq;
+  if (!silent) {
+    _providerUsageLimits = {
+      claude: { status: "loading" },
+      codex: { status: "loading" },
+    };
+    renderProfileList(_profileData);
+  }
+  try {
+    const res = await fetch("api/usage-limits", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (seq !== _usageLimitsRequestSeq) return;
+    if (!res.ok) throw new Error(data.error || "usage query failed");
+    _providerUsageLimits = {
+      claude: data.providers?.claude ?? { status: "unavailable", available: false },
+      codex: data.providers?.codex ?? { status: "unsupported", available: false },
+    };
+  } catch (err) {
+    if (seq !== _usageLimitsRequestSeq) return;
+    const message = String(err?.message || err || "usage query failed");
+    _providerUsageLimits = {
+      claude: { status: "error", available: false, message },
+      codex: { status: "error", available: false, message },
+    };
+  }
+  renderProfileList(_profileData);
+}
+
+function startUsageLimitPolling() {
+  stopUsageLimitPolling();
+  void checkProviderUsageLimits();
+  _usageLimitsTimer = setInterval(() => {
+    if (authDialog.classList.contains("open")) void checkProviderUsageLimits({ silent: true });
+  }, 60_000);
+}
+
+function stopUsageLimitPolling() {
+  if (_usageLimitsTimer) clearInterval(_usageLimitsTimer);
+  _usageLimitsTimer = null;
+}
+
 const authProfileList = document.getElementById("auth-profile-list");
 
 function renderProfileList(data) {
@@ -2262,6 +2742,7 @@ function renderProfileList(data) {
         <span class="auth-profile-meta" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
           ${providerBadge(p.provider)}
           <span style="opacity:.65;font-size:10.5px">${escapeHtml(meta)}</span>
+          ${renderProviderUsageLimit(p.provider)}
         </span>
       </span>
       ${actions}
@@ -2465,6 +2946,7 @@ function openAuthDialog() {
   void fetchProfiles();
   checkClaudeAuth();
   checkCodexAuth();
+  startUsageLimitPolling();
   if (typeof checkWechatStatus === "function") {
     stopWechatPolling();
     checkWechatStatus();
@@ -2474,6 +2956,7 @@ function openAuthDialog() {
 function closeAuthDialog() {
   authDialog.classList.remove("open");
   authBackdrop.classList.remove("open");
+  stopUsageLimitPolling();
 }
 
 settingsBtn.addEventListener("click", (e) => {
@@ -2863,11 +3346,17 @@ function normalizeVaultNotes(notes) {
     const title = candidate.title.trim();
     if (!path.trim() || !title || seen.has(path)) continue;
     seen.add(path);
+    const aliases = Array.isArray(candidate.aliases)
+      ? candidate.aliases.map((alias) => String(alias ?? "").trim()).filter(Boolean)
+      : [];
     normalized.push({
       path,
       title,
+      aliases,
       searchTitle: normalizeMentionSearch(title),
       searchPath: normalizeMentionSearch(path.replace(/\.(md|html?)$/i, "")),
+      searchAliases: aliases.map(normalizeMentionSearch),
+      kind: candidate.kind || "markdown",
     });
   }
   return normalized;
@@ -3021,7 +3510,7 @@ connect();
 // events for longer than the server-side threshold plus a generous buffer.
 const CLIENT_STALL_MS = 240_000; // 4 min — server kills at 3, so this only fires if WS is dead
 function checkClientStall() {
-  if (isGenerating && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
+  if (isGenerating && !isAwaitingAskUserQuestion && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
     showInlineError("连接已断开，请重新发送消息。");
     setGenerating(false);
     removeTyping();
@@ -3222,6 +3711,25 @@ function handleEvent(ev) {
 
   if (ev.type === "rate_limit_event") {
     updateRateLimit(ev.rate_limit_info);
+    return;
+  }
+
+  if (ev.type === "ask_user_question") {
+    renderAskUserQuestion(ev);
+    return;
+  }
+
+  if (ev.type === "ask_user_question_cancelled") {
+    if (!pendingAskUserQuestion || pendingAskUserQuestion.requestId === ev.requestId) {
+      clearAskUserQuestion();
+      updateGenChip("");
+    }
+    return;
+  }
+
+  if (ev.type === "ask_user_question_error") {
+    if (!pendingAskUserQuestion || pendingAskUserQuestion.requestId === ev.requestId) clearAskUserQuestion();
+    showInlineError(ev.text || "Clarification question expired.");
     return;
   }
 
@@ -3428,12 +3936,14 @@ function handleEvent(ev) {
   }
 
   if (ev.type === "done" || ev.type === "stopped") {
+    clearAskUserQuestion();
     resetAssistantState();
     setGenerating(false); removeTyping();
     return;
   }
 
   if (ev.type === "error") {
+    clearAskUserQuestion();
     cleanupRunningTools();
     showInlineError(ev.text?.trim() || "发生错误");
     setGenerating(false); removeTyping();
@@ -3678,7 +4188,9 @@ function getMentionQuery() {
 function mentionScore(note, query) {
   if (!query) return 4;
   if (note.searchTitle === query) return 0;
+  if (note.searchAliases?.some((alias) => alias === query)) return 0;
   if (note.searchTitle.startsWith(query)) return 1;
+  if (note.searchAliases?.some((alias) => alias.startsWith(query))) return 1;
   if (note.searchPath.startsWith(query)) return 2;
   return 3;
 }
@@ -3689,7 +4201,8 @@ function renderMentionPopup(mention) {
     .filter((note) => !selectedMentionNotes.has(note.path))
     .filter((note) => !query
       || note.searchTitle.includes(query)
-      || note.searchPath.includes(query))
+      || note.searchPath.includes(query)
+      || note.searchAliases?.some((alias) => alias.includes(query)))
     .sort((a, b) => mentionScore(a, query) - mentionScore(b, query)
       || a.title.localeCompare(b.title, "zh-CN"))
     .slice(0, 20);
@@ -3704,8 +4217,8 @@ function renderMentionPopup(mention) {
     ${matches.map((note, index) => `
       <button class="slash-item mention-item${index === 0 ? " active" : ""}" data-i="${index}" role="option">
         <span class="slash-cmd">${highlightPopupMatch(note.title, mention.query)}</span>
-        <span class="slash-desc" title="${escapeAttr(note.path)}">${escapeHtml(note.path)}</span>
-        <span class="slash-badge note">笔记</span>
+        <span class="slash-desc" title="${escapeAttr(note.path)}">${escapeHtml(note.aliases?.length ? `${note.aliases.join(" · ")} · ${note.path}` : note.path)}</span>
+        <span class="slash-badge note">${escapeHtml(note.kind === "pdf" ? "PDF" : note.kind === "image" ? "图片" : note.kind === "html" ? "HTML" : "笔记")}</span>
       </button>
     `).join("")}`;
   popupEl.setAttribute("aria-label", "笔记列表");

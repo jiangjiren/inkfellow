@@ -2,8 +2,11 @@ import { promises as fs, readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import path from "path";
 import type {
+  MentionEntry,
+  MentionEntryKind,
   NotesDirectoryNode,
   NotesFileNode,
+  NotesSearchHit,
   NotesTreeNode,
 } from "@/lib/notesTypes";
 
@@ -292,6 +295,113 @@ export const getNotesTree = async () => {
 // 结构指纹：收集所有节点路径并哈希。只反映「有哪些文件/文件夹」，
 // 不含 size/mtime，因此纯内容编辑不会改变它——客户端据此轮询，仅在
 // 增/删/改名时才刷新文件树。
+const SEARCH_RESULT_LIMIT = 80;
+const SEARCH_CONCURRENCY = 12;
+
+const makeSearchSnippet = (content: string, normalizedQuery: string) => {
+  const matchingLine = content
+    .split(/\r?\n/)
+    .find((line) => line.normalize("NFKC").toLocaleLowerCase().includes(normalizedQuery));
+
+  return matchingLine
+    ? Array.from(matchingLine.trim().replace(/\s+/g, " ")).slice(0, 180).join("")
+    : "";
+};
+
+export const searchNotes = async (query: string): Promise<NotesSearchHit[]> => {
+  const trimmedQuery = query.trim();
+  if (trimmedQuery.length < 2 && !/[^\u0000-\u007f]/.test(trimmedQuery)) {
+    return [];
+  }
+  if (Array.from(trimmedQuery).length > 200) {
+    throw new VaultAccessError("Search query is too long.");
+  }
+
+  const normalizedQuery = trimmedQuery.normalize("NFKC").toLocaleLowerCase();
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  const textFiles: NotesFileNode[] = [];
+
+  const collectTextFiles = (node: NotesTreeNode) => {
+    if (node.type === "file") {
+      if (isMarkdownPath(node.path) || isHtmlPath(node.path)) {
+        textFiles.push(node);
+      }
+      return;
+    }
+    for (const child of node.children) {
+      collectTextFiles(child);
+    }
+  };
+  collectTextFiles(tree);
+
+  const rankedHits: Array<NotesSearchHit & { score: number }> = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < textFiles.length && rankedHits.length < SEARCH_RESULT_LIMIT) {
+      const file = textFiles[cursor++];
+      const normalizedName = file.name.normalize("NFKC").toLocaleLowerCase();
+      const normalizedPath = file.path.normalize("NFKC").toLocaleLowerCase();
+      const normalizedStem = path.basename(file.name, path.extname(file.name))
+        .normalize("NFKC")
+        .toLocaleLowerCase();
+      const nameOrPathMatch =
+        normalizedName.includes(normalizedQuery) || normalizedPath.includes(normalizedQuery);
+      const absolutePath = path.join(/* turbopackIgnore: true */ vaultRoot, file.path.replace(/\//g, path.sep));
+
+      let content = "";
+      try {
+        content = await fs.readFile(absolutePath, "utf8");
+      } catch {
+        if (!nameOrPathMatch) {
+          continue;
+        }
+      }
+
+      const snippet = makeSearchSnippet(content, normalizedQuery);
+      if (!nameOrPathMatch && !snippet) {
+        continue;
+      }
+
+      let score = 3;
+      if (normalizedStem === normalizedQuery || normalizedPath === normalizedQuery) {
+        score = 0;
+      } else if (
+        normalizedStem.startsWith(normalizedQuery) ||
+        normalizedPath.startsWith(normalizedQuery)
+      ) {
+        score = 1;
+      } else if (nameOrPathMatch) {
+        score = 2;
+      }
+
+      rankedHits.push({
+        path: file.path,
+        name: file.name,
+        snippet,
+        score,
+      });
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(SEARCH_CONCURRENCY, textFiles.length) }, () => worker()),
+  );
+
+  return rankedHits
+    .sort((left, right) =>
+      left.score - right.score ||
+      left.name.localeCompare(right.name, "zh-Hans", { numeric: true, sensitivity: "base" }) ||
+      left.path.localeCompare(right.path, "zh-Hans", { numeric: true, sensitivity: "base" }),
+    )
+    .slice(0, SEARCH_RESULT_LIMIT)
+    .map((hit) => ({
+      path: hit.path,
+      name: hit.name,
+      snippet: hit.snippet,
+    }));
+};
+
 export const computeTreeRev = (root: NotesDirectoryNode): string => {
   const paths: string[] = [];
   const walk = (node: NotesTreeNode) => {
@@ -338,6 +448,7 @@ export const readMarkdownNote = async (relativePath: string) => {
     content,
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
+    aliases: isMarkdownPath(resolved.relativePath) ? extractFrontMatterAliases(content) : [],
   };
 };
 
@@ -509,6 +620,7 @@ export const updateMarkdownNote = async (relativePath: string, content: string) 
     content,
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
+    aliases: extractFrontMatterAliases(content),
   };
 };
 
@@ -542,6 +654,7 @@ export const createMarkdownNote = async (relativePath: string, content = "") => 
     content,
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
+    aliases: extractFrontMatterAliases(content),
   };
 };
 
@@ -700,12 +813,130 @@ export type WikiBacklinkEntry = {
   context: string;
 };
 
+export type WikiIndexEntry = {
+  path: string;
+  aliases: string[];
+};
+
 const WIKI_LINK_RE = /(!?)\[\[([^\]]+)\]\]/g;
 const MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|mp3|wav|ogg|flac|pdf)$/i;
 
 const normalizeWikiTargetKey = (target: string) => {
   const normalized = target.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
   return normalized.endsWith(".md") ? normalized.slice(0, -3) : normalized;
+};
+
+const extractFrontMatterAliases = (content: string): string[] => {
+  if (!content.startsWith("---")) return [];
+  const firstNewline = content.indexOf("\n");
+  if (firstNewline === -1) return [];
+  const rest = content.slice(firstNewline + 1);
+  const closing = /^---[ \t]*\r?$/m.exec(rest);
+  if (!closing || closing.index === undefined) return [];
+  const frontMatter = rest.slice(0, closing.index);
+  const lines = frontMatter.split("\n");
+  const aliases: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^\s*(aliases?|别名)\s*:\s*(.*)$/i);
+    if (!match) continue;
+    const inline = match[2].trim();
+    if (inline.startsWith("[") && inline.endsWith("]")) {
+      aliases.push(...inline.slice(1, -1).split(","));
+      continue;
+    }
+    if (inline) {
+      aliases.push(inline);
+      continue;
+    }
+    while (i + 1 < lines.length && /^\s+-\s+/.test(lines[i + 1])) {
+      aliases.push(lines[++i].replace(/^\s+-\s+/, ""));
+    }
+  }
+
+  return [...new Set(aliases
+    .map((alias) => alias.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean))];
+};
+
+const buildWikiIndex = async (
+  vaultRoot: string,
+  tree: NotesDirectoryNode,
+): Promise<WikiIndexEntry[]> => {
+  const markdownPaths: string[] = [];
+  const collectMarkdown = (node: NotesTreeNode) => {
+    if (node.type === "file" && /\.md$/i.test(node.path)) {
+      markdownPaths.push(node.path);
+    } else if (node.type === "directory") {
+      for (const child of node.children) collectMarkdown(child);
+    }
+  };
+  collectMarkdown(tree);
+
+  const entries: WikiIndexEntry[] = new Array(markdownPaths.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < markdownPaths.length) {
+      const index = cursor++;
+      const notePath = markdownPaths[index];
+      try {
+        const content = await fs.readFile(path.join(/* turbopackIgnore: true */ vaultRoot, notePath.replace(/\//g, path.sep)), "utf8");
+        entries[index] = { path: notePath, aliases: extractFrontMatterAliases(content) };
+      } catch {
+        entries[index] = { path: notePath, aliases: [] };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(16, markdownPaths.length) }, () => worker()),
+  );
+  return entries;
+};
+
+export const getWikiIndex = async (): Promise<WikiIndexEntry[]> => {
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  return buildWikiIndex(vaultRoot, tree);
+};
+
+const getMentionEntryKind = (relativePath: string): MentionEntryKind | null => {
+  if (isMarkdownPath(relativePath)) return "markdown";
+  if (isHtmlPath(relativePath)) return "html";
+  if (isPdfPath(relativePath)) return "pdf";
+  if (isImagePath(relativePath)) return "image";
+  return null;
+};
+
+export const getMentionIndex = async (): Promise<MentionEntry[]> => {
+  const vaultRoot = await getVaultRoot();
+  const tree = await walkDirectory(vaultRoot, "");
+  const aliasesByPath = new Map(
+    (await buildWikiIndex(vaultRoot, tree)).map((entry) => [entry.path, entry.aliases]),
+  );
+  const entries: MentionEntry[] = [];
+
+  const collectEntries = (node: NotesTreeNode) => {
+    if (node.type === "directory") {
+      for (const child of node.children) collectEntries(child);
+      return;
+    }
+
+    const kind = getMentionEntryKind(node.path);
+    if (!kind) return;
+    const extension = path.posix.extname(node.name);
+    entries.push({
+      path: node.path,
+      title: extension ? node.name.slice(0, -extension.length) : node.name,
+      aliases: aliasesByPath.get(node.path) ?? [],
+      kind,
+    });
+  };
+  collectEntries(tree);
+
+  return entries.sort((left, right) =>
+    left.title.localeCompare(right.title, "zh-Hans", { numeric: true, sensitivity: "base" }) ||
+    left.path.localeCompare(right.path, "zh-Hans", { numeric: true, sensitivity: "base" }),
+  );
 };
 
 export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBacklinkEntry[]> => {
@@ -727,6 +958,10 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
   const pathKey = normTarget.toLowerCase().endsWith(".md")
     ? normTarget.toLowerCase().slice(0, -3)
     : normTarget.toLowerCase();
+  const targetAliases = await fs.readFile(path.join(/* turbopackIgnore: true */ vaultRoot, normTarget.replace(/\//g, path.sep)), "utf8")
+    .then(extractFrontMatterAliases)
+    .catch(() => []);
+  const targetKeys = new Set([noteStem, pathKey, ...targetAliases.map(normalizeWikiTargetKey)]);
 
   const results: WikiBacklinkEntry[] = [];
 
@@ -769,7 +1004,7 @@ export const scanWikiBacklinks = async (targetRelPath: string): Promise<WikiBack
       const targetRaw = inner.split("|")[0].split("#")[0].trim().toLowerCase();
       if (isEmbed && MEDIA_EXT_RE.test(targetRaw)) continue;
       const targetKey = normalizeWikiTargetKey(targetRaw);
-      if (targetKey !== noteStem && targetKey !== pathKey) continue;
+      if (!targetKeys.has(targetKey)) continue;
 
       const matchStart = match.index;
       const lineStart = clean.lastIndexOf("\n", matchStart - 1) + 1;

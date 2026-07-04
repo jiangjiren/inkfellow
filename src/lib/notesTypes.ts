@@ -22,10 +22,34 @@ export type NotesTreeResponse = {
   rev: string;
 };
 
+export type NotesSearchHit = {
+  path: string;
+  name: string;
+  snippet: string;
+};
+
+export type NotesSearchResponse = {
+  hits: NotesSearchHit[];
+};
+
+export type MentionEntryKind = "markdown" | "html" | "pdf" | "image";
+
+export type MentionEntry = {
+  path: string;
+  title: string;
+  aliases: string[];
+  kind: MentionEntryKind;
+};
+
+export type MentionsResponse = {
+  entries: MentionEntry[];
+};
+
 export type NotesFileResponse = {
   name: string;
   path: string;
   content: string;
   size: number;
   updatedAt: string;
+  aliases?: string[];
 };

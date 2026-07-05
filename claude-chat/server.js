@@ -915,6 +915,58 @@ function saveWechatHistory() {
   } catch { }
 }
 
+// ── WeChat 待补发队列 ─────────────────────────────────────
+// ilink 网关的 context_token 有时效，用户长时间不发消息后定时任务的主动推送
+// 会被网关拒绝（ret -2）。失败的消息进入此队列，等用户下次发消息拿到新
+// context_token 时自动补发。
+const WECHAT_PENDING_FILE = join(DATA_DIR, `wechat-pending-${PORT}.json`);
+const WECHAT_PENDING_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+const WECHAT_PENDING_MAX_ITEMS = 20;
+
+function readWechatPending() {
+  if (!existsSync(WECHAT_PENDING_FILE)) return [];
+  try {
+    const items = JSON.parse(readFileSync(WECHAT_PENDING_FILE, "utf8"));
+    return Array.isArray(items) ? items : [];
+  } catch { return []; }
+}
+
+function writeWechatPending(items) {
+  try { writeFileSync(WECHAT_PENDING_FILE, JSON.stringify(items, null, 2), "utf8"); } catch { }
+}
+
+function queueWechatPendingDelivery(peer, text) {
+  const cleanPeer = String(peer || "").trim();
+  if (!cleanPeer || !text) return;
+  const now = Date.now();
+  const items = readWechatPending().filter(it => now - (it.queuedAtMs || 0) <= WECHAT_PENDING_MAX_AGE_MS);
+  items.push({ peer: cleanPeer, text, queuedAtMs: now });
+  writeWechatPending(items.slice(-WECHAT_PENDING_MAX_ITEMS));
+  console.log(`[WeChat Pending] Queued message for ${cleanPeer.slice(0, 12)}... (${items.length} in queue)`);
+}
+
+async function flushWechatPendingDeliveries(baseUrl, token, sender, contextToken) {
+  const items = readWechatPending();
+  if (items.length === 0) return;
+  const now = Date.now();
+  const keep = [];
+  let flushed = 0;
+  for (const item of items) {
+    if (now - (item.queuedAtMs || 0) > WECHAT_PENDING_MAX_AGE_MS) continue;
+    if (item.peer !== sender) { keep.push(item); continue; }
+    const queuedAt = new Date(item.queuedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+    try {
+      await sendWechatMessage(baseUrl, token, sender, `📬 补发离线消息（原定 ${queuedAt}）\n\n${item.text}`, contextToken);
+      flushed++;
+    } catch (err) {
+      console.warn(`[WeChat Pending] Flush to ${sender.slice(0, 12)}... failed, will retry later: ${err.message}`);
+      keep.push(item);
+    }
+  }
+  writeWechatPending(keep);
+  if (flushed > 0) console.log(`[WeChat Pending] Flushed ${flushed} pending message(s) to ${sender.slice(0, 12)}...`);
+}
+
 function resolveWechatDeliveryTargets(peer) {
   const primary = String(peer || "").trim();
   const peers = primary ? [primary] : [];
@@ -1452,6 +1504,9 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   const contextToken = msg.context_token;
   if (!sender) return;
   rememberWechatContext(sender, contextToken);
+  flushWechatPendingDeliveries(baseUrl, token, sender, contextToken).catch(err =>
+    console.warn(`[WeChat Pending] Flush error: ${err.message}`)
+  );
 
   const textParts = extractWechatTextParts(msg);
   const mediaItems = (msg.item_list || []).filter(item =>
@@ -1807,6 +1862,7 @@ scheduler.init({
   sendWechatMessage,
   resolveWechatDeliveryTargets,
   resolveWechatDeliveryPeers,
+  queueWechatPendingDelivery,
   buildAgentEnv,
   getActiveProfile,
   readProfiles,

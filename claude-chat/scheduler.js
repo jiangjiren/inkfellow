@@ -43,12 +43,28 @@ export function init(context) {
           return;
         } catch (err) {
           lastErr = err;
+          // 存储的 context_token 可能已过期（网关返回 ret -2），去掉 token 重试一次
+          if (contextToken) {
+            try {
+              await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text, undefined, creds.botId || "");
+              console.log(`[Scheduler] WeChat delivery succeeded without stale context token: ${String(candidate).slice(0, 12)}...`);
+              return;
+            } catch (retryErr) {
+              lastErr = retryErr;
+            }
+          }
           if (target !== targets[targets.length - 1]) {
-            console.warn(`[Scheduler] WeChat delivery to ${String(candidate).slice(0, 12)}... failed, trying fallback: ${err.message}`);
+            console.warn(`[Scheduler] WeChat delivery to ${String(candidate).slice(0, 12)}... failed, trying fallback: ${lastErr.message}`);
           }
         }
       }
-      throw lastErr || new Error("WeChat delivery failed");
+      // 全部投递失败：入待补发队列，用户下次发微信时自动补发
+      let queued = false;
+      if (typeof ctx.queueWechatPendingDelivery === "function") {
+        try { ctx.queueWechatPendingDelivery(peer, text); queued = true; } catch { }
+      }
+      const baseMsg = (lastErr || new Error("WeChat delivery failed")).message;
+      throw new Error(queued ? `${baseMsg}（已入待补发队列，用户下次发消息时自动补发）` : baseMsg);
     },
   };
 

@@ -17,6 +17,9 @@ import NotesHtml from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
 import NotesGit from "./NotesGit";
 import NotesDashboard from "./NotesDashboard";
+import TreeItem from "./TreeItem";
+import QuickSwitcher from "./QuickSwitcher";
+import { isImagePath, isPdfPath, stripNoteExtension, type TreeActionTarget } from "./noteFileUtils";
 import styles from "./notes.module.css";
 import type { NotesEditorHandle } from "./NotesEditor";
 
@@ -70,15 +73,8 @@ type LoadNoteOptions = {
   updateHistory?: boolean;
 };
 
-type TreeActionTarget = {
-  kind: "file" | "folder";
-  name: string;
-  path: string;
-};
-
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-const stripNoteExtension = (value: string) => value.replace(/\.(md|html?)$/i, "");
 const isSearchQueryReady = (value: string) => {
   const trimmed = value.trim();
   return trimmed.length >= 2 || /[^\u0000-\u007f]/.test(trimmed);
@@ -94,10 +90,6 @@ const replaceMovedPath = (currentPath: string, oldPath: string, nextPath: string
   }
   return currentPath.startsWith(`${oldPath}/`) ? `${nextPath}${currentPath.slice(oldPath.length)}` : currentPath;
 };
-
-// PDF / 图片走只读预览，不经文本加载/编辑流程
-const isPdfPath = (value: string | null | undefined) => /\.pdf$/i.test(value ?? "");
-const isImagePath = (value: string | null | undefined) => /\.(png|jpe?g|gif|webp|svg|avif)$/i.test(value ?? "");
 
 const decodeLoose = (value: string) => {
   try {
@@ -213,332 +205,6 @@ const filterTree = (node: NotesTreeNode, query: string): NotesTreeNode | null =>
 
   return null;
 };
-
-function TreeActionMenu({
-  target,
-  onCreateNote,
-  onCreateFolder,
-  onImport,
-  onRename,
-  onDelete,
-  onDownload,
-}: {
-  target: TreeActionTarget;
-  onCreateNote: (folder: string) => void;
-  onCreateFolder: (folder: string) => void;
-  onImport: (folder: string) => void;
-  onRename: (target: TreeActionTarget) => void;
-  onDelete: (target: TreeActionTarget) => void;
-  onDownload: (path: string) => void;
-}) {
-  const isFolder = target.kind === "folder";
-  const canDownload = target.kind === "file" && (isPdfPath(target.path) || isImagePath(target.path));
-
-  return (
-    <div className={styles.treeActionMenu} role="menu" onClick={(event) => event.stopPropagation()}>
-      {isFolder ? (
-        <>
-          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onCreateNote(target.path)}>新建笔记</button>
-          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onCreateFolder(target.path)}>新建文件夹</button>
-          <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onImport(target.path)}>导入文件</button>
-          <div className={styles.moreMenuDivider} role="separator" />
-        </>
-      ) : null}
-      {canDownload ? (
-        <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onDownload(target.path)}>下载</button>
-      ) : null}
-      <button type="button" className={styles.treeActionItem} role="menuitem" onClick={() => onRename(target)}>重命名</button>
-      <button type="button" className={`${styles.treeActionItem} ${styles.moreMenuItemDanger}`} role="menuitem" onClick={() => onDelete(target)}>删除</button>
-    </div>
-  );
-}
-
-function TreeItem({
-  node,
-  level,
-  activePath,
-  expandedFolders,
-  searchQuery,
-  activeMenuPath,
-  isMobileViewport,
-  renamingTarget,
-  renameValue,
-  renameError,
-  onToggle,
-  onSelect,
-  onOpenMenu,
-  onCloseMenu,
-  onCreateNote,
-  onCreateFolder,
-  onImport,
-  onRename,
-  onDelete,
-  onDownload,
-  onRenameValueChange,
-  onRenameCommit,
-  onRenameCancel,
-}: {
-  node: NotesTreeNode;
-  level: number;
-  activePath: string | null;
-  expandedFolders: Set<string>;
-  searchQuery: string;
-  activeMenuPath: string | null;
-  isMobileViewport: boolean;
-  renamingTarget: TreeActionTarget | null;
-  renameValue: string;
-  renameError: string | null;
-  onToggle: (path: string) => void;
-  onSelect: (path: string) => void;
-  onOpenMenu: (target: TreeActionTarget) => void;
-  onCloseMenu: () => void;
-  onCreateNote: (folder: string) => void;
-  onCreateFolder: (folder: string) => void;
-  onImport: (folder: string) => void;
-  onRename: (target: TreeActionTarget) => void;
-  onDelete: (target: TreeActionTarget) => void;
-  onDownload: (path: string) => void;
-  onRenameValueChange: (val: string) => void;
-  onRenameCommit: () => Promise<void>;
-  onRenameCancel: () => void;
-}) {
-  const isRenaming = renamingTarget?.path === node.path;
-  const inlineInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (isRenaming && inlineInputRef.current) {
-      inlineInputRef.current.focus();
-      inlineInputRef.current.select();
-    }
-  }, [isRenaming]);
-
-  if (node.type === "file") {
-    const isActive = node.path === activePath;
-    const isHtml = /\.html?$/i.test(node.name);
-    const isPdf = /\.pdf$/i.test(node.name);
-    const isImg = isImagePath(node.name);
-    const ext = isImg ? node.name.split(".").pop()?.toLowerCase() : null;
-    const fileExt = node.name.match(/\.[^.]+$/)?.[0] ?? "";
-    const target: TreeActionTarget = { kind: "file", name: node.name, path: node.path };
-    return (
-      <div
-        className={`${styles.treeNodeWrap} ${isRenaming ? styles.treeNodeWrapRenaming : ""}`}
-        style={{ "--level": level } as CSSProperties}
-        onContextMenu={(event) => {
-          if (isRenaming) return;
-          event.preventDefault();
-          onOpenMenu(target);
-        }}
-      >
-        {isRenaming ? (
-          <>
-            <div className={styles.treeRenameWrap}>
-              <svg className={styles.fileDot} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "13px", height: "13px" }}>
-                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-              <input
-                ref={inlineInputRef}
-                className={styles.treeRenameInput}
-                value={renameValue}
-                onChange={(e) => { onRenameValueChange(e.target.value); }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); void onRenameCommit(); }
-                  if (e.key === "Escape") { e.preventDefault(); onRenameCancel(); }
-                }}
-                onBlur={() => void onRenameCommit()}
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="重命名"
-              />
-              {fileExt ? <span className={styles.renameExtension}>{fileExt}</span> : null}
-            </div>
-            {renameError ? <span className={styles.treeRenameError}>{renameError}</span> : null}
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              className={`${styles.treeFile} ${isActive ? styles.treeFileActive : ""}`}
-              onClick={() => onSelect(node.path)}
-              title={node.path}
-            >
-              <svg className={styles.fileDot} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "13px", height: "13px" }}>
-                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-              <span className={styles.treeLabel}>{isImg ? node.name.replace(/\.[^.]+$/, "") : isPdf ? node.name.replace(/\.pdf$/i, "") : stripNoteExtension(node.name)}</span>
-              {isHtml ? <span className={styles.fileTypeBadge}>html</span> : null}
-              {isPdf ? <span className={styles.fileTypeBadge}>pdf</span> : null}
-              {isImg ? <span className={styles.fileTypeBadge}>{ext}</span> : null}
-            </button>
-            <button
-              type="button"
-              className={styles.treeNodeMore}
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpenMenu(target);
-              }}
-              aria-label={`${node.name} 的操作`}
-              title="更多操作"
-            >
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
-                <circle cx="5" cy="12" r="1.5" />
-                <circle cx="12" cy="12" r="1.5" />
-                <circle cx="19" cy="12" r="1.5" />
-              </svg>
-            </button>
-            {!isMobileViewport && activeMenuPath === node.path ? (
-              <TreeActionMenu
-                target={target}
-                onCreateNote={(folder) => { onCloseMenu(); onCreateNote(folder); }}
-                onCreateFolder={(folder) => { onCloseMenu(); onCreateFolder(folder); }}
-                onImport={(folder) => { onCloseMenu(); onImport(folder); }}
-                onRename={(menuTarget) => { onCloseMenu(); onRename(menuTarget); }}
-                onDelete={(menuTarget) => { onCloseMenu(); onDelete(menuTarget); }}
-                onDownload={(path) => { onCloseMenu(); onDownload(path); }}
-              />
-            ) : null}
-          </>
-        )}
-      </div>
-    );
-  }
-
-  const isExpanded = searchQuery ? true : expandedFolders.has(node.path);
-  const target: TreeActionTarget = { kind: "folder", name: node.name, path: node.path };
-  return (
-    <div className={styles.treeGroup}>
-      {node.path ? (
-        <div
-          className={`${styles.treeNodeWrap} ${isRenaming ? styles.treeNodeWrapRenaming : ""}`}
-          style={{ "--level": level } as CSSProperties}
-          onContextMenu={(event) => {
-            if (isRenaming) return;
-            event.preventDefault();
-            onOpenMenu(target);
-          }}
-        >
-          {isRenaming ? (
-            <>
-              <div className={styles.treeRenameWrap}>
-                <span className={`${styles.chevron} ${isExpanded ? styles.chevronOpen : ""}`} aria-hidden="true">›</span>
-                <svg className={styles.folderGlyph} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "16px", height: "16px", color: "var(--notes-accent)" }}>
-                  {isExpanded ? (
-                    <>
-                      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" fill="var(--notes-accent-bg)" />
-                      <path d="M2 10h20" />
-                    </>
-                  ) : (
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--notes-accent-bg)" />
-                  )}
-                </svg>
-                <input
-                  ref={inlineInputRef}
-                  className={styles.treeRenameInput}
-                  value={renameValue}
-                  onChange={(e) => { onRenameValueChange(e.target.value); }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") { e.preventDefault(); void onRenameCommit(); }
-                    if (e.key === "Escape") { e.preventDefault(); onRenameCancel(); }
-                  }}
-                  onBlur={() => void onRenameCommit()}
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-label="重命名"
-                />
-              </div>
-              {renameError ? <span className={styles.treeRenameError}>{renameError}</span> : null}
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className={styles.treeFolder}
-                onClick={() => onToggle(node.path)}
-                title={node.path}
-              >
-                <span className={`${styles.chevron} ${isExpanded ? styles.chevronOpen : ""}`} aria-hidden="true">
-                  ›
-                </span>
-                <svg className={styles.folderGlyph} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: "16px", height: "16px", color: "var(--notes-accent)" }}>
-                  {isExpanded ? (
-                    <>
-                      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" fill="var(--notes-accent-bg)" />
-                      <path d="M2 10h20" />
-                    </>
-                  ) : (
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--notes-accent-bg)" />
-                  )}
-                </svg>
-                <span className={styles.treeLabel}>{node.name}</span>
-              </button>
-              <button
-                type="button"
-                className={styles.treeNodeMore}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onOpenMenu(target);
-                }}
-                aria-label={`${node.name} 的操作`}
-                title="更多操作"
-              >
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
-                  <circle cx="5" cy="12" r="1.5" />
-                  <circle cx="12" cy="12" r="1.5" />
-                  <circle cx="19" cy="12" r="1.5" />
-                </svg>
-              </button>
-              {!isMobileViewport && activeMenuPath === node.path ? (
-                <TreeActionMenu
-                  target={target}
-                  onCreateNote={(folder) => { onCloseMenu(); onCreateNote(folder); }}
-                  onCreateFolder={(folder) => { onCloseMenu(); onCreateFolder(folder); }}
-                  onImport={(folder) => { onCloseMenu(); onImport(folder); }}
-                  onRename={(menuTarget) => { onCloseMenu(); onRename(menuTarget); }}
-                  onDelete={(menuTarget) => { onCloseMenu(); onDelete(menuTarget); }}
-                  onDownload={(path) => { onCloseMenu(); onDownload(path); }}
-                />
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-
-      {isExpanded || !node.path ? (
-        <div className={styles.treeChildren}>
-          {node.children.map((child) => (
-            <TreeItem
-              key={`${child.type}:${child.path}`}
-              node={child}
-              level={node.path ? level + 1 : level}
-              activePath={activePath}
-              expandedFolders={expandedFolders}
-              searchQuery={searchQuery}
-              activeMenuPath={activeMenuPath}
-              isMobileViewport={isMobileViewport}
-              renamingTarget={renamingTarget}
-              renameValue={renameValue}
-              renameError={renameError}
-              onToggle={onToggle}
-              onSelect={onSelect}
-              onOpenMenu={onOpenMenu}
-              onCloseMenu={onCloseMenu}
-              onCreateNote={onCreateNote}
-              onCreateFolder={onCreateFolder}
-              onImport={onImport}
-              onRename={onRename}
-              onDelete={onDelete}
-              onDownload={onDownload}
-              onRenameValueChange={onRenameValueChange}
-              onRenameCommit={onRenameCommit}
-              onRenameCancel={onRenameCancel}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function ArticleToc({
   headings,
@@ -957,6 +623,7 @@ export default function NotesExplorer() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [newNoteOpen, setNewNoteOpen] = useState(false);
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteFolder, setNewNoteFolder] = useState("");
   const [newNoteError, setNewNoteError] = useState<string | null>(null);
@@ -2453,6 +2120,18 @@ export default function NotesExplorer() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [newNoteOpen, newFolderOpen, openNewNote]);
 
+  /** ⌘K / Ctrl+K 快速打开（输入框内也生效：这是全局导航，不与文本输入冲突） */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setQuickSwitcherOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleToggle = useCallback((path: string) => {
     setTreeMenuTarget(null);
     setGlobalCreateMenuOpen(false);
@@ -2594,6 +2273,9 @@ export default function NotesExplorer() {
     }
   }, [isMobileViewport]);
 
+  // 稳定引用：TreeItem 已 memo 化，内联箭头会让整棵树每次父组件渲染都重渲染
+  const handleCloseTreeMenu = useCallback(() => setTreeMenuTarget(null), []);
+
   const handleOpenRename = useCallback((target: TreeActionTarget) => {
     const ext = target.kind === "file" ? target.name.match(/\.[^.]+$/)?.[0] ?? "" : "";
     renameInProgressRef.current = false;
@@ -2610,12 +2292,112 @@ export default function NotesExplorer() {
     setRenameError(null);
   }, []);
 
+  // ── 删除核心（确认框路径与"直接删+撤销"路径共用） ─────────
+  const deleteEntry = useCallback(async (target: TreeActionTarget) => {
+    const currentPath = activePathRef.current;
+    const affectsActivePath = !!currentPath && (
+      target.kind === "file"
+        ? currentPath === target.path
+        : (currentPath === target.path || currentPath.startsWith(`${target.path}/`))
+    );
+
+    const res = await fetch(target.kind === "file" ? "/api/notes/file" : "/api/notes/folder", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: target.path }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(data.error ?? "删除失败");
+    }
+    // 文件已删除 — 清自动保存定时器，再刷新文件树（失败不影响后续流程）
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (affectsActivePath) {
+      skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
+    }
+    try {
+      await refreshTree();
+    } catch { /* 刷新文件树失败不影响回首页 */ }
+    if (affectsActivePath) {
+      setHasGitChanges(true);
+      goHome();
+    }
+  }, [goHome, refreshTree]);
+
+  // ── Markdown 笔记：立即删除 + 撤销 toast（可撤销优于确认框）────
+  const [undoDelete, setUndoDelete] = useState<{ path: string; name: string; content: string } | null>(null);
+  const undoDeleteTimerRef = useRef<number | null>(null);
+
+  const clearUndoDelete = useCallback(() => {
+    if (undoDeleteTimerRef.current) {
+      window.clearTimeout(undoDeleteTimerRef.current);
+      undoDeleteTimerRef.current = null;
+    }
+    setUndoDelete(null);
+  }, []);
+
+  const handleSoftDeleteNote = useCallback(async (target: TreeActionTarget) => {
+    try {
+      // 删前抓取内容，撤销时原样写回；抓取失败则回落到确认框流程
+      const res = await fetch(`/api/notes/file?path=${encodeURIComponent(target.path)}`);
+      if (!res.ok) throw new Error("读取失败");
+      const note = (await res.json()) as { content?: string };
+      await deleteEntry(target);
+      if (undoDeleteTimerRef.current) {
+        window.clearTimeout(undoDeleteTimerRef.current);
+      }
+      setUndoDelete({ path: target.path, name: target.name, content: note.content ?? "" });
+      undoDeleteTimerRef.current = window.setTimeout(() => {
+        undoDeleteTimerRef.current = null;
+        setUndoDelete(null);
+      }, 6000);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [deleteEntry]);
+
+  const handleUndoDelete = useCallback(async () => {
+    if (!undoDelete) return;
+    clearUndoDelete();
+    try {
+      const res = await fetch("/api/notes/file", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: undoDelete.path, content: undoDelete.content }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? "恢复失败");
+      }
+      try {
+        await refreshTree();
+      } catch { /* 刷新失败不影响恢复本身 */ }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "恢复失败");
+    }
+  }, [undoDelete, clearUndoDelete, refreshTree]);
+
   const handleOpenDelete = useCallback((target: TreeActionTarget) => {
-    setDeleteTarget(target);
-    setDeleteConfirmOpen(true);
     setTreeMenuTarget(null);
     setTreeSheetTarget(null);
-  }, []);
+    // .md 笔记直接删 + 撤销 toast；文件夹、html、pdf、图片仍走确认框
+    // （恢复接口只支持 .md，且文件夹删除影响面大，保留一步确认）
+    if (target.kind === "file" && /\.md$/i.test(target.path)) {
+      void handleSoftDeleteNote(target).then((ok) => {
+        if (!ok) {
+          setDeleteTarget(target);
+          setDeleteConfirmOpen(true);
+        }
+      });
+      return;
+    }
+    setDeleteTarget(target);
+    setDeleteConfirmOpen(true);
+  }, [handleSoftDeleteNote]);
 
   const handleStartImport = useCallback((folder: string) => {
     setImportFolder(folder);
@@ -2734,8 +2516,6 @@ export default function NotesExplorer() {
       ? baseName.slice(0, -ext.length)
       : baseName;
     const nextName = renameTarget.kind === "file" && ext ? `${normalizedBaseName}${ext}` : normalizedBaseName;
-    const parentPath = getParentFolder(renameTarget.path);
-    const nextPath = parentPath ? `${parentPath}/${nextName}` : nextName;
     if (nextName === renameTarget.name) {
       setRenameTarget(null);
       return;
@@ -3048,51 +2828,21 @@ export default function NotesExplorer() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [globalCreateMenuOpen, treeMenuTarget]);
 
-  // ── 删除文件 ──────────────────────────────────────────
+  // ── 删除文件（确认框路径：文件夹 / html / pdf / 图片） ─────────
   const handleDeleteNote = useCallback(async () => {
     const target = deleteTarget ?? (activePath ? { kind: "file" as const, path: activePath, name: getFilenameFromPath(activePath, activePath) } : null);
     if (!target) return;
     setDeleteLoading(true);
     try {
-      const currentPath = activePathRef.current;
-      const affectsActivePath = !!currentPath && (
-        target.kind === "file"
-          ? currentPath === target.path
-          : (currentPath === target.path || currentPath.startsWith(`${target.path}/`))
-      );
-
-      const res = await fetch(target.kind === "file" ? "/api/notes/file" : "/api/notes/folder", {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: target.path }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error ?? "删除失败");
-      }
-      // 文件已删除 — 先关弹窗、清定时器，再刷新文件树（失败不影响后续流程）
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = null;
-      }
+      await deleteEntry(target);
       setDeleteConfirmOpen(false);
       setDeleteTarget(null);
-      if (affectsActivePath) {
-        skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
-      }
-      try {
-        await refreshTree();
-      } catch { /* 刷新文件树失败不影响回首页 */ }
-      if (affectsActivePath) {
-        setHasGitChanges(true);
-        goHome();
-      }
     } catch (err) {
       alert(err instanceof Error ? err.message : "删除失败");
     } finally {
       setDeleteLoading(false);
     }
-  }, [activePath, deleteTarget, goHome, refreshTree]);
+  }, [activePath, deleteTarget, deleteEntry]);
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
     "--sidebar-width": `${sidebarWidth}px`,
@@ -3436,9 +3186,9 @@ export default function NotesExplorer() {
                   onToggle={handleToggle}
                   onSelect={handleSelect}
                   onOpenMenu={handleOpenTreeMenu}
-                  onCloseMenu={() => setTreeMenuTarget(null)}
-                  onCreateNote={(folder) => openNewNote(folder)}
-                  onCreateFolder={(folder) => openNewFolder(folder)}
+                  onCloseMenu={handleCloseTreeMenu}
+                  onCreateNote={openNewNote}
+                  onCreateFolder={openNewFolder}
                   onImport={handleStartImport}
                   onRename={handleOpenRename}
                   onDelete={handleOpenDelete}
@@ -3887,11 +3637,8 @@ export default function NotesExplorer() {
               )
             ) : null}
 
-            {treeState === "ready" && files.length === 0 ? (
-              <div className={styles.documentState}>知识库中没有可显示的文件。</div>
-            ) : null}
-
-            {treeState === "ready" && files.length > 0 && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
+            {/* 空库也渲染仪表盘：首屏保留输入框并给出新建/导入 CTA，而非一句"没有文件" */}
+            {treeState === "ready" && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
               <NotesDashboard
                 files={files}
                 exiting={isDashboardExiting}
@@ -3916,6 +3663,8 @@ export default function NotesExplorer() {
                   }
                 }}
                 onQuickCapture={handleQuickCapture}
+                onCreateNote={() => openNewNote()}
+                onImport={() => handleStartImport("")}
               />
             ) : null}
           </article>
@@ -4241,7 +3990,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=9${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=10${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
@@ -4547,6 +4296,25 @@ export default function NotesExplorer() {
         >
           ✦ Ask AI
         </button>
+      ) : null}
+
+      <QuickSwitcher
+        open={quickSwitcherOpen}
+        files={files}
+        onClose={() => setQuickSwitcherOpen(false)}
+        onSelect={(path) => {
+          setQuickSwitcherOpen(false);
+          handleSelect(path);
+        }}
+      />
+
+      {undoDelete ? (
+        <div className={styles.undoToast} role="status">
+          <span className={styles.undoToastText}>已删除「{stripNoteExtension(undoDelete.name)}」</span>
+          <button type="button" className={styles.undoToastButton} onClick={() => void handleUndoDelete()}>
+            撤销
+          </button>
+        </div>
       ) : null}
     </main>
   );

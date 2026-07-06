@@ -2588,6 +2588,28 @@ export default function NotesExplorer() {
     }
   }, [isMobileViewport]);
 
+  /** ⌘J / Ctrl+J 开合 AI 对话面板（全局导航，与 ⌘K 同级，输入框内也生效） */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "j" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        handleClaudeToggle();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [handleClaudeToggle]);
+
+  /** 焦点在 chat iframe 内时按键不冒泡，由 chat 侧把 ⌘J 转发成消息 */
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "toggle-panel") handleClaudeToggle();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [handleClaudeToggle]);
+
   // ── 移动端底部 sheet：跟手拖拽 + 速度吸附 ─────────────────
   // 两个吸附点（translateY，单位 px）：expanded=0, closed=H。
   const handleSheetPointerDown = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -3308,10 +3330,19 @@ export default function NotesExplorer() {
               aria-label={isSidebarOpen ? "隐藏目录" : "显示目录"}
               title={isSidebarOpen ? "隐藏目录" : "显示目录"}
             >
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="9" y1="3" x2="9" y2="21" />
-              </svg>
+              {isMobileViewport ? (
+                /* 移动端开的是目录抽屉，用 ☰；panel-left 是桌面折叠侧栏的语义 */
+                <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="7" x2="20" y2="7" />
+                  <line x1="4" y1="12" x2="20" y2="12" />
+                  <line x1="4" y1="17" x2="20" y2="17" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <line x1="9" y1="3" x2="9" y2="21" />
+                </svg>
+              )}
               {globalGitPending !== null && globalGitPending > 0 && !isSidebarOpen && (
                 <span className={styles.sidebarToggleBadge} aria-hidden="true" />
               )}
@@ -3649,9 +3680,16 @@ export default function NotesExplorer() {
                     postAskToClaude(query);
                   }
                   if (isMobileViewport) {
+                    if (isDashboardExiting) return;
+                    // 移动端与桌面端一致：仪表盘先退场，再原地转成全屏对话页，
+                    // 而不是从底部弹出 sheet
                     setMobileSidebarOpen(false);
-                    setIsDashboardChatActive(true);
-                    setMobileAssistantSheet('expanded');
+                    setIsDashboardExiting(true);
+                    window.setTimeout(() => {
+                      setIsDashboardChatActive(true);
+                      setMobileAssistantSheet('expanded');
+                      setIsDashboardExiting(false);
+                    }, 240);
                   } else if (!isDashboardExiting) {
                     // 桌面端不直接切页：仪表盘先退场，再原地展开对话
                     setIsDashboardExiting(true);
@@ -3959,6 +3997,23 @@ export default function NotesExplorer() {
               title="拖拽调整面板宽度，双击恢复默认"
               tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
             />
+            {/* 桌面端收起按钮：浮在 iframe 顶栏（44px，按钮居右）左侧空白处，
+                收起动作就近发生在面板上，而不是要回到笔记头部找 Fellow 胶囊 */}
+            {!isMobileViewport && (
+              <button
+                type="button"
+                className={styles.assistantPanelCollapse}
+                onClick={() => setAssistantPanelVisible(false)}
+                aria-label="收起对话面板"
+                title="收起（⌘J）"
+                tabIndex={isAssistantPanelOpen ? 0 : -1}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="13 17 18 12 13 7" />
+                  <polyline points="6 17 11 12 6 7" />
+                </svg>
+              </button>
+            )}
           </>
         )}
 

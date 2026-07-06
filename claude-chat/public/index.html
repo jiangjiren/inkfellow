@@ -3580,6 +3580,14 @@ mentionChipsEl.addEventListener("click", (e) => {
   promptEl.focus();
 });
 
+// ⌘J / Ctrl+J：iframe 内按键不会冒泡到父页面，转发成消息让父页面开合面板
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "j" && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    if (window.parent !== window) window.parent.postMessage({ type: "toggle-panel" }, "*");
+  }
+});
+
 window.addEventListener("message", (e) => {
   if (e.data?.type === "note-context" && e.data.filePath) {
     const isNewFile = currentNoteFile !== e.data.filePath;

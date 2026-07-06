@@ -594,8 +594,10 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 44px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-  background: rgba(255, 255, 255, 0.85);
+  /* 静止时无分割线、背景全透明与页面一体，内容滚到栏下时
+     由 readerHeaderScrolled 浮现同色系毛玻璃 + hairline（iOS 惯例） */
+  border-bottom: 1px solid transparent;
+  background: transparent;
   backdrop-filter: blur(24px) saturate(190%);
   -webkit-backdrop-filter: blur(24px) saturate(190%);
   padding: 0 22px;
@@ -605,21 +607,23 @@
 
 @media (prefers-color-scheme: dark) {
   .readerHeader {
-    background: rgba(20, 20, 22, 0.85);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: transparent;
+    border-bottom: 1px solid transparent;
   }
 }
 
 .readerHeaderScrolled {
   min-height: 44px !important;
-  background: rgba(255, 255, 255, 0.95) !important;
+  /* 与 --notes-bg-reader (#f5f4ef) 同色系，避免滚动时泛白 */
+  background: rgba(245, 244, 239, 0.92) !important;
   border-bottom-color: rgba(0, 0, 0, 0.08) !important;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
 }
 
 @media (prefers-color-scheme: dark) {
   .readerHeaderScrolled {
-    background: rgba(20, 20, 22, 0.95) !important;
+    /* 与暗色 --notes-bg-reader (#09090b) 同色系 */
+    background: rgba(9, 9, 11, 0.9) !important;
     border-bottom-color: rgba(255, 255, 255, 0.08) !important;
   }
 }
@@ -1195,6 +1199,29 @@
   border-radius: 0;
   background: transparent;
   cursor: col-resize;
+}
+
+/* 桌面端收起按钮：与 iframe 顶栏（44px 高、30px 按钮）同规格，落在其左侧空白处 */
+.assistantPanelCollapse {
+  position: absolute;
+  top: 7px;
+  left: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.assistantPanelCollapse:hover {
+  background: var(--notes-bg-hover);
+  color: var(--notes-text);
 }
 
 .assistantPanelResizer::after {
@@ -3298,6 +3325,8 @@
     border-left: 0;
     border-top: 1px solid var(--notes-border);
     border-radius: 16px 16px 0 0;
+    /* 拖拽把手改为浮层后 iframe 直达顶部，裁掉方角以跟随圆角 */
+    overflow: hidden;
     box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.15);
     transform: translateY(104%);
     transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
@@ -3334,11 +3363,26 @@
     padding-top: env(safe-area-inset-top, 0px);
   }
 
+  /* 全屏面板有 safe-area 顶部内边距，绝对定位的返回按钮要落到内边距之下，
+     才能与 iframe 顶栏同一行 */
   .assistantPanel.assistantPanelFullscreen .dashboardChatHeader {
-    flex-shrink: 0;
+    top: env(safe-area-inset-top, 0px);
   }
 
-  .assistantPanelResizer {
+  /* 首页提问：原地过渡成对话页 —— 淡入上浮，不走底部 sheet 的整页上滑 */
+  .shellMobileAssistantPanelOpen .assistantPanel.assistantPanelFullscreen {
+    transition: none;
+    animation: assistantPanelEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* 返回首页：原地淡出露出首页，不走整页下滑 */
+  .assistantPanel.assistantPanelFullscreen.assistantPanelHidden {
+    transform: translateY(0) !important;
+    transition: opacity 0.22s ease !important;
+  }
+
+  .assistantPanelResizer,
+  .assistantPanelCollapse {
     display: none;
   }
 
@@ -3820,13 +3864,17 @@
 }
 
 @media (max-width: 900px), (orientation: portrait) {
+  /* 不占布局高度：浮在 iframe 顶栏（44px，按钮居右）上的透明热区，
+     覆盖除右侧按钮区外的整行——顶栏任意位置轻点收起、按住下滑关闭；
+     视觉上只保留屏幕居中的小横条 */
   .mobileSheetHandle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: calc(100% - 116px);
     height: 44px;
-    flex-shrink: 0;
+    z-index: 2;
     background: transparent;
     border: none;
     padding: 0;
@@ -3837,6 +3885,10 @@
 
   .mobileSheetHandlePill {
     display: block;
+    position: absolute;
+    top: 50%;
+    left: 50vw;
+    transform: translate(-50%, -50%);
     width: 36px;
     height: 4px;
     border-radius: 2px;
@@ -5109,16 +5161,24 @@
   to { opacity: 0; }
 }
 
+/* 浮在 iframe 自带顶栏（44px，按钮居右）的同一行上：
+   左侧「返回首页」与右侧设置/历史/新建合并为一行，不再各占一行 */
 .dashboardChatHeader {
-  height: 48px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  background: var(--notes-bg-app);
-  border-bottom: 1px solid var(--notes-border);
+  padding: 0 8px;
+  background: transparent;
+  border-bottom: none;
+  pointer-events: none;
 }
 
 .dashboardChatBackBtn {
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 6px;

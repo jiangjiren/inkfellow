@@ -26,11 +26,11 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
   ? process.env.CLAUDE_PERMISSION_MODE
   : "auto";
 
-// How long a query() stream can be silent before we consider it stalled.
-// We use event-interval (not total duration) so long but active tasks (multi-tool,
-// compaction, slow thinking) are never killed — only truly frozen streams are.
-const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
-const MAX_AGENT_RUN_MS = 8 * 60_000;
+// How long a query() stream can emit nothing at all before we consider it dead.
+// Resets on every SDK event (including api_retry backoff notices), so active tasks
+// of any total length — hours or days — are never killed. There is no total-duration
+// cap; only a stream that stays completely silent this long is treated as frozen.
+const STREAM_STALL_MS = 30 * 60_000; // 30 min with zero events → abort
 const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
 const USAGE_LIMIT_QUERY_TIMEOUT_MS = 12_000;
 
@@ -1722,7 +1722,7 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     } catch (err) {
       if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
       if (err?.name === "AbortError" && isWechatStall) {
-        console.warn("[WeChat Agent] Stream stalled, timed out after 3 min.");
+        console.warn(`[WeChat Agent] Stream emitted no events for ${STREAM_STALL_MS / 60_000} min; aborted as frozen.`);
         finalResponse = "⚠️ AI 响应超时，请稍后重试。";
       } else {
         console.error("[WeChat Agent] Error:", err);
@@ -2262,15 +2262,34 @@ function makeAbortError(message) {
   return err;
 }
 
-wss.on("connection", (ws) => {
-  let abortCtrl = null;
-  let pendingAskUserQuestion = null;
+// ── Background-run state (module scope) ──────────────────
+// The desktop app is a single-user client, and runs must survive WebSocket drops
+// (sleep/wake, webview reloads, proxy switches). So the abort controller, the
+// pending clarification question, and the outbound channel live at module scope
+// instead of per-connection: a dropped socket detaches the client but leaves the
+// run alive; events are buffered and flushed when the client reconnects.
+let activeWs = null;
+let abortCtrl = null;
+let pendingAskUserQuestion = null;
+const DETACHED_BUFFER_MAX = 2000;
+let detachedBuffer = [];
 
-  const send = (obj) => {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
-  };
+const send = (obj) => {
+  if (activeWs && activeWs.readyState === activeWs.OPEN) {
+    activeWs.send(JSON.stringify(obj));
+    return;
+  }
+  // No client attached: buffer so the UI can catch up after reconnect, but only
+  // while something is actually in flight (run or unanswered question).
+  if (abortCtrl || pendingAskUserQuestion) {
+    detachedBuffer.push(obj);
+    if (detachedBuffer.length > DETACHED_BUFFER_MAX) {
+      detachedBuffer.splice(0, detachedBuffer.length - DETACHED_BUFFER_MAX);
+    }
+  }
+};
 
-  const clearPendingAskUserQuestion = (reason = "cancelled") => {
+const clearPendingAskUserQuestion = (reason = "cancelled") => {
     if (!pendingAskUserQuestion) return;
     const pending = pendingAskUserQuestion;
     pendingAskUserQuestion = null;
@@ -2310,6 +2329,7 @@ wss.on("connection", (ws) => {
       pendingAskUserQuestion = {
         requestId,
         questions,
+        toolUseID: context.toolUseID ?? null,
         cleanup: () => signal?.removeEventListener("abort", onAbort),
         reject,
         resolve: (payload = {}) => {
@@ -2338,11 +2358,49 @@ wss.on("connection", (ws) => {
     });
   };
 
+wss.on("connection", (ws) => {
+  // Last connection wins; any previous socket is stale (single-user desktop app).
+  const previousWs = activeWs;
+  activeWs = ws;
+  if (previousWs && previousWs !== ws && previousWs.readyState === previousWs.OPEN) {
+    previousWs.close(1000, "replaced by newer connection");
+  }
+
+  // Application-level heartbeat: browser JS can't observe protocol-level pings,
+  // so send a JSON ping the frontend can use to detect a silently dead socket.
+  const pingTimer = setInterval(() => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+  }, 30_000);
+
   // Send the persisted default first; the browser sends a profile-specific refresh
   // after it loads its local activeProfileId.
   sendSkillInit(send, getActiveProfile(readProfiles())?.provider);
 
+  // Reattach to an in-flight run: restore the generating UI, replay whatever
+  // happened while detached, and re-show a still-unanswered question.
+  if (abortCtrl || pendingAskUserQuestion || detachedBuffer.length > 0) {
+    send({ type: "run_attached", running: !!abortCtrl });
+    const backlog = detachedBuffer;
+    detachedBuffer = [];
+    let questionInBacklog = false;
+    for (const obj of backlog) {
+      if (obj?.type === "ask_user_question" && obj.requestId === pendingAskUserQuestion?.requestId) {
+        questionInBacklog = true;
+      }
+      send(obj);
+    }
+    if (pendingAskUserQuestion && !questionInBacklog) {
+      send({
+        type: "ask_user_question",
+        requestId: pendingAskUserQuestion.requestId,
+        toolUseID: pendingAskUserQuestion.toolUseID ?? null,
+        questions: pendingAskUserQuestion.questions,
+      });
+    }
+  }
+
   ws.on("message", (raw) => {
+    if (activeWs !== ws) return;
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
@@ -2541,33 +2599,24 @@ wss.on("connection", (ws) => {
 
     (async () => {
       let stallTimer = null;
-      let hardTimer = null;
       let isStallAbort = false;
       let waitingForUserInput = false;
       // Stall watchdog: resets on each SDK event. Catches truly frozen streams.
+      // There is deliberately no total-duration cap — tasks may run for hours or
+      // days as long as the stream keeps emitting events.
       const resetStall = () => {
         if (waitingForUserInput) return;
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
       };
-      const resetHardTimer = () => {
-        if (waitingForUserInput) return;
-        clearTimeout(hardTimer);
-        hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
-      };
       const pauseForUserInput = () => {
         waitingForUserInput = true;
         clearTimeout(stallTimer);
-        clearTimeout(hardTimer);
       };
       const resumeAfterUserInput = () => {
         waitingForUserInput = false;
-        if (!ac.signal.aborted) {
-          resetStall();
-          resetHardTimer();
-        }
+        if (!ac.signal.aborted) resetStall();
       };
-      resetHardTimer();
 
       const collectAskUserQuestionInput = async (input, context = {}) => {
         pauseForUserInput();
@@ -2626,9 +2675,12 @@ wss.on("connection", (ws) => {
 
       options.canUseTool = async (toolName, input, context = {}) => {
         if (toolName !== ASK_USER_QUESTION_TOOL) {
+          // Log every denial so occasional "task gave up midway" reports can be
+          // traced back to a permission escalation the web UI couldn't display.
+          console.warn(`[Web Agent] Permission escalation denied for tool: ${toolName} (mode: ${permissionMode})`);
           return {
             behavior: "deny",
-            message: `Web UI currently only handles ${ASK_USER_QUESTION_TOOL}; it will not auto-approve ${toolName}.`,
+            message: `此环境无法弹出「${toolName}」的人工授权确认。如果这一步是完成任务所必需的，请改用 ${ASK_USER_QUESTION_TOOL} 工具向用户说明情况并征询如何继续；如果有不需要额外授权的替代做法，也可以直接采用。不要因此放弃整个任务。`,
           };
         }
 
@@ -2653,10 +2705,10 @@ wss.on("connection", (ws) => {
           prompt: (async function* () { yield promptMsg; })(),
           options: queryOptions,
         })) {
-          // api_retry means the SDK is in a backoff loop — don't reset the stall
-          // timer here or it will keep resetting indefinitely while the WebSocket
-          // sits idle and the browser receives nothing. Real progress resets it.
-          if (!(ev.type === "system" && ev.subtype === "api_retry")) resetStall();
+          // Every event resets the stall watchdog — including api_retry backoff
+          // notices, since the SDK has its own retry ceiling and will surface a
+          // real error when retries are exhausted. We only kill dead-silent streams.
+          resetStall();
           if (ev.type === "system" && ev.subtype === "init") {
             saveSession(ev.session_id);
             send({ type: "session", sessionId: ev.session_id });
@@ -2725,7 +2777,8 @@ wss.on("connection", (ws) => {
       } catch (err) {
         if (err?.name === "AbortError") {
           if (isStallAbort) {
-            send({ type: "error", text: "AI 响应超时（API 重试超出上限），请稍后重新发送消息。" });
+            console.warn(`[Web Agent] Stream emitted no events for ${STREAM_STALL_MS / 60_000} min; aborted as frozen.`);
+            send({ type: "error", text: `AI 响应流已中断（${STREAM_STALL_MS / 60_000} 分钟内没有任何事件），已停止本次任务。请重新发送消息。` });
             send({ type: "done" });
           } else {
             send({ type: "stopped" });
@@ -2736,7 +2789,6 @@ wss.on("connection", (ws) => {
         }
       } finally {
         clearTimeout(stallTimer);
-        clearTimeout(hardTimer);
         clearPendingAskUserQuestion("request finished");
         if (abortCtrl === ac) abortCtrl = null;
       }
@@ -2744,8 +2796,15 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    clearPendingAskUserQuestion("connection closed");
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+    clearInterval(pingTimer);
+    if (activeWs === ws) {
+      activeWs = null;
+      // Do NOT abort or clear the pending question: the run keeps going in the
+      // background and reattaches when the client reconnects.
+      if (abortCtrl) {
+        console.log("[Web Agent] Client detached; run continues in background, events buffered until reconnect.");
+      }
+    }
   });
 });
 

@@ -3504,17 +3504,16 @@ function connect() {
 }
 connect();
 
-// Client-side failsafe: if the server stall watchdog (3 min) fires, it sends error+done.
-// This timer is a last-resort belt-and-suspenders for cases where the WebSocket itself
-// dies silently (no onclose event) — detected when we've been generating with no server
-// events for longer than the server-side threshold plus a generous buffer.
-const CLIENT_STALL_MS = 240_000; // 4 min — server kills at 3, so this only fires if WS is dead
+// Dead-socket detector: the server sends {type:"ping"} every 30s, so a healthy
+// connection never goes silent for long — regardless of how long the AI task runs.
+// If we're generating and nothing (not even a ping) arrives for CLIENT_STALL_MS,
+// the socket died without firing onclose. Force-close it: the reconnect loop takes
+// over and the server reattaches the still-running task, so nothing is lost.
+const CLIENT_STALL_MS = 120_000; // 2 min without any message (pings come every 30s)
 function checkClientStall() {
   if (isGenerating && !isAwaitingAskUserQuestion && lastWsEventAt > 0 && Date.now() - lastWsEventAt > CLIENT_STALL_MS) {
-    showInlineError("连接已断开，请重新发送消息。");
-    setGenerating(false);
-    removeTyping();
     lastWsEventAt = 0;
+    try { ws.close(); } catch { }
   }
 }
 setInterval(checkClientStall, 15_000);
@@ -3686,6 +3685,21 @@ function updateRateLimit(info) {
 // ── Event handling ────────────────────────────────────────
 function handleEvent(ev) {
   lastWsEventAt = Date.now();
+
+  // Server heartbeat (every 30s) — only used to keep lastWsEventAt fresh so the
+  // dead-socket detector below never fires on a healthy connection.
+  if (ev.type === "ping") return;
+
+  // Reconnected while the server still has a run in flight (or a finished run
+  // whose events we missed). Restore the generating UI; buffered events replay
+  // immediately after this message.
+  if (ev.type === "run_attached") {
+    if (ev.running) {
+      setGenerating(true, false);
+      if (!document.getElementById("typing")) addTyping();
+    }
+    return;
+  }
 
   if (ev.type === "system" && ev.subtype === "api_retry") {
     updateTypingStatus(`API 繁忙，正在重试 (${ev.attempt}/${ev.max_retries})…`);

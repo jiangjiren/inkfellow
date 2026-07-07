@@ -4027,7 +4027,8 @@ export default function NotesExplorer() {
         {(isDashboardChatMode || isMobileDashboardChat) && (
           <header className={styles.dashboardChatHeader}>
             <button
-              className={styles.dashboardChatBackBtn}
+              className={`${styles.dashboardChatBackBtn} ${isChildOverlayOpen ? styles.dashboardChatBackBtnHidden : ""}`}
+              tabIndex={isChildOverlayOpen ? -1 : 0}
               onClick={() => {
                 if (isMobileViewport) {
                   // 只收起面板，保持全屏几何到下滑动画结束；

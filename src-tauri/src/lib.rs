@@ -2034,12 +2034,8 @@ async fn git_diff(app: AppHandle, path: String) -> Result<GitFileDiff, String> {
     let status = run_git(&root, &["status", "--porcelain=v1", "--", &relative])?;
     let is_untracked = status.stdout.lines().any(|line| line.starts_with("??"));
     if is_untracked {
-        let absolute = root.join(relative_to_path_buf(&relative));
-        assert_inside_vault(
-            &absolute,
-            &fs::canonicalize(&root).map_err(|err| err.to_string())?,
-        )?;
-        let content = fs::read_to_string(&absolute).unwrap_or_default();
+        let resolved = resolve_existing_path(&app, &relative, false)?;
+        let content = fs::read_to_string(&resolved.absolute).unwrap_or_default();
         let raw = content
             .lines()
             .map(|line| format!("+{line}"))
@@ -2068,18 +2064,14 @@ async fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
     let is_untracked = status.stdout.lines().any(|line| line.starts_with("??"));
 
     if is_untracked {
-        let root_canonical = fs::canonicalize(&root).map_err(|err| err.to_string())?;
-        let target = root.join(relative_to_path_buf(&relative));
-        let canonical = if target.exists() {
-            fs::canonicalize(&target).map_err(|err| err.to_string())?
-        } else {
-            target.clone()
+        let resolved = match resolve_existing_path(&app, &relative, false) {
+            Ok(resolved) => resolved,
+            Err(_) => return Ok(()),
         };
-        assert_inside_vault(&canonical, &root_canonical)?;
-        if target.is_dir() {
-            fs::remove_dir_all(&target).map_err(|err| err.to_string())?;
-        } else if target.exists() {
-            fs::remove_file(&target).map_err(|err| err.to_string())?;
+        if resolved.absolute.is_dir() {
+            fs::remove_dir_all(&resolved.absolute).map_err(|err| err.to_string())?;
+        } else {
+            fs::remove_file(&resolved.absolute).map_err(|err| err.to_string())?;
         }
         return Ok(());
     }

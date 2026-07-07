@@ -3112,14 +3112,6 @@ async function saveCurrentConversation() {
     title,
     date: new Date().toISOString(),
     sessionId: currentSessionId,
-    messages: messageLog.map(m => ({
-      role: m.role,
-      text: m.text,
-      blocks: m.blocks ?? null,
-      raw: m.raw ?? null,
-      events: m.events ?? null,
-      cost: m.cost ?? null,
-    })),
   };
   try {
     await fetch(`api/history/${conv.id}`, {
@@ -3130,8 +3122,9 @@ async function saveCurrentConversation() {
     // 更新内存缓存，使下次打开历史面板时可立即渲染
     if (_historyCache !== null) {
       const idx = _historyCache.findIndex(h => h.id === conv.id);
-      if (idx >= 0) _historyCache[idx] = conv;
-      else _historyCache.unshift(conv);
+      const summary = { ...conv, messageCount: messageLog.length };
+      if (idx >= 0) _historyCache[idx] = { ..._historyCache[idx], ...summary };
+      else _historyCache.unshift(summary);
     }
   } catch { }
 }
@@ -3943,7 +3936,7 @@ function handleEvent(ev) {
     }
     resetAssistantState();
     if (savedText || savedBlocks?.length) {
-      messageLog.push({ role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost });
+      messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status: "complete" });
       saveCurrentConversation();
     }
     return;
@@ -4375,6 +4368,7 @@ function send() {
   hidePopup();
   const mentionedNotes = [...selectedMentionNotes.values()];
   if (!currentConvId) currentConvId = genId();
+  const userMessageId = genId();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
   // If a previous request froze without a done/stopped event, assistantEl still
   // points to the old AI message element. Clear it so the upcoming response is
@@ -4384,7 +4378,7 @@ function send() {
     ? `${text}\n\n引用笔记：${mentionedNotes.map((note) => `@${note.title}`).join(" · ")}`
     : text;
   addMessage("user", displayText, imagePreviewUrls);
-  messageLog.push({ role: "user", text: displayText, cost: null });
+  messageLog.push({ id: userMessageId, role: "user", text: displayText, cost: null });
   promptEl.value = "";
   promptEl.style.height = "36px";
   addTyping();
@@ -4417,6 +4411,9 @@ function send() {
   }
   parts.push(text);
   const wsPayload = {
+    conversationId: currentConvId,
+    userMessageId,
+    displayText,
     prompt: parts.join("\n\n"),
     model: selectedModel,
     permissionMode: selectedPermissionMode,
@@ -4768,12 +4765,14 @@ async function loadConversation(conv) {
   }
   messagesEl.innerHTML = "";
   messageLog = conv.messages.map(m => ({
+    id: m.id ?? null,
     role: m.role,
     text: m.text,
     blocks: m.blocks ?? null,
     raw: m.raw ?? null,
     events: m.events ?? null,
     cost: m.cost ?? null,
+    status: m.status ?? null,
   }));
   for (const msg of conv.messages) {
     const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
@@ -4785,7 +4784,7 @@ async function loadConversation(conv) {
   currentConvId = conv.id;
   currentSessionId = conv.sessionId;
   if (conv.sessionId && ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ setSession: conv.sessionId }));
+    ws.send(JSON.stringify({ setSession: conv.sessionId, conversationId: conv.id }));
   }
   closeHistoryPanel();
   scrollBottom();

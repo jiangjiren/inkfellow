@@ -849,15 +849,389 @@ function migrateLegacyHistoryFiles() {
   });
 }
 
-function readHistory() {
-  return readHistoryFile(HISTORY_FILE);
-}
-
-function writeHistory(arr) {
-  writeJsonFile(HISTORY_FILE, arr);
-}
-
 migrateLegacyHistoryFiles();
+
+let historyStore = readHistoryFile(HISTORY_FILE);
+let historyFlushTimer = null;
+let historyDirty = false;
+
+function flushHistoryNow() {
+  if (historyFlushTimer) {
+    clearTimeout(historyFlushTimer);
+    historyFlushTimer = null;
+  }
+  if (!historyDirty) return;
+  historyDirty = false;
+  writeJsonFile(HISTORY_FILE, historyStore);
+}
+
+function scheduleHistoryFlush(delayMs = 500) {
+  historyDirty = true;
+  if (historyFlushTimer) return;
+  historyFlushTimer = setTimeout(flushHistoryNow, delayMs);
+}
+
+function readHistory() {
+  return historyStore;
+}
+
+function writeHistory(arr, options = {}) {
+  historyStore = Array.isArray(arr) ? arr : [];
+  historyDirty = true;
+  if (options.defer) scheduleHistoryFlush(options.delayMs);
+  else flushHistoryNow();
+}
+
+process.on("beforeExit", flushHistoryNow);
+process.on("SIGINT", () => {
+  flushHistoryNow();
+  process.exit(130);
+});
+process.on("SIGTERM", () => {
+  flushHistoryNow();
+  process.exit(143);
+});
+
+function cloneHistoryJson(value) {
+  if (value == null) return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function normalizeHistoryId(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw && /^[A-Za-z0-9_-]{4,128}$/.test(raw)
+    ? raw
+    : `srv_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
+}
+
+function makeHistoryMessageId(prefix = "msg") {
+  return `${prefix}_${crypto.randomUUID()}`;
+}
+
+function titleFromUserText(text) {
+  const title = String(text || "").replace(/[\n\r]+/g, " ").trim().slice(0, 60);
+  return title || "新对话";
+}
+
+function countAssistantBlocks(messages) {
+  return (messages || [])
+    .filter(m => m?.role === "assistant")
+    .reduce((sum, m) => sum + (Array.isArray(m.blocks) ? m.blocks.length : 0), 0);
+}
+
+function countTextChars(messages) {
+  return (messages || []).reduce((sum, m) => sum + String(m?.text || "").length, 0);
+}
+
+function historyMessagesScore(messages) {
+  if (!Array.isArray(messages)) {
+    return { total: 0, assistants: 0, assistantBlocks: 0, textChars: 0 };
+  }
+  return {
+    total: messages.length,
+    assistants: messages.filter(m => m?.role === "assistant").length,
+    assistantBlocks: countAssistantBlocks(messages),
+    textChars: countTextChars(messages),
+  };
+}
+
+function shouldAcceptIncomingMessages(currentMessages, incomingMessages) {
+  if (!Array.isArray(incomingMessages)) return false;
+  if (!Array.isArray(currentMessages) || currentMessages.length === 0) return true;
+  const current = historyMessagesScore(currentMessages);
+  const incoming = historyMessagesScore(incomingMessages);
+  if (incoming.assistants < current.assistants) return false;
+  if (incoming.assistants === current.assistants && incoming.total < current.total) return false;
+  if (incoming.assistants === current.assistants && incoming.assistantBlocks < current.assistantBlocks) return false;
+  return true;
+}
+
+function upsertHistoryConversation(conv, options = {}) {
+  if (!conv || typeof conv !== "object" || !conv.id) return null;
+  const id = normalizeHistoryId(conv.id);
+  const history = readHistory();
+  const idx = history.findIndex(h => h.id === id);
+  const current = idx >= 0 ? history[idx] : null;
+  const next = {
+    ...(current || {}),
+    ...conv,
+    id,
+    date: conv.date || new Date().toISOString(),
+  };
+
+  if (current) {
+    if ("messages" in conv) {
+      next.messages = shouldAcceptIncomingMessages(current.messages, conv.messages)
+        ? conv.messages
+        : current.messages;
+    } else if (current.messages) {
+      next.messages = current.messages;
+    }
+    history[idx] = next;
+  } else {
+    if (!Array.isArray(next.messages)) next.messages = [];
+    history.unshift(next);
+    if (history.length > MAX_SERVER_HISTORY) history.splice(MAX_SERVER_HISTORY);
+  }
+
+  writeHistory(history, options);
+  return next;
+}
+
+function ensureHistoryConversation(id, { userText = "", sessionId: nextSessionId = null } = {}) {
+  const convId = normalizeHistoryId(id);
+  const history = readHistory();
+  let conv = history.find(h => h.id === convId);
+  if (!conv) {
+    conv = {
+      id: convId,
+      title: titleFromUserText(userText),
+      date: new Date().toISOString(),
+      sessionId: nextSessionId,
+      messages: [],
+    };
+    history.unshift(conv);
+    if (history.length > MAX_SERVER_HISTORY) history.splice(MAX_SERVER_HISTORY);
+  } else {
+    conv.date = new Date().toISOString();
+    if (nextSessionId) conv.sessionId = nextSessionId;
+    if (!Array.isArray(conv.messages)) conv.messages = [];
+  }
+  return conv;
+}
+
+function persistHistoryDeferred() {
+  writeHistory(readHistory(), { defer: true });
+}
+
+function persistHistoryImmediate() {
+  writeHistory(readHistory());
+}
+
+function blockText(block) {
+  return (block?.type === "text" || block?.type === "refusal") && block.text
+    ? String(block.text)
+    : "";
+}
+
+function textFromHistoryBlocks(blocks) {
+  return (blocks || []).map(blockText).filter(Boolean).join("\n\n");
+}
+
+function assistantBlockKey(block) {
+  const id = block?.id || block?.raw?.id || block?.raw?.call_id || block?.raw?.tool_use_id || block?.raw?.raw?.id;
+  return id ? `${block.type || "unknown"}:${id}` : "";
+}
+
+function normalizeAssistantHistoryBlocks(content, fallbackText = "") {
+  const blocks = [];
+  const items = Array.isArray(content) ? content : (content ? [content] : []);
+  for (const item of items) {
+    if (!item) continue;
+    const raw = cloneHistoryJson(item);
+    if (item.type === "thinking" && item.thinking) {
+      blocks.push({ type: "thinking", thinking: item.thinking, signature: item.signature ?? null, raw });
+    } else if (item.type === "redacted_thinking") {
+      blocks.push({ type: "redacted_thinking", data: item.data ?? null, raw });
+    } else if (item.type === "text" && item.text) {
+      blocks.push({ type: "text", text: item.text, citations: item.citations ?? null, raw });
+    } else if (item.type === "refusal") {
+      blocks.push({ type: "refusal", text: item.refusal ?? "", raw });
+    } else if (item.type === "tool_use" || item.type === "server_tool_use" || item.type === "mcp_tool_use") {
+      blocks.push({
+        type: item.type,
+        id: item.id ?? "",
+        name: item.name ?? "tool",
+        serverName: item.server_name ?? item.serverName ?? null,
+        input: item.input ?? {},
+        raw,
+      });
+    } else {
+      const type = item.type || "unknown";
+      const block = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? { ...raw, type, raw }
+        : { type, raw };
+      blocks.push(block);
+    }
+  }
+  if (!blocks.some(block => block.type === "text") && fallbackText) {
+    blocks.push({ type: "text", text: fallbackText });
+  }
+  return blocks;
+}
+
+let activeHistoryConversationId = null;
+let activeAssistantHistoryMessage = null;
+
+function beginServerConversationFromClient(msg) {
+  const conversationId = normalizeHistoryId(msg.conversationId);
+  const displayText = typeof msg.displayText === "string" && msg.displayText.trim()
+    ? msg.displayText.trim()
+    : String(msg.prompt || "").trim();
+  const userMessageId = normalizeHistoryId(msg.userMessageId || makeHistoryMessageId("user"));
+  activeHistoryConversationId = conversationId;
+  activeAssistantHistoryMessage = null;
+
+  const conv = ensureHistoryConversation(conversationId, { userText: displayText });
+  if (!conv.messages.some(m => m.id === userMessageId)) {
+    conv.messages.push({
+      id: userMessageId,
+      role: "user",
+      text: displayText,
+      cost: null,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  conv.date = new Date().toISOString();
+  persistHistoryImmediate();
+  return conversationId;
+}
+
+function clearActiveHistoryConversation() {
+  activeHistoryConversationId = null;
+  activeAssistantHistoryMessage = null;
+}
+
+function ensureActiveAssistantHistoryMessage() {
+  if (!activeHistoryConversationId) return null;
+  const conv = ensureHistoryConversation(activeHistoryConversationId);
+  if (
+    activeAssistantHistoryMessage
+    && conv.messages.includes(activeAssistantHistoryMessage)
+  ) {
+    return activeAssistantHistoryMessage;
+  }
+  const msg = {
+    id: makeHistoryMessageId("assistant"),
+    role: "assistant",
+    text: "",
+    blocks: [],
+    raw: [],
+    events: [],
+    cost: null,
+    status: "running",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  conv.messages.push(msg);
+  conv.date = new Date().toISOString();
+  activeAssistantHistoryMessage = msg;
+  return msg;
+}
+
+function appendAssistantHistoryBlocks(blocks, rawEvent = null, { rawMessage = null } = {}) {
+  if (!blocks?.length) return;
+  const msg = ensureActiveAssistantHistoryMessage();
+  if (!msg) return;
+  if (!Array.isArray(msg.blocks)) msg.blocks = [];
+  if (!Array.isArray(msg.raw)) msg.raw = [];
+  if (!Array.isArray(msg.events)) msg.events = [];
+
+  for (const block of blocks) {
+    const key = assistantBlockKey(block);
+    if (key) {
+      const existingIdx = msg.blocks.findIndex(existing => assistantBlockKey(existing) === key);
+      if (existingIdx >= 0) {
+        msg.blocks[existingIdx] = block;
+        continue;
+      }
+    }
+    msg.blocks.push(block);
+  }
+
+  if (rawMessage) msg.raw.push(cloneHistoryJson(rawMessage));
+  if (rawEvent) msg.events.push(cloneHistoryJson(rawEvent));
+  msg.text = textFromHistoryBlocks(msg.blocks);
+  msg.updatedAt = new Date().toISOString();
+  const conv = ensureHistoryConversation(activeHistoryConversationId);
+  conv.date = msg.updatedAt;
+  persistHistoryDeferred();
+}
+
+function finalizeActiveAssistantHistory(status = "complete", cost = null) {
+  if (!activeAssistantHistoryMessage) return;
+  activeAssistantHistoryMessage.status = status;
+  activeAssistantHistoryMessage.updatedAt = new Date().toISOString();
+  if (cost != null) activeAssistantHistoryMessage.cost = cost;
+  activeAssistantHistoryMessage.text = textFromHistoryBlocks(activeAssistantHistoryMessage.blocks);
+  const conv = ensureHistoryConversation(activeHistoryConversationId);
+  conv.date = activeAssistantHistoryMessage.updatedAt;
+  persistHistoryImmediate();
+  activeAssistantHistoryMessage = null;
+}
+
+function updateActiveConversationSession(nextSessionId) {
+  if (!activeHistoryConversationId || !nextSessionId) return;
+  const conv = ensureHistoryConversation(activeHistoryConversationId, { sessionId: nextSessionId });
+  conv.sessionId = nextSessionId;
+  conv.date = new Date().toISOString();
+  persistHistoryDeferred();
+}
+
+function isOutboundToolUse(type) {
+  return type === "tool_use" || type === "server_tool_use" || type === "mcp_tool_use";
+}
+
+function isOutboundToolResult(type) {
+  return type === "tool_result" || type === "mcp_tool_result" || type?.includes("tool_result");
+}
+
+function persistOutboundAgentEvent(ev) {
+  if (!activeHistoryConversationId || !ev?.type) return;
+  if (ev.type === "session" && ev.sessionId) {
+    updateActiveConversationSession(ev.sessionId);
+    return;
+  }
+  if (ev.type === "assistant") {
+    const content = ev.message?.content ?? ev.content ?? [];
+    const blocks = normalizeAssistantHistoryBlocks(content);
+    appendAssistantHistoryBlocks(blocks, ev, { rawMessage: ev.message ?? ev });
+    return;
+  }
+  if (isOutboundToolUse(ev.type)) {
+    appendAssistantHistoryBlocks([{
+      type: ev.type,
+      id: ev.id ?? "",
+      name: ev.name ?? "tool",
+      serverName: ev.server_name ?? ev.serverName ?? null,
+      input: ev.input ?? {},
+      raw: cloneHistoryJson(ev),
+    }], ev);
+    return;
+  }
+  if (isOutboundToolResult(ev.type)) {
+    appendAssistantHistoryBlocks([{ type: ev.type, raw: cloneHistoryJson(ev) }], ev);
+    return;
+  }
+  if (ev.type === "tool_progress" || ev.type === "tool_use_summary" || ev.type === "permission_denied" || ev.type === "task_notification") {
+    appendAssistantHistoryBlocks([{ type: "sdk_event", eventType: ev.type, raw: cloneHistoryJson(ev) }], ev);
+    return;
+  }
+  if (ev.type === "error") {
+    appendAssistantHistoryBlocks([{
+      type: "codex_error",
+      message: ev.text || ev.message || "Assistant error",
+      raw: cloneHistoryJson(ev),
+    }], ev);
+    finalizeActiveAssistantHistory("error");
+    return;
+  }
+  if (ev.type === "result") {
+    finalizeActiveAssistantHistory(ev.subtype === "success" || !ev.is_error ? "complete" : "error", ev.total_cost_usd ?? null);
+    return;
+  }
+  if (ev.type === "done") {
+    finalizeActiveAssistantHistory("complete");
+    return;
+  }
+  if (ev.type === "stopped") {
+    finalizeActiveAssistantHistory("stopped");
+  }
+}
 
 // ── Skills preload ─────────────────────────────────────────
 function addSkillSlugsFromDir(slugs, dir) {
@@ -2170,20 +2544,9 @@ const http = createServer((req, res) => {
       req.on("data", (chunk) => { body += chunk; });
       req.on("end", () => {
         try {
-          const conv = JSON.parse(body);
-          const history = readHistory();
-          const idx = history.findIndex(h => h.id === conv.id);
-          if (idx >= 0) {
-            // 列表接口只返回摘要（无 messages），重命名等局部更新不应抹掉已存消息
-            if (!("messages" in conv) && history[idx].messages) {
-              conv.messages = history[idx].messages;
-            }
-            history[idx] = conv;
-          } else {
-            history.unshift(conv);
-            if (history.length > MAX_SERVER_HISTORY) history.splice(MAX_SERVER_HISTORY);
-          }
-          writeHistory(history);
+          const payload = JSON.parse(body || "{}");
+          const saved = upsertHistoryConversation({ ...payload, id });
+          if (!saved) throw new Error("invalid conversation");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch {
@@ -2274,7 +2637,7 @@ let pendingAskUserQuestion = null;
 const DETACHED_BUFFER_MAX = 2000;
 let detachedBuffer = [];
 
-const send = (obj) => {
+const deliver = (obj) => {
   if (activeWs && activeWs.readyState === activeWs.OPEN) {
     activeWs.send(JSON.stringify(obj));
     return;
@@ -2287,6 +2650,11 @@ const send = (obj) => {
       detachedBuffer.splice(0, detachedBuffer.length - DETACHED_BUFFER_MAX);
     }
   }
+};
+
+const send = (obj) => {
+  persistOutboundAgentEvent(obj);
+  deliver(obj);
 };
 
 const clearPendingAskUserQuestion = (reason = "cancelled") => {
@@ -2379,7 +2747,7 @@ wss.on("connection", (ws) => {
   // Reattach to an in-flight run: restore the generating UI, replay whatever
   // happened while detached, and re-show a still-unanswered question.
   if (abortCtrl || pendingAskUserQuestion || detachedBuffer.length > 0) {
-    send({ type: "run_attached", running: !!abortCtrl });
+    deliver({ type: "run_attached", running: !!abortCtrl });
     const backlog = detachedBuffer;
     detachedBuffer = [];
     let questionInBacklog = false;
@@ -2387,10 +2755,10 @@ wss.on("connection", (ws) => {
       if (obj?.type === "ask_user_question" && obj.requestId === pendingAskUserQuestion?.requestId) {
         questionInBacklog = true;
       }
-      send(obj);
+      deliver(obj);
     }
     if (pendingAskUserQuestion && !questionInBacklog) {
-      send({
+      deliver({
         type: "ask_user_question",
         requestId: pendingAskUserQuestion.requestId,
         toolUseID: pendingAskUserQuestion.toolUseID ?? null,
@@ -2430,16 +2798,34 @@ wss.on("connection", (ws) => {
 
     if (msg.reset) {
       clearPendingAskUserQuestion("session reset");
+      finalizeActiveAssistantHistory("stopped");
+      clearActiveHistoryConversation();
       clearSession();
       clearCodexThread();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       return;
     }
 
-    if (msg.setSession != null) { saveSession(String(msg.setSession)); return; }
+    if (msg.setSession != null) {
+      saveSession(String(msg.setSession));
+      if (msg.conversationId) {
+        const nextConversationId = normalizeHistoryId(msg.conversationId);
+        // A generation still streaming into a different conversation owns
+        // activeHistoryConversationId until it finalizes — viewing another
+        // conversation must not redirect its in-flight output.
+        const generatingElsewhere = activeAssistantHistoryMessage?.status === "running"
+          && activeHistoryConversationId !== nextConversationId;
+        if (!generatingElsewhere) {
+          activeHistoryConversationId = nextConversationId;
+          updateActiveConversationSession(String(msg.setSession));
+        }
+      }
+      return;
+    }
 
     if (msg.stop) {
       clearPendingAskUserQuestion("generation stopped");
+      finalizeActiveAssistantHistory("stopped");
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
       else send({ type: "stopped" });
       return;
@@ -2447,7 +2833,14 @@ wss.on("connection", (ws) => {
 
     // Cancel any in-flight query before starting a new one
     clearPendingAskUserQuestion("new request started");
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+    if (abortCtrl) {
+      finalizeActiveAssistantHistory("stopped");
+      abortCtrl.abort();
+      abortCtrl = null;
+    } else {
+      finalizeActiveAssistantHistory("complete");
+    }
+    beginServerConversationFromClient(msg);
 
     const schedulerRequest = hasSchedulerIntent(msg.prompt);
 

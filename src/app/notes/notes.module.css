@@ -1216,12 +1216,18 @@
   background: transparent;
   color: var(--notes-text-secondary);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
 .assistantPanelCollapse:hover {
   background: var(--notes-bg-hover);
   color: var(--notes-text);
+}
+
+/* 面板内设置/历史等子页面满铺时，让位给子页面自己的返回按钮，避免两个控件叠在左上角 */
+.assistantPanelCollapseHidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .assistantPanelResizer::after {

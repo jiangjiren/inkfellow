@@ -564,6 +564,9 @@ export default function NotesExplorer() {
     lastY: number; lastT: number; velocity: number; moved: number;
   } | null>(null);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
+  // 面板内（设置/历史）是否正显示为满铺子页面：此时唯一的"返回"控件应是子页面自己的返回按钮，
+  // 收起整个面板的按钮需要让位，避免两个"返回"叠在同一个左上角
+  const [isChildOverlayOpen, setIsChildOverlayOpen] = useState(false);
   // 大纲已从右侧面板迁出：桌面端常驻左栏（可折叠），移动端用底部 sheet 唤出
   const [tocSectionOpen, setTocSectionOpen] = useState(true);
   const [mobileTocOpen, setMobileTocOpen] = useState(false);
@@ -688,6 +691,10 @@ export default function NotesExplorer() {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === "open-git-tab") {
         setGitPanelOpen(true);
+        return;
+      }
+      if (event.data?.type === "chat-overlay-state") {
+        setIsChildOverlayOpen(!!event.data.open);
         return;
       }
       if (event.data && event.data.type === "ai-generating-state") {
@@ -4002,11 +4009,11 @@ export default function NotesExplorer() {
             {!isMobileViewport && (
               <button
                 type="button"
-                className={styles.assistantPanelCollapse}
+                className={`${styles.assistantPanelCollapse} ${isChildOverlayOpen ? styles.assistantPanelCollapseHidden : ""}`}
                 onClick={() => setAssistantPanelVisible(false)}
                 aria-label="收起对话面板"
                 title="收起（⌘J）"
-                tabIndex={isAssistantPanelOpen ? 0 : -1}
+                tabIndex={isAssistantPanelOpen && !isChildOverlayOpen ? 0 : -1}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <polyline points="13 17 18 12 13 7" />

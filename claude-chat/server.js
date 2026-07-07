@@ -519,6 +519,9 @@ function normalizeProfiles(raw) {
       profiles.push({ id: "p_codex", name: "Codex（GPT 会员）", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
     }
   }
+  // 会员账号（Claude、Codex）固定置顶，其余自定义 key 账号保持原有相对顺序
+  const providerRank = { claude: 0, codex: 1 };
+  profiles.sort((a, b) => (providerRank[a.provider] ?? 2) - (providerRank[b.provider] ?? 2));
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId
     : profiles[0].id;

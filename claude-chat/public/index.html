@@ -1549,9 +1549,9 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   height: 18px;
   padding: 0 6px;
   border-radius: 5px;
-  border: 1px solid rgba(var(--green-rgb),0.18);
-  background: rgba(var(--green-rgb),0.07);
-  color: var(--green);
+  border: 1px solid rgba(var(--dim-rgb),0.18);
+  background: rgba(var(--dim-rgb),0.07);
+  color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 650;
   line-height: 1;
@@ -1573,16 +1573,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   flex-shrink: 0;
   opacity: 0.78;
 }
-.auth-limit-badge.warning {
-  border-color: rgba(var(--yellow-rgb),0.22);
-  background: rgba(var(--yellow-rgb),0.08);
-  color: var(--yellow);
+/* 只有剩余百分比数字本身按额度高低上色，badge 外壳保持中性 */
+.auth-limit-pct {
+  font-weight: 700;
 }
-.auth-limit-badge.critical {
-  border-color: rgba(var(--red-rgb),0.2);
-  background: rgba(var(--red-rgb),0.08);
-  color: var(--red);
-}
+.auth-limit-pct.ok { color: var(--green); }
+.auth-limit-pct.warning { color: var(--yellow); }
+.auth-limit-pct.critical { color: var(--red); }
 .auth-limit-badge.muted {
   border-color: rgba(var(--dim-rgb),0.18);
   background: rgba(var(--dim-rgb),0.07);
@@ -2732,10 +2729,18 @@ function mergeClaudeRateLimitInfo(info) {
 
 const LIMIT_CLOCK_ICON = '<svg class="auth-limit-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>';
 
+function percentColorClass(pct) {
+  if (typeof pct !== "number") return "";
+  if (pct <= 10) return "critical";
+  if (pct <= 25) return "warning";
+  return "ok";
+}
+
 function renderLimitWindow(label, win, resetFormat = "hm") {
-  const remaining = win?.remainingPercent == null ? "--" : `${win.remainingPercent}%`;
+  const pct = win?.remainingPercent;
+  const remaining = pct == null ? "--" : `${pct}%`;
   const resetIn = formatResetCountdown(win?.resetAt, resetFormat);
-  return `${escapeHtml(label)} 剩${escapeHtml(remaining)}${resetIn ? ` ${LIMIT_CLOCK_ICON}${escapeHtml(resetIn)}` : ""}`;
+  return `${escapeHtml(label)} 剩<span class="auth-limit-pct ${percentColorClass(pct)}">${escapeHtml(remaining)}</span>${resetIn ? ` ${LIMIT_CLOCK_ICON}${escapeHtml(resetIn)}` : ""}`;
 }
 
 function renderLimitTooltipWindow(label, win) {
@@ -2744,16 +2749,6 @@ function renderLimitTooltipWindow(label, win) {
   if (win.usedPercent != null) parts.push(`已用 ${win.usedPercent}%`);
   if (win.resetAt) parts.push(`${formatResetTime(win.resetAt)} 重置`);
   return parts.length ? `${label}：${parts.join("，")}` : "";
-}
-
-function limitBadgeClass(limit) {
-  const values = [limit?.fiveHour?.remainingPercent, limit?.week?.remainingPercent]
-    .filter(v => typeof v === "number");
-  if (!values.length) return "muted";
-  const min = Math.min(...values);
-  if (min <= 10) return "critical";
-  if (min <= 25) return "warning";
-  return "";
 }
 
 function renderProviderLimitSummary(provider) {
@@ -2775,7 +2770,7 @@ function renderProviderLimitSummary(provider) {
   ].filter(Boolean);
   const title = tooltipParts.length ? tooltipParts.join("；") : "会员实时额度";
   const html = `${renderLimitWindow("5h", limit.fiveHour, "hm")} · ${renderLimitWindow("周", limit.week, "dh")}`;
-  return `<span class="auth-limit-badge ${limitBadgeClass(limit)}" title="${escapeAttr(title)}"><span class="auth-limit-text">${html}</span></span>`;
+  return `<span class="auth-limit-badge" title="${escapeAttr(title)}"><span class="auth-limit-text">${html}</span></span>`;
 }
 
 async function checkProviderUsageLimits({ silent = false } = {}) {
@@ -3069,11 +3064,21 @@ async function fetchProfiles() {
   } catch { }
 }
 
+// 设置/历史面板在窄面板下会满铺整个 iframe（见 #auth-dialog / #history-dropdown 的
+// 移动端媒体查询），此时父页面浮在 iframe 左上角的"收起面板"按钮会跟这里的返回按钮叠在一起。
+// 打开/关闭时把状态告诉父页面，让它自己隐藏那个按钮，让返回操作只有一个入口。
+function notifyPanelOverlayState() {
+  if (window.parent === window) return;
+  const open = authDialog.classList.contains("open") || historyDropdown.classList.contains("open");
+  window.parent.postMessage({ type: "chat-overlay-state", open }, "*");
+}
+
 function openAuthDialog() {
   closeHeaderPickers();
   closeHistoryPanel();
   authDialog.classList.add("open");
   authBackdrop.classList.add("open");
+  notifyPanelOverlayState();
   showListView();
   void fetchProfiles();
   checkClaudeAuth();
@@ -3088,6 +3093,7 @@ function openAuthDialog() {
 function closeAuthDialog() {
   authDialog.classList.remove("open");
   authBackdrop.classList.remove("open");
+  notifyPanelOverlayState();
   stopUsageLimitPolling();
 }
 
@@ -5046,6 +5052,7 @@ async function openHistoryPanel() {
   // 立即打开面板（无延迟）
   historyDropdown.classList.add("open");
   historyBackdrop.classList.add("open");
+  notifyPanelOverlayState();
   closeHeaderPickers(); // 互斥
   // 有缓存先渲染缓存，同时后台刷新；没缓存才等 fetch
   if (_historyCache !== null) {
@@ -5059,6 +5066,7 @@ async function openHistoryPanel() {
 function closeHistoryPanel() {
   historyDropdown.classList.remove("open");
   historyBackdrop.classList.remove("open");
+  notifyPanelOverlayState();
 }
 
 function formatRelDate(iso) {

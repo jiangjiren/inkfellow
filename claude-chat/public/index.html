@@ -15,21 +15,71 @@
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* 与 desktop-lite / inkfellow 外壳共用 token，保证 iframe 一体感 */
 :root {
-  --bg: #f9f9f8;
-  --bg2: #f2f1ef;
-  --bg3: #eae9e6;
-  --border: #dddbd7;
-  --text: #1a1916;
-  --text-dim: #8a8680;
-  --accent: #1a6cf6;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+
+  --bg: #f5f4ef;
+  --bg2: #eae9e4;
+  --bg3: rgba(120, 120, 128, 0.09);
+  --bg-document: #ffffff;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --text: #1d1d1f;
+  --text-dim: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0066cc;
+  --accent-bg: rgba(0, 113, 227, 0.06);
+  --accent-bg-hover: rgba(0, 113, 227, 0.12);
+  --accent-ring: rgba(0, 113, 227, 0.1);
+  --fellow: #7c3aed;
   --green: #1a7a3f;
-  --yellow: #92600a;
+  --yellow: #c4521c;
   --red: #c0392b;
-  --tool-bg: #f0eee9;
+  --tool-bg: rgba(120, 120, 128, 0.07);
+  --user-bubble: rgba(120, 120, 128, 0.12);
+  --radius-card: 12px;
+  --radius-item: 8px;
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
-html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; background: var(--bg); color: var(--text); }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09090b;
+    --bg2: #151516;
+    --bg3: rgba(255, 255, 255, 0.05);
+    --bg-document: #18181b;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.15);
+    --text: #f5f5f7;
+    --text-dim: #86868b;
+    --accent: #2997ff;
+    --accent-hover: #54adff;
+    --accent-bg: rgba(41, 151, 255, 0.12);
+    --accent-bg-hover: rgba(41, 151, 255, 0.2);
+    --accent-ring: rgba(41, 151, 255, 0.15);
+    --fellow: #a78bfa;
+    --yellow: #d05a22;
+    --tool-bg: rgba(255, 255, 255, 0.05);
+    --user-bubble: rgba(255, 255, 255, 0.1);
+    --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+}
+
+html, body {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 
 #app {
   display: flex;
@@ -52,10 +102,10 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   padding: 8px 12px;
   border-radius: 17px;
   border-bottom-right-radius: 6px;
-  background: #ececea;
-  color: #1d1d1f;
+  background: var(--user-bubble);
+  color: var(--text);
   line-height: 1.55;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.025);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .msg-body { line-height: 1.6; word-break: break-word; }
 .msg-user .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -76,15 +126,15 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 .msg-body table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
 .msg-body th,.msg-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
 .msg-body th { background: var(--bg2); font-weight: 600; }
-.msg-body code { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-family: "Fira Code", "JetBrains Mono", monospace; font-size: 12px; }
-.msg-body pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+.msg-body code { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-family: var(--font-mono); font-size: 12px; }
+.msg-body pre { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-item); padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
 .msg-body pre code { background: none; border: none; padding: 0; font-size: 12px; }
-.tool-call { display: flex; align-items: center; gap: 8px; background: var(--tool-bg); border: 1px solid var(--border); border-left: 2px solid var(--yellow); border-radius: 6px; padding: 7px 10px; margin: 4px 0; font-family: "Fira Code", monospace; font-size: 11px; transition: border-left-color 0.2s, background 0.2s; }
+.tool-call { display: flex; align-items: center; gap: 8px; background: var(--tool-bg); border: 1px solid var(--border); border-left: 2px solid var(--yellow); border-radius: var(--radius-item); padding: 7px 10px; margin: 4px 0; font-family: var(--font-mono); font-size: 11px; transition: border-left-color 0.2s, background 0.2s; }
 .tool-call.running { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--tool-bg)); }
 .tool-call.running .tool-name { color: var(--accent); }
 .tool-name { color: var(--yellow); font-weight: 600; white-space: nowrap; flex-shrink: 0; transition: color 0.2s; }
 .tool-input { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.tool-spinner { flex-shrink: 0; width: 11px; height: 11px; border: 1.5px solid rgba(26,108,246,0.25); border-top-color: var(--accent); border-radius: 50%; animation: toolSpin 0.65s linear infinite; }
+.tool-spinner { flex-shrink: 0; width: 11px; height: 11px; border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: toolSpin 0.65s linear infinite; }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
 .typing { display: flex; gap: 4px; align-items: center; padding: 4px 0; }
 .typing span { width: 5px; height: 5px; background: var(--text-dim); border-radius: 50%; animation: blink 1.2s infinite; }
@@ -123,9 +173,9 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   margin: 0 0 8px;
   max-height: min(44vh, 380px);
   overflow: hidden;
-  background: #fff;
-  border: 1px solid rgba(26,108,246,0.18);
-  border-radius: 12px;
+  background: var(--bg-document);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: var(--radius-card);
   box-shadow: 0 -6px 24px rgba(0,0,0,0.08);
 }
 #ask-user-question.open {
@@ -145,7 +195,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(26,108,246,0.1);
+  background: var(--accent-bg-hover);
   color: var(--accent);
   font-weight: 700;
   font-size: 12px;
@@ -208,8 +258,8 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 }
 .ask-option:hover,
 .ask-option.selected {
-  border-color: rgba(26,108,246,0.35);
-  background: rgba(26,108,246,0.07);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-bg);
 }
 .ask-option-label { font-size: 12.5px; font-weight: 600; }
 .ask-option-desc { font-size: 11px; color: var(--text-dim); line-height: 1.35; }
@@ -220,10 +270,11 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   min-height: 34px;
   resize: vertical;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-item);
   padding: 8px 10px;
   font: inherit;
-  background: #fff;
+  background: var(--bg-document);
+  color: var(--text);
 }
 .ask-question-actions {
   display: flex;
@@ -275,7 +326,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 .slash-item.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg3)); }
 
 .slash-cmd {
-  font-family: "Fira Code", "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--accent);
   min-width: 0;
@@ -307,9 +358,9 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   flex-shrink: 0;
 }
 .slash-badge.builtin {
-  background: rgba(26, 108, 246, 0.08);
+  background: var(--accent-bg);
   color: var(--accent);
-  border: 1px solid rgba(26, 108, 246, 0.15);
+  border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .slash-badge.skill {
   background: rgba(26, 122, 63, 0.08);
@@ -322,7 +373,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   border: 1px solid rgba(146, 96, 10, 0.16);
 }
 .mention-item .slash-cmd {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-weight: 560;
 }
 
@@ -351,16 +402,16 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
 }
 
 #composer {
-  background: #fff;
+  background: var(--bg-document);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 0px rgba(26,108,246,0);
-  transition: box-shadow 0.2s;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
+  transition: box-shadow 0.2s, border-color 0.2s;
   overflow: hidden;
 }
 #composer:focus-within {
-  border-color: rgba(26,108,246,0.35);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 3px rgba(26,108,246,0.08);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: var(--shadow-soft), 0 0 0 3px var(--accent-ring);
 }
 
 /* context chip — full-width header row inside composer */
@@ -369,16 +420,16 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   align-items: center;
   gap: 7px;
   padding: 6px 10px 6px 14px;
-  background: rgba(26,108,246,0.04);
+  background: var(--accent-bg);
   border: none;
-  border-bottom: 1px solid rgba(26,108,246,0.1);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
   width: 100%;
   box-sizing: border-box;
   cursor: pointer;
   transition: background 0.15s;
 }
 #context-chip.visible { display: flex; }
-#context-chip:hover { background: rgba(26,108,246,0.08); }
+#context-chip:hover { background: var(--accent-bg-hover); }
 #context-chip.context-disabled {
   background: transparent;
   border-bottom-color: var(--border);
@@ -462,9 +513,9 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   max-width: 100%;
   min-width: 0;
   padding: 4px 5px 4px 8px;
-  border: 1px solid rgba(26,108,246,0.18);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 999px;
-  background: rgba(26,108,246,0.055);
+  background: var(--accent-bg);
   color: var(--accent);
 }
 .mention-context-icon {
@@ -499,7 +550,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   opacity: 0.5;
 }
 .mention-context-remove:hover {
-  background: rgba(26,108,246,0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   opacity: 1;
 }
 
@@ -509,7 +560,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   font-size: 12px;
   font-weight: 500;
   color: var(--accent);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -521,23 +572,23 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   height: 23px;
   display: grid;
   place-items: center;
-  background: #fff;
-  border: 1px solid rgba(26,108,246,0.22);
+  background: var(--bg-document);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 50%;
   color: var(--accent);
   cursor: pointer;
   line-height: 1;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  box-shadow: var(--shadow-soft);
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
 #ctx-toggle:hover {
-  background: rgba(26,108,246,0.08);
-  border-color: rgba(26,108,246,0.38);
+  background: var(--accent-bg);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 #ctx-toggle:active { transform: scale(0.94); }
 #context-chip.context-disabled #ctx-toggle {
-  background: #fff;
-  border-color: rgba(138,134,128,0.26);
+  background: var(--bg-document);
+  border-color: var(--border-strong);
   color: var(--text-dim);
 }
 #ctx-toggle svg { width: 14px; height: 14px; }
@@ -567,7 +618,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   min-height: 26px;
   outline: none;
 }
-#prompt::placeholder { color: #b0aea9; }
+#prompt::placeholder { color: var(--text-dim); opacity: 0.85; }
 
 #send {
   flex-shrink: 0;
@@ -575,15 +626,15 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; margin: 0; padding:
   height: 30px;
   border-radius: 50%;
   border: none;
-  background: var(--text);
+  background: var(--accent);
   color: #fff;
   cursor: pointer;
   display: grid;
   place-items: center;
   transition: background 0.15s, transform 0.1s;
 }
-#send:disabled { background: #d0cdc9; cursor: default; }
-#send:not(:disabled):hover { background: #3a3835; }
+#send:disabled { background: color-mix(in srgb, var(--text-dim) 35%, transparent); cursor: default; }
+#send:not(:disabled):hover { background: var(--accent-hover); }
 #send:not(:disabled):active { transform: scale(0.93); }
 #send.stopping { background: var(--red); }
 #send.stopping:hover { background: #a02d22; }
@@ -1227,7 +1278,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   color: var(--text-dim);
   transition: background 0.12s, color 0.12s; padding: 0;
 }
-.history-item-rename:hover { background: rgba(26,108,246,0.1); color: var(--accent); }
+.history-item-rename:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 .history-item-del:hover { background: rgba(192,57,43,0.1); color: var(--red); }
 
 /* inline rename input */
@@ -1360,7 +1411,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   cursor: pointer;
   border: 1px solid rgba(0,0,0,0.04);
   border-radius: 12px;
-  background: #ffffff;
+  background: var(--bg-document);
   width: 100%;
   text-align: left;
   transition: all 0.15s ease;
@@ -1372,8 +1423,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   box-shadow: 0 2px 6px rgba(0,0,0,0.04);
 }
 .auth-profile-item.active { 
-  background: color-mix(in srgb, var(--accent) 4%, #ffffff);
-  border-color: rgba(26,108,246,0.2);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-document));
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 /* 左侧 checkmark */
@@ -1547,8 +1598,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 #auth-add-toggle:hover { 
   color: var(--accent); 
-  border-color: rgba(26,108,246,0.3);
-  background: rgba(26,108,246,0.02);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
 }
 #auth-add-toggle .add-icon {
   display: grid; place-items: center;
@@ -1583,7 +1634,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   flex-direction: column;
   gap: 1px;
   margin-bottom: 20px;
-  background: #ffffff;
+  background: var(--bg-document);
   border: 1px solid rgba(0,0,0,0.06);
   border-radius: 12px;
   overflow: hidden;
@@ -1595,7 +1646,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   display: flex;
   flex-direction: column;
   padding: 10px 12px;
-  background: #ffffff;
+  background: var(--bg-document);
   border-bottom: 1px solid rgba(0,0,0,0.04);
 }
 .add-field:last-child { border-bottom: none; }
@@ -1621,9 +1672,9 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   width: 100%;
 }
 .add-field input:focus {
-  background: #ffffff;
-  border-color: rgba(26,108,246,0.4);
-  box-shadow: 0 0 0 3px rgba(26,108,246,0.1);
+  background: var(--bg-document);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .add-field input::placeholder { color: rgba(0,0,0,0.25); }
 
@@ -1649,9 +1700,9 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   transition: all 0.15s ease;
 }
 .add-provider-select:focus {
-  background: #ffffff;
-  border-color: rgba(26,108,246,0.4);
-  box-shadow: 0 0 0 3px rgba(26,108,246,0.1);
+  background: var(--bg-document);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .select-arrow {
   position: absolute;
@@ -1696,7 +1747,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     max-height: 100dvh;
     border-radius: 0;
     border: none;
-    background: #f9f9f8;
+    background: var(--bg);
     z-index: 1000;
   }
   #auth-dialog.open, #history-dropdown.open {
@@ -1881,7 +1932,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
               <span style="font-size: 12px; color: #d97757; font-weight: 500;">👉 请输入手机微信显示的 4 位数配对码：</span>
               <div style="display: flex; gap: 6px; width: 80%;">
                 <input id="wechat-verify-input" type="text" maxlength="6" style="flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; text-align: center; font-weight: bold; background: var(--bg-color); color: var(--fg-color);" placeholder="0000"/>
-                <button id="wechat-verify-submit" style="padding: 6px 12px; font-size: 12px; background: var(--accent-color, #1a6cf6); color: white; border: none; border-radius: 4px; cursor: pointer;">确认</button>
+                <button id="wechat-verify-submit" style="padding: 6px 12px; font-size: 12px; background: var(--accent-color, var(--accent)); color: white; border: none; border-radius: 4px; cursor: pointer;">确认</button>
               </div>
             </div>
           </div>
@@ -2586,7 +2637,7 @@ function setAuthStatus(type, text, isForm = false) {
 
 // ── Provider display metadata ─────────────────────────────
 const PROVIDER_COLOR = {
-  claude: "#d97757", anthropic: "#c96442", deepseek: "#1a6cf6", openrouter: "#8b5cf6", minimax: "#ff6b35", custom: "#6b7280",
+  claude: "#d97757", anthropic: "#c96442", deepseek: "#0071e3", openrouter: "#8b5cf6", minimax: "#ff6b35", custom: "#6b7280",
   codex: "#10a37f",
 };
 const PROVIDER_LABEL = {

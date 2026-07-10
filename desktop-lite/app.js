@@ -1133,13 +1133,15 @@ function renderDashboard() {
     <section class="dashboardContainer">
       <div class="dashboardHero">
         <p class="dashboardSubtitle">你的个人知识库，已就绪。</p>
-        <form class="dashboardSearchBox" id="dashboard-search-form">
-          <svg class="dashboardSearchIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          <input id="dashboard-search-input" class="dashboardSearchInput" placeholder="问 Fellow 或写点什么…" autocomplete="off" spellcheck="false" />
-          <button type="submit" class="dashboardSearchShortcut" title="问 Fellow">Fellow</button>
+        <form class="dashboardComposer" id="dashboard-ask-form" aria-label="问 Fellow">
+          <span class="dashboardComposerMark" aria-hidden="true">✦</span>
+          <input id="dashboard-ask-input" class="dashboardComposerInput" type="text" placeholder="问 Fellow…" autocomplete="off" spellcheck="false" />
+          <button type="submit" class="dashboardComposerSend" title="问 Fellow" aria-label="问 Fellow">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 12V4" />
+              <path d="M4.5 7.5 8 4l3.5 3.5" />
+            </svg>
+          </button>
         </form>
       </div>
       <div class="dashboardSection">
@@ -1166,14 +1168,26 @@ function renderDashboard() {
 function wireDashboard() {
   qs("dashboard-capture")?.addEventListener("click", createNote);
   qs("dashboard-empty-create")?.addEventListener("click", createNote);
-  qs("dashboard-search-form")?.addEventListener("submit", (event) => {
+  const askInput = qs("dashboard-ask-input");
+  const askSend = qs("dashboard-ask-form")?.querySelector(".dashboardComposerSend");
+  const syncAskReady = () => {
+    if (!askSend || !askInput) return;
+    askSend.classList.toggle("isReady", askInput.value.trim().length > 0);
+  };
+  askInput?.addEventListener("input", syncAskReady);
+  syncAskReady();
+
+  qs("dashboard-ask-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const input = qs("dashboard-search-input");
+    const input = qs("dashboard-ask-input");
     const text = input?.value.trim();
     openFellowPanel();
     setTimeout(() => {
       const accepted = postAgentMessage(text ? { type: "note-ask", text } : { type: "note-ask" });
-      if (accepted && input) input.value = "";
+      if (accepted && input) {
+        input.value = "";
+        syncAskReady();
+      }
     }, 120);
   });
 

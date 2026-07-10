@@ -1067,36 +1067,40 @@ input, textarea { font-family: inherit; }
   font-size: 15px;
 }
 
-.dashboardSearchBox {
+/* 首页对话入口：有意不像侧栏搜索 */
+.dashboardComposer {
   display: flex;
   align-items: center;
-  width: min(100%, 580px);
-  height: 56px;
-  padding: 0 20px;
-  border: 1px solid var(--notes-border);
-  border-radius: 28px;
-  background: var(--notes-bg-sidebar);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  gap: 10px;
+  width: min(100%, 560px);
+  min-height: 56px;
+  padding: 8px 10px 8px 18px;
+  border: 1px solid rgba(124, 58, 237, 0.16);
+  border-radius: 18px;
+  background: var(--notes-bg-document);
+  box-shadow: 0 4px 22px rgba(124, 58, 237, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
   cursor: text;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-.dashboardSearchBox:hover,
-.dashboardSearchBox:focus-within {
-  border-color: var(--notes-accent);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
+.dashboardComposer:hover,
+.dashboardComposer:focus-within {
+  border-color: rgba(124, 58, 237, 0.38);
+  box-shadow: 0 8px 28px rgba(124, 58, 237, 0.1), 0 0 0 3px rgba(124, 58, 237, 0.06);
   transform: translateY(-1px);
 }
 
-.dashboardSearchIcon {
-  width: 20px;
-  height: 20px;
+.dashboardComposerMark {
   flex: 0 0 auto;
-  margin-right: 12px;
-  color: var(--notes-text-muted);
+  font-size: 15px;
+  line-height: 1;
+  background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-.dashboardSearchInput {
+.dashboardComposerInput {
   flex: 1;
   min-width: 0;
   border: 0;
@@ -1105,23 +1109,100 @@ input, textarea { font-family: inherit; }
   color: var(--notes-text-primary);
   font: inherit;
   font-size: 15px;
+  line-height: 1.4;
 }
 
-.dashboardSearchInput::placeholder {
+.dashboardComposerInput::placeholder {
   color: var(--notes-text-muted);
 }
 
-.dashboardSearchShortcut {
+/* 发送：默认安静；有内容时再轻微强调（Messages 逻辑） */
+.dashboardComposerSend {
+  display: inline-grid;
+  place-items: center;
   flex: 0 0 auto;
-  min-width: 48px;
-  height: 28px;
-  border: 1px solid var(--notes-border);
-  border-radius: 8px;
-  background: var(--notes-bg-app);
-  color: var(--notes-text-muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(120, 120, 128, 0.1);
+  color: var(--notes-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.dashboardComposerSend:hover {
+  background: rgba(120, 120, 128, 0.16);
+  color: var(--notes-text-primary);
+}
+
+.dashboardComposer:focus-within .dashboardComposerSend:not(.isReady) {
+  background: rgba(124, 58, 237, 0.08);
+  color: #7c3aed;
+}
+
+.dashboardComposerSend.isReady {
+  background: rgba(124, 58, 237, 0.14);
+  color: #6d28d9;
+}
+
+.dashboardComposerSend.isReady:hover {
+  background: rgba(124, 58, 237, 0.2);
+  color: #5b21b6;
+}
+
+.dashboardComposerSend:active {
+  transform: scale(0.94);
+}
+
+.dashboardComposerSend svg {
+  display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dashboardComposer {
+    border-color: rgba(167, 139, 250, 0.22);
+    box-shadow: 0 4px 22px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(167, 139, 250, 0.06);
+  }
+
+  .dashboardComposer:hover,
+  .dashboardComposer:focus-within {
+    border-color: rgba(167, 139, 250, 0.45);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 3px rgba(167, 139, 250, 0.1);
+  }
+
+  .dashboardComposerMark {
+    background: linear-gradient(135deg, #c4b5fd 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .dashboardComposerSend {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--notes-text-secondary);
+  }
+
+  .dashboardComposerSend:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--notes-text-primary);
+  }
+
+  .dashboardComposer:focus-within .dashboardComposerSend:not(.isReady) {
+    background: rgba(167, 139, 250, 0.12);
+    color: #c4b5fd;
+  }
+
+  .dashboardComposerSend.isReady {
+    background: rgba(167, 139, 250, 0.2);
+    color: #ddd6fe;
+  }
+
+  .dashboardComposerSend.isReady:hover {
+    background: rgba(167, 139, 250, 0.28);
+    color: #ede9fe;
+  }
 }
 
 .dashboardSection {
@@ -1276,9 +1357,10 @@ input, textarea { font-family: inherit; }
     margin-bottom: 40px;
   }
 
-  .dashboardSearchBox {
-    height: 52px;
-    padding: 0 16px;
+  .dashboardComposer {
+    min-height: 52px;
+    padding: 8px 8px 8px 14px;
+    border-radius: 16px;
   }
 
   .dashboardRecentGrid {
@@ -1861,7 +1943,8 @@ input, textarea { font-family: inherit; }
   min-height: 0;
   display: flex;
   overflow: hidden;
-  background: var(--notes-bg-sidebar);
+  /* 与 Fellow iframe --bg 一致，避免壳/内层色差 */
+  background: var(--notes-bg-app);
 }
 
 .assistantPanelFrame {
@@ -1869,7 +1952,7 @@ input, textarea { font-family: inherit; }
   min-height: 0;
   width: 100%;
   border: 0;
-  background: var(--notes-bg-sidebar);
+  background: var(--notes-bg-app);
 }
 
 .assistantPanelLoading {
@@ -1881,7 +1964,7 @@ input, textarea { font-family: inherit; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: var(--notes-bg-sidebar);
+  background: var(--notes-bg-app);
   color: var(--notes-text-secondary);
   padding: 28px;
   text-align: center;

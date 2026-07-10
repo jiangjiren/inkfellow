@@ -920,6 +920,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   transition: background 0.15s, color 0.15s;
 }
 .header-btn:hover { background: var(--bg3); color: var(--text); }
+#btn-collapse-desktop-panel:not([hidden]) { margin-right: auto; }
 
 /* ── History dropdown ── */
 #history-backdrop {
@@ -1781,6 +1782,9 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 <body>
 <div id="app">
   <header id="chat-header">
+    <button id="btn-collapse-desktop-panel" class="header-btn" type="button" title="收起 Fellow 侧边栏" aria-label="收起 Fellow 侧边栏" hidden>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 5 5-5 5"/><path d="m12 7 5 5-5 5"/></svg>
+    </button>
     <div id="header-actions">
       <div id="rate-limit-chip" aria-live="polite">
         <span id="rate-limit-dot"></span>
@@ -2130,6 +2134,13 @@ const parentOrigin = (() => {
   }
   return referrerOrigin === location.origin ? referrerOrigin : null;
 })();
+const collapseDesktopPanelBtn = document.getElementById("btn-collapse-desktop-panel");
+if (isDesktopEmbed && parentOrigin && configuredParentToken) {
+  collapseDesktopPanelBtn.hidden = false;
+  collapseDesktopPanelBtn.addEventListener("click", () => {
+    postParentMessage({ type: "agent-collapse-panel" });
+  });
+}
 const settingsBtn   = document.getElementById("btn-settings");
 const authDialog    = document.getElementById("auth-dialog");
 const authBackdrop  = document.getElementById("auth-backdrop");
@@ -2321,10 +2332,9 @@ function renderModelOptions(activeProfile) {
       modelTiers[m].push(tier);
     }
     const GPT_DESCS = {
-      "gpt-5.5": "旗舰最强",
-      "gpt-5.4": "专业推理",
-      "gpt-5.4-mini": "极速轻量",
-      "gpt-5.3-codex-spark": "实时预览",
+      "gpt-5.6-sol": "旗舰最强",
+      "gpt-5.6-terra": "均衡通用",
+      "gpt-5.6-luna": "快速经济",
     };
     options = Object.entries(modelTiers).map(([model, tiers]) => {
       const shortName = model.split("/").pop() || model;

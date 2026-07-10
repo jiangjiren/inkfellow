@@ -7,10 +7,10 @@
     <link rel="icon" href="./icon.png?v=3" />
     <link rel="stylesheet" href="./vendor/codemirror.min.css" />
     <link rel="stylesheet" href="./vendor/show-hint.css" />
-    <link rel="stylesheet" href="./app.css?v=5" />
+    <link rel="stylesheet" href="./app.css?v=10" />
   </head>
   <body>
-    <div id="shell" class="shell">
+    <div id="shell" class="shell shellPanelHidden">
 
       <!-- ── Left Sidebar ───────────────────────────── -->
       <aside id="sidebar" class="sidebar">
@@ -25,6 +25,12 @@
             </button>
             <div id="vault-menu" class="vaultDropdownMenu" role="menu" hidden></div>
           </div>
+          <button id="btn-new-note" class="sidebarNewNoteBtn" type="button" title="新建笔记" aria-label="新建笔记">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+          </button>
         </div>
 
         <div class="search">
@@ -42,10 +48,12 @@
         </div>
 
         <div class="sidebarFooter">
-          <button id="btn-git-footer" class="sidebarGitStatus" type="button">
+          <button id="btn-git-footer" class="sidebarGitStatus" type="button" aria-controls="git-quick-popover" aria-expanded="false" aria-haspopup="dialog">
             <span id="sidebar-git-dot" class="sidebarGitDot"></span>
             <span id="sidebar-git-label" class="sidebarGitLabel">正在检查…</span>
-            <span class="sidebarGitArrow">›</span>
+            <span class="sidebarGitArrow" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m4 10 4-4 4 4"/></svg>
+            </span>
           </button>
         </div>
 
@@ -59,7 +67,7 @@
 
         <header id="reader-header" class="readerHeader">
           <div class="readerHeaderLeft">
-            <button id="btn-toggle-sidebar" class="iconButton" type="button" title="Toggle sidebar">
+            <button id="btn-toggle-sidebar" class="iconButton" type="button" title="切换侧栏">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/></svg>
             </button>
             <button id="btn-home" class="iconButton homeBtn" type="button" title="回到首页" aria-label="回到首页">
@@ -85,7 +93,7 @@
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
               </button>
               <div id="more-menu" class="moreMenuDropdown" role="menu" hidden>
-                <button id="menu-outline" class="moreMenuItem" type="button" role="menuitem">
+                <button id="menu-outline" class="moreMenuItem" type="button" role="menuitem" aria-controls="outline-popover" aria-expanded="false" aria-haspopup="dialog">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
                   大纲
                 </button>
@@ -109,8 +117,31 @@
               <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="6" width="32" height="36" rx="3"/><line x1="15" y1="15" x2="33" y2="15"/><line x1="15" y1="21" x2="33" y2="21"/><line x1="15" y1="27" x2="25" y2="27"/></svg>
             </div>
             <p class="emptyStateTitle">打开或创建一篇笔记</p>
-            <p class="emptyStateHint">从左侧文件树中选择，或在文件夹的 <strong>⋯</strong> 菜单中新建</p>
+            <p class="emptyStateHint">从左侧选择笔记，或点击「新建笔记」开始记录</p>
+            <button id="empty-create-note" class="emptyStateCta" type="button">新建笔记</button>
           </div>
+        </div>
+
+        <!-- Full sync workspace (replaces the document area) -->
+        <section id="git-workspace" class="gitWorkspace" aria-label="同步详情" hidden>
+          <header class="gitWorkspaceHeader">
+            <button id="btn-close-git-workspace" class="gitWorkspaceBack" type="button" title="返回笔记" aria-label="返回笔记">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <h2>同步</h2>
+          </header>
+          <div id="git-panel" class="gitTabPanel"></div>
+        </section>
+
+        <!-- Outline popover (opened from ⋯ menu) -->
+        <div id="outline-popover" class="outlinePopover" role="dialog" aria-label="笔记大纲" tabindex="-1" hidden>
+          <div class="outlinePopoverHeader">
+            <span>大纲</span>
+            <strong id="toc-count"></strong>
+            <button id="btn-close-outline" class="outlinePopoverClose" type="button" title="关闭大纲" aria-label="关闭大纲">✕</button>
+          </div>
+          <ul id="toc-list" class="articleTocList"></ul>
+          <p class="articleTocEmpty" id="toc-empty" hidden>当前笔记没有标题</p>
         </div>
 
       </main>
@@ -118,30 +149,9 @@
       <!-- Assistant panel resize handle -->
       <div id="panel-resizer" class="assistantPanelResizer"></div>
 
-      <!-- ── Right: Assistant Panel ─────────────────── -->
+      <!-- ── Right: Fellow only ─────────────────────── -->
       <aside id="assistant-panel" class="assistantPanel">
 
-        <div class="assistantPanelHeader">
-          <div class="assistantPanelTabs" role="tablist">
-            <button class="assistantPanelTab assistantPanelTabActive" role="tab" data-tab="agent" type="button">
-              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="5" r="2"/><path d="M3.5 12c0-1.9 1.6-3.5 3.5-3.5s3.5 1.6 3.5 3.5"/></svg>
-              Fellow
-            </button>
-            <button class="assistantPanelTab" role="tab" data-tab="toc" type="button">
-              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="2" y1="4" x2="12" y2="4"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="4" y1="10" x2="10" y2="10"/></svg>
-              大纲
-            </button>
-            <button class="assistantPanelTab" role="tab" data-tab="git" type="button">
-              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="10.5" r="1.5"/><circle cx="10" cy="5.5" r="1.5"/><line x1="4" y1="5" x2="4" y2="9"/><path d="M5.5 3.5H8c1.1 0 2 .9 2 2v0"/></svg>
-              同步
-            </button>
-          </div>
-          <div class="assistantPanelControls">
-            <button id="btn-close-panel" class="assistantPanelClose" type="button" title="Close panel">✕</button>
-          </div>
-        </div>
-
-        <!-- Fellow (agent iframe) -->
         <div id="agent-panel" class="assistantPanelAgent">
           <iframe
             id="agent-frame"
@@ -156,21 +166,17 @@
           </div>
         </div>
 
-        <!-- Outline (TOC) -->
-        <div id="toc-panel" class="articleToc" hidden>
-          <div class="articleTocHeader">
-            <span>大纲</span>
-            <strong id="toc-count"></strong>
-          </div>
-          <ul id="toc-list" class="articleTocList"></ul>
-          <p class="articleTocEmpty" id="toc-empty" hidden>当前笔记没有标题</p>
-        </div>
-
-        <!-- Git（内容由 renderGitPanel 动态渲染） -->
-        <div id="git-panel" class="gitTabPanel" hidden></div>
-
       </aside>
     </div>
+
+    <!-- Quick sync popover anchored to the sidebar footer -->
+    <aside id="git-quick-popover" class="gitQuickPopover" role="dialog" aria-label="快速同步" tabindex="-1" hidden>
+      <header class="gitQuickHeader">
+        <span>同步</span>
+        <button id="btn-close-git-quick" class="outlinePopoverClose" type="button" title="关闭同步" aria-label="关闭同步">✕</button>
+      </header>
+      <div id="git-quick-content" class="gitQuickContent"></div>
+    </aside>
 
     <!-- Context menu (floats near tree node "⋯" button) -->
     <div id="context-menu" class="treeActionMenu" hidden></div>
@@ -184,8 +190,8 @@
         <p id="dialog-message" class="dialogMessage"></p>
         <input id="dialog-input" class="dialogInput" type="text" />
         <div class="dialogActions">
-          <button id="dialog-cancel" class="ghostButton" type="button">Cancel</button>
-          <button id="dialog-confirm" class="primaryButton" type="button">OK</button>
+          <button id="dialog-cancel" class="ghostButton" type="button">取消</button>
+          <button id="dialog-confirm" class="primaryButton" type="button">确定</button>
         </div>
       </div>
     </div>
@@ -195,6 +201,6 @@
     <script src="./vendor/markdown.min.js"></script>
     <script src="./vendor/continuelist.min.js"></script>
     <script src="./vendor/show-hint.js"></script>
-    <script src="./app.js?v=11"></script>
+    <script src="./app.js?v=15"></script>
   </body>
 </html>

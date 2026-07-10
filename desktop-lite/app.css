@@ -44,7 +44,7 @@
   --notes-transition-fast: all 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
 
   --sidebar-width: 280px;
-  --assistant-panel-width: 480px;
+  --assistant-panel-width: 400px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -184,9 +184,33 @@ input, textarea { font-family: inherit; }
 .sidebarHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px 14px 4px;
+  gap: 6px;
+  padding: 16px 10px 4px 14px;
   flex-shrink: 0;
+}
+
+.sidebarNewNoteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--notes-accent);
+  color: #fff;
+  cursor: pointer;
+  transition: var(--notes-transition-fast);
+}
+
+.sidebarNewNoteBtn:hover {
+  background: var(--notes-accent-hover);
+  transform: scale(1.04);
+}
+
+.sidebarNewNoteBtn:active {
+  transform: scale(0.96);
 }
 
 /* ── Vault switcher ──────────────────────────────── */
@@ -853,14 +877,18 @@ input, textarea { font-family: inherit; }
 }
 
 .sidebarGitArrow {
+  display: inline-grid;
+  place-items: center;
   flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 700;
   color: var(--notes-accent);
+  transition: transform 140ms ease;
 }
+
+.sidebarGitStatus[aria-expanded="true"] .sidebarGitArrow { transform: rotate(180deg); }
 
 /* ── Reader ───────────────────────────────────────── */
 .reader {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   height: 100vh;
@@ -984,6 +1012,30 @@ input, textarea { font-family: inherit; }
   font-size: 13.5px;
   color: var(--notes-text-secondary);
   line-height: 1.6;
+}
+
+.emptyStateCta {
+  margin-top: 8px;
+  min-height: 36px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 18px;
+  background: var(--notes-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--notes-transition-fast);
+}
+
+.emptyStateCta:hover {
+  background: var(--notes-accent-hover);
+  transform: translateY(-1px);
+}
+
+.emptyStateCta:active {
+  transform: translateY(0);
 }
 
 /* Dashboard */
@@ -1199,6 +1251,10 @@ input, textarea { font-family: inherit; }
 }
 
 .dashboardEmptyPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
   border: 1px dashed var(--notes-border-strong);
   border-radius: 16px;
   background: var(--notes-bg-sidebar);
@@ -1760,6 +1816,7 @@ input, textarea { font-family: inherit; }
   position: relative;
   z-index: 2;
   width: var(--assistant-panel-width);
+  min-width: 0;
   flex: 0 0 auto;
   height: 100vh;
   display: flex;
@@ -1769,7 +1826,9 @@ input, textarea { font-family: inherit; }
   -webkit-backdrop-filter: blur(25px);
   border-left: 1px solid var(--notes-border);
   overflow: hidden;
-  transition: var(--notes-transition-spring);
+  transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.25s ease,
+              border-color 0.25s ease;
   will-change: width, opacity;
 }
 
@@ -1777,85 +1836,23 @@ input, textarea { font-family: inherit; }
   .assistantPanel { background: rgba(21, 21, 22, 0.8); }
 }
 
+/* flex 默认 min-width:auto 会被内部 iframe 撑开，收起时必须强制为 0 */
 .shell.shellPanelHidden .assistantPanel {
   width: 0 !important;
+  min-width: 0 !important;
+  flex: 0 0 0 !important;
   opacity: 0;
+  overflow: hidden;
+  border-left-width: 0;
   border-left-color: transparent;
   pointer-events: none;
+  visibility: hidden;
 }
 
-.shell.shellPanelHidden .assistantPanelResizer { display: none; }
-
-.assistantPanelHeader {
-  min-height: 44px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 8px;
-  border-bottom: 1px solid var(--notes-border);
-  background: var(--notes-bg-sidebar);
-  padding-right: 10px;
-}
-
-.assistantPanelTabs {
-  display: flex;
-  align-items: stretch;
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-}
-
-.assistantPanelTab {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 13px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--notes-text-secondary);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 550;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: var(--notes-transition-fast);
-}
-
-.assistantPanelTab svg { width: 13px; height: 13px; flex-shrink: 0; }
-.assistantPanelTab:hover { color: var(--notes-text-primary); }
-
-.assistantPanelTabActive {
-  color: var(--notes-accent) !important;
-  border-bottom-color: var(--notes-accent);
-}
-
-.assistantPanelControls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.assistantPanelClose {
-  display: inline-grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--notes-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--notes-text-muted);
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  transition: var(--notes-transition-fast);
-}
-
-.assistantPanelClose:hover {
-  border-color: rgba(196, 82, 28, 0.5);
-  background: rgba(196, 82, 28, 0.1);
-  color: var(--notes-accent-warm);
+.shell.shellPanelHidden .assistantPanelResizer {
+  display: none;
+  width: 0;
+  flex: 0 0 0;
 }
 
 .assistantPanelAgent {
@@ -1919,37 +1916,405 @@ input, textarea { font-family: inherit; }
   50% { transform: scale(0.94); opacity: 1; }
 }
 
-.assistantPanelFrameHidden {
+/* Outline popover (reader overlay) */
+.outlinePopover {
   position: absolute;
-  inset: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
-
-/* TOC panel */
-.articleToc {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  background: var(--notes-bg-sidebar);
-  padding: 16px 12px;
+  top: 52px;
+  right: 16px;
+  z-index: 40;
+  width: min(280px, calc(100% - 32px));
+  max-height: min(70vh, 480px);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--notes-border);
+  border-radius: 12px;
+  background: var(--notes-bg-document);
+  box-shadow: var(--notes-shadow-popover);
+  overflow: hidden;
+  animation: menuFadeIn 0.14s ease-out;
 }
 
-.articleToc::-webkit-scrollbar { width: 4px; }
-.articleToc::-webkit-scrollbar-thumb { background: var(--notes-border-strong); border-radius: 999px; }
+.outlinePopover[hidden] {
+  display: none !important;
+}
 
-.articleTocHeader {
+.outlinePopoverHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 6px;
+  color: var(--notes-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.outlinePopoverHeader span {
+  flex: 1;
+}
+
+.outlinePopoverHeader strong {
+  font-weight: 600;
+  color: var(--notes-text-secondary);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.outlinePopoverClose {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--notes-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.outlinePopoverClose:hover {
+  background: rgba(120, 120, 128, 0.12);
+  color: var(--notes-text-primary);
+}
+
+.outlinePopover .articleTocList {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 4px;
+}
+
+.outlinePopover .articleTocList::-webkit-scrollbar { width: 4px; }
+.outlinePopover .articleTocList::-webkit-scrollbar-thumb {
+  background: var(--notes-border-strong);
+  border-radius: 999px;
+}
+
+/* Quick sync popover */
+.gitQuickPopover {
+  position: fixed;
+  z-index: 180;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--notes-bg-document) 96%, transparent);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  animation: gitQuickIn 150ms ease-out;
+}
+
+.gitQuickPopover[hidden],
+.gitWorkspace[hidden] {
+  display: none !important;
+}
+
+@keyframes gitQuickIn {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.gitQuickHeader {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--notes-border);
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.gitQuickContent {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.gitQuickStatus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.gitQuickStatusDot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #ff9500;
+  box-shadow: 0 0 0 4px rgba(255, 149, 0, 0.12);
+}
+
+.gitQuickStatusDotSynced {
+  background: #34c759;
+  box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.12);
+}
+
+.gitQuickStatusDotBusy { animation: gitPulse 1s ease-in-out infinite; }
+
+.gitQuickStatusText {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gitQuickStatusText strong {
+  overflow: hidden;
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitQuickStatusText span,
+.gitQuickMoreCount {
+  color: var(--notes-text-muted);
+  font-size: 11px;
+}
+
+.gitQuickIconButton {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.gitQuickIconButton:hover:not(:disabled) {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.gitQuickIconButton:disabled { opacity: 0.45; }
+
+.gitQuickChanges {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--notes-border);
+}
+
+.gitQuickSectionLabel {
+  margin-bottom: 5px;
   color: var(--notes-text-muted);
   font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 650;
+}
+
+.gitQuickChanges ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gitQuickChanges li button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gitQuickChanges li button:hover { background: var(--notes-accent-bg); }
+
+.gitQuickChanges li button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.gitQuickChanges li button:disabled:hover { background: transparent; }
+
+.gitQuickFileText {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gitQuickFileText strong {
+  overflow: hidden;
+  color: var(--notes-text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitQuickFileText span {
+  flex: 0 0 auto;
+  color: var(--notes-text-muted);
+  font-size: 11px;
+}
+
+.gitQuickMoreCount { padding: 5px 7px 0 24px; }
+
+.gitQuickFeedback {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: rgba(52, 199, 89, 0.1);
+  color: #248a3d;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.gitQuickFeedbackError {
+  background: rgba(255, 59, 48, 0.09);
+  color: #cc2d24;
+}
+
+.gitQuickActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.gitQuickPrimary,
+.gitQuickDetails {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gitQuickPrimary {
+  border: 1px solid var(--notes-accent);
+  background: var(--notes-accent);
+  color: #fff;
+}
+
+.gitQuickPrimary:disabled {
+  border-color: var(--notes-border-strong);
+  background: var(--notes-bg-app);
+  color: var(--notes-text-muted);
+  cursor: default;
+}
+
+.gitQuickDetails {
+  border: 1px solid var(--notes-border-strong);
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+}
+
+.gitQuickDetails:hover { background: var(--notes-accent-bg); }
+
+/* Center sync workspace */
+.gitWorkspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--notes-bg-document);
+  animation: workspaceFadeIn 160ms ease-out;
+}
+
+@keyframes workspaceFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.gitWorkspaceHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  flex: 0 0 auto;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--notes-border);
+}
+
+.gitWorkspaceHeader h2 {
+  margin: 0;
+  color: var(--notes-text-primary);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.gitWorkspaceBack {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  cursor: pointer;
+}
+
+.gitWorkspaceBack:hover {
+  border-color: var(--notes-border);
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.readerSyncWorkspaceOpen #btn-toggle-mode,
+.readerSyncWorkspaceOpen #btn-more-menu {
+  display: none;
+}
+
+.gitWorkspace .gitTabPanel {
+  background: var(--notes-bg-document);
+}
+
+.gitWorkspace .gitPanel {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  border-right: 1px solid var(--notes-border);
+  border-left: 1px solid var(--notes-border);
+  background: var(--notes-bg-document);
+}
+
+@media (max-width: 820px) {
+  .gitWorkspace .gitPanel {
+    border-right: 0;
+    border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gitQuickPopover,
+  .gitWorkspace {
+    animation: none;
+  }
 }
 
 .articleTocList {
@@ -1998,7 +2363,7 @@ input, textarea { font-family: inherit; }
   border-radius: 0 var(--notes-radius-item) var(--notes-radius-item) 0;
 }
 
-/* ── Git Tab Panel ──────────────────────────────── */
+/* ── Git Panel (inside center workspace) ───────── */
 .gitTabPanel {
   flex: 1;
   min-height: 0;

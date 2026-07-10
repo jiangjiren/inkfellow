@@ -9,7 +9,6 @@ const SIDEBAR_VISIBLE_KEY = "inkfellow-sidebar-visible-v1";
 const PANEL_VISIBLE_KEY = "inkfellow-panel-visible-v1";
 const LAST_FILE_KEY = "inkfellow-last-file-v1";
 const EXPANDED_KEY = "inkfellow-expanded-v1";
-const PANEL_TAB_KEY = "inkfellow-panel-tab-v1";
 const EDIT_MODE_KEY = "inkfellow-edit-mode-v1";
 const IMAGE_ZOOM_MIN = 0.2;
 const IMAGE_ZOOM_MAX = 8;
@@ -28,7 +27,9 @@ const state = {
   navHistory: [],
   navIndex: -1,
   expanded: new Set([""]),
-  activeTab: "agent",
+  outlineOpen: false,
+  gitQuickOpen: false,
+  gitWorkspaceOpen: false,
   searchTimer: null,
   searchRequestId: 0,
   savePromise: null,
@@ -173,7 +174,7 @@ function showConfirm(message) {
 
     msgEl.textContent = message;
     inputEl.hidden = true;
-    confirmBtn.textContent = "Delete";
+    confirmBtn.textContent = "删除";
     confirmBtn.style.background = "#cc2d24";
     overlay.hidden = false;
     confirmBtn.focus();
@@ -181,7 +182,7 @@ function showConfirm(message) {
     function finish(value) {
       overlay.hidden = true;
       inputEl.hidden = false;
-      confirmBtn.textContent = "OK";
+      confirmBtn.textContent = "确定";
       confirmBtn.style.background = "";
       confirmBtn.removeEventListener("click", onConfirm);
       cancelBtn.removeEventListener("click", onCancel);
@@ -836,6 +837,7 @@ function renderToc() {
   const list = qs("toc-list");
   const empty = qs("toc-empty");
   const count = qs("toc-count");
+  if (!list || !empty || !count) return;
   list.replaceChildren();
 
   if (!state.activeNote || !/^(md|html?)$/i.test(state.activeNote.extension)) {
@@ -951,7 +953,7 @@ function renderDocArea() {
     cm.on("change", () => {
       setDirty(true);
       scheduleAutosave();
-      if (state.activeTab === "toc") renderToc();
+      if (state.outlineOpen) renderToc();
     });
     cm.on("blur", () => { void flushPendingSave(); });
     cm.on("cursorActivity", sendSelectionContext);
@@ -1136,8 +1138,8 @@ function renderDashboard() {
             <circle cx="11" cy="11" r="8" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
-          <input id="dashboard-search-input" class="dashboardSearchInput" placeholder="有什么想写或想聊的..." autocomplete="off" spellcheck="false" />
-          <button type="submit" class="dashboardSearchShortcut" title="Ask Fellow">Fellow</button>
+          <input id="dashboard-search-input" class="dashboardSearchInput" placeholder="问 Fellow 或写点什么…" autocomplete="off" spellcheck="false" />
+          <button type="submit" class="dashboardSearchShortcut" title="问 Fellow">Fellow</button>
         </form>
       </div>
       <div class="dashboardSection">
@@ -1153,7 +1155,8 @@ function renderDashboard() {
         </div>
         ${files.length ? `<div class="dashboardRecentGrid">${cards}</div>` : `
           <div class="dashboardEmptyPanel">
-            <p>左侧选择文件夹，或点击“记录灵感”创建第一篇笔记。</p>
+            <p>还没有笔记。点击下方按钮，或左上角「+」开始记录。</p>
+            <button type="button" id="dashboard-empty-create" class="emptyStateCta">新建笔记</button>
           </div>
         `}
       </div>
@@ -1162,12 +1165,12 @@ function renderDashboard() {
 
 function wireDashboard() {
   qs("dashboard-capture")?.addEventListener("click", createNote);
+  qs("dashboard-empty-create")?.addEventListener("click", createNote);
   qs("dashboard-search-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const input = qs("dashboard-search-input");
     const text = input?.value.trim();
-    if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
-    switchTab("agent");
+    openFellowPanel();
     setTimeout(() => {
       const accepted = postAgentMessage(text ? { type: "note-ask", text } : { type: "note-ask" });
       if (accepted && input) input.value = "";
@@ -1240,6 +1243,14 @@ async function resolveMarkdownImages(notePath) {
 function renderNoteMeta() {
   const titleEl = qs("note-title");
   const metaEl = qs("note-meta");
+
+  if (state.gitWorkspaceOpen) {
+    titleEl.textContent = "同步";
+    metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
+    qs("btn-more-menu").disabled = true;
+    toggleMoreMenu(false);
+    return;
+  }
 
   if (!state.activeNote) {
     titleEl.textContent = "inkfellow Desktop";
@@ -1637,6 +1648,7 @@ async function navForward() {
 async function loadNote(path, opts = {}) {
   // 自动保存模式：切换前把未保存内容落盘
   if (!(await flushPendingSave())) return;
+  closeGitWorkspace(false);
 
   // Push to navigation history (skip when going back/forward)
   if (!opts.skipHistory) navPush(path);
@@ -1644,7 +1656,7 @@ async function loadNote(path, opts = {}) {
 
   const docArea = qs("doc-area");
   docArea.className = "docArea";
-  docArea.innerHTML = `<div class="loadingDoc"><div class="loadingSpinner"></div><span>Loading…</span></div>`;
+  docArea.innerHTML = `<div class="loadingDoc"><div class="loadingSpinner"></div><span>加载中…</span></div>`;
 
   try {
     const command = isImageExt(extOf(path)) ? "read_asset" : "read_note";
@@ -1656,7 +1668,7 @@ async function loadNote(path, opts = {}) {
     renderNoteMeta();
     setDirty(false);
     renderDocArea();
-    if (state.activeTab === "toc") renderToc();
+    if (state.outlineOpen) renderToc();
     sendNoteContext();
     try { localStorage.setItem(LAST_FILE_KEY, path); } catch {}
   } catch (err) {
@@ -1700,7 +1712,7 @@ async function saveNote() {
         }
       }
       await loadTree(false);
-      if (state.activeTab === "toc") renderToc();
+      if (state.outlineOpen) renderToc();
       return true;
     } catch (err) {
       showToast(String(err));
@@ -1721,12 +1733,14 @@ async function saveNote() {
 
 async function goHome() {
   if (!(await flushPendingSave())) return;
+  closeOutline();
+  closeGitWorkspace(false);
   clearActiveNote();
 }
 
 async function createNote() {
   const folder = state.activePath ? parentFolder(state.activePath) : "";
-  const title = await showDialog("New note title", "Untitled");
+  const title = await showDialog("新建笔记", "无标题");
   if (!title) return;
   try {
     const note = await invoke("create_note", { folder, title });
@@ -2162,7 +2176,7 @@ function scheduleTreeRefresh(changedPaths = []) {
             state.activeNote = note;
             renderDocArea();
             applyDocScrollRatio(scrollRatio); // 同步恢复，避免浏览器画出滚动=0的中间帧
-            if (state.activeTab === "toc") renderToc();
+            if (state.outlineOpen) renderToc();
             flashChangedPreviewBlocks(oldBlockTexts);
           }
         } catch {}
@@ -2260,7 +2274,7 @@ async function gitInit() {
   renderGitPanel();
   try {
     const result = await invoke("git_init");
-    showGitFeedback(result.stdout || "Initialized.");
+    showGitFeedback(result.stdout || "已初始化。");
     await refreshGitStatus();
   } catch (err) {
     showGitFeedback(String(err), true);
@@ -2271,25 +2285,100 @@ async function gitInit() {
 }
 
 function renderGitPanel() {
+  renderGitQuickPopover();
   const panel = qs("git-panel");
-  if (!panel || state.activeTab !== "git") return;
+  if (!panel || !state.gitWorkspaceOpen) return;
 
   const st = state.gitStatus;
   const files = st?.files || [];
-  const initialized = st?.initialized !== false;
-  const synced = initialized && st && files.length === 0 && st.ahead === 0 && st.behind === 0;
+  const initialized = st ? st.initialized !== false : null;
+  const synced = initialized === true && files.length === 0 && st.ahead === 0 && st.behind === 0;
 
   panel.innerHTML = `
     <div id="git-app" class="gitPanel">
       <div class="gitStack ${state.gitPane !== "main" ? "gitStackShowingDetail" : ""}">
-        <section class="gitStackPane">${renderGitMainPane(st, files, initialized, synced)}</section>
-        <section class="gitStackPane gitDetailPane" aria-hidden="${state.gitPane === "main" ? "true" : "false"}">
+        <section class="gitStackPane" aria-hidden="${state.gitPane !== "main" ? "true" : "false"}" ${state.gitPane !== "main" ? "inert" : ""}>${renderGitMainPane(st, files, initialized, synced)}</section>
+        <section class="gitStackPane gitDetailPane" aria-hidden="${state.gitPane === "main" ? "true" : "false"}" ${state.gitPane === "main" ? "inert" : ""}>
           ${state.gitPane === "diff" ? renderGitDiffPane() : ""}
           ${state.gitPane === "history" ? renderGitHistoryPane() : ""}
         </section>
       </div>
     </div>`;
   wireGitPanel();
+}
+
+function renderGitQuickPopover() {
+  const content = qs("git-quick-content");
+  if (!content || !state.gitQuickOpen) return;
+
+  const st = state.gitStatus;
+  const files = st?.files || [];
+  const initialized = st ? st.initialized !== false : null;
+  const synced = initialized === true && files.length === 0 && st.ahead === 0 && st.behind === 0;
+  const statusLabel = !st
+    ? "正在检查..."
+    : !initialized
+      ? "尚未初始化同步"
+      : synced
+        ? "已同步到云端"
+        : files.length
+          ? `${files.length} 篇待同步`
+          : st.behind > 0
+            ? `远端有 ${st.behind} 个新版本`
+            : `${st.ahead || 0} 篇待同步`;
+  const detailLabel = st?.lastSync
+    ? `上次同步 ${formatLastSync(st.lastSync)}`
+    : st?.branch || "";
+  const previewFiles = files.slice(0, 3);
+
+  content.innerHTML = `
+    <div class="gitQuickStatus">
+      <span class="gitQuickStatusDot ${synced ? "gitQuickStatusDotSynced" : ""} ${state.gitBusy ? "gitQuickStatusDotBusy" : ""}"></span>
+      <div class="gitQuickStatusText">
+        <strong>${escapeHtml(statusLabel)}</strong>
+        ${detailLabel ? `<span>${escapeHtml(detailLabel)}</span>` : ""}
+      </div>
+      <button id="btn-git-quick-refresh" class="gitQuickIconButton" type="button" title="重新检查" aria-label="重新检查" ${state.gitBusy ? "disabled" : ""}>↻</button>
+    </div>
+    ${previewFiles.length ? `
+      <div class="gitQuickChanges">
+        <div class="gitQuickSectionLabel">最近更改</div>
+        <ul>
+          ${previewFiles.map((file) => `
+            <li>
+              <button type="button" ${file.kind === "folder" ? "disabled" : `data-quick-diff="${escapeHtml(file.path)}"`}>
+                <span class="gitStateDot ${gitStateDotClass(file.state)}"></span>
+                <span class="gitQuickFileText">
+                  <strong>${escapeHtml(stripExt(file.name))}</strong>
+                  <span>${escapeHtml(gitStateLabel(file.state))}</span>
+                </span>
+              </button>
+            </li>`).join("")}
+        </ul>
+        ${files.length > previewFiles.length ? `<div class="gitQuickMoreCount">另有 ${files.length - previewFiles.length} 项更改</div>` : ""}
+      </div>` : ""}
+    ${state.gitFeedback ? `<div class="gitQuickFeedback ${state.gitFeedbackError ? "gitQuickFeedbackError" : ""}">${escapeHtml(state.gitFeedback)}</div>` : ""}
+    <div class="gitQuickActions">
+      ${initialized === null ? `
+        <button class="gitQuickPrimary" type="button" disabled>正在检查...</button>` : initialized ? `
+        <button id="btn-git-quick-sync" class="gitQuickPrimary" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
+          ${state.gitBusy ? "同步中..." : synced ? "已是最新版本" : "立即同步"}
+        </button>` : `
+        <button id="btn-git-quick-init" class="gitQuickPrimary" type="button" ${state.gitBusy ? "disabled" : ""}>初始化同步</button>`}
+      <button id="btn-git-quick-details" class="gitQuickDetails" type="button">${files.length ? "查看全部更改" : "查看同步详情"}</button>
+    </div>`;
+
+  qs("btn-git-quick-refresh")?.addEventListener("click", () => void refreshGitStatus());
+  qs("btn-git-quick-sync")?.addEventListener("click", () => void gitCommitPush());
+  qs("btn-git-quick-init")?.addEventListener("click", () => void gitInit());
+  qs("btn-git-quick-details")?.addEventListener("click", () => void openGitWorkspace());
+  content.querySelectorAll("[data-quick-diff]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const path = button.getAttribute("data-quick-diff");
+      if (await openGitWorkspace()) await openGitDiff(path);
+    });
+  });
+  requestAnimationFrame(positionGitQuickPopover);
 }
 
 function renderGitMainPane(st, files, initialized, synced) {
@@ -2317,7 +2406,7 @@ function renderGitMainPane(st, files, initialized, synced) {
     <div class="gitBottomBar">
       ${initialized && files.length ? renderGitMessageBar() : ""}
       <div class="gitActions">
-        ${initialized ? `
+        ${initialized === null ? `<button class="gitButton gitButtonPrimary gitButtonFull gitButtonDisabled" type="button" disabled>正在检查...</button>` : initialized ? `
           <button id="btn-git-sync-new" class="gitButton gitButtonPrimary gitButtonFull ${synced ? "gitButtonDisabled" : ""}" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
             ${state.gitBusy ? `<span class="gitSpinner"></span><span>智能同步中...</span>` : synced ? "<span>已同步到最新</span>" : "<span>立即同步到云端</span>"}
           </button>
@@ -2586,35 +2675,22 @@ function discardWarning(fileState, kind) {
   }[fileState] || "确定还原这个文件吗？";
 }
 
-function switchTab(tab) {
-  state.activeTab = tab;
-  localStorage.setItem(PANEL_TAB_KEY, tab);
-
-  document.querySelectorAll(".assistantPanelTab").forEach((btn) => {
-    btn.classList.toggle("assistantPanelTabActive", btn.dataset.tab === tab);
-  });
-
-  const agent = qs("agent-panel");
-  const toc = qs("toc-panel");
-  const git = qs("git-panel");
-
-  agent.classList.toggle("assistantPanelFrameHidden", tab !== "agent");
-  toc.hidden = tab !== "toc";
-  git.hidden = tab !== "git";
-  git.style.display = tab === "git" ? "flex" : "";
-  git.style.flexDirection = tab === "git" ? "column" : "";
-
-  if (tab === "toc") renderToc();
-  if (tab === "git") {
-    renderGitPanel();
-    refreshGitStatus();
+/* ── Fellow panel ────────────────────────────────── */
+function openFellowPanel() {
+  closeOutline(false);
+  closeGitQuickPopover(false);
+  const shell = qs("shell");
+  if (shell.classList.contains("shellPanelHidden")) {
+    shell.classList.remove("shellPanelHidden");
+    qs("btn-toggle-panel").classList.add("fellowPillActive");
+    localStorage.setItem(PANEL_VISIBLE_KEY, "1");
   }
 }
 
-/* ── Sidebar + Panel visibility toggle ──────────── */
 function toggleSidebar() {
   const shell = qs("shell");
   const isHidden = shell.classList.toggle("shellSidebarHidden");
+  if (isHidden) closeGitQuickPopover(false);
   localStorage.setItem(SIDEBAR_VISIBLE_KEY, isHidden ? "0" : "1");
 }
 
@@ -2624,6 +2700,135 @@ function togglePanel() {
   const btn = qs("btn-toggle-panel");
   btn.classList.toggle("fellowPillActive", !isHidden);
   localStorage.setItem(PANEL_VISIBLE_KEY, isHidden ? "0" : "1");
+  if (!isHidden) {
+    closeOutline(false);
+    closeGitQuickPopover(false);
+  }
+}
+
+/* ── Outline popover ─────────────────────────────── */
+function openOutline() {
+  closeGitQuickPopover(false);
+  state.outlineOpen = true;
+  const pop = qs("outline-popover");
+  const trigger = qs("menu-outline");
+  if (pop) pop.hidden = false;
+  trigger?.setAttribute("aria-expanded", "true");
+  renderToc();
+  requestAnimationFrame(() => {
+    if (state.outlineOpen) qs("btn-close-outline")?.focus();
+  });
+}
+
+function closeOutline(restoreFocus = true) {
+  if (!state.outlineOpen) return;
+  state.outlineOpen = false;
+  const pop = qs("outline-popover");
+  const trigger = qs("menu-outline");
+  if (pop) pop.hidden = true;
+  trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) {
+    requestAnimationFrame(() => qs("btn-more-menu")?.focus());
+  }
+}
+
+function toggleOutline() {
+  if (state.outlineOpen) closeOutline();
+  else openOutline();
+}
+
+/* ── Quick sync popover + center workspace ───────── */
+function positionGitQuickPopover() {
+  if (!state.gitQuickOpen) return;
+  const popover = qs("git-quick-popover");
+  const trigger = qs("btn-git-footer");
+  if (!popover || !trigger) return;
+
+  const triggerRect = trigger.getBoundingClientRect();
+  const margin = 10;
+  const width = Math.min(360, window.innerWidth - margin * 2);
+  popover.style.width = `${width}px`;
+  popover.style.maxHeight = `${Math.max(180, window.innerHeight - margin * 2)}px`;
+  const left = clamp(triggerRect.left + 8, margin, window.innerWidth - width - margin);
+  const maxTop = Math.max(margin, window.innerHeight - popover.offsetHeight - margin);
+  const top = clamp(triggerRect.top - popover.offsetHeight - 8, margin, maxTop);
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function openGitQuickPopover() {
+  closeOutline(false);
+  state.gitQuickOpen = true;
+  const popover = qs("git-quick-popover");
+  const trigger = qs("btn-git-footer");
+  if (popover) popover.hidden = false;
+  trigger?.setAttribute("aria-expanded", "true");
+  renderGitPanel();
+  void refreshGitStatus();
+  requestAnimationFrame(() => {
+    if (state.gitQuickOpen) qs("btn-close-git-quick")?.focus();
+  });
+}
+
+function closeGitQuickPopover(restoreFocus = true) {
+  if (!state.gitQuickOpen) return;
+  state.gitQuickOpen = false;
+  const popover = qs("git-quick-popover");
+  const trigger = qs("btn-git-footer");
+  if (popover) popover.hidden = true;
+  trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) {
+    requestAnimationFrame(() => trigger?.focus());
+  }
+}
+
+async function openGitWorkspace() {
+  if (state.gitWorkspaceOpen) {
+    closeGitQuickPopover(false);
+    qs("btn-close-git-workspace")?.focus();
+    return true;
+  }
+  if (!(await flushPendingSave())) return false;
+
+  closeGitQuickPopover(false);
+  closeOutline(false);
+  state.gitWorkspaceOpen = true;
+  state.gitPane = "main";
+  qs("doc-area").hidden = true;
+  qs("git-workspace").hidden = false;
+  qs("reader").classList.add("readerSyncWorkspaceOpen");
+  qs("note-meta").querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
+  qs("note-title").textContent = "同步";
+  qs("btn-more-menu").disabled = true;
+  toggleMoreMenu(false);
+  qs("btn-toggle-mode").hidden = true;
+  renderGitPanel();
+  void refreshGitStatus();
+  requestAnimationFrame(() => qs("btn-close-git-workspace")?.focus());
+  return true;
+}
+
+function closeGitWorkspace(restoreFocus = true) {
+  if (!state.gitWorkspaceOpen) return;
+  state.gitWorkspaceOpen = false;
+  state.gitPane = "main";
+  state.gitSelectedFile = null;
+  state.gitDiff = null;
+  state.gitDiffError = null;
+  state.gitDiscardPath = null;
+  qs("git-workspace").hidden = true;
+  qs("doc-area").hidden = false;
+  qs("reader").classList.remove("readerSyncWorkspaceOpen");
+  renderNoteMeta();
+  updateEditButton();
+  qs("btn-toggle-mode").hidden = !state.activeNote || !/^(md|html?)$/i.test(state.activeNote.extension || "");
+  if (restoreFocus) {
+    requestAnimationFrame(() => {
+      const trigger = qs("btn-git-footer");
+      if (trigger?.getClientRects().length) trigger.focus();
+      else qs("btn-home")?.focus();
+    });
+  }
 }
 
 /* ── Panel resize ────────────────────────────────── */
@@ -2666,7 +2871,7 @@ function initPanelResize() {
     resizer.setPointerCapture(e.pointerId);
     shell.classList.add("shellResizing");
     const startX = e.clientX;
-    const startW = parseInt(getComputedStyle(shell).getPropertyValue("--assistant-panel-width"), 10) || 480;
+    const startW = parseInt(getComputedStyle(shell).getPropertyValue("--assistant-panel-width"), 10) || 400;
 
     function onMove(ev) {
       const w = clamp(startW - (ev.clientX - startX), MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
@@ -2700,16 +2905,19 @@ function restoreLayout() {
   const sv = localStorage.getItem(SIDEBAR_VISIBLE_KEY);
   if (sv === "0") shell.classList.add("shellSidebarHidden");
 
+  // Default closed (two-column). Bump key meaning: only explicit "1" restores open.
+  // Clear legacy "open by default" feel by treating missing/"0" as closed.
   const pv = localStorage.getItem(PANEL_VISIBLE_KEY);
-  if (pv === "0") {
+  if (pv === "1") {
+    shell.classList.remove("shellPanelHidden");
+    qs("btn-toggle-panel").classList.add("fellowPillActive");
+  } else {
     shell.classList.add("shellPanelHidden");
     qs("btn-toggle-panel").classList.remove("fellowPillActive");
-  } else {
-    qs("btn-toggle-panel").classList.add("fellowPillActive");
+    if (pv !== "0") {
+      try { localStorage.setItem(PANEL_VISIBLE_KEY, "0"); } catch {}
+    }
   }
-
-  const tab = localStorage.getItem(PANEL_TAB_KEY) || "agent";
-  switchTab(tab);
 
   const em = localStorage.getItem(EDIT_MODE_KEY);
   state.editMode = em === "1";
@@ -2773,6 +2981,22 @@ function initKeyboard() {
       toggleMoreMenu(false);
       if (!qs("dialog-overlay").hidden) {
         qs("dialog-cancel").click();
+        return;
+      }
+      if (state.gitQuickOpen) {
+        e.preventDefault();
+        closeGitQuickPopover();
+        return;
+      }
+      if (state.outlineOpen) {
+        e.preventDefault();
+        closeOutline();
+        return;
+      }
+      if (state.gitWorkspaceOpen) {
+        e.preventDefault();
+        closeGitWorkspace();
+        return;
       }
       if (state.editMode) {
         void setEditMode(false);
@@ -2789,12 +3013,16 @@ function initKeyboard() {
 /* ── Wire events ─────────────────────────────────── */
 function wireEvents() {
   qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
+  qs("btn-new-note").addEventListener("click", () => { void createNote(); });
+  qs("empty-create-note")?.addEventListener("click", () => { void createNote(); });
   qs("btn-home").addEventListener("click", () => { void goHome(); });
   qs("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
   qs("btn-nav-back").addEventListener("click", navBack);
   qs("btn-nav-forward").addEventListener("click", navForward);
-  qs("btn-toggle-panel").addEventListener("click", togglePanel);
-  qs("btn-close-panel").addEventListener("click", togglePanel);
+  qs("btn-toggle-panel").addEventListener("click", () => {
+    if (qs("shell").classList.contains("shellPanelHidden")) openFellowPanel();
+    else togglePanel();
+  });
   qs("btn-toggle-mode").addEventListener("click", () => void setEditMode(!state.editMode));
 
   qs("doc-area").addEventListener("dblclick", (e) => {
@@ -2809,22 +3037,21 @@ function wireEvents() {
   qs("btn-more-menu").addEventListener("click", () => toggleMoreMenu());
   qs("menu-outline").addEventListener("click", () => {
     toggleMoreMenu(false);
-    if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
-    switchTab("toc");
+    toggleOutline();
   });
   qs("menu-delete").addEventListener("click", () => {
     toggleMoreMenu(false);
     deleteActiveNote();
   });
+  qs("btn-close-outline")?.addEventListener("click", () => closeOutline());
 
   qs("btn-git-footer").addEventListener("click", () => {
-    if (qs("shell").classList.contains("shellPanelHidden")) togglePanel();
-    switchTab("git");
+    if (state.gitQuickOpen) closeGitQuickPopover();
+    else openGitQuickPopover();
   });
-
-  document.querySelectorAll(".assistantPanelTab").forEach((btn) => {
-    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-  });
+  qs("btn-close-git-quick")?.addEventListener("click", () => closeGitQuickPopover());
+  qs("btn-close-git-workspace")?.addEventListener("click", () => closeGitWorkspace());
+  window.addEventListener("resize", positionGitQuickPopover);
 
   window.addEventListener("message", (event) => {
     const frame = qs("agent-frame");
@@ -2833,6 +3060,10 @@ function wireEvents() {
     if (event.data?.type === "agent-not-ready") {
       state.agentReady = false;
       setAgentLoading(true, "Fellow 连接已断开，正在重连...");
+      return;
+    }
+    if (event.data?.type === "agent-collapse-panel") {
+      if (!qs("shell").classList.contains("shellPanelHidden")) togglePanel();
       return;
     }
     if (event.data?.type !== "agent-ready") return;
@@ -2885,10 +3116,29 @@ function wireEvents() {
     if (!moreMenu.hidden && !moreMenu.contains(e.target) && !qs("btn-more-menu").contains(e.target)) {
       toggleMoreMenu(false);
     }
+    const outline = qs("outline-popover");
+    if (
+      state.outlineOpen &&
+      outline &&
+      !outline.contains(e.target) &&
+      !qs("menu-outline")?.contains(e.target) &&
+      !qs("btn-more-menu")?.contains(e.target)
+    ) {
+      closeOutline(false);
+    }
+    const gitQuick = qs("git-quick-popover");
+    if (
+      state.gitQuickOpen &&
+      gitQuick &&
+      !gitQuick.contains(e.target) &&
+      !qs("btn-git-footer")?.contains(e.target)
+    ) {
+      closeGitQuickPopover(false);
+    }
   });
 
   qs("doc-area").addEventListener("scroll", () => {
-    if (state.activeTab === "toc") updateActiveTocLink();
+    if (state.outlineOpen) updateActiveTocLink();
   }, { passive: true });
 
   // 链接拦截：外部 http(s) → 系统浏览器；相对 .md → 应用内导航
@@ -2991,7 +3241,8 @@ async function boot() {
     initPanelResize();
     initKeyboard();
   } catch (initErr) {
-    qs("vault-label").textContent = "Init error: " + String(initErr);
+    qs("vault-label").textContent = "初始化失败";
+    showToast("初始化失败: " + String(initErr));
     return;
   }
 
@@ -3004,7 +3255,7 @@ async function boot() {
     requestAutoPull();
     initAutoSync();
   } catch (err) {
-    qs("vault-label").textContent = "Error: " + String(err);
+    qs("vault-label").textContent = "启动失败";
     showToast("启动失败: " + String(err));
   }
 }

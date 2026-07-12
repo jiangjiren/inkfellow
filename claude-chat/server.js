@@ -27,10 +27,15 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 // How long a query() stream can be silent before we consider it stalled.
 // We use event-interval (not total duration) so long but active tasks (multi-tool,
 // compaction, slow thinking) are never killed — only truly frozen streams are.
+// 工具执行期间（assistant tool_use 之后、tool_result 之前）两个看门狗都会暂停：
+// 工具可能合法地运行数小时，期间 SDK 本来就不产生事件。
 const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
-const MAX_AGENT_RUN_MS = 8 * 60_000; // hard cap even if the stream keeps emitting retries/status
+const MAX_AGENT_RUN_MS = 8 * 60_000; // 单个 API 阶段（不含工具执行）的硬上限，兜底无限 api_retry
 const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
 const USAGE_LIMIT_QUERY_TIMEOUT_MS = 12_000;
+// 客户端断线后，生成中的 run 保留这么久等待重连领回，超时才真正 abort。
+const RUN_GRACE_MS = 90_000;
+const WS_HEARTBEAT_MS = 30_000;
 
 const htmlPath   = join(__dirname, "public/index.html");
 const AUTH_PROFILE_FILE = process.env.CLAUDE_CHAT_AUTH_PROFILE_FILE || join(__dirname, "auth-profile.json");
@@ -1755,8 +1760,10 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         parent_tool_use_id: null,
       };
       const queryAbortController = new AbortController();
+      let wechatToolRunning = false; // 工具执行期间 SDK 静默是正常的，不计入 stall
       const resetWechatStall = () => {
         clearTimeout(wechatStallTimer);
+        if (wechatToolRunning) return;
         wechatStallTimer = setTimeout(() => {
           isWechatStall = true;
           queryAbortController.abort();
@@ -1785,6 +1792,12 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       });
       resetWechatStall();
       for await (const ev of generator) {
+        if (ev.type === "assistant") {
+          const blocks = ev.message?.content || ev.content || [];
+          if (Array.isArray(blocks) && blocks.some(b => b?.type === "tool_use")) wechatToolRunning = true;
+        } else if (ev.type === "user") {
+          wechatToolRunning = false; // tool_result 回来，恢复计时
+        }
         resetWechatStall();
         if (ev.type === "assistant") {
           const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
@@ -2302,6 +2315,18 @@ const http = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: http });
 
+// 心跳：探测半死连接。移动端 NAT/基站切换常常静默掐断 TCP，
+// 服务端永远等不到 close 事件，run 也就一直挂着。两个周期没有 pong 即 terminate，
+// terminate 会触发 close → run 进入宽限期而不是直接丢失。
+const wsHeartbeat = setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.isAlive === false) { client.terminate(); continue; }
+    client.isAlive = false;
+    client.ping();
+  }
+}, WS_HEARTBEAT_MS);
+wss.on("close", () => clearInterval(wsHeartbeat));
+
 function normalizeAskUserQuestions(input) {
   const rawQuestions = Array.isArray(input?.questions) ? input.questions : [];
   return rawQuestions.slice(0, 4).map((raw, index) => {
@@ -2331,32 +2356,95 @@ function makeAbortError(message) {
   return err;
 }
 
+// ── 断线宽限期 ─────────────────────────────────────────────
+// 锁屏/切网/网络抖动导致 WS 断开时，不立即中止生成：把 run 挂为孤儿，
+// 输出缓存在 buffer 里，客户端在宽限期内带 runId 重连即可无缝领回
+//（包括断线期间已完成的完整回答）。宽限期内没人认领才真正 abort。
+const orphanRuns = new Map(); // runId -> run
+
+function createRun(runId, ws, ac) {
+  return {
+    id: runId,
+    ac,
+    ws,
+    buffer: [],
+    graceTimer: null,
+    finished: false,
+    pendingAskUserQuestion: null,
+    send(obj) {
+      // 所有事件带上 runId：客户端据此丢弃被新请求取代的旧 run 的迟到事件
+      const tagged = { ...obj, runId: this.id };
+      if (this.ws && this.ws.readyState === this.ws.OPEN) this.ws.send(JSON.stringify(tagged));
+      else this.buffer.push(tagged);
+    },
+    detach() {
+      this.ws = null;
+      orphanRuns.set(this.id, this);
+      clearTimeout(this.graceTimer);
+      this.graceTimer = setTimeout(() => {
+        orphanRuns.delete(this.id);
+        if (this.pendingAskUserQuestion) {
+          const pending = this.pendingAskUserQuestion;
+          this.pendingAskUserQuestion = null;
+          pending.cleanup?.();
+          pending.reject(makeAbortError("连接已断开"));
+        }
+        if (!this.finished) {
+          console.warn(`[Web Agent] Run ${this.id} 断线超过 ${RUN_GRACE_MS / 1000}s 未重连，中止生成。`);
+          this.ac.abort();
+        }
+      }, RUN_GRACE_MS);
+    },
+    attach(newWs) {
+      clearTimeout(this.graceTimer);
+      this.graceTimer = null;
+      orphanRuns.delete(this.id);
+      this.ws = newWs;
+      for (const obj of this.buffer.splice(0)) this.send(obj);
+      // 断线期间未回答的澄清问题重新推给新页面
+      if (this.pendingAskUserQuestion) {
+        const p = this.pendingAskUserQuestion;
+        this.send({ type: "ask_user_question", requestId: p.requestId, toolUseID: p.toolUseID ?? null, questions: p.questions });
+      }
+    },
+    finish() {
+      this.finished = true;
+      if (this.ws) {
+        clearTimeout(this.graceTimer);
+        orphanRuns.delete(this.id);
+      }
+      // 已断线的 run：保留 buffer 到宽限期结束，等客户端重连领取完整结果
+    },
+  };
+}
+
 wss.on("connection", (ws) => {
-  let abortCtrl = null;
-  let pendingAskUserQuestion = null;
+  ws.isAlive = true;
+  ws.on("pong", () => { ws.isAlive = true; });
+  let activeRun = null;
 
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
-  const clearPendingAskUserQuestion = (reason = "cancelled") => {
-    if (!pendingAskUserQuestion) return;
-    const pending = pendingAskUserQuestion;
-    pendingAskUserQuestion = null;
+  const clearPendingAskUserQuestion = (run, reason = "cancelled") => {
+    if (!run?.pendingAskUserQuestion) return;
+    const pending = run.pendingAskUserQuestion;
+    run.pendingAskUserQuestion = null;
     pending.cleanup?.();
     pending.reject(makeAbortError(reason));
-    send({ type: "ask_user_question_cancelled", requestId: pending.requestId, reason });
+    run.send({ type: "ask_user_question_cancelled", requestId: pending.requestId, reason });
   };
 
-  const waitForAskUserQuestionAnswer = (input, context = {}) => {
+  const waitForAskUserQuestionAnswer = (run, input, context = {}) => {
     const questions = normalizeAskUserQuestions(input);
     if (questions.length === 0) {
       return Promise.reject(new Error("AskUserQuestion 请求格式无效：缺少 questions/options"));
     }
-    clearPendingAskUserQuestion("新的澄清问题已替换上一条问题");
+    clearPendingAskUserQuestion(run, "新的澄清问题已替换上一条问题");
 
     const requestId = crypto.randomUUID();
-    send({
+    run.send({
       type: "ask_user_question",
       requestId,
       toolUseID: context.toolUseID ?? null,
@@ -2365,10 +2453,10 @@ wss.on("connection", (ws) => {
 
     return new Promise((resolve, reject) => {
       const onAbort = () => {
-        if (pendingAskUserQuestion?.requestId !== requestId) return;
-        pendingAskUserQuestion = null;
+        if (run.pendingAskUserQuestion?.requestId !== requestId) return;
+        run.pendingAskUserQuestion = null;
         reject(makeAbortError("用户输入已取消"));
-        send({ type: "ask_user_question_cancelled", requestId, reason: "aborted" });
+        run.send({ type: "ask_user_question_cancelled", requestId, reason: "aborted" });
       };
       const signal = context.signal;
       if (signal?.aborted) {
@@ -2376,14 +2464,15 @@ wss.on("connection", (ws) => {
         return;
       }
       signal?.addEventListener("abort", onAbort, { once: true });
-      pendingAskUserQuestion = {
+      run.pendingAskUserQuestion = {
         requestId,
         questions,
+        toolUseID: context.toolUseID ?? null,
         cleanup: () => signal?.removeEventListener("abort", onAbort),
         reject,
         resolve: (payload = {}) => {
-          if (pendingAskUserQuestion?.requestId !== requestId) return;
-          pendingAskUserQuestion = null;
+          if (run.pendingAskUserQuestion?.requestId !== requestId) return;
+          run.pendingAskUserQuestion = null;
           signal?.removeEventListener("abort", onAbort);
           const rawAnswers = payload && typeof payload.answers === "object" && payload.answers !== null
             ? payload.answers
@@ -2415,6 +2504,27 @@ wss.on("connection", (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
+    // 应用层心跳：浏览器无法主动发 WS ping 帧，用消息模拟，
+    // 让客户端能主动探测出"半死连接"（readyState 仍是 OPEN 但实际已断）。
+    if (msg.type === "ping") {
+      send({ type: "pong" });
+      return;
+    }
+
+    // 断线重连后领回生成中的 run：补发断线期间缓存的全部事件
+    if (msg.resumeRun != null) {
+      const run = orphanRuns.get(String(msg.resumeRun));
+      if (run) {
+        if (activeRun && activeRun !== run && !activeRun.finished) activeRun.ac.abort();
+        activeRun = run;
+        run.attach(ws);
+        console.log(`[Web Agent] Run ${run.id} 已被重连客户端领回（补发 ${run.finished ? "已完成" : "进行中"}）。`);
+      } else {
+        send({ type: "run_not_found", runId: String(msg.resumeRun) });
+      }
+      return;
+    }
+
     if (msg.type === "skills") {
       const profileData = readProfiles();
       if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
@@ -2426,23 +2536,24 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "ask_user_question_response") {
-      if (!pendingAskUserQuestion || msg.requestId !== pendingAskUserQuestion.requestId) {
+      if (!activeRun?.pendingAskUserQuestion || msg.requestId !== activeRun.pendingAskUserQuestion.requestId) {
         send({ type: "ask_user_question_error", requestId: msg.requestId ?? null, text: "这个问题已过期，请重新发起请求。" });
         return;
       }
-      pendingAskUserQuestion.resolve(msg);
+      activeRun.pendingAskUserQuestion.resolve(msg);
       return;
     }
 
     if (msg.type === "ask_user_question_cancel") {
-      clearPendingAskUserQuestion("用户取消了澄清问题");
+      clearPendingAskUserQuestion(activeRun, "用户取消了澄清问题");
       return;
     }
 
     if (msg.reset) {
-      clearPendingAskUserQuestion("会话已重置");
+      clearPendingAskUserQuestion(activeRun, "会话已重置");
       clearAllSessions();
-      if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+      if (activeRun && !activeRun.finished) activeRun.ac.abort();
+      activeRun = null;
       return;
     }
 
@@ -2455,15 +2566,16 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.stop) {
-      clearPendingAskUserQuestion("用户停止了生成");
-      if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+      clearPendingAskUserQuestion(activeRun, "用户停止了生成");
+      if (activeRun && !activeRun.finished) { activeRun.ac.abort(); activeRun = null; }
       else send({ type: "stopped" });
       return;
     }
 
     // Cancel any in-flight query before starting a new one
-    clearPendingAskUserQuestion("新的请求已开始");
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+    clearPendingAskUserQuestion(activeRun, "新的请求已开始");
+    if (activeRun && !activeRun.finished) activeRun.ac.abort();
+    activeRun = null;
 
     const schedulerRequest = hasSchedulerIntent(msg.prompt);
 
@@ -2485,7 +2597,10 @@ wss.on("connection", (ws) => {
     };
 
     const ac = new AbortController();
-    abortCtrl = ac;
+    // runId 由客户端生成并随消息带上，断线重连时凭它领回本次生成
+    const runId = typeof msg.runId === "string" && msg.runId ? msg.runId.slice(0, 64) : crypto.randomUUID();
+    const run = createRun(runId, ws, ac);
+    activeRun = run;
     const permissionMode = PERMISSION_MODES.has(msg.permissionMode)
       ? msg.permissionMode
       : DEFAULT_PERMISSION_MODE;
@@ -2500,19 +2615,19 @@ wss.on("connection", (ws) => {
     if (activeProfile && activeProfile.provider !== "claude" && activeProfile.provider !== "codex" && !activeProfile.apiKey) {
       send({ type: "error", text: `${activeProfile.name} 的 API Key 还没有配置，请先在账号设置里保存。` });
       send({ type: "done" });
-      abortCtrl = null;
+      run.finish(); activeRun = null;
       return;
     }
     if (activeProfile?.provider === "codex" && !isCodexAuthAvailable()) {
       send({ type: "error", text: "Codex 还没有登录，请先打开 Codex 客户端或运行 codex login 完成 ChatGPT 账号登录。" });
       send({ type: "done" });
-      abortCtrl = null;
+      run.finish(); activeRun = null;
       return;
     }
     if (activeProfile?.provider === "codex" && schedulerRequest) {
       send({ type: "error", text: "定时任务目前需要 Claude 会员通道的 scheduler 工具。请切换到 Claude 会员后再创建、查看或修改提醒任务。" });
       send({ type: "done" });
-      abortCtrl = null;
+      run.finish(); activeRun = null;
       return;
     }
 
@@ -2547,20 +2662,30 @@ wss.on("connection", (ws) => {
     // ── Codex SDK 路径 ────────────────────────────────────────
     if (activeProfile?.provider === "codex") {
       (async () => {
+        const send = (obj) => run.send(obj); // 断线时进 buffer，重连后补发
         let stallTimer = null;
+        let hardTimer = null;
         let isTimeoutAbort = false;
+        let toolRunning = false; // 命令/工具执行期间无事件是正常的，可能持续数小时
         const tempImagePaths = [];
         const resetStall = () => {
           clearTimeout(stallTimer);
+          if (toolRunning) return;
           stallTimer = setTimeout(() => {
             isTimeoutAbort = true;
             ac.abort();
           }, STREAM_STALL_MS);
         };
-        const hardTimer = setTimeout(() => {
-          isTimeoutAbort = true;
-          ac.abort();
-        }, MAX_AGENT_RUN_MS);
+        const resetHardTimer = () => {
+          clearTimeout(hardTimer);
+          if (toolRunning) return;
+          hardTimer = setTimeout(() => {
+            isTimeoutAbort = true;
+            ac.abort();
+          }, MAX_AGENT_RUN_MS);
+        };
+        const CODEX_TOOL_ITEMS = new Set(["command_execution", "mcp_tool_call", "web_search", "file_change"]);
+        resetHardTimer();
         try {
           const codex = new Codex();
           const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
@@ -2599,6 +2724,14 @@ wss.on("connection", (ws) => {
           const { events } = await thread.runStreamed(input, { signal: ac.signal });
           let codexResultSent = false;
           for await (const ev of events) {
+            if (ev.type === "item.started" && CODEX_TOOL_ITEMS.has(ev.item?.type)) {
+              toolRunning = true;
+              clearTimeout(stallTimer);
+              clearTimeout(hardTimer);
+            } else if (ev.type === "item.completed" && CODEX_TOOL_ITEMS.has(ev.item?.type)) {
+              toolRunning = false;
+              resetHardTimer();
+            }
             resetStall();
             if (ev.type === "thread.started") {
               saveCodexThread(ev.thread_id);
@@ -2636,27 +2769,48 @@ wss.on("connection", (ws) => {
           for (const tempPath of tempImagePaths) {
             try { unlinkSync(tempPath); } catch { }
           }
-          if (abortCtrl === ac) abortCtrl = null;
+          run.finish();
+          if (activeRun === run) activeRun = null;
         }
       })();
       return;
     }
 
     (async () => {
+      const send = (obj) => run.send(obj); // 断线时进 buffer，重连后补发
       let stallTimer = null;
       let hardTimer = null;
       let isStallAbort = false;
+      let isHardAbort = false;
       let waitingForUserInput = false;
+      let toolRunning = false; // 工具执行期间 SDK 无事件是正常的，可能持续数小时
       // Stall watchdog: resets on each SDK event. Catches truly frozen streams.
       const resetStall = () => {
-        if (waitingForUserInput) return;
         clearTimeout(stallTimer);
+        if (waitingForUserInput || toolRunning) return;
         stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
       };
       const resetHardTimer = () => {
-        if (waitingForUserInput) return;
         clearTimeout(hardTimer);
-        hardTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
+        if (waitingForUserInput || toolRunning) return;
+        hardTimer = setTimeout(() => { isHardAbort = true; ac.abort(); }, MAX_AGENT_RUN_MS);
+      };
+      // 工具开始执行（assistant 消息带 tool_use）→ 两个看门狗全部暂停；
+      // tool_result 回来（user 消息）→ 重新计时。硬上限因此只约束 API 阶段
+      //（无限 api_retry 兜底），不会误杀跑几十个小时的长任务。
+      const updateToolState = (ev) => {
+        if (ev.type === "assistant") {
+          const blocks = ev.message?.content;
+          if (Array.isArray(blocks) && blocks.some(b => b?.type === "tool_use")) {
+            toolRunning = true;
+            clearTimeout(stallTimer);
+            clearTimeout(hardTimer);
+          }
+        } else if (ev.type === "user" && toolRunning) {
+          toolRunning = false;
+          resetStall();
+          resetHardTimer();
+        }
       };
       const pauseForUserInput = () => {
         waitingForUserInput = true;
@@ -2677,7 +2831,7 @@ wss.on("connection", (ws) => {
       const collectAskUserQuestionInput = async (input, context = {}) => {
         pauseForUserInput();
         try {
-          const answer = await waitForAskUserQuestionAnswer(input, context);
+          const answer = await waitForAskUserQuestionAnswer(run, input, context);
           const updatedInput = {
             ...input,
             questions: answer.questions,
@@ -2758,6 +2912,7 @@ wss.on("connection", (ws) => {
           prompt: (async function* () { yield promptMsg; })(),
           options: queryOptions,
         })) {
+          updateToolState(ev);
           // api_retry means the SDK is in a backoff loop — don't reset the stall
           // timer here or it will keep resetting indefinitely while the WebSocket
           // sits idle and the browser receives nothing. Real progress resets it.
@@ -2830,7 +2985,10 @@ wss.on("connection", (ws) => {
       } catch (err) {
         if (err?.name === "AbortError") {
           if (isStallAbort) {
-            send({ type: "error", text: "AI 响应超时（API 重试超出上限），请稍后重新发送消息。" });
+            send({ type: "error", text: "AI 长时间无响应（3 分钟内无任何进展），已中断，请重新发送消息。" });
+            send({ type: "done" });
+          } else if (isHardAbort) {
+            send({ type: "error", text: "本次请求在 API 阶段耗时过长（可能在反复重试），已中断，请稍后重新发送消息。" });
             send({ type: "done" });
           } else {
             send({ type: "stopped" });
@@ -2842,15 +3000,19 @@ wss.on("connection", (ws) => {
       } finally {
         clearTimeout(stallTimer);
         clearTimeout(hardTimer);
-        clearPendingAskUserQuestion("请求已结束");
-        if (abortCtrl === ac) abortCtrl = null;
+        clearPendingAskUserQuestion(run, "请求已结束");
+        run.finish();
+        if (activeRun === run) activeRun = null;
       }
     })();
   });
 
   ws.on("close", () => {
-    clearPendingAskUserQuestion("连接已关闭");
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+    if (activeRun && !activeRun.finished) {
+      // 断线不立即中止生成：进入宽限期，等客户端带 runId 重连领回
+      activeRun.detach();
+    }
+    activeRun = null;
   });
 });
 

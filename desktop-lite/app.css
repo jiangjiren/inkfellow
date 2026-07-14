@@ -1720,6 +1720,21 @@ input, textarea { font-family: inherit; }
   font-size: 0.9em;
 }
 
+.prose .tableWrap {
+  width: 100%;
+  max-width: 100%;
+  margin: 1em 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-radius: var(--notes-radius-item);
+}
+
+.prose .tableWrap table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+
 .prose th, .prose td {
   padding: 8px 14px;
   border: 1px solid var(--notes-border-strong);

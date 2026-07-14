@@ -336,29 +336,62 @@ function isWikiMediaTarget(t) {
   return WIKI_MEDIA_EXT_RE.test(t.trim());
 }
 
-/** Transform [[...]] syntax into markdown links before marked.parse(). */
-function preprocessWikiLinks(text) {
-  return text.replace(/(!?)\[\[([^\]]+)\]\]/g, (match, embed, inner) => {
-    // Parse [[target#heading|alias]]
-    const pipIdx = inner.indexOf("|");
-    let core = pipIdx !== -1 ? inner.slice(0, pipIdx) : inner;
-    const alias = pipIdx !== -1 ? inner.slice(pipIdx + 1).trim() : "";
-    const hashIdx = core.indexOf("#");
-    const target = (hashIdx !== -1 ? core.slice(0, hashIdx) : core).trim();
-    const heading = hashIdx !== -1 ? core.slice(hashIdx + 1).trim() : "";
+function splitWikiTarget(inner) {
+  const pipIdx = inner.indexOf("|");
+  const core = pipIdx !== -1 ? inner.slice(0, pipIdx) : inner;
+  const alias = pipIdx !== -1 ? inner.slice(pipIdx + 1).trim() : "";
+  const hashIdx = core.indexOf("#");
+  return {
+    target: (hashIdx !== -1 ? core.slice(0, hashIdx) : core).trim(),
+    heading: hashIdx !== -1 ? core.slice(hashIdx + 1).trim() : "",
+    alias,
+  };
+}
 
-    if (embed === "!" && isWikiMediaTarget(target)) {
-      // ![[image.ext]] → standard markdown image (resolved by resolveMarkdownImages)
-      const alt = alias || target;
-      return `![${alt}](${target})`;
+function encodeWikiMediaTarget(value) {
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) {
+    try { return new URL(value).href; } catch { return value; }
+  }
+
+  return value.split("/").map((segment) => {
+    let decoded = segment;
+    try { decoded = decodeURIComponent(segment); } catch {}
+    return encodeURIComponent(decoded).replace(/[!'()*]/g, (char) =>
+      `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  }).join("/");
+}
+
+/** Parse [[...]] as an inline extension so fenced and inline code remain literal. */
+const wikiSyntaxExtension = {
+  name: "wikiSyntax",
+  level: "inline",
+  start(src) {
+    return src.search(/!?\[\[/);
+  },
+  tokenizer(src) {
+    const match = /^(!?)\[\[([^\]\n]+)\]\]/.exec(src);
+    if (!match) return undefined;
+    return { type: "wikiSyntax", raw: match[0], embed: match[1] === "!", inner: match[2] };
+  },
+  renderer(token) {
+    const { target, heading, alias } = splitWikiTarget(token.inner);
+    if (!target) return escapeHtml(token.raw);
+
+    if (token.embed && isWikiMediaTarget(target)) {
+      const src = encodeWikiMediaTarget(target);
+      return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alias || target)}">`;
     }
 
-    // Note link or note embed
-    const display = alias || (heading ? `${target} › ${heading}` : target) || match;
+    const display = alias || (heading ? `${target} › ${heading}` : target);
     let href = "inkwell-wiki:" + encodeURIComponent(target);
     if (heading) href += encodeURIComponent("#" + heading);
-    return `[${display}](${href})`;
-  });
+    return `<a href="${href}">${escapeHtml(display || token.raw)}</a>`;
+  },
+};
+
+if (typeof marked !== "undefined" && typeof marked.use === "function") {
+  marked.use({ extensions: [wikiSyntaxExtension] });
 }
 
 /** Build a lowercase name/path → vault-relative path index from the current tree. */
@@ -384,8 +417,10 @@ function wireWikiLinks(noteIndex) {
     const pctHash = raw.indexOf("%23");
     const targetEnc = pctHash !== -1 ? raw.slice(0, pctHash) : raw;
     const headingEnc = pctHash !== -1 ? raw.slice(pctHash + 3) : "";
-    const target = decodeURIComponent(targetEnc);
-    const heading = headingEnc ? decodeURIComponent(headingEnc) : "";
+    let target = targetEnc;
+    let heading = headingEnc;
+    try { target = decodeURIComponent(targetEnc); } catch {}
+    try { heading = headingEnc ? decodeURIComponent(headingEnc) : ""; } catch {}
     const key = target.toLowerCase().replace(/\.md$/i, "");
     const resolvedPath = noteIndex.get(key);
 
@@ -546,10 +581,27 @@ function injectSourceLineAttrs(html, tokens) {
   return template.innerHTML;
 }
 
+const MARKDOWN_URI_ALLOWLIST = /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|inkwell-wiki):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+
+function sanitizeMarkdownHtml(html) {
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "base", "meta", "link"],
+    FORBID_ATTR: ["style"],
+    ALLOWED_URI_REGEXP: MARKDOWN_URI_ALLOWLIST,
+    ALLOW_DATA_ATTR: false,
+    SANITIZE_NAMED_PROPS: true,
+  });
+}
+
 function renderMarkdownContent(md, options = {}) {
-  if (typeof marked === "undefined") return `<pre>${escapeHtml(md)}</pre>`;
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+    return `<pre>${escapeHtml(md)}</pre>`;
+  }
   const lineOffset = Number.isFinite(options.lineOffset) ? options.lineOffset : 0;
-  const tokens = marked.lexer(md, { breaks: false, gfm: true });
+  // Notes are authored line-by-line in the editor, so preserve single newlines in
+  // the preview instead of collapsing GFM soft breaks into spaces.
+  const tokens = marked.lexer(md, { breaks: true, gfm: true });
   let lineNum = 0;
   for (const tok of tokens) {
     const raw = tok.raw || "";
@@ -558,8 +610,8 @@ function renderMarkdownContent(md, options = {}) {
     tok._el = lineOffset + lineNum + (visibleRaw.match(/\n/g) || []).length;
     lineNum += (raw.match(/\n/g) || []).length;
   }
-  const html = marked.parser(tokens, { breaks: false, gfm: true });
-  return injectSourceLineAttrs(html, tokens);
+  const html = marked.parser(tokens, { breaks: true, gfm: true });
+  return injectSourceLineAttrs(sanitizeMarkdownHtml(html), tokens);
 }
 
 function previewClickEditTarget(event, block) {
@@ -963,10 +1015,10 @@ function renderDocArea() {
     if (ext === "md") {
       const { data: frontMatterData, body: markdownBody, bodyStartLine } = parseFrontMatter(state.activeNote.content);
       const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
-      const processedMd = preprocessWikiLinks(markdownBody);
-      const html = renderMarkdownContent(processedMd, { lineOffset: bodyStartLine });
+      const html = renderMarkdownContent(markdownBody, { lineOffset: bodyStartLine });
       docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
+      wrapMarkdownTables();
       resolveMarkdownImages(state.activeNote.path);
       wireWikiLinks(buildNoteIndex());
       renderBacklinksPanel(state.activeNote.path);
@@ -1210,6 +1262,18 @@ function addHeadingSlugs() {
   });
 }
 
+function wrapMarkdownTables() {
+  const container = qs("prose-content");
+  if (!container) return;
+  container.querySelectorAll("table").forEach((table) => {
+    if (table.parentElement?.classList.contains("tableWrap")) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = "tableWrap";
+    table.before(wrapper);
+    wrapper.appendChild(table);
+  });
+}
+
 /* 将 md 里引用的本地图片 src 转成 data URL */
 function resolveRelativePath(base, rel) {
   const baseParts = base ? base.split("/") : [];
@@ -1232,9 +1296,11 @@ async function resolveMarkdownImages(notePath) {
 
   for (const img of imgs) {
     // marked.js 会对路径做 URL 编码（中文、空格等），需先解码再传给 Rust
-    const raw = decodeURIComponent((img.getAttribute("src") || "").trim());
-    // 跳过外链、data URL、锚点
-    if (!raw || /^(https?:|data:|#)/i.test(raw)) continue;
+    const encodedSrc = (img.getAttribute("src") || "").trim();
+    let raw = encodedSrc;
+    try { raw = decodeURIComponent(encodedSrc); } catch {}
+    // 跳过外部协议、data/blob URL、协议相对 URL和锚点
+    if (!raw || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(raw)) continue;
 
     const assetPath = raw.startsWith("/")
       ? raw.replace(/^\/+/, "")

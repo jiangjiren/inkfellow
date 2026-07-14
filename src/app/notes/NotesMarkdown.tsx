@@ -4,6 +4,7 @@
 import type { ComponentPropsWithoutRef, MouseEvent, ReactNode } from "react";
 import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { slugifyHeading } from "@/lib/noteToc";
 import styles from "./notes.module.css";
@@ -1021,7 +1022,7 @@ export default function NotesMarkdown({
     <div className={styles.markdown}>
       {showFrontMatter && <FrontMatterPanel data={frontMatterData} />}
       {renderedParts.map((part, index) => part.type === "markdown" ? (
-        <ReactMarkdown key={`markdown-${index}`} remarkPlugins={[remarkGfm]} components={components}>
+        <ReactMarkdown key={`markdown-${index}`} remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
           {part.value}
         </ReactMarkdown>
       ) : (

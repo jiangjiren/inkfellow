@@ -3129,7 +3129,10 @@
 }
 
 .tableWrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--notes-border);
   border-radius: 8px;
   background: var(--notes-bg-document);
@@ -3138,7 +3141,8 @@
 }
 
 .tableWrap table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 14px;
   line-height: 1.5;

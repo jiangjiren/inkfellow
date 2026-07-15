@@ -3689,12 +3689,16 @@ input, textarea { font-family: inherit; }
 /* ── HTML iframe viewer ──────────────────────────── */
 .docAreaHtml {
   background: transparent;
+  display: flex;
+  overflow: hidden;
 }
 
 .htmlFrame {
   display: block;
+  flex: 1;
   width: 100%;
-  min-height: calc(100vh - 44px);
+  height: 100%;
+  min-height: 0;
   border: 0;
   background: transparent;
 }

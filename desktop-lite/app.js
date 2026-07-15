@@ -1026,20 +1026,7 @@ function renderDocArea() {
       docArea.className = "docArea docAreaHtml";
       docArea.innerHTML = `<iframe id="html-frame" class="htmlFrame"></iframe>`;
       const frame = document.getElementById("html-frame");
-      let _htmlRo = null;
-      const _htmlResizeHandler = () => {
-        try {
-          const h = frame.contentDocument?.documentElement?.scrollHeight ?? 0;
-          frame.style.height = Math.max(h, window.innerHeight - 44) + "px";
-        } catch {}
-      };
       frame.addEventListener("load", () => {
-        _htmlResizeHandler();
-        try {
-          _htmlRo = new frame.contentWindow.ResizeObserver(_htmlResizeHandler);
-          _htmlRo.observe(frame.contentDocument.documentElement);
-        } catch {}
-        window.addEventListener("resize", _htmlResizeHandler);
         // 拦截 obsidian:// 链接，在应用内跳转而非打开外部 Obsidian
         try {
           frame.contentDocument.addEventListener("click", (e) => {
@@ -1056,11 +1043,6 @@ function renderDocArea() {
           }, true);
         } catch {}
       });
-      // 离开时清理
-      frame.addEventListener("unload", () => {
-        try { _htmlRo?.disconnect(); } catch {}
-        window.removeEventListener("resize", _htmlResizeHandler);
-      }, { once: true });
       frame.srcdoc = state.activeNote.content;
     } else if (isImage) {
       docArea.innerHTML = `

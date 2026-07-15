@@ -594,11 +594,37 @@ function normalizeUsageWindow(raw) {
   const utilizationRaw = raw.utilization ?? raw.percent ?? raw.used_percent;
   const utilizationNum = typeof utilizationRaw === "number" ? utilizationRaw : Number(utilizationRaw);
   const usedPercent = clampPercent(utilizationNum <= 1 ? utilizationNum * 100 : utilizationNum);
+  const windowSecondsRaw = raw.limit_window_seconds ?? raw.window_seconds ?? raw.windowSeconds;
+  const windowSecondsNum = typeof windowSecondsRaw === "number" ? windowSecondsRaw : Number(windowSecondsRaw);
   return {
     usedPercent,
     remainingPercent: usedPercent == null ? null : clampPercent(100 - usedPercent),
     resetAt: normalizeUsageResetAt(raw.resets_at ?? raw.resetsAt ?? raw.reset_at ?? null),
+    windowSeconds: Number.isFinite(windowSecondsNum) && windowSecondsNum > 0
+      ? Math.round(windowSecondsNum)
+      : null,
   };
+}
+
+function normalizeCodexUsageWindows(rateLimit) {
+  const primary = normalizeUsageWindow(rateLimit?.primary_window);
+  const secondary = normalizeUsageWindow(rateLimit?.secondary_window);
+  const windows = [primary, secondary].filter(Boolean);
+  const hasDurationMetadata = windows.some(win => win.windowSeconds != null);
+
+  // Older responses did not expose window length. Keep the original positional
+  // mapping in that case, but prefer semantic duration whenever it is available.
+  if (!hasDurationMetadata) return { fiveHour: primary, week: secondary };
+
+  const fiveHour = windows.find(win => win.windowSeconds != null && win.windowSeconds <= 8 * 60 * 60)
+    ?? (primary?.windowSeconds == null ? primary : null);
+  const week = windows.find(win => (
+    win.windowSeconds != null
+    && win.windowSeconds >= 5 * 24 * 60 * 60
+    && win.windowSeconds <= 9 * 24 * 60 * 60
+  )) ?? (secondary?.windowSeconds == null ? secondary : null);
+
+  return { fiveHour, week };
 }
 
 async function getClaudeSubscriptionLimits() {
@@ -715,14 +741,15 @@ async function queryCodexSubscriptionLimits() {
 
     const body = await resp.json();
     const rateLimit = body?.rate_limit ?? null;
+    const windows = normalizeCodexUsageWindows(rateLimit);
     return {
       provider: "codex",
       status: rateLimit ? "ok" : "unavailable",
       authenticated: true,
       available: !!rateLimit,
       planType: body?.plan_type ?? null,
-      fiveHour: normalizeUsageWindow(rateLimit?.primary_window),
-      week: normalizeUsageWindow(rateLimit?.secondary_window),
+      fiveHour: windows.fiveHour,
+      week: windows.week,
       updatedAt: new Date().toISOString(),
     };
   } catch (err) {

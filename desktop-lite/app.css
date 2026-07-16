@@ -1560,6 +1560,31 @@ input, textarea { font-family: inherit; }
   background: rgba(79, 109, 245, 0.15) !important;
 }
 
+.cmImagePastePending {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin: 0 4px;
+  vertical-align: -1px;
+  border: 1.5px solid rgba(79, 109, 245, 0.28);
+  border-top-color: var(--notes-accent);
+  border-radius: 50%;
+  animation: cmImagePasteSpin 0.75s linear infinite;
+}
+
+.cmImagePasteSelection {
+  border-radius: 3px;
+  background: rgba(79, 109, 245, 0.12);
+}
+
+@keyframes cmImagePasteSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmImagePastePending { animation: none; }
+}
+
 /* # 符号和 ** * 等标记：变浅，退到背景 */
 .cmContainer .cm-formatting-header,
 .cmContainer .cm-formatting-strong,

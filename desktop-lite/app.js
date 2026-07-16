@@ -13,6 +13,7 @@ const EDIT_MODE_KEY = "inkfellow-edit-mode-v1";
 const IMAGE_ZOOM_MIN = 0.2;
 const IMAGE_ZOOM_MAX = 8;
 const IMAGE_ZOOM_STEP = 1.12;
+const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024;
 
 /* ── State ───────────────────────────────────────── */
 const state = {
@@ -33,6 +34,7 @@ const state = {
   searchTimer: null,
   searchRequestId: 0,
   savePromise: null,
+  pendingImagePastes: new Set(),
   contextTarget: null,
   gitStatus: null,
   gitPane: "main",
@@ -105,6 +107,46 @@ function extOf(name) {
 
 function isImageExt(ext) {
   return /^(png|jpe?g|gif|webp|svg|avif)$/i.test(ext || "");
+}
+
+function pastedImageTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function suggestedPastedImageName(file) {
+  const original = String(file?.name || "").trim();
+  const stem = original.replace(/\.[^.]+$/, "");
+  const generic = /^(?:image|screenshot|screen[-_ ]?shot|clipboard|pasted[-_ ]?image)(?:[-_ ]?\d+)?$/i;
+  if (!stem || generic.test(stem)) return `image-${pastedImageTimestamp()}`;
+  return original;
+}
+
+function pastedImageMime(file) {
+  const declared = String(file?.type || "").toLowerCase();
+  if (/^image\/(?:png|jpeg|gif|webp)$/.test(declared)) return declared;
+  const extension = extOf(String(file?.name || ""));
+  return {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+  }[extension] || "";
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const separator = result.indexOf(",");
+      if (separator === -1) reject(new Error("无法读取剪贴板图片。"));
+      else resolve(result.slice(separator + 1));
+    };
+    reader.onerror = () => reject(reader.error || new Error("无法读取剪贴板图片。"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function formatSize(bytes) {
@@ -222,10 +264,86 @@ function cancelAutosave() {
 /* 切换笔记/模式前把未保存内容落盘，避免丢失 */
 async function flushPendingSave() {
   cancelAutosave();
+  while (state.pendingImagePastes.size) {
+    await Promise.allSettled([...state.pendingImagePastes]);
+  }
   while (state.dirty) {
     if (!(await saveNote())) return false;
   }
   return true;
+}
+
+async function pasteEditorImage(cm, file, mimeType) {
+  const notePath = state.activeNote?.path;
+  if (!notePath || state.activeNote?.extension !== "md") return;
+
+  const from = cm.getCursor("from");
+  const to = cm.getCursor("to");
+  const hasSelection = from.line !== to.line || from.ch !== to.ch;
+  const spinner = document.createElement("span");
+  spinner.className = "cmImagePastePending";
+  spinner.setAttribute("aria-label", "正在保存图片");
+  spinner.title = "正在保存图片";
+
+  const selectionMarker = hasSelection
+    ? cm.markText(from, to, {
+        className: "cmImagePasteSelection",
+        clearWhenEmpty: false,
+        inclusiveLeft: false,
+        inclusiveRight: false,
+      })
+    : null;
+  const insertionMarker = cm.setBookmark(hasSelection ? to : from, {
+    widget: spinner,
+    insertLeft: false,
+  });
+  if (hasSelection) cm.setCursor(to);
+
+  try {
+    if (file.size > MAX_PASTED_IMAGE_BYTES) throw new Error("图片不能超过 20 MB。");
+    const dataBase64 = await readFileAsBase64(file);
+    const saved = await invoke("paste_image", {
+      notePath,
+      originalName: suggestedPastedImageName(file),
+      mimeType,
+      dataBase64,
+    });
+    const markedRange = selectionMarker?.find();
+    const markedPosition = insertionMarker.find();
+    selectionMarker?.clear();
+    insertionMarker.clear();
+
+    if (state.activeNote?.path !== notePath || state.editor !== cm) {
+      showToast("图片已保存，但当前笔记已切换。");
+      return;
+    }
+    if (!markedRange && !markedPosition) return;
+
+    const insertFrom = markedRange?.from ?? markedPosition;
+    const insertTo = markedRange?.to ?? markedPosition;
+    const imagePath = `./${encodeWikiMediaTarget(saved.name)}`;
+    cm.replaceRange(`![图片](${imagePath})`, insertFrom, insertTo, "paste");
+    void loadTree(false).catch(() => {});
+  } catch (err) {
+    selectionMarker?.clear();
+    insertionMarker.clear();
+    showToast(String(err));
+  }
+}
+
+function handleEditorPaste(cm, event) {
+  if (state.activeNote?.extension !== "md") return;
+  const file = Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .find((candidate) => candidate && pastedImageMime(candidate));
+  const mimeType = pastedImageMime(file);
+  if (!file || !mimeType) return;
+
+  event.preventDefault();
+  const task = pasteEditorImage(cm, file, mimeType);
+  state.pendingImagePastes.add(task);
+  void task.finally(() => state.pendingImagePastes.delete(task));
 }
 
 /* 保存成功后短暂显示"已保存"（与 web 端一致） */
@@ -1007,6 +1125,7 @@ function renderDocArea() {
       scheduleAutosave();
       if (state.outlineOpen) renderToc();
     });
+    cm.on("paste", (_inst, event) => handleEditorPaste(cm, event));
     cm.on("blur", () => { void flushPendingSave(); });
     cm.on("cursorActivity", sendSelectionContext);
     cm.getInputField().focus({ preventScroll: true });
@@ -1809,6 +1928,7 @@ async function createNote() {
 
 async function deleteActiveNote() {
   if (!state.activeNote) return;
+  if (!(await flushPendingSave())) return;
   const ok = await showConfirm(`确定删除「${state.activeNote.name}」吗？此操作无法撤销。`);
   if (!ok) return;
   // 取消待执行的自动保存，避免删除后又把文件写回来
@@ -1930,6 +2050,7 @@ async function applyVaultChange(desktop) {
 async function switchToVault(path) {
   toggleVaultMenu(false);
   if (!path || path === state.vaultPath) return;
+  if (!(await flushPendingSave())) return;
   try {
     const desktop = await invoke("set_vault_path", { path });
     await applyVaultChange(desktop);
@@ -1940,6 +2061,7 @@ async function switchToVault(path) {
 
 async function chooseVault() {
   toggleVaultMenu(false);
+  if (!(await flushPendingSave())) return;
   try {
     const desktop = await invoke("select_and_set_vault");
     await applyVaultChange(desktop);

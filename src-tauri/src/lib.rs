@@ -5,7 +5,8 @@ use notify::{
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -29,6 +30,7 @@ const NOTE_EXTENSIONS: &[&str] = &[
 
 const TEXT_NOTE_EXTENSIONS: &[&str] = &["md", "html", "htm"];
 const IMAGE_NOTE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"];
+const MAX_PASTED_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 struct AppState {
     processes: Mutex<Vec<Child>>,
@@ -90,6 +92,12 @@ struct AssetResponse {
     #[serde(rename = "updatedAt")]
     updated_at: u64,
     extension: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PastedImageResponse {
+    name: String,
+    path: String,
 }
 
 #[derive(Serialize)]
@@ -319,6 +327,116 @@ fn mime_for_extension(ext: &str) -> &'static str {
         "avif" => "image/avif",
         _ => "application/octet-stream",
     }
+}
+
+fn pasted_image_extension(mime_type: &str) -> Option<&'static str> {
+    match mime_type.to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn has_bytes(data: &[u8], offset: usize, expected: &[u8]) -> bool {
+    data.get(offset..offset.saturating_add(expected.len())) == Some(expected)
+}
+
+fn is_valid_pasted_image(mime_type: &str, data: &[u8]) -> bool {
+    match mime_type.to_ascii_lowercase().as_str() {
+        "image/png" => has_bytes(data, 0, &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+        "image/jpeg" => has_bytes(data, 0, &[0xff, 0xd8, 0xff]),
+        "image/gif" => has_bytes(data, 0, b"GIF87a") || has_bytes(data, 0, b"GIF89a"),
+        "image/webp" => has_bytes(data, 0, b"RIFF") && has_bytes(data, 8, b"WEBP"),
+        _ => false,
+    }
+}
+
+fn pasted_image_base_name(original_name: &str) -> String {
+    let raw_stem = Path::new(original_name)
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("");
+    let mut clean = raw_stem
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '-'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .trim_end_matches(['.', ' '])
+        .chars()
+        .take(96)
+        .collect::<String>();
+
+    if clean.is_empty() {
+        clean = format!("image-{}", now_secs());
+    }
+
+    let lower = clean.to_ascii_lowercase();
+    let windows_reserved = matches!(lower.as_str(), "con" | "prn" | "aux" | "nul")
+        || (lower.len() == 4
+            && (lower.starts_with("com") || lower.starts_with("lpt"))
+            && lower.as_bytes()[3].is_ascii_digit()
+            && lower.as_bytes()[3] != b'0');
+    if windows_reserved {
+        format!("image-{clean}")
+    } else {
+        clean
+    }
+}
+
+fn write_pasted_image_file(
+    note_absolute: &Path,
+    note_relative: &str,
+    base_name: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> Result<PastedImageResponse, String> {
+    let note_directory = note_absolute
+        .parent()
+        .ok_or_else(|| "Invalid note path.".to_string())?;
+    let relative_directory = Path::new(note_relative)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+
+    for suffix in 1..=9_999 {
+        let suffix_text = if suffix == 1 {
+            String::new()
+        } else {
+            format!("-{suffix}")
+        };
+        let file_name = format!("{base_name}{suffix_text}.{extension}");
+        let absolute = note_directory.join(&file_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&absolute)
+        {
+            Ok(mut file) => {
+                if let Err(err) = file.write_all(bytes) {
+                    drop(file);
+                    let _ = fs::remove_file(&absolute);
+                    return Err(err.to_string());
+                }
+                let path = to_slash_path(&relative_directory.join(&file_name));
+                return Ok(PastedImageResponse {
+                    name: file_name,
+                    path,
+                });
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
+    Err("无法生成可用的图片文件名。".to_string())
 }
 
 fn to_slash_path(value: &Path) -> String {
@@ -1240,6 +1358,48 @@ async fn read_asset(app: AppHandle, path: String) -> Result<AssetResponse, Strin
 }
 
 #[tauri::command]
+async fn paste_image(
+    app: AppHandle,
+    note_path: String,
+    original_name: String,
+    mime_type: String,
+    data_base64: String,
+) -> Result<PastedImageResponse, String> {
+    let extension = pasted_image_extension(&mime_type)
+        .ok_or_else(|| "仅支持 PNG、JPEG、WebP 和 GIF 图片。".to_string())?;
+    let max_base64_len = MAX_PASTED_IMAGE_BYTES.saturating_mul(4) / 3 + 8;
+    if data_base64.len() > max_base64_len {
+        return Err("图片不能超过 20 MB。".to_string());
+    }
+
+    let bytes = general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|_| "剪贴板图片数据无效。".to_string())?;
+    if bytes.is_empty() {
+        return Err("图片内容为空。".to_string());
+    }
+    if bytes.len() > MAX_PASTED_IMAGE_BYTES {
+        return Err("图片不能超过 20 MB。".to_string());
+    }
+    if !is_valid_pasted_image(&mime_type, &bytes) {
+        return Err("剪贴板图片格式无效。".to_string());
+    }
+
+    let resolved_note = resolve_existing_path(&app, &note_path, false)?;
+    if path_extension(&resolved_note.absolute) != "md" {
+        return Err("图片只能粘贴到 Markdown 笔记。".to_string());
+    }
+    let base_name = pasted_image_base_name(&original_name);
+    write_pasted_image_file(
+        &resolved_note.absolute,
+        &resolved_note.relative,
+        &base_name,
+        extension,
+        &bytes,
+    )
+}
+
+#[tauri::command]
 async fn write_note(app: AppHandle, path: String, content: String) -> Result<NoteResponse, String> {
     let resolved = resolve_existing_path(&app, &path, false)?;
     if !is_text_note(&resolved.absolute) {
@@ -2122,6 +2282,7 @@ pub fn run() {
             list_notes_tree,
             read_note,
             read_asset,
+            paste_image,
             write_note,
             create_note,
             create_folder,
@@ -2191,5 +2352,56 @@ mod proxy_tests {
         assert_eq!(proxy.http_proxy, "http://127.0.0.1:8080");
         assert_eq!(proxy.https_proxy, "https://proxy.example:8443");
         assert_eq!(proxy.no_proxy, "localhost,127.0.0.1,::1");
+    }
+}
+
+#[cfg(test)]
+mod pasted_image_tests {
+    use super::*;
+
+    #[test]
+    fn validates_supported_raster_signatures() {
+        assert!(is_valid_pasted_image(
+            "image/png",
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        ));
+        assert!(is_valid_pasted_image("image/jpeg", &[0xff, 0xd8, 0xff]));
+        assert!(is_valid_pasted_image("image/gif", b"GIF89a"));
+        assert!(is_valid_pasted_image("image/webp", b"RIFF\0\0\0\0WEBP"));
+        assert!(!is_valid_pasted_image("image/png", b"not an image"));
+        assert!(!is_valid_pasted_image("image/svg+xml", b"<svg></svg>"));
+    }
+
+    #[test]
+    fn sanitizes_pasted_image_names() {
+        assert_eq!(pasted_image_base_name("旅行照片.jpeg"), "旅行照片");
+        assert_eq!(pasted_image_base_name("my:photo?.png"), "my-photo-");
+        assert_eq!(pasted_image_base_name("CON.png"), "image-CON");
+    }
+
+    #[test]
+    fn writes_beside_note_and_suffixes_collisions() {
+        let directory = std::env::temp_dir().join(format!(
+            "inkfellow-paste-image-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let note = directory.join("note.md");
+        fs::write(&note, b"# Test\n").unwrap();
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        let first = write_pasted_image_file(&note, "note.md", "image-20260716-120000", "png", &png)
+            .unwrap();
+        let second =
+            write_pasted_image_file(&note, "note.md", "image-20260716-120000", "png", &png)
+                .unwrap();
+
+        assert_eq!(first.name, "image-20260716-120000.png");
+        assert_eq!(first.path, "image-20260716-120000.png");
+        assert_eq!(second.name, "image-20260716-120000-2.png");
+        assert!(directory.join(&first.name).is_file());
+        assert!(directory.join(&second.name).is_file());
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

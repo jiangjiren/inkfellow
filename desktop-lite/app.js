@@ -1793,13 +1793,6 @@ async function saveNote() {
   }
 }
 
-async function goHome() {
-  if (!(await flushPendingSave())) return;
-  closeOutline();
-  closeGitWorkspace(false);
-  clearActiveNote();
-}
-
 async function createNote() {
   const folder = state.activePath ? parentFolder(state.activePath) : "";
   const title = await showDialog("新建笔记", "无标题");
@@ -2747,10 +2740,12 @@ function openFellowPanel() {
     qs("btn-toggle-panel").classList.add("fellowPillActive");
     localStorage.setItem(PANEL_VISIBLE_KEY, "1");
   }
+  postAgentMessage({ type: "focus-input" });
 }
 
 function toggleSidebar() {
   const shell = qs("shell");
+  shell.classList.remove("shellSidebarPeek");
   const isHidden = shell.classList.toggle("shellSidebarHidden");
   if (isHidden) closeGitQuickPopover(false);
   localStorage.setItem(SIDEBAR_VISIBLE_KEY, isHidden ? "0" : "1");
@@ -2888,7 +2883,7 @@ function closeGitWorkspace(restoreFocus = true) {
     requestAnimationFrame(() => {
       const trigger = qs("btn-git-footer");
       if (trigger?.getClientRects().length) trigger.focus();
-      else qs("btn-home")?.focus();
+      else qs("btn-toggle-sidebar")?.focus();
     });
   }
 }
@@ -2922,6 +2917,36 @@ function initSidebarResize() {
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
   });
+
+  resizer.addEventListener("dblclick", toggleSidebar);
+}
+
+/* ── Sidebar hover peek（侧栏隐藏时，鼠标靠左边缘浮出） ── */
+function initSidebarPeek() {
+  const shell = qs("shell");
+  const sidebar = qs("sidebar");
+
+  const zone = document.createElement("div");
+  zone.className = "sidebarPeekZone";
+  shell.appendChild(zone);
+
+  let hideTimer = null;
+
+  function openPeek() {
+    if (!shell.classList.contains("shellSidebarHidden")) return;
+    clearTimeout(hideTimer);
+    shell.classList.add("shellSidebarPeek");
+  }
+
+  function scheduleClose() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => shell.classList.remove("shellSidebarPeek"), 260);
+  }
+
+  zone.addEventListener("mouseenter", openPeek);
+  zone.addEventListener("mouseleave", scheduleClose);
+  sidebar.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+  sidebar.addEventListener("mouseleave", scheduleClose);
 }
 
 function initPanelResize() {
@@ -2951,6 +2976,11 @@ function initPanelResize() {
 
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
+  });
+
+  resizer.addEventListener("dblclick", () => {
+    if (shell.classList.contains("shellPanelHidden")) openFellowPanel();
+    else togglePanel();
   });
 }
 
@@ -3037,6 +3067,22 @@ function initKeyboard() {
       input.select();
     }
 
+    if (mod && e.key === "b") {
+      e.preventDefault();
+      toggleSidebar();
+    }
+
+    if (mod && e.key === "n") {
+      e.preventDefault();
+      void createNote();
+    }
+
+    if (mod && e.key === "l") {
+      e.preventDefault();
+      if (qs("shell").classList.contains("shellPanelHidden")) openFellowPanel();
+      else togglePanel();
+    }
+
     if (e.key === "Escape") {
       hideContextMenu();
       toggleVaultMenu(false);
@@ -3077,8 +3123,12 @@ function wireEvents() {
   qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
   qs("btn-new-note").addEventListener("click", () => { void createNote(); });
   qs("empty-create-note")?.addEventListener("click", () => { void createNote(); });
-  qs("btn-home").addEventListener("click", () => { void goHome(); });
   qs("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  if (navigator.platform.includes("Mac")) {
+    qs("btn-toggle-sidebar").title = "切换侧栏 (⌘B)";
+    qs("btn-new-note").title = "新建笔记 (⌘N)";
+    qs("btn-toggle-panel").title = "Fellow (⌘L)";
+  }
   qs("btn-nav-back").addEventListener("click", navBack);
   qs("btn-nav-forward").addEventListener("click", navForward);
   qs("btn-toggle-panel").addEventListener("click", () => {
@@ -3252,6 +3302,16 @@ function wireEvents() {
     }
   });
 
+  // 鼠标侧键后退/前进（XButton1/2，与浏览器、资源管理器一致）
+  window.addEventListener("mouseup", (e) => {
+    if (e.button === 3) { e.preventDefault(); void navBack(); }
+    if (e.button === 4) { e.preventDefault(); void navForward(); }
+  });
+  // 阻止 webview 自身的历史导航，避免侧键把页面导走
+  window.addEventListener("auxclick", (e) => {
+    if (e.button === 3 || e.button === 4) e.preventDefault();
+  });
+
   // 后退/前进键盘快捷键（Alt+← / Alt+→，与 Windows/Obsidian 一致）
   document.addEventListener("keydown", (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -3300,6 +3360,7 @@ async function boot() {
     restoreLayout();
     wireEvents();
     initSidebarResize();
+    initSidebarPeek();
     initPanelResize();
     initKeyboard();
   } catch (initErr) {

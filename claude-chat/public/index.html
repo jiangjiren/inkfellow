@@ -3522,6 +3522,17 @@ window.addEventListener("message", (e) => {
     promptEl.dispatchEvent(new Event("input"));
     sendBtn.click();
   }
+  if (e.data?.type === "focus-input") {
+    promptEl.focus();
+  }
+});
+
+// Ctrl/⌘+L 在 iframe 内按下时也能收起面板（父窗口收不到 iframe 的按键）
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "l") {
+    e.preventDefault();
+    postParentMessage({ type: "agent-collapse-panel" });
+  }
 });
 
 ctxToggle.addEventListener("click", () => {

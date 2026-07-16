@@ -152,8 +152,34 @@ input, textarea { font-family: inherit; }
 
 .shell.shellSidebarHidden .sidebarResizer { display: none; }
 
-/* Home button: 始终显示 */
-#btn-home { display: flex; }
+/* ── Sidebar hover peek ──────────────────────────── */
+.sidebarPeekZone {
+  display: none;
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 40;
+}
+
+.shell.shellSidebarHidden .sidebarPeekZone { display: block; }
+
+.shell.shellSidebarHidden.shellSidebarPeek .sidebar {
+  position: fixed;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  height: auto;
+  width: var(--sidebar-width) !important;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 41;
+  border: 1px solid var(--notes-border);
+  border-left: none;
+  border-radius: 0 12px 12px 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
 
 .sidebarResizer {
   position: relative;
@@ -198,19 +224,25 @@ input, textarea { font-family: inherit; }
   height: 30px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: var(--notes-accent);
-  color: #fff;
+  background: transparent;
+  color: var(--notes-text-secondary);
   cursor: pointer;
   transition: var(--notes-transition-fast);
 }
 
 .sidebarNewNoteBtn:hover {
-  background: var(--notes-accent-hover);
-  transform: scale(1.04);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--notes-accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  .sidebarNewNoteBtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 .sidebarNewNoteBtn:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
 }
 
 /* ── Vault switcher ──────────────────────────────── */
@@ -3722,6 +3754,31 @@ input, textarea { font-family: inherit; }
   opacity: 0.28;
   cursor: default;
   pointer-events: none;
+}
+
+/* 顶栏左侧 chrome 控件：无边框幽灵样式，hover 才浮现底色 */
+.readerHeaderLeft .iconButton {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.readerHeaderLeft .iconButton:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--notes-accent-warm);
+}
+
+@media (prefers-color-scheme: dark) {
+  .readerHeaderLeft .iconButton {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .readerHeaderLeft .iconButton:hover:not(:disabled) {
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 /* ── Wiki Links ──────────────────────────────────── */

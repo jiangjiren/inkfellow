@@ -1,62 +1,225 @@
-# inkfellow — AI Chat Service
+# inkfellow AI Service (`claude-chat`)
 
-Small Node.js and WebSocket service that embeds a Claude Agent SDK assistant beside the inkfellow notes UI.
+`claude-chat` is the local AI backend and embedded panel used by inkfellow. It serves a static chat UI, streams agent events over WebSocket, keeps local history and provider profiles, runs scheduled jobs, and can connect the active agent to WeChat.
 
-## Setup
+It supports two native subscription runtimes:
+
+- Claude through `@anthropic-ai/claude-agent-sdk` and the current user's Claude Code login.
+- Codex through `@openai/codex-sdk` and the current user's Codex/ChatGPT login.
+
+Anthropic-compatible API providers are routed through the Claude runtime with provider-specific environment settings.
+
+## Requirements
+
+- Node.js 20.9 or newer when used with the main inkfellow project
+- npm
+- A vault directory
+- Claude Code and/or Codex login if using subscription accounts
+
+## Standalone Setup
 
 ```bash
-npm install
+cd claude-chat
+npm ci
 cp .env.example .env
-set -a; source .env; set +a
 npm start
 ```
 
-Required environment:
+PowerShell equivalent:
 
-```bash
-VAULT_PATH=/absolute/path/to/your/vault
+```powershell
+Copy-Item .env.example .env
+npm.cmd start
 ```
 
-## Authentication
+Minimal `.env`:
 
-The default account source is the Claude subscription credential on the server:
+```dotenv
+HOST=127.0.0.1
+PORT=8082
+VAULT_PATH=/absolute/path/to/your/vault
+CLAUDE_PERMISSION_MODE=auto
+```
 
-1. Use a Claude Pro, Max, Team, or Enterprise account.
-   Complete Claude Code login once on the same machine and under the same system user that runs this service.
+Open <http://127.0.0.1:8082> to inspect the standalone panel. In the main app, Next.js exposes it at `/notes-claude/` and proxies WebSocket traffic to this port.
 
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   claude /login
-   ```
+## Provider Authentication
 
-   After login, confirm the local credential exists:
+### Claude subscription
 
-   ```bash
-   ls ~/.claude/.credentials.json
-   ```
+Install Claude Code and log in as the same OS user that runs this service. If needed, start `claude` and use its `/login` command. Verify the result with:
 
-   Do not set `ANTHROPIC_API_KEY` if you want subscription credentials to be used. Also make sure your process manager uses the same user and home directory. For example, if `claude /login` was run as `youruser`, then PM2 or systemd should run `claude-chat` as `youruser` with `HOME=/home/youruser`.
+```bash
+claude auth status
+```
 
-2. Optional DeepSeek API Key: open the Claude panel, click `设置`, choose `DeepSeek API Key`, enter the key, and save. The next message will use DeepSeek's Anthropic-compatible endpoint. Switch back to `Claude 会员额度` to use the server's Claude subscription credential again.
+The service uses the Claude Agent SDK default credential discovery. Credentials may be stored in the system keychain, so checking only `~/.claude/.credentials.json` is not reliable. Do not set a third-party `ANTHROPIC_BASE_URL` in the service environment when the Claude subscription profile should use the official login.
 
-3. Optional OpenRouter API Key: open `设置`, choose `OpenRouter API Key`, enter the key, and keep or adjust the model mapping fields:
-   - `Opus 模型`, default `~anthropic/claude-opus-latest`
-   - `Sonnet 模型`, default `~anthropic/claude-sonnet-latest`
-   - `Haiku 模型`, default `~anthropic/claude-haiku-latest`
-   - `Subagent 模型`, default `~anthropic/claude-opus-latest`
+### Codex / ChatGPT subscription
 
-   The OpenRouter base URL is fixed to `https://openrouter.ai/api`.
+Log in through Codex Desktop or the CLI as the service user:
 
-The chat service uses the Claude Agent SDK default runtime. No extra executable-path setting is required.
+```bash
+codex login
+```
 
-The service listens on `127.0.0.1:8082` by default. Put it behind Nginx at `/notes-claude/` and protect that location with the same authentication as `/notes`.
+The service exposes the Codex profile only when `~/.codex/auth.json` contains usable login data. Codex conversations use persistent thread IDs and map inkfellow permission modes to Codex sandbox modes.
 
-## Security Notes
+### API providers
 
-- Default permission mode is `auto`.
-- Supported permission modes are `plan`, `acceptEdits`, `auto`, and `bypassPermissions`.
-- `bypassPermissions` is supported for trusted single-user deployments, but should only be used behind strong authentication.
-- Requested working directories are constrained to `VAULT_PATH`.
-- Static files are served only from `public/`.
-- `auth-profile.json` stores provider settings and may contain API keys. Do not commit it.
-- `session.json` and `history.json` may contain private content and should not be committed.
+Add accounts from the panel settings:
+
+| Provider | Default endpoint behavior |
+| --- | --- |
+| Anthropic | Official Anthropic API; API key required. |
+| DeepSeek | Anthropic-compatible DeepSeek endpoint and preset model mapping. |
+| OpenRouter | OpenRouter Anthropic-compatible endpoint and configurable model mapping. |
+| MiniMax | MiniMax Anthropic-compatible endpoint and preset model mapping. |
+| Custom | User-supplied Anthropic-compatible base URL, key, and model mapping. |
+
+Profiles can be added, edited, activated, and removed in the UI. Claude is always retained as a built-in profile; Codex is injected when a login is available. Exact model IDs come from the current profile instead of being fixed by this README.
+
+## Agent Controls
+
+The panel supports:
+
+- Model selection and provider-specific reasoning/effort levels.
+- `plan`, `acceptEdits`, `auto`, and `bypassPermissions` modes.
+- Streaming text, thinking, tool use/results, cost/usage events, and interactive questions.
+- New, resume, rename, and delete operations for locally stored conversations.
+- Image attachments. Codex attachments are materialized as temporary local image files before SDK submission.
+- Skills discovered from the current user's Claude or Codex skill directories and the vault-local skill directories.
+
+Permission behavior is provider-specific. `bypassPermissions` is the broadest mode and should be enabled only in a trusted, single-user environment.
+
+## Scheduled Jobs
+
+The built-in scheduler supports cron jobs and future one-off jobs. A job can:
+
+- Add its result to chat history.
+- Ask the agent to create a dated Markdown note.
+- Ask the agent to append to a specified note.
+- Deliver a result back to the source channel.
+
+The chat agent receives scheduler tools when the request looks like a reminder or automation request. REST clients can also manage jobs through `/api/cron/jobs`.
+
+Cron time zones are stored per job and default to `Asia/Shanghai`. One-off times use a future Unix timestamp in milliseconds. Schedules, state, and run logs live in `CLAUDE_CHAT_DATA_DIR`.
+
+At present, WeChat is the only registered external delivery adapter. References in source comments to Feishu or Telegram are extension points, not implemented channels.
+
+## WeChat Connection
+
+The settings panel can start a QR-code login flow. After confirmation, the service stores the bot token locally, starts a background polling loop, and can receive and send text or media messages. Scheduled tasks created from a WeChat conversation can deliver results to the originating peer.
+
+WeChat state and downloaded media are stored below `CLAUDE_CHAT_DATA_DIR`. Treat the bot configuration as a credential. The integration depends on the configured Tencent iLink endpoints and should not be exposed as an unauthenticated public API.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HOST` | `127.0.0.1` | Listener address. Keep loopback unless another trusted network layer protects the service. |
+| `PORT` | `8082` | HTTP and WebSocket port. |
+| `VAULT_PATH` | process working directory | Default and maximum allowed agent working directory. |
+| `CLAUDE_PERMISSION_MODE` | `auto` | Initial permission mode: `plan`, `acceptEdits`, `auto`, or `bypassPermissions`. |
+| `CLAUDE_CHAT_DATA_DIR` | `claude-chat/data` | Sessions, history, schedules, run logs, WeChat state, media, and Codex thread data. |
+| `CLAUDE_CHAT_AUTH_PROFILE_FILE` | `claude-chat/auth-profile.json` | Provider profiles and API keys. |
+| `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history.json` | Optional override for the merged conversation history file. |
+| `DESKTOP_AGENT_TOKEN` | empty | Tauri-only access token for embedded HTTP/WebSocket requests. Set by the desktop host, not by normal deployments. |
+| `WECHAT_CDN_BASE_URL` | Tencent CDN URL | Override for WeChat media downloads. |
+| `WECHAT_MAX_INLINE_IMAGE_BYTES` | `5242880` | Maximum image size embedded directly into an agent request. |
+| `WECHAT_MAX_MEDIA_BYTES` | `26214400` | Maximum inbound or outbound WeChat media size. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | empty | Optional inherited credentials for the default Claude runtime. UI profiles are preferred for multiple accounts. |
+| `ANTHROPIC_BASE_URL` and model variables | provider/runtime defaults | Optional inherited Claude-compatible runtime overrides. Avoid stale global overrides when switching UI profiles. |
+
+`CLAUDE_CHAT_SESSION_FILE` is not a runtime setting in the current server implementation; session state is stored under `CLAUDE_CHAT_DATA_DIR` using the service port. Use `CLAUDE_CHAT_HISTORY_FILE` only when conversation history must live at a custom path.
+
+## Local Data
+
+Default runtime files include:
+
+```text
+claude-chat/auth-profile.json       provider profiles and API keys
+claude-chat/data/history.json       merged chat history
+claude-chat/data/session-<port>.json
+claude-chat/data/codex-thread-<port>.json
+claude-chat/data/schedules-<port>.json
+claude-chat/data/schedules-state-<port>.json
+claude-chat/data/runs/               scheduler run logs
+claude-chat/data/wechat-*            WeChat credentials, sync state, history, and media
+```
+
+These paths are ignored by the repository's `.gitignore`. Keep them private, include them deliberately in backups, and protect backups at rest.
+
+## HTTP and WebSocket Surface
+
+The service exposes the panel and a small local API:
+
+| Path | Purpose |
+| --- | --- |
+| `/` and static files | Embedded chat UI. |
+| `/api/health/claude-auth` | Claude CLI login status. |
+| `/api/health/codex-auth` | Codex login status. |
+| `/api/usage-limits` | Best-effort Claude/Codex subscription usage windows. |
+| `/api/auth-profile` | Read and manage provider profiles. Secret values are masked in GET responses. |
+| `/api/history` | List and manage local conversation history. |
+| `/api/cron/jobs` | List, create, enable/disable, and delete scheduled jobs. |
+| `/api/cron/jobs/once` | Create a future one-off job. |
+| `/api/wechat/*` | WeChat status, QR login, polling, and logout. |
+| WebSocket upgrade | Agent messages, streaming events, cancellation, and interactive question responses. |
+
+This API is designed for the local inkfellow UI, not as a hardened public service.
+
+## Reverse Proxy
+
+For local development, the main Next.js app handles `/notes-claude/*` through its built-in rewrite.
+
+For production, `deploy/nginx.conf.example` proxies `/notes-claude/` directly to this service and includes the required WebSocket headers. The trailing slash in `proxy_pass http://127.0.0.1:8082/` strips the public prefix before forwarding.
+
+Recommended boundaries:
+
+- Bind this service to `127.0.0.1`.
+- Require authentication at Nginx or another trusted gateway.
+- Preserve `Upgrade` and `Connection` headers.
+- Use long read/send timeouts for agent streams.
+- Run the process as the same user that owns the selected subscription credentials and vault.
+
+## Desktop Embedding
+
+The Tauri app packages this directory with production dependencies and a Node runtime. At launch it:
+
+1. Chooses a free loopback port.
+2. Generates a random `DESKTOP_AGENT_TOKEN`.
+3. Sets the selected vault as `VAULT_PATH`.
+4. Stores auth profiles and runtime data in the desktop application config directory.
+5. Starts `server.js` as a child process and injects the token into the embedded panel URL and WebSocket.
+
+Do not add `.env`, `auth-profile.json`, `data/`, or `node_modules` to the desktop bundle manually; `scripts/prepare-desktop-sidecar.mjs` intentionally excludes and regenerates them.
+
+## Development and Checks
+
+```bash
+npm ci
+node --check server.js
+node --check scheduler.js
+npm start
+```
+
+There is currently no automated test script in `claude-chat/package.json`; the declared `npm test` intentionally exits with an error. Use syntax checks plus a local service smoke test, then run the root project checks before release.
+
+## Security Checklist
+
+- Never commit `.env`, `auth-profile.json`, `data/`, OAuth files, chat history, or API keys.
+- Do not bind to a public interface without a separate authenticated gateway.
+- Keep `VAULT_PATH` as narrow as possible. Requested working directories are resolved and constrained below it.
+- Use `plan` or `acceptEdits` for cautious deployments; reserve `auto` and especially `bypassPermissions` for trusted users.
+- Isolate `CLAUDE_CHAT_DATA_DIR`, profile files, ports, and Unix users when running more than one instance.
+- Remember that chat and schedule logs may contain private note excerpts even when no API keys are present.
+
+## Troubleshooting
+
+- **Claude shows logged out:** run `claude auth status` as the exact service user and check its `HOME` and keychain access.
+- **Codex profile is missing:** complete `codex login` as the service user and confirm that `~/.codex/auth.json` exists.
+- **Panel loads but streaming fails:** preserve WebSocket upgrade headers and make the configured frontend port match the service port.
+- **Agent cannot see the vault:** use an absolute `VAULT_PATH` and verify filesystem permissions for the service user.
+- **A stale provider endpoint is used:** remove inherited `ANTHROPIC_*` overrides from the process manager, then restart and activate the intended UI profile.
+- **Schedules disappear between restarts:** verify that `CLAUDE_CHAT_DATA_DIR` is writable and persistent.

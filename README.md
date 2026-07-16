@@ -2,741 +2,284 @@
 
 English | [中文](./README.zh-CN.md)
 
-Turn your Markdown folder into a cloud-accessible personal knowledge base — **browse, organize, sync, and share** from any device, anywhere. The built-in AI Agent panel works as an **LLM Wiki**: AI reads and understands every note you've written, so you can ask questions and get answers grounded in your own knowledge.
+inkfellow turns a folder of Markdown notes into a local-first knowledge workspace. Read and edit the same vault on the web or desktop, keep it under Git, share individual notes, and work with an AI agent that can use the vault as its working context.
 
-Supports **Claude Pro/Teams subscriptions** (no API key needed), **DeepSeek**, **OpenRouter** (200+ models), and any Anthropic-compatible API — swap providers anytime from the UI.
+The repository contains three usable surfaces:
 
----
-
-## What is an LLM Wiki?
-
-With ordinary note tools, the workflow is: **write → search → scroll → find**. Most of what you write gets forgotten over time.
-
-**LLM Wiki** changes that to: **write → just ask**.
-
-Every note you write becomes part of the AI's memory. Whatever you want to find or work on, just ask in plain language:
-
-> "What was the core idea in that project plan I wrote last month?"  
-> "Expand this reading note into a full article."  
-> "How does this note connect to my other thoughts on XX?"
-
-The AI answers based on **your own content** — not generic knowledge. Your note folder stops being a pile of files and becomes a **personal knowledge assistant that actually knows what you've written**.
-
----
-
-## AI Agent Integration
-
-The AI panel is embedded directly inside the notes interface — no tab switching, no copy-pasting.
-
-- **Select text → auto-quote**: Highlight any passage in a note and it appears instantly in the AI chat as a quoted reference.
-- **Note context awareness**: The AI knows which note you are reading and can discuss it directly.
-- **Resizable side panel**: Drag to adjust width; collapses to a floating button on mobile.
-- **Persistent sessions**: Conversation history is preserved across page reloads.
-
-### Supported Providers
-
-| Provider | How to connect | Models |
+| Surface | Best for | Implementation |
 | --- | --- | --- |
-| **Claude (Official)** | Log in with your Anthropic account — no API key required | Claude Opus / Sonnet / Haiku (latest) |
-| **DeepSeek** | Paste your DeepSeek API key | DeepSeek V4 Pro, V4 Flash |
-| **OpenRouter** | Paste your OpenRouter API key | 200+ models (GPT-4o, Gemini, Llama…) |
-| **Custom** | Any provider with an Anthropic-compatible API — set base URL + API key | Your choice |
+| Web app / PWA | Self-hosting, phones, tablets, and remote access | Next.js 16 + React 19 |
+| Desktop app | Direct access to a local vault with no web server setup | Tauri 2 + the static `desktop-lite` UI |
+| AI service | Streaming agent chat, provider switching, history, schedules, and WeChat connection | Node.js + WebSocket + Claude Agent SDK + Codex SDK |
 
-You can add multiple accounts and switch between them from the settings panel at any time.
+## Current Features
 
-The AI backend is a lightweight Node.js service that runs alongside the notes app and uses the official [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk).
+- Browse, search, create, import, rename, edit, and delete notes and folders.
+- Render GFM Markdown, front matter, tables of contents, Mermaid diagrams, local images, Wiki links, backlinks, and mentions.
+- Read and edit `.md`, `.html`, and `.htm` files in the web app. The desktop app also previews PDF and common image formats.
+- Keep edits under Git: inspect status and diffs, view history, pull, commit and push, or discard a selected change.
+- Generate revocable public links for individual notes under `/share/<token>`.
+- Install the web app as a PWA; the UI shell is cached for faster reopening.
+- Open a resizable AI panel beside the active note. Selected text and the current note can be passed into the conversation.
+- Switch between Claude subscription login, Codex/ChatGPT login, Anthropic, DeepSeek, OpenRouter, MiniMax, and custom Anthropic-compatible endpoints.
+- Preserve chat history, choose models and permission modes, create one-off or cron schedules, and optionally connect a WeChat bot.
+- Use responsive layouts designed for desktop and mobile screens.
 
----
+## How the Pieces Fit Together
 
-## Other Features
+```text
+Browser / installed PWA
+        |
+        v
+Next.js app :3000  ---- reads/writes ----> VAULT_PATH
+        |
+        +---- /notes-claude/* -----------> claude-chat :8082
+        |
+        +---- /share/<token> ------------> public read-only note
 
-- Browse `.md`, `.html`, and `.htm` files from a local vault.
-- Render Markdown with GFM, table of contents, and Obsidian-style local images.
-- Protect the private notes UI and APIs with Basic Auth.
-- **Create folders**: Add new folders directly from the sidebar toolbar, or inline inside the "New Note" dialog without leaving the flow.
-- **Git sync panel**: view status, diffs, commit history, pull / push / discard. An ambient status bar at the bottom of the sidebar shows pending-change count at a glance; on mobile an orange badge appears on the sidebar toggle when the sidebar is closed.
-- **Nightly auto-sync**: `scripts/nightly-sync.js` runs at midnight via cron — pulls, commits with an AI-generated message, and pushes silently. No changes = no commit.
-- Create tokenized public share links under `/share/:token`.
-- **Progressive Web App (PWA)**: Install inkfellow to your device home screen for a native-app feel — full-screen, no browser chrome, offline-capable for the UI shell.
+Tauri desktop app
+        +---- reads/writes the selected local vault directly
+        +---- starts its own loopback claude-chat sidecar on a free port
+```
 
-## Install as App (PWA)
-
-inkfellow is a full PWA. Once installed it launches like a native app — no browser address bar, no tab switching.
-
-### Desktop (Chrome / Edge)
-
-1. Open the site in Chrome or Edge.
-2. Click the **install icon** that appears in the address bar (a monitor with a download arrow).
-3. Click **Install** → the app appears in your OS app launcher and opens in its own window.
-
-### Mobile
-
-**iOS (Safari)**
-
-1. Open the site in Safari (other browsers on iOS don't support PWA install).
-2. Tap the **Share** button (box with an arrow) at the bottom of the screen.
-3. Scroll down and tap **Add to Home Screen** → **Add**.
-4. The inkfellow icon appears on your home screen and opens full-screen.
-
-**Android (Chrome)**
-
-1. Open the site in Chrome.
-2. Chrome shows an **"Add to Home Screen"** banner automatically, or tap the menu (⋮) → **Install app**.
-3. The icon appears on your home screen; the app runs full-screen without browser controls.
-
-> **Other Android browsers** (Via, Firefox, etc.) do not support PWA installation. Use Chrome or Edge to install; afterwards you can ignore those browsers entirely.
-
-## Live Demo (Vercel)
-
-The repo includes a `vault/` sample knowledge base so you can deploy a working demo to Vercel instantly.
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/jiangjiren/inkfellow)
-
-After deploying, go to Vercel → Project → Settings → **Environment Variables** and add:
-
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `NOTES_BASIC_AUTH_USERNAME` | `demo` (or anything) | Login username for the demo |
-| `NOTES_BASIC_AUTH_PASSWORD` | your chosen password | Login password — **must not be empty** |
-| `NEXT_PUBLIC_APP_NAME` | `inkfellow` | Shown in the page title |
-| `SITE_URL` | your Vercel URL (e.g. `https://xxx.vercel.app`) | Used for share link generation |
-
-> **Note**: The Vercel version uses the bundled `vault/` sample notes and does not support Git sync or the AI panel (both require a persistent server environment). Deploy to a VPS for full functionality.
-
-## Not a Developer? Let an AI Agent Install It for You
-
-If you're not comfortable with the command line, the easiest path is to hand the job to an AI coding agent — **Claude Code**, **Codex**, **OpenCode**, or any similar tool. Just paste the repository URL and say something like:
-
-> "Please clone this repo and deploy it on my server: `https://github.com/jiangjiren/inkfellow`"
-
-The agent will read the README, run the commands, and guide you through the configuration. Most users get a working installation this way without touching a single line of code themselves.
-
----
+Next.js already rewrites `/notes-claude/*` to the AI service, so the panel works through `http://localhost:3000` during local development. The production Nginx example proxies that path directly to port 8082 to handle long-lived WebSocket traffic explicitly.
 
 ## Requirements
 
-- Node.js 20 or newer.
-- npm.
-- A local Markdown vault (any folder with `.md` files; Obsidian format works best).
+For the web app and AI service:
 
-On a fresh Ubuntu / Debian VPS, install all prerequisites in one line:
+- Node.js 20.9 or newer
+- npm
+- A notes folder; an Obsidian vault works well
+- Git only if you want sync and version-history features
 
-```bash
-sudo apt update && sudo apt install -y git nodejs npm nginx
-```
+For desktop development, also install Rust 1.77.2 or newer and the [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
 
-> Ubuntu 24.04+ ships Node.js 20+ via `apt`, which already meets the version requirement.
-
-## Quick Start
+## Quick Start: Web App
 
 ```bash
-git clone https://github.com/jiangjiren/inkfellow notes-app
-cd notes-app
-npm install
-bash scripts/setup-vault.sh   # creates vault + bare git repo, writes VAULT_PATH to .env.local
+git clone https://github.com/jiangjiren/inkfellow.git
+cd inkfellow
+npm ci
+cp .env.example .env.local
 ```
+
+On PowerShell, use `Copy-Item .env.example .env.local` instead of `cp`.
 
 Edit `.env.local`:
 
-```bash
-NEXT_PUBLIC_APP_NAME=inkfellow       # Shown in the UI and page titles
-VAULT_PATH=/home/you/vault          # Set automatically by setup-vault.sh
-SITE_URL=http://localhost:3000      # Replace with your domain or public IP
+```dotenv
+NEXT_PUBLIC_APP_NAME=inkfellow
+VAULT_PATH=/absolute/path/to/your/vault
+SITE_URL=http://localhost:3000
 
-# ↓ These two lines are your login credentials for the knowledge base
-NOTES_BASIC_AUTH_USERNAME=notes     # Username — change to anything you like
-NOTES_BASIC_AUTH_PASSWORD=change-me # Password — must not be left empty
+# Required when the site is accessed through a non-local hostname.
+NOTES_BASIC_AUTH_USERNAME=notes
+NOTES_BASIC_AUTH_PASSWORD=replace-with-a-strong-password
 ```
 
-Build and start the notes app:
+Then start development:
 
 ```bash
-npm run build
-npm start            # runs on http://localhost:3000
+npm run dev
 ```
 
-Open `http://localhost:3000` in your browser. A login prompt will appear — enter the username and password you set in `.env.local`.
+Open <http://localhost:3000>. Requests whose host is `localhost` or `127.0.0.1` bypass Basic Auth; remote access does not. An empty remote password deliberately denies access.
 
-> **Where does the login account come from?** There is no registration. The credentials are exactly what you put in `NOTES_BASIC_AUTH_USERNAME` and `NOTES_BASIC_AUTH_PASSWORD`. Change either value and restart the service to update your credentials.
+The repository includes a sample `vault/`. If `VAULT_PATH` is omitted, that folder is used. On Linux, `bash scripts/setup-vault.sh` can create a working vault, a bare Git remote, seed the sample notes, and write `VAULT_PATH` to `.env.local`.
 
-### Enabling the AI Panel
+## Enable the AI Panel
 
-The AI panel loads from `/notes-claude/`, which is served by a separate Node.js process in the `claude-chat/` directory.
+Run the AI service as a second process:
 
 ```bash
 cd claude-chat
-npm install
-npm start            # runs on http://127.0.0.1:8082 by default
+npm ci
+cp .env.example .env
+npm start
 ```
 
-**Nginx is required for the AI panel.** The chat uses WebSocket for real-time streaming; Nginx must forward both HTTP and WebSocket upgrade requests to port 8082. A ready-to-use template is provided in `deploy/nginx.conf.example`, which includes the `/notes-claude/` block with all required headers.
+Set `VAULT_PATH` in `claude-chat/.env` to the same folder used by the web app. The default listener is `127.0.0.1:8082`.
 
-> **Why 404 on `/notes-claude/`?** If you access the app directly via `:3000` (bypassing Nginx), Next.js has no route for `/notes-claude/` and returns 404. Always go through Nginx (port 80/443) in production.
+Authentication options:
 
-Generate the AI panel password file (recommended to protect API credits):
+| Provider | Setup |
+| --- | --- |
+| Claude subscription | Install Claude Code, log in under the same OS user that runs `claude-chat`, then verify with `claude auth status`. |
+| Codex / ChatGPT subscription | Log in through Codex or run `codex login` under the service user. The service detects `~/.codex/auth.json`. |
+| Anthropic, DeepSeek, OpenRouter, MiniMax | Add an account and API key in the AI panel settings. |
+| Custom | Add an API key, base URL, and model mapping for an Anthropic-compatible endpoint. |
+
+The service user and `HOME` matter: subscription credentials must be visible to the process. API keys and provider profiles are stored locally and must not be committed.
+
+See [claude-chat/README.md](./claude-chat/README.md) for provider behavior, data files, schedules, WeChat, REST endpoints, and security details.
+
+## Desktop App
+
+The desktop app selects a vault on first launch and stores the choice in the OS application config directory. It initializes a local Git repository when necessary and starts the packaged AI service on a free loopback port.
+
+Development:
 
 ```bash
-echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.htpasswd
+npm ci
+npm run desktop:dev
 ```
 
-Once running, click the **✦ AI** button in the notes toolbar to open the panel, then connect your provider from the settings icon.
-
-### Connecting an AI Provider
-
-Open the settings panel (⚙ icon) inside the AI panel and pick one of the following:
-
----
-
-#### Option A — Claude Pro / Teams subscription (no API key)
-
-This uses your existing Claude subscription quota — no extra cost, no API key required.
-
-**1. Install Claude Code CLI on the server**
+Windows installer:
 
 ```bash
-npm install -g @anthropic-ai/claude-code
+npm run desktop:build
 ```
 
-**2. Log in with your Anthropic account**
+macOS DMG:
 
 ```bash
-claude login
-# Opens a browser-based OAuth flow.
-# Complete the login in your browser; credentials are saved on the server.
+npx -y @tauri-apps/cli build --config src-tauri/tauri.conf.mac.json
 ```
 
-**3. Verify the login**
-
-```bash
-claude auth status
-# Should print: "loggedIn": true, "subscriptionType": "pro"
-```
-
-**4. In the AI panel settings** — the **Claude** provider row will show ✅ logged in. Select it and start chatting.
-
-> The `claude-chat` service reads the same credentials stored by the CLI. Once logged in, the service works automatically — no restart needed.
-
----
-
-#### Option B — Anthropic API Key
-
-If you prefer pay-as-you-go billing instead of a subscription:
-
-1. Get a key at [console.anthropic.com](https://console.anthropic.com/) → API Keys.
-2. In the AI panel settings → **Add account** → choose **Anthropic** → paste `sk-ant-…`.
-
----
-
-#### Option C — DeepSeek / OpenRouter / Custom
-
-Add an account in the settings panel and select the corresponding provider. Refer to each provider's website for API key instructions.
-
-## Syncing Your Local Obsidian Vault
-
-The app has a built-in Git panel (pull / push / discard / history). To keep your local Obsidian in sync with the server, pick one of the two methods below.
-
-### Method A: Self-hosted bare repo on the server (no external service, recommended)
-
-This keeps everything on your own machine. A *bare repository* acts as the central hub — local Obsidian pushes to it, the server pulls from it.
-
-```
-Local Obsidian ──push──▶ bare repo on server ◀──pull── inkfellow (working dir)
-                         ~/git/notes-vault.git
-```
-
-> **✅ Already ran `bash scripts/setup-vault.sh`?** The bare repo and working vault were created automatically — the script printed the SSH remote address at the end. Skip steps 1 and 2 below and **jump straight to step 3** to configure your local machine.
-
-**1. Create the bare repo on the server** (skip if you ran setup-vault.sh)
-
-```bash
-mkdir -p ~/git
-git init --bare ~/git/notes-vault.git
-```
-
-**2. Clone it as the working vault** (skip if you ran setup-vault.sh)
-
-```bash
-git clone ~/git/notes-vault.git ~/vault
-# then set VAULT_PATH=~/vault in .env.local
-```
-
-**3. Authorise your local machine via SSH**
-
-On your local computer, generate an SSH key if you don't have one:
-
-```bash
-ssh-keygen -t ed25519 -C "obsidian-local"
-```
-
-Copy the public key to the server (you'll be prompted for the server password once):
-
-```bash
-ssh-copy-id user@your-server.com
-```
-
-Verify it works without a password:
-
-```bash
-ssh user@your-server.com   # should log in directly
-```
-
-**4. Add the server as the remote on your local vault**
-
-```bash
-cd /path/to/local/obsidian-vault
-git init                   # skip if already a git repo
-git remote add origin ssh://user@your-server.com/home/you/git/my-vault.git
-git pull origin main
-```
-
-**5. Install the Obsidian Git plugin**
-
-In Obsidian → Settings → Community plugins → search **Obsidian Git**, install and enable it. Recommended settings:
-- *Auto pull interval*: `10` (minutes)
-- *Auto push interval*: `5` (minutes)
-
-After each push, open the Git panel in inkfellow and click **Pull** to update the working vault.
-
----
-
-### Method B: GitHub private repo (easiest, works from any machine)
-
-```
-Local Obsidian ──push──▶ GitHub private repo ◀──pull── inkfellow on server
-```
-
-**1. Push your local vault to GitHub**
-
-Create a private repo on GitHub, then in your local vault:
-
-```bash
-git init
-git remote add origin https://github.com/yourname/my-vault.git
-git add . && git commit -m "init"
-git push -u origin main
-```
-
-**2. Clone it on the server**
-
-```bash
-git clone https://github.com/yourname/my-vault.git ~/vault
-# set VAULT_PATH=~/vault in .env.local
-```
-
-**3. Store a GitHub Personal Access Token on the server**
-
-Generate a token at GitHub → Settings → Developer settings → Personal access tokens (classic), scope: `repo`.
-
-```bash
-# on the server, let git remember the token permanently
-git config --global credential.helper store
-
-cd ~/vault
-git pull   # enter your GitHub username + token when prompted; stored after that
-```
-
-Or embed the token directly in the remote URL:
-
-```bash
-git remote set-url origin https://yourname:YOUR_TOKEN@github.com/yourname/my-vault.git
-```
-
-**4. Install the Obsidian Git plugin** (same as Method A, step 5)
-
-After each push, open the Git panel in inkfellow and click **Pull**.
-
----
-
-### Sync flow summary
-
-| Action | What to do |
-|--------|-----------|
-| Wrote notes locally | Obsidian Git auto-pushes → click **Pull** in inkfellow |
-| Edited notes on the web | Click **Push** in inkfellow → Obsidian Git auto-pulls |
-| Want automatic nightly backup | Set up `scripts/nightly-sync.js` via cron (see below) |
-
----
-
-### Nightly Auto-Sync
-
-`scripts/nightly-sync.js` mirrors the manual Sync button — pull → detect changes → AI commit message → push — but runs automatically at midnight with zero user interaction.
-
-**What it does:**
-
-1. `git pull --rebase --autostash` — fetch the latest from remote first
-2. Stage all local changes and check whether anything is new
-3. If nothing changed → exit cleanly (no empty commit, no noise)
-4. Call the AI to generate a commit message describing what changed today (same model and prompt as the manual sync panel); falls back to a date-stamped template if the AI is unreachable
-5. `git commit` + `git push`
-
-> The commit message intentionally describes **what changed**, not whether writing is "finished" — incomplete notes are backed up just like complete ones.
-
-**Setup:**
-
-Find your node binary path first:
-
-```bash
-which node   # e.g. /home/you/.nvm/versions/node/v20.x.x/bin/node
-```
-
-Open your crontab and add one line per vault:
-
-```bash
-crontab -e
-```
-
-```
-# inkfellow nightly sync — adjust paths to match your installation
-0 0 * * * /path/to/node /path/to/clawapp/scripts/nightly-sync.js /path/to/your/vault >> ~/.pm2/logs/nightly-sync.log 2>&1
-```
-
-Logs land in the path you set in the cron line above. Run the script manually to verify it works before the first midnight trigger:
-
-```bash
-node scripts/nightly-sync.js /path/to/your/vault
-```
-
-## Access Without a Domain (Public IP)
-
-No domain? No problem. Set `SITE_URL` to your server's public IP:
-
-```bash
-SITE_URL=http://203.0.113.42        # via Nginx on port 80
-# or
-SITE_URL=http://203.0.113.42:3000   # direct Next.js, no Nginx
-```
-
-For direct access without Nginx, open port `3000` in your firewall:
-
-```bash
-# CentOS / RHEL / AlmaLinux (firewalld)
-sudo firewall-cmd --permanent --add-port=3000/tcp
-sudo firewall-cmd --reload
-
-# Ubuntu / Debian (ufw)
-sudo ufw allow 3000/tcp
-```
-
-The app works identically over IP — share links will include the IP in the URL.
+The Tauri `beforeBuildCommand` runs `scripts/prepare-desktop-sidecar.mjs`. It copies the current Node runtime, copies `claude-chat` without credentials or runtime data, and installs the sidecar's production dependencies. Build artifacts are written below `src-tauri/target/release/bundle/`.
 
 ## Environment Variables
 
-### inkfellow
+### Web app
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `NEXT_PUBLIC_APP_NAME` | No | `inkfellow` | App name shown in UI and page titles. |
-| `VAULT_PATH` | Yes | `./vault` | Absolute path to the Markdown vault. |
-| `NOTES_BASIC_AUTH_USERNAME` | Yes | `notes` | Login username for the knowledge base. |
-| `NOTES_BASIC_AUTH_PASSWORD` | Yes | *(empty)* | Password. If empty, access is always denied. |
-| `SHARED_NOTES_PATH` | No | `./shared-notes.json` | JSON file for share tokens. |
-| `SITE_URL` | No | `http://localhost:3000` | Public base URL for share links (domain or IP). |
-| `NOTES_GIT_PUSH_TARGET` | No | `HEAD:main` | Git refspec used by the push action. |
-| `GIT_COMMIT_USER_NAME` | No | `Inkfellow Web` | Git commit author name for the web "Push to cloud" feature. No global git identity required on the server. |
-| `GIT_COMMIT_USER_EMAIL` | No | `web-editor@inkfellow.local` | Git commit author email for the web "Push to cloud" feature. |
-| `NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN` | No | *(empty)* | Enables Cloudflare Web Analytics. |
-
-### AI Service (`claude-chat/`)
-
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `8082` | Port the AI service listens on. |
-| `VAULT_PATH` | *(cwd)* | Working directory for the AI agent. |
-| `CLAUDE_PERMISSION_MODE` | `auto` | Agent permission mode: `plan`, `acceptEdits`, `auto`, `bypassPermissions`. |
-| `ANTHROPIC_API_KEY` | *(empty)* | Optional default API key (users can also set keys in the UI). |
-| `ANTHROPIC_BASE_URL` | *(empty)* | Optional custom API base URL for self-hosted or third-party providers. |
+| `NEXT_PUBLIC_APP_NAME` | `inkfellow` | Name shown in the UI, page titles, and auth realm. |
+| `VAULT_PATH` | `./vault` | Absolute or process-relative path to the notes vault. |
+| `SITE_URL` | `http://localhost:3000` | Public origin used when creating share links. |
+| `SHARED_NOTES_PATH` | `./shared-notes.json` | Share-token database. |
+| `NOTES_BASIC_AUTH_USERNAME` | `notes` | Username for remote web and notes API access. |
+| `NOTES_BASIC_AUTH_PASSWORD` | empty | Remote access is denied while empty. |
+| `NEXT_PUBLIC_CLAUDE_CHAT_PORT` | `8082` | Port used by the Next rewrite and AI panel. |
+| `NOTES_GIT_PUSH_TARGET` | `HEAD:main` | Refspec used by the web Git push action. |
+| `GIT_COMMIT_USER_NAME` | `Inkfellow Web` | Git author name used for web commits. |
+| `GIT_COMMIT_USER_EMAIL` | `web-editor@inkfellow.local` | Git author email used for web commits. |
+| `NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN` | empty | Enables Cloudflare Web Analytics when set. |
+| `DISABLE_PWA` | unset | Set to `1` to disable PWA generation in production. |
 
-## Scripts
+`NOTES_BASIC_AUTH_USER` and `NOTES_PASSWORD` remain accepted as legacy aliases, but new installations should use the canonical names above.
 
-```bash
-# Notes app
-npm run dev      # local development (hot reload)
-npm run build    # production build
-npm start        # run the built app
+### AI service
 
-# Share link CLI
-node scripts/create-share-link.mjs "path/in/vault/note.md"
+The most common settings are `HOST`, `PORT`, `VAULT_PATH`, `CLAUDE_PERMISSION_MODE`, and `CLAUDE_CHAT_DATA_DIR`. The complete table is in [claude-chat/README.md](./claude-chat/README.md#configuration).
 
-# Nightly auto-sync (also runs via cron at midnight)
-node scripts/nightly-sync.js /path/to/vault
-```
+## Git Sync
 
-## Production Deployment
+Git features operate on `VAULT_PATH`, not on the inkfellow source repository.
 
-A typical production setup:
+1. Initialize the vault and make an initial commit.
+2. Add a remote if you want pull and push.
+3. Make sure the OS user running inkfellow can access the remote without an interactive password prompt.
 
-1. **systemd** keeps both processes running persistently.
-2. **Nginx** proxies traffic: `/` and `/share` → port 3000; `/notes-claude/` → port 8082.
-
-```bash
-# ── inkfellow (Next.js) ──────────────────────────────────────────
-sudo cp deploy/notes-app.service.example /etc/systemd/system/notes-app.service
-# Edit: set User, WorkingDirectory, EnvironmentFile
-sudo systemctl daemon-reload
-sudo systemctl enable --now notes-app
-
-# ── AI Chat Service (claude-chat) ────────────────────────────────
-sudo cp deploy/claude-chat.service.example /etc/systemd/system/claude-chat.service
-# Edit: set User, WorkingDirectory, and VAULT_PATH
-sudo systemctl daemon-reload
-sudo systemctl enable --now claude-chat
-
-# ── Nginx ────────────────────────────────────────────────────────
-sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/notes-app
-sudo ln -s /etc/nginx/sites-available/notes-app /etc/nginx/sites-enabled/
-# Generate the AI panel password file
-echo "YOUR_USER:$(openssl passwd -apr1 YOUR_PASSWORD)" | sudo tee /etc/nginx/.htpasswd
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-For HTTPS with a real domain:
+Example using a private remote:
 
 ```bash
-sudo apt install certbot python3-certbot-nginx   # Debian/Ubuntu
-sudo certbot --nginx -d your-domain.com
-```
-
-To update after pulling new code:
-
-```bash
-SERVICE_NAME=notes-app bash scripts/update_app.sh
-```
-
-## Multi-User Setup
-
-Each user gets their own isolated instance: a separate Next.js process, a separate vault directory, and a separate git repository. They share the same compiled build — no code duplication.
-
-### Step 1 — Create the vault and git repo
-
-```bash
-# Working vault
-mkdir -p /home/you/vault/USERNAME-vault
-
-# Bare git repo (for sync/backup, same pattern as the main vault)
-git init --bare /home/you/git/USERNAME-vault.git
-
-# Initialize git in the working vault and make the first commit
-cd /home/you/vault/USERNAME-vault
+cd /path/to/vault
 git init
-git remote add origin /home/you/git/USERNAME-vault.git
-git config user.email "USERNAME@inkfellow"
-git config user.name "USERNAME"
-git checkout -b main
 git add .
-git commit -m "init: USERNAME vault"
+git -c user.name="Vault Setup" -c user.email="setup@localhost" commit -m "Initial notes"
+git branch -M main
+git remote add origin <your-private-remote>
 git push -u origin main
 ```
 
-> Each vault must have its **own** bare repo. Never point two users at the same `.git` remote.
+The web and desktop Git panels show uncommitted changes, diffs, history, upstream ahead/behind state, and sync actions. `scripts/nightly-sync.js` can also pull, create a concise commit message, commit, and push from cron.
 
-### Step 2 — Add PM2 processes
+## Production Deployment
 
-Edit `ecosystem.config.cjs` and add **two** new entries to the `apps` array — one for the notes app and one for the AI chat backend:
-
-```js
-// Notes app
-{
-  name: "inkfellow-USERNAME",
-  script: "node_modules/.bin/next",
-  args: "start",
-  cwd: "/path/to/clawapp",   // always use an absolute path, not __dirname
-  env: {
-    PORT: "3001",                     // pick a free port (3001, 3002, …)
-    NODE_ENV: "production",
-    VAULT_PATH: "/home/you/vault/USERNAME-vault",
-    NOTES_BASIC_AUTH_USERNAME: "USERNAME",
-    NOTES_BASIC_AUTH_PASSWORD: "STRONG_PASSWORD",
-  },
-  autorestart: true,
-  watch: false,
-  merge_logs: true,
-  out_file: "~/.pm2/logs/inkfellow-USERNAME-out.log",
-  error_file: "~/.pm2/logs/inkfellow-USERNAME-error.log",
-},
-// AI chat backend — must point to this user's own vault
-{
-  name: "claude-chat-USERNAME",
-  script: "server.js",
-  cwd: "/path/to/clawapp/claude-chat",
-  node_args: "--env-file-if-exists=.env",
-  env: {
-    PORT: "8083",                     // pick a free port different from the main claude-chat (8082)
-    HOST: "127.0.0.1",
-    VAULT_PATH: "/home/you/vault/USERNAME-vault",
-    CLAUDE_PERMISSION_MODE: "auto",
-  },
-  autorestart: true,
-  watch: false,
-  merge_logs: true,
-  out_file: "~/.pm2/logs/claude-chat-USERNAME-out.log",
-  error_file: "~/.pm2/logs/claude-chat-USERNAME-error.log",
-},
-```
-
-Then start both:
+Build both Node projects first:
 
 ```bash
-pm2 start ecosystem.config.cjs --only inkfellow-USERNAME,claude-chat-USERNAME
+npm ci
+npm run build
+
+cd claude-chat
+npm ci
+cd ..
 ```
 
-> **Important:** always use absolute paths for `cwd`. Using `__dirname` in `ecosystem.config.cjs`
-> causes PM2 to resolve the path relative to the daemon's working directory, not the config file,
-> which makes the process unable to find the `.next` build and crash on startup.
+The repository provides:
 
-> **Each user must have their own `claude-chat` instance** pointing to their own `VAULT_PATH`.
-> Sharing one `claude-chat` between users means the AI agent reads the wrong vault.
+- `deploy/notes-app.service.example` for the Next.js process
+- `deploy/claude-chat.service.example` for the AI service
+- `deploy/nginx.conf.example` for HTTPS, WebSocket proxying, upload limits, and optional extra auth on the AI route
+- `ecosystem.config.cjs` as a PM2 alternative
 
-### Step 3 — Add an Nginx server block
+Before enabling the examples, replace every placeholder and make both services use the same vault. Run the AI service as the same Unix user that owns the Claude/Codex subscription credentials. Keep `claude-chat` bound to loopback and expose it only through Next.js or a trusted reverse proxy.
 
-Add a new server block to your Nginx config (e.g. `/etc/nginx/conf.d/inkfellow.conf`):
+For multiple users, run one isolated web process and one isolated AI process per vault, with unique ports, credentials, share-token files, and AI data directories. The repository does not provide multi-tenant authorization inside a single process.
 
-```nginx
-server {
-    listen 80;
-    server_name USERNAME.yourdomain.com;
-    return 301 https://$host$request_uri;
-}
+### Vercel demo
 
-server {
-    listen 443 ssl;
-    server_name USERNAME.yourdomain.com;
+The bundled `vault/` makes a read-only-style demo deployment possible:
 
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/jiangjiren/inkfellow)
 
-    client_max_body_size 50M;
+Serverless filesystems and long-lived WebSockets are not a replacement for a persistent inkfellow server. Use a VPS or the desktop app for editing, Git sync, durable share state, and the AI service.
 
-    location = /notes-claude {
-        return 301 /notes-claude/;
-    }
+## PWA Installation
 
-    location /notes-claude/ {
-        proxy_pass http://127.0.0.1:8083/;  # match claude-chat-USERNAME PORT
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-        proxy_buffering off;
-    }
+- Chrome or Edge on desktop: use the install icon in the address bar.
+- Android Chrome: choose **Install app** or **Add to Home screen**.
+- iOS Safari: choose **Share → Add to Home Screen**.
 
-    location / {
-        proxy_pass http://127.0.0.1:3001;   # match the inkfellow-USERNAME PORT
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
+PWA caching covers the application shell. The vault and AI service still come from your running server; it is not a full offline copy of all notes.
+
+## Useful Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start Next.js development mode. |
+| `npm run build` | Create the production standalone build. |
+| `npm start` | Start the production web app. |
+| `npm run typecheck` | Run TypeScript without emitting files. |
+| `npm run lint` | Run ESLint. |
+| `npm run desktop:dev` | Start Tauri development mode. |
+| `npm run desktop:build` | Build the desktop installer for the current configured target. |
+| `node scripts/create-share-link.mjs "path/to/note.md"` | Create or reuse a public share token. |
+| `node scripts/nightly-sync.js /path/to/vault` | Run one automated Git sync cycle. |
+| `bash scripts/update_app.sh` | Pull, install, build, and restart the systemd web service. |
+| `bash scripts/deploy.sh` | Rebuild and restart the PM2 deployment described by `ecosystem.config.cjs`. |
+
+`scripts/deploy.sh` stops every PM2 app and terminates listeners it finds on ports 3000/3001 before rebuilding. Use it only on a host dedicated to this deployment, or adapt it to target named processes.
+
+## Repository Layout
+
+```text
+src/app/             Next.js UI and API routes
+src/lib/             vault, share, and note helpers
+src/proxy.ts         remote Basic Auth gate
+claude-chat/         AI panel and Node/WebSocket service
+desktop-lite/        static desktop UI
+src-tauri/           native desktop backend and packaging
+deploy/              systemd and Nginx examples
+scripts/             setup, share, sync, deploy, and desktop helpers
+vault/               sample notes
 ```
 
-Test and reload:
+## Security Notes
 
-```bash
-sudo nginx -t && sudo nginx -s reload
-```
-
-### Step 4 — Add a DNS record and get an SSL certificate
-
-1. Add an `A` record for `USERNAME.yourdomain.com` pointing to your server's IP.
-2. Once DNS propagates (usually 5–10 minutes), expand the existing certificate:
-
-```bash
-sudo certbot --nginx --expand \
-  -d yourdomain.com \
-  -d www.yourdomain.com \
-  -d USERNAME.yourdomain.com \
-  --non-interactive --agree-tos -m you@example.com
-```
-
-The new subdomain is now live at `https://USERNAME.yourdomain.com`.
-
----
+- Remote `/` and `/api/notes/*` access is protected by Basic Auth. Localhost is intentionally exempt for local and desktop use.
+- `/share/<token>` is public to anyone who knows the token; revoke links that should no longer work.
+- The standalone AI service has no general-purpose login layer. Bind it to `127.0.0.1` and place authentication at Next.js/Nginx. The desktop build adds a per-launch token.
+- Vault path resolution rejects traversal outside the configured vault and excludes internal/tooling directories from note discovery.
+- Provider profiles, OAuth credentials, chat history, share tokens, `.env*`, `.next`, `node_modules`, desktop bundles, and vault content should not be committed.
+- `bypassPermissions` gives the agent broad filesystem/tool access inside the allowed working directory. Use it only for a trusted single-user deployment.
 
 ## Troubleshooting
 
-### Page is blank after a code update or `next build`
-
-**Symptom:** The site returns HTTP 200 but an empty body. No `X-Powered-By: Next.js` header. Paths outside the auth middleware (e.g. `/share/…`) return normal 404 pages.
-
-**Cause:** Occasionally a production build produces a broken middleware bundle for `proxy.ts`. The compiled middleware intercepts every request matching `/` and `/api/notes/*` but fails to emit a response body.
-
-**Fix:** Rebuild and restart:
-
-```bash
-cd /path/to/clawapp
-
-# Stop both instances first to avoid port conflicts
-pm2 stop all   # or list specific names: pm2 stop inkfellow inkfellow-USERNAME2
-
-npm run build
-
-pm2 start ecosystem.config.cjs
-```
-
-If a `next-server` process is still holding the port after stopping PM2, kill it first:
-
-```bash
-# Find and kill any stray next-server on port 3000
-ss -tlnp | grep 3000          # note the PID
-kill <PID>
-pm2 start inkfellow
-```
-
-### PM2 process starts then immediately crashes (EADDRINUSE)
-
-A previous `next start` or `next dev` process is still occupying the port. Find and kill it:
-
-```bash
-ss -tlnp | grep <PORT>
-kill <PID>
-pm2 start inkfellow-USERNAME
-```
-
-### PM2 reports "Could not find a production build in the .next directory"
-
-The `cwd` in `ecosystem.config.cjs` is resolving to the wrong directory. Replace any use of `__dirname` with the absolute path to the app:
-
-```js
-// ❌ unreliable — PM2 daemon resolves __dirname differently
-const BASE = __dirname;
-
-// ✅ always use the absolute path
-const BASE = "/path/to/clawapp";
-```
-
-## Security Model
-
-- The root `/` and `/api/notes/*` require Basic Auth — the entire knowledge base is private by default.
-- `/notes-claude/` should also be protected — the Nginx example includes Basic Auth for this route.
-- Public share routes are tokenized and read-only.
-- Vault reads are restricted to `VAULT_PATH`; `.git`, `.obsidian`, `.claude`, `.claudian`, and `node_modules` are excluded.
-- Git commands are executed without a shell and validate user-supplied paths.
-
-## Repository Hygiene
-
-Do not commit:
-
-- `.env.local` or any `.env*` file (already in `.gitignore`).
-- `shared-notes.json` if it contains real share tokens (already in `.gitignore`).
-- `claude-chat/auth-profile.json` and `claude-chat/session.json` — these hold your AI provider credentials.
-- `.next/`, `node_modules/`, vault contents, or generated media.
+- **AI panel does not connect:** start `claude-chat`, confirm its `PORT` matches `NEXT_PUBLIC_CLAUDE_CHAT_PORT`, and preserve WebSocket upgrade headers in the reverse proxy.
+- **Remote site always returns 401:** set a non-empty `NOTES_BASIC_AUTH_PASSWORD`, rebuild/restart, and use the configured username.
+- **Git pull or push fails:** verify the vault itself has a remote and that the service user has non-interactive SSH or token access.
+- **Desktop build cannot prepare the sidecar:** confirm Node/npm are available and the machine can install `claude-chat` dependencies.
+- **Production build is missing:** run `npm run build` before `npm start`, and make sure the process working directory is the repository root.
 
 ## License
 
-This project is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+[GNU Affero General Public License v3.0](./LICENSE)
 
 ## Contact
 
-- **Email**: jiangjiren@hotmail.com
-- **WeChat**: jiangjiren
+- Email: jiangjiren@hotmail.com
+- WeChat: jiangjiren

@@ -15,6 +15,7 @@ import { extractHeadings, type TocEntry } from "@/lib/noteToc";
 import dynamic from "next/dynamic";
 import NotesHtml from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
+import { NoteTabs, useNoteTabs } from "./NoteTabs";
 import NotesGit from "./NotesGit";
 import NotesDashboard from "./NotesDashboard";
 import TreeItem from "./TreeItem";
@@ -540,6 +541,8 @@ export default function NotesExplorer() {
   // 当前文件树的结构指纹，用于轮询比对，只在增/删/改名时才刷新
   const treeRevRef = useRef<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
+  // 轻量多标签：只是「已打开路径」的书签列表，文档状态仍由下方单例逻辑持有
+  const { tabs, ensureTab, removeTab: removeTabEntry, mapTabs, pruneTabs } = useNoteTabs();
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -553,6 +556,9 @@ export default function NotesExplorer() {
   const [error, setError] = useState<string | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  // 侧栏悬浮：隐藏时鼠标移到左缘以覆盖层唤出（fixed，不回流），移开滑出
+  const [sidebarPeek, setSidebarPeek] = useState<"closed" | "open" | "closing">("closed");
+  const sidebarPeekTimersRef = useRef<{ hide: number | null; close: number | null }>({ hide: null, close: null });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileAssistantSheet, setMobileAssistantSheet] = useState<'closed' | 'expanded'>('closed');
   const mobileAssistantPanelOpen = mobileAssistantSheet === 'expanded';
@@ -750,6 +756,13 @@ export default function NotesExplorer() {
     }
   }, [activePath]);
 
+  // 任何途径打开的文件（文件树、搜索、wiki 链接、草稿落盘…）都自动收进标签
+  useEffect(() => {
+    if (activePath) {
+      ensureTab(activePath);
+    }
+  }, [activePath, ensureTab]);
+
   useEffect(() => {
     if (!activePath) return;
     claudeFrameRef.current?.contentWindow?.postMessage(
@@ -767,6 +780,14 @@ export default function NotesExplorer() {
   }, [note?.path]);
 
   const files = useMemo(() => (tree ? collectFiles(tree) : []), [tree]);
+
+  // 文件树每次刷新后清理失效标签（外部删除/首次恢复 localStorage 里的旧标签）。
+  // 保留 activePath：新建/草稿落盘的文件可能先于文件树刷新出现。
+  useEffect(() => {
+    if (treeState !== "ready") return;
+    const existing = new Set(files.map((file) => file.path));
+    pruneTabs((path) => existing.has(path) || path === activePathRef.current);
+  }, [files, treeState, pruneTabs]);
 
   const refreshWikiIndex = useCallback(async () => {
     try {
@@ -1043,6 +1064,35 @@ export default function NotesExplorer() {
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
   }, [sidebarVisible]);
+
+  // ── 侧栏悬浮开合 ──────────────────────────────────────
+  const clearSidebarPeekTimers = useCallback(() => {
+    const timers = sidebarPeekTimersRef.current;
+    if (timers.hide) { window.clearTimeout(timers.hide); timers.hide = null; }
+    if (timers.close) { window.clearTimeout(timers.close); timers.close = null; }
+  }, []);
+
+  const openSidebarPeek = useCallback(() => {
+    clearSidebarPeekTimers();
+    setSidebarPeek("open");
+  }, [clearSidebarPeekTimers]);
+
+  const scheduleSidebarPeekClose = useCallback(() => {
+    clearSidebarPeekTimers();
+    sidebarPeekTimersRef.current.hide = window.setTimeout(() => {
+      // 先以覆盖层滑出（不回流），动画结束后再摘掉 peek 态
+      setSidebarPeek("closing");
+      sidebarPeekTimersRef.current.close = window.setTimeout(() => setSidebarPeek("closed"), 360);
+    }, 260);
+  }, [clearSidebarPeekTimers]);
+
+  // 侧栏恢复常驻或切到移动端时，清掉悬浮态
+  useEffect(() => {
+    if (isMobileViewport || sidebarVisible) {
+      clearSidebarPeekTimers();
+      setSidebarPeek("closed");
+    }
+  }, [isMobileViewport, sidebarVisible, clearSidebarPeekTimers]);
 
   useEffect(() => {
     if (!isMobileViewport || (!mobileSidebarOpen && mobileAssistantSheet !== 'expanded')) {
@@ -2188,6 +2238,25 @@ export default function NotesExplorer() {
     [isMobileViewport, loadNote, flushEditBeforeSwitch],
   );
 
+  const handleTabSelect = useCallback((path: string) => {
+    if (path === activePathRef.current) return;
+    // 标签切换恢复上次阅读位置（与文件树点击不同，这是标签的核心价值）
+    void flushEditBeforeSwitch().then(() => loadNote(path, null, { restoreStoredScroll: true }));
+  }, [flushEditBeforeSwitch, loadNote]);
+
+  const handleTabClose = useCallback((path: string) => {
+    const isActive = path === activePathRef.current;
+    const idx = tabs.indexOf(path);
+    const neighbor = isActive ? tabs[idx + 1] ?? tabs[idx - 1] ?? null : null;
+    removeTabEntry(path);
+    if (!isActive) return;
+    if (neighbor) {
+      void flushEditBeforeSwitch().then(() => loadNote(neighbor, null, { restoreStoredScroll: true }));
+    } else {
+      goHome();
+    }
+  }, [tabs, removeTabEntry, flushEditBeforeSwitch, loadNote, goHome]);
+
   const clearSearch = useCallback(() => {
     setSearchQuery("");
     setSearchResults([]);
@@ -2345,6 +2414,9 @@ export default function NotesExplorer() {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
+    pruneTabs((p) => target.kind === "file"
+      ? p !== target.path
+      : p !== target.path && !p.startsWith(`${target.path}/`));
     if (affectsActivePath) {
       skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
     }
@@ -2355,7 +2427,7 @@ export default function NotesExplorer() {
       setHasGitChanges(true);
       goHome();
     }
-  }, [goHome, refreshTree]);
+  }, [goHome, pruneTabs, refreshTree]);
 
   // ── Markdown 笔记：立即删除 + 撤销 toast（可撤销优于确认框）────
   const [undoDelete, setUndoDelete] = useState<{ path: string; name: string; content: string } | null>(null);
@@ -2571,6 +2643,8 @@ export default function NotesExplorer() {
         throw new Error(data.error ?? "重命名失败");
       }
       const result = (await res.json()) as { oldPath: string; path: string; kind: TreeActionTarget["kind"] };
+      // 先映射标签路径再刷新文件树，否则刷新触发的失效清理会把旧路径标签删掉
+      mapTabs((p) => replaceMovedPath(p, result.oldPath, result.path, result.kind));
       await refreshTree();
 
       setExpandedFolders((prev) => {
@@ -2592,7 +2666,7 @@ export default function NotesExplorer() {
       setRenameError(err instanceof Error ? err.message : "重命名失败");
       renameInProgressRef.current = false;
     }
-  }, [flushEditBeforeSwitch, loadNote, refreshTree, renameName, renameTarget]);
+  }, [flushEditBeforeSwitch, loadNote, mapTabs, refreshTree, renameName, renameTarget]);
 
   const handleSelectTocHeading = useCallback(
     (slug: string) => {
@@ -2943,7 +3017,23 @@ export default function NotesExplorer() {
       } ${isResizingAssistantPanel || isResizingSidebar ? styles.shellResizing : ""}`}
       style={shellStyle}
     >
-      <aside className={`${styles.sidebar} ${isDesktopSidebarHidden ? styles.sidebarHidden : ""}`} aria-hidden={!isSidebarOpen}>
+      {/* 侧栏隐藏时的左缘感应区：悬停唤出悬浮侧栏 */}
+      {isDesktopSidebarHidden ? (
+        <div
+          className={styles.sidebarPeekZone}
+          onMouseEnter={openSidebarPeek}
+          onMouseLeave={scheduleSidebarPeekClose}
+          aria-hidden="true"
+        />
+      ) : null}
+      <aside
+        className={`${styles.sidebar} ${isDesktopSidebarHidden ? styles.sidebarHidden : ""} ${
+          isDesktopSidebarHidden && sidebarPeek !== "closed" ? styles.sidebarPeek : ""
+        } ${isDesktopSidebarHidden && sidebarPeek === "closing" ? styles.sidebarPeekClosing : ""}`}
+        aria-hidden={!isSidebarOpen && sidebarPeek === "closed"}
+        onMouseEnter={isDesktopSidebarHidden && sidebarPeek !== "closed" ? openSidebarPeek : undefined}
+        onMouseLeave={isDesktopSidebarHidden && sidebarPeek !== "closed" ? scheduleSidebarPeekClose : undefined}
+      >
         <button
           type="button"
           className={styles.sidebarResizer}
@@ -3426,7 +3516,8 @@ export default function NotesExplorer() {
             </div>
           ) : (
             <div className={styles.noteMeta}>
-              <span>{isDraft ? "记录灵感" : activePath ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : ""}</span>
+              {/* 桌面端文档身份由标签承载，顶栏不再重复显示标题；移动端无标签保持原样 */}
+              <span>{isDraft ? "记录灵感" : activePath && (isMobileViewport || tabs.length === 0) ? stripNoteExtension(activePath.split("/").pop() ?? activePath) : ""}</span>
               {!isEditing && hasGitChanges && note ? (
                 <button
                   type="button"
@@ -3572,6 +3663,16 @@ export default function NotesExplorer() {
           </div>
         </header>
 
+        {/* 多标签条：仅桌面端、非 git 视图。移动端保持单文档交互 */}
+        {!isMobileViewport && !isDesktopGitView ? (
+          <NoteTabs
+            tabs={tabs}
+            activePath={isDraft ? null : activePath}
+            onSelect={handleTabSelect}
+            onClose={handleTabClose}
+          />
+        ) : null}
+
         {/* 桌面端 git 详情内联视图 */}
         {isDesktopGitView ? (
           <div className={styles.gitDesktopPanel}>
@@ -3622,6 +3723,12 @@ export default function NotesExplorer() {
               onChange={handleEditorChange}
               onExit={handleEditToggle}
               noteNames={noteNames}
+              currentPath={isDraft ? null : activePath}
+              onImagePasted={() => {
+                setHasGitChanges(true);
+                void refreshTree().catch(() => { /* 树刷新失败不影响已插入的引用 */ });
+              }}
+              onImagePasteError={(message) => alert(message)}
               onReady={() => {
                 setEditorMinHeight(0);
                 // fix: 草稿模式下确保 CM 就绪后光标落在编辑器内

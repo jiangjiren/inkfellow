@@ -667,6 +667,9 @@ export default function NotesExplorer() {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
+  // loadNote 切换窗口内为 true：loading 骨架/内容替换会把 scrollTop 钳制到 0，
+  // 此时的 scroll 事件不能写滚动快照，否则会覆盖旧文件的真实阅读位置
+  const suppressScrollSaveRef = useRef(false);
   const noteUpdatedAtRef = useRef<string | null>(null);
   const claudeFrameRef = useRef<HTMLIFrameElement>(null);
   // iframe 是否已 load 完：load 前 postMessage 会丢，提问先暂存到 pending，就绪后补投
@@ -1205,7 +1208,9 @@ export default function NotesExplorer() {
       }
       frame = window.requestAnimationFrame(() => {
         frame = 0;
-        saveCurrentScrollSnapshot();
+        if (!suppressScrollSaveRef.current) {
+          saveCurrentScrollSnapshot();
+        }
       });
     };
 
@@ -1240,11 +1245,17 @@ export default function NotesExplorer() {
 
   const loadNote = useCallback(
     async (path: string, hash?: string | null, options: LoadNoteOptions = {}) => {
+      // 进入切换窗口：暂停滚动快照写入，直到新内容提交并恢复滚动位置。
+      // loading 骨架/内容替换会把 scrollTop 钳制到 0，此时的 scroll 事件
+      // 若照常写快照，会把 0 记到旧文件名下，覆盖真实阅读位置。
+      suppressScrollSaveRef.current = true;
+
       // PDF / 图片：不拉文本，直接交给原生预览（见下方渲染分支）
       if (isPdfPath(path) || isImagePath(path)) {
         setError(null);
         pendingHashRef.current = null;
         noteUpdatedAtRef.current = null; // 让 2s 文本轮询对 PDF 直接跳过
+        activePathRef.current = path; // 同步认领，防止内容替换钳制 scrollTop 时把快照写到旧文件
         setNote(null);
         setActivePath(path);
         openAncestors(path);
@@ -1256,6 +1267,7 @@ export default function NotesExplorer() {
           window.history.replaceState(null, "", nextUrl);
           pushNavHistory(path);
         }
+        suppressScrollSaveRef.current = false;
         return;
       }
 
@@ -1289,12 +1301,21 @@ export default function NotesExplorer() {
           pushNavHistory(payload.path);
         }
 
-        const scrollSnapshot = options.preserveScroll
-          ? getReaderScrollSnapshot()
-          : options.restoreStoredScroll && !hash
-            ? readStoredScrollSnapshot(payload.path)
-            : null;
+        let scrollSnapshot: ScrollSnapshot | null = null;
+        if (options.preserveScroll) {
+          scrollSnapshot = getReaderScrollSnapshot();
+        } else if (options.restoreStoredScroll && !hash) {
+          // 无快照的文件（从未滚动过）落到顶部，避免继承上一篇的滚动位置
+          scrollSnapshot = readStoredScrollSnapshot(payload.path);
+          if (!scrollSnapshot) {
+            const current = getReaderScrollSnapshot();
+            scrollSnapshot = current ? { ...current, top: 0, left: 0 } : null;
+          }
+        }
         const commitNote = () => {
+          // 同步认领路径：内容替换会让浏览器钳制 scrollTop 并触发 scroll 事件，
+          // 若此时 ref 仍指向旧文件，钳制后的位置会覆盖旧文件的滚动快照
+          activePathRef.current = payload.path;
           setNote(payload);
           setActivePath(payload.path);
           openAncestors(payload.path);
@@ -1314,6 +1335,8 @@ export default function NotesExplorer() {
           setNoteState("error");
         }
         setError(loadError instanceof Error ? loadError.message : "Failed to load note.");
+      } finally {
+        suppressScrollSaveRef.current = false;
       }
     },
     [getReaderScrollSnapshot, openAncestors, pushNavHistory, restoreReaderScroll],

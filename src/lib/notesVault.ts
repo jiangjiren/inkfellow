@@ -606,6 +606,97 @@ export const readVaultImageFromNoteDirectory = async (assetPath: string, notePat
   };
 };
 
+// ── 编辑器粘贴图片（与桌面端 paste_image 约定一致） ──────────
+export const PASTED_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+
+const PASTED_IMAGE_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/** 魔数校验：声明的 MIME 必须与实际字节头一致 */
+const isValidPastedImage = (mimeType: string, bytes: Buffer) => {
+  switch (mimeType) {
+    case "image/png":
+      return bytes.length > 8 &&
+        bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    case "image/jpeg":
+      return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    case "image/gif": {
+      const header = bytes.subarray(0, 6).toString("latin1");
+      return bytes.length > 6 && (header === "GIF87a" || header === "GIF89a");
+    }
+    case "image/webp":
+      return bytes.length > 12 &&
+        bytes.subarray(0, 4).toString("latin1") === "RIFF" &&
+        bytes.subarray(8, 12).toString("latin1") === "WEBP";
+    default:
+      return false;
+  }
+};
+
+const pastedImageTimestamp = (date = new Date()) => {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+};
+
+/** 剪贴板文件名通常是 image.png 这类无信息名，换成时间戳；有意义的原名保留 */
+const pastedImageBaseName = (originalName: string) => {
+  const stem = decodeLoose(originalName).replace(/\\/g, "/").trim().split("/").pop()!.replace(/\.[^.]+$/, "");
+  const generic = /^(?:image|screenshot|screen[-_ ]?shot|clipboard|pasted[-_ ]?image)(?:[-_ ]?\d+)?$/i;
+  if (!stem || stem === "." || stem === ".." || generic.test(stem) || stem.includes("\0")) {
+    return `image-${pastedImageTimestamp()}`;
+  }
+  return stem;
+};
+
+export const writePastedImage = async (
+  notePath: string,
+  originalName: string,
+  mimeType: string,
+  data: Buffer,
+) => {
+  const extension = PASTED_IMAGE_EXTENSIONS[mimeType.toLowerCase()];
+  if (!extension) {
+    throw new VaultAccessError("仅支持 PNG、JPEG、WebP 和 GIF 图片。", 415);
+  }
+  if (data.length === 0) {
+    throw new VaultAccessError("图片内容为空。");
+  }
+  if (data.length > PASTED_IMAGE_MAX_BYTES) {
+    throw new VaultAccessError("图片不能超过 20 MB。", 413);
+  }
+  if (!isValidPastedImage(mimeType.toLowerCase(), data)) {
+    throw new VaultAccessError("剪贴板图片格式无效。", 415);
+  }
+
+  const note = await resolveExistingVaultPath(notePath);
+  if (!isMarkdownPath(note.relativePath)) {
+    throw new VaultAccessError("图片只能粘贴到 Markdown 笔记。", 415);
+  }
+
+  const noteDirectory = path.dirname(note.absolutePath);
+  const relativeDirectory = path.posix.dirname(note.relativePath);
+  const baseName = pastedImageBaseName(originalName);
+
+  // 与桌面端一致：存到笔记同目录，重名追加 -2..-9999 后缀，create_new 防覆盖
+  for (let suffix = 1; suffix <= 9999; suffix++) {
+    const fileName = `${baseName}${suffix === 1 ? "" : `-${suffix}`}.${extension}`;
+    const absolutePath = path.join(noteDirectory, fileName);
+    try {
+      await fs.writeFile(absolutePath, data, { flag: "wx" });
+      const relativePath = relativeDirectory === "." ? fileName : `${relativeDirectory}/${fileName}`;
+      return { name: fileName, path: relativePath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new VaultAccessError("无法为图片生成文件名。", 500);
+};
+
 export const updateMarkdownNote = async (relativePath: string, content: string) => {
   const resolved = await resolveExistingVaultPath(relativePath);
   if (!isMarkdownPath(resolved.relativePath)) {

@@ -8,6 +8,7 @@ const PANEL_WIDTH_KEY = "inkfellow-panel-width-v1";
 const SIDEBAR_VISIBLE_KEY = "inkfellow-sidebar-visible-v1";
 const PANEL_VISIBLE_KEY = "inkfellow-panel-visible-v1";
 const LAST_FILE_KEY = "inkfellow-last-file-v1";
+const TABS_KEY = "inkfellow-tabs-v1";
 const EXPANDED_KEY = "inkfellow-expanded-v1";
 const EDIT_MODE_KEY = "inkfellow-edit-mode-v1";
 const IMAGE_ZOOM_MIN = 0.2;
@@ -23,6 +24,8 @@ const state = {
   tree: null,
   activePath: null,
   activeNote: null,
+  tabs: [],
+  tabScroll: new Map(),
   dirty: false,
   editMode: false,
   navHistory: [],
@@ -1441,20 +1444,9 @@ function renderNoteMeta() {
     return;
   }
 
-  const parts = state.activePath.split("/");
-  titleEl.textContent = stripExt(parts[parts.length - 1]);
-
+  // 笔记态不再显示标题/路径：文档身份由标签承载（悬停标签可见完整路径）
+  titleEl.textContent = "";
   metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
-  if (parts.length > 1) {
-    const sep = document.createElement("span");
-    sep.className = "noteBreadcrumbSep";
-    sep.textContent = "/";
-    const crumb = document.createElement("span");
-    crumb.className = "noteBreadcrumb";
-    crumb.textContent = parts.slice(0, -1).join("/");
-    metaEl.insertBefore(crumb, titleEl);
-    metaEl.insertBefore(sep, titleEl);
-  }
 
   qs("btn-more-menu").disabled = false;
 }
@@ -1717,6 +1709,12 @@ function renameEntry(target) {
         if (state.activeNote) state.activeNote = { ...state.activeNote, path: newPath, name: newName };
         renderNoteMeta();
       }
+      // 标签跟随改名（文件夹改名时映射所有子路径）；先映射再刷新树，避免失效清理误删旧路径标签
+      mapTabPaths((p) => p === target.path
+        ? newPath
+        : target.kind === "folder" && p.startsWith(target.path + "/")
+          ? newPath + p.slice(target.path.length)
+          : p);
       await loadTree(false);
       showToast("已重命名");
     } catch (err) {
@@ -1753,6 +1751,9 @@ async function deleteEntry(target) {
   }
   try {
     await invoke("delete_entry", { path: target.path });
+    pruneTabs((p) => target.kind === "file"
+      ? p !== target.path
+      : p !== target.path && !p.startsWith(target.path + "/"));
     if (affectsActive) {
       clearActiveNote();
     }
@@ -1825,11 +1826,306 @@ async function navForward() {
   await loadNote(state.navHistory[state.navIndex], { skipHistory: true });
 }
 
+/* ── 多标签 ──────────────────────────────────────── */
+/* 标签只是「已打开路径」的书签列表，文档加载/保存仍由 loadNote 单例逻辑持有 */
+
+function loadTabsFromStorage() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TABS_KEY) || "[]");
+    if (Array.isArray(parsed)) {
+      state.tabs = parsed.filter((p) => typeof p === "string" && p);
+    }
+  } catch {}
+}
+
+function persistTabs() {
+  try { localStorage.setItem(TABS_KEY, JSON.stringify(state.tabs)); } catch {}
+}
+
+function ensureTab(path) {
+  if (!state.tabs.includes(path)) {
+    state.tabs.push(path);
+    persistTabs();
+  }
+  renderTabs();
+}
+
+/* 重命名/移动后批量映射路径，映射后去重 */
+function mapTabPaths(mapper) {
+  const next = [];
+  for (const p of state.tabs) {
+    const mapped = mapper(p);
+    if (!next.includes(mapped)) next.push(mapped);
+  }
+  const changed = next.length !== state.tabs.length || next.some((p, i) => p !== state.tabs[i]);
+  if (changed) {
+    state.tabs = next;
+    persistTabs();
+    renderTabs();
+  }
+}
+
+/* 按谓词保留标签（删除文件/文件夹、文件树刷新后清理失效标签） */
+function pruneTabs(keep) {
+  const next = state.tabs.filter(keep);
+  if (next.length !== state.tabs.length) {
+    state.tabs = next;
+    persistTabs();
+    renderTabs();
+  }
+}
+
+const TAB_CLOSE_ICON = `<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+const TAB_ADD_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+
+function renderTabs() {
+  const strip = qs("tab-strip");
+  if (!strip) return;
+  strip.hidden = state.tabs.length === 0;
+  strip.innerHTML = "";
+  for (const path of state.tabs) {
+    const name = stripExt(path.split("/").pop() || path);
+    const active = path === state.activePath;
+
+    const tab = document.createElement("div");
+    tab.className = "tabItem" + (active ? " tabItemActive" : "");
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.dataset.path = path;
+    tab.title = path;
+    tab.tabIndex = 0;
+
+    const label = document.createElement("span");
+    label.className = "tabLabel";
+    label.textContent = name;
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "tabClose";
+    close.setAttribute("aria-label", `关闭 ${name}`);
+    close.title = "关闭";
+    close.tabIndex = -1;
+    close.innerHTML = TAB_CLOSE_ICON;
+    close.addEventListener("click", (e) => { e.stopPropagation(); closeTab(path); });
+
+    tab.addEventListener("click", () => selectTab(path));
+    tab.addEventListener("auxclick", (e) => { if (e.button === 1) { e.preventDefault(); closeTab(path); } });
+    tab.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+    tab.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectTab(path); }
+    });
+
+    tab.append(label, close);
+    strip.append(tab);
+  }
+
+  // 浏览器式「+」：快速打开器（搜索已有笔记 / 新建）
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "tabAdd";
+  add.title = "打开或新建笔记";
+  add.setAttribute("aria-label", "打开或新建笔记");
+  add.setAttribute("aria-haspopup", "dialog");
+  add.innerHTML = TAB_ADD_ICON;
+  add.addEventListener("click", () => openQuickOpen(add));
+  strip.append(add);
+
+  // 激活标签滚入可视区（标签多到横向溢出时）
+  const activeEl = strip.querySelector(".tabItemActive");
+  if (activeEl && strip.scrollWidth > strip.clientWidth) {
+    activeEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
+
+async function selectTab(path) {
+  if (path === state.activePath) return;
+  await loadNote(path);
+}
+
+/* ── 快速打开器（标签栏「+」）─────────────────────── */
+/* 一个输入框同时覆盖「打开已有」与「新建」：空查询列最近笔记，
+   输入即按文件名过滤，无匹配时首项变为「新建『query』」 */
+let quickOpenEl = null;
+
+function closeQuickOpen() {
+  if (!quickOpenEl) return;
+  quickOpenEl.remove();
+  quickOpenEl = null;
+  document.removeEventListener("mousedown", onQuickOpenOutside, true);
+}
+
+function onQuickOpenOutside(e) {
+  if (quickOpenEl && !quickOpenEl.contains(e.target)) closeQuickOpen();
+}
+
+function quickOpenMatches(query) {
+  const files = flattenFiles(state.tree);
+  if (!query) return recentDashboardFiles();
+  const q = query.toLowerCase();
+  const starts = [];
+  const nameHits = [];
+  const pathHits = [];
+  for (const f of files) {
+    const base = stripExt(f.name).toLowerCase();
+    if (base.startsWith(q)) starts.push(f);
+    else if (base.includes(q)) nameHits.push(f);
+    else if (f.path.toLowerCase().includes(q)) pathHits.push(f);
+  }
+  return [...starts, ...nameHits, ...pathHits].slice(0, 8);
+}
+
+function openQuickOpen(anchor) {
+  closeQuickOpen();
+  const rect = anchor.getBoundingClientRect();
+
+  const pop = document.createElement("div");
+  pop.className = "quickOpen";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "打开或新建笔记");
+  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 316))}px`;
+  pop.style.top = `${rect.bottom + 6}px`;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "quickOpenInput";
+  input.placeholder = "输入以打开或新建笔记…";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+
+  const list = document.createElement("div");
+  list.className = "quickOpenList";
+
+  pop.append(input, list);
+  document.body.append(pop);
+  quickOpenEl = pop;
+  document.addEventListener("mousedown", onQuickOpenOutside, true);
+
+  // 新建目标：当前笔记所在文件夹；无打开笔记时落根目录。在「新建」行上明示。
+  const targetFolder = state.activePath ? parentFolder(state.activePath) : "";
+
+  let items = [];
+  let selected = 0;
+
+  function applySelection() {
+    list.querySelectorAll(".quickOpenItem").forEach((el, i) => {
+      el.classList.toggle("quickOpenItemSelected", i === selected);
+    });
+  }
+
+  async function activate(item) {
+    closeQuickOpen();
+    if (item.kind === "file") {
+      await loadNote(item.path);
+    } else {
+      await createNoteWithTitle(item.title, targetFolder);
+    }
+  }
+
+  function rebuild() {
+    const query = input.value.trim();
+    const matches = quickOpenMatches(query);
+    items = matches.map((f) => ({ kind: "file", path: f.path, name: f.name }));
+
+    // 无同名笔记时提供「新建」项：有匹配放末尾（优先打开已有），零匹配放首位
+    const exact = query && matches.some((f) => stripExt(f.name).toLowerCase() === query.toLowerCase());
+    if (query && !exact) {
+      const createItem = { kind: "create", title: query };
+      if (items.length === 0) items.unshift(createItem);
+      else items.push(createItem);
+    }
+
+    selected = 0;
+    list.innerHTML = "";
+
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "quickOpenEmpty";
+      empty.textContent = "输入以搜索或新建笔记";
+      list.append(empty);
+      return;
+    }
+
+    items.forEach((item, i) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "quickOpenItem" + (i === selected ? " quickOpenItemSelected" : "");
+
+      const name = document.createElement("span");
+      name.className = "quickOpenName";
+      if (item.kind === "file") {
+        name.textContent = stripExt(item.name);
+        const folder = parentFolder(item.path);
+        if (folder) {
+          const sub = document.createElement("span");
+          sub.className = "quickOpenPath";
+          sub.textContent = folder;
+          row.append(name, sub);
+        } else {
+          row.append(name);
+        }
+      } else {
+        name.innerHTML = `${TAB_ADD_ICON} 新建「${escapeHtml(item.title)}」`;
+        const dest = document.createElement("span");
+        dest.className = "quickOpenPath";
+        dest.textContent = `存到：${targetFolder || "根目录"}`;
+        row.append(name, dest);
+      }
+
+      row.addEventListener("mouseenter", () => { selected = i; applySelection(); });
+      row.addEventListener("click", () => activate(item));
+      list.append(row);
+    });
+  }
+
+  input.addEventListener("input", rebuild);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selected = Math.min(selected + 1, items.length - 1);
+      applySelection();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selected = Math.max(selected - 1, 0);
+      applySelection();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (items[selected]) activate(items[selected]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeQuickOpen();
+    }
+  });
+
+  rebuild();
+  input.focus();
+}
+
+async function closeTab(path) {
+  const isActive = path === state.activePath;
+  const idx = state.tabs.indexOf(path);
+  const neighbor = isActive ? state.tabs[idx + 1] ?? state.tabs[idx - 1] ?? null : null;
+  pruneTabs((p) => p !== path);
+  if (!isActive) return;
+  if (neighbor) {
+    await loadNote(neighbor);
+  } else {
+    if (!(await flushPendingSave())) return;
+    clearActiveNote();
+    // 本次会话不再自动恢复被关掉的文件
+    try { localStorage.removeItem(LAST_FILE_KEY); } catch {}
+  }
+}
+
 /* ── Note operations ─────────────────────────────── */
 async function loadNote(path, opts = {}) {
   // 自动保存模式：切换前把未保存内容落盘
   if (!(await flushPendingSave())) return;
   closeGitWorkspace(false);
+
+  // 记住当前笔记的阅读位置（loading 替换内容前采集，切标签回来时恢复）
+  if (state.activePath && state.activePath !== path) {
+    state.tabScroll.set(state.activePath, qs("doc-area").scrollTop);
+  }
 
   // Push to navigation history (skip when going back/forward)
   if (!opts.skipHistory) navPush(path);
@@ -1844,11 +2140,13 @@ async function loadNote(path, opts = {}) {
     const note = await invoke(command, { path });
     state.activePath = note.path;
     state.activeNote = note;
+    ensureTab(note.path);
     expandAncestors(note.path);
     renderTree();
     renderNoteMeta();
     setDirty(false);
     renderDocArea();
+    docArea.scrollTop = state.tabScroll.get(note.path) ?? 0;
     if (state.outlineOpen) renderToc();
     sendNoteContext();
     try { localStorage.setItem(LAST_FILE_KEY, path); } catch {}
@@ -1867,6 +2165,7 @@ function clearActiveNote() {
   renderNoteMeta();
   renderDocArea();
   renderTree();
+  renderTabs();
 }
 
 async function saveNote() {
@@ -1912,10 +2211,7 @@ async function saveNote() {
   }
 }
 
-async function createNote() {
-  const folder = state.activePath ? parentFolder(state.activePath) : "";
-  const title = await showDialog("新建笔记", "无标题");
-  if (!title) return;
+async function createNoteWithTitle(title, folder) {
   try {
     const note = await invoke("create_note", { folder, title });
     if (folder) state.expanded.add(folder);
@@ -1924,6 +2220,13 @@ async function createNote() {
   } catch (err) {
     showToast(String(err));
   }
+}
+
+async function createNote() {
+  const folder = state.activePath ? parentFolder(state.activePath) : "";
+  const title = await showDialog("新建笔记", "无标题");
+  if (!title) return;
+  await createNoteWithTitle(title, folder);
 }
 
 async function deleteActiveNote() {
@@ -1935,7 +2238,9 @@ async function deleteActiveNote() {
   cancelAutosave();
   setDirty(false);
   try {
-    await invoke("delete_entry", { path: state.activeNote.path });
+    const deletedPath = state.activeNote.path;
+    await invoke("delete_entry", { path: deletedPath });
+    pruneTabs((p) => p !== deletedPath);
     clearActiveNote();
     await loadTree(false);
     showToast("已删除");
@@ -2853,13 +3158,22 @@ function discardWarning(fileState, kind) {
 }
 
 /* ── Fellow panel ────────────────────────────────── */
+/* 面板开关按钮不随面板搬家（位置稳定 > 邻近），用按下态与提示语表达状态 */
+function syncPanelToggleUI(open) {
+  const btn = qs("btn-toggle-panel");
+  btn.classList.toggle("fellowPillActive", open);
+  btn.title = open ? "收起 Fellow (Ctrl+L)" : "Fellow (Ctrl+L)";
+  btn.setAttribute("aria-pressed", open ? "true" : "false");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function openFellowPanel() {
   closeOutline(false);
   closeGitQuickPopover(false);
   const shell = qs("shell");
   if (shell.classList.contains("shellPanelHidden")) {
     shell.classList.remove("shellPanelHidden");
-    qs("btn-toggle-panel").classList.add("fellowPillActive");
+    syncPanelToggleUI(true);
     localStorage.setItem(PANEL_VISIBLE_KEY, "1");
   }
   postAgentMessage({ type: "focus-input" });
@@ -2876,8 +3190,7 @@ function toggleSidebar() {
 function togglePanel() {
   const shell = qs("shell");
   const isHidden = shell.classList.toggle("shellPanelHidden");
-  const btn = qs("btn-toggle-panel");
-  btn.classList.toggle("fellowPillActive", !isHidden);
+  syncPanelToggleUI(!isHidden);
   localStorage.setItem(PANEL_VISIBLE_KEY, isHidden ? "0" : "1");
   if (!isHidden) {
     closeOutline(false);
@@ -3053,16 +3366,31 @@ function initSidebarPeek() {
   shell.appendChild(zone);
 
   let hideTimer = null;
+  let closeAnimTimer = null;
 
   function openPeek() {
     if (!shell.classList.contains("shellSidebarHidden")) return;
     clearTimeout(hideTimer);
+    clearTimeout(closeAnimTimer);
+    shell.classList.remove("shellSidebarPeekClosing");
     shell.classList.add("shellSidebarPeek");
+  }
+
+  function closePeek() {
+    if (!shell.classList.contains("shellSidebarPeek")) return;
+    // 先以悬浮态滑出屏幕（不回流），动画结束后再无过渡地归位，
+    // 避免侧栏带着 width 过渡回到文档流时挤动中间区域
+    shell.classList.add("shellSidebarPeekClosing");
+    closeAnimTimer = setTimeout(() => {
+      sidebar.style.transition = "none";
+      shell.classList.remove("shellSidebarPeek", "shellSidebarPeekClosing");
+      requestAnimationFrame(() => { sidebar.style.transition = ""; });
+    }, 360); // 与 --notes-transition-spring 时长一致
   }
 
   function scheduleClose() {
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => shell.classList.remove("shellSidebarPeek"), 260);
+    hideTimer = setTimeout(closePeek, 260);
   }
 
   zone.addEventListener("mouseenter", openPeek);
@@ -3124,7 +3452,7 @@ function restoreLayout() {
   const pv = localStorage.getItem(PANEL_VISIBLE_KEY);
   if (pv === "1") {
     shell.classList.remove("shellPanelHidden");
-    qs("btn-toggle-panel").classList.add("fellowPillActive");
+    syncPanelToggleUI(true);
   } else {
     shell.classList.add("shellPanelHidden");
     qs("btn-toggle-panel").classList.remove("fellowPillActive");
@@ -3157,6 +3485,9 @@ function applyDesktopState(desktop) {
 async function loadTree(selectFirst = false) {
   const response = await invoke("list_notes_tree");
   state.tree = response.root;
+  // 清理指向已不存在文件的标签（保留 activePath：新建文件可能先于树刷新出现）
+  const existingPaths = new Set(flattenFiles(state.tree).map((f) => f.path));
+  pruneTabs((p) => existingPaths.has(p) || p === state.activePath);
   renderTree();
   sendVaultNotes();
   if (!state.activeNote) renderDocArea();
@@ -3479,6 +3810,8 @@ async function boot() {
   try {
     qs("dialog-overlay").hidden = true;
     loadExpandedState();
+    loadTabsFromStorage();
+    renderTabs();
     restoreLayout();
     wireEvents();
     initSidebarResize();

@@ -181,6 +181,14 @@ input, textarea { font-family: inherit; }
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
 }
 
+/* 收起动画：保持悬浮态整体滑出屏幕，全程不回到文档流，避免挤动中间区域 */
+.shell.shellSidebarHidden.shellSidebarPeekClosing .sidebar {
+  transform: translateX(-102%);
+  opacity: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+
 .sidebarResizer {
   position: relative;
   z-index: 3;
@@ -951,6 +959,204 @@ input, textarea { font-family: inherit; }
     background: rgba(9, 9, 11, 0.9);
     border-bottom-color: rgba(255, 255, 255, 0.05);
   }
+}
+
+/* ── 多标签条 ─────────────────────────────────────── */
+.tabStrip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 14px 0;
+  border-bottom: 1px solid var(--notes-border);
+  background: var(--notes-bg-reader);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabStrip::-webkit-scrollbar { display: none; }
+
+.tabItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  padding: 5px 8px 5px 12px;
+  border-radius: 7px 7px 0 0;
+  font-size: 12.5px;
+  color: var(--notes-text-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tabItem:hover {
+  background: rgba(0, 0, 0, 0.045);
+  color: var(--notes-text-primary);
+}
+
+.tabItemActive,
+.tabItemActive:hover {
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  font-weight: 500;
+  box-shadow: 0 0 0 1px var(--notes-border);
+  clip-path: inset(-2px -2px 0 -2px); /* 底边阴影裁掉，与内容区连成一体 */
+}
+
+.tabLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabClose {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  opacity: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.tabItem:hover .tabClose,
+.tabItemActive .tabClose {
+  opacity: 0.55;
+}
+
+.tabClose:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.tabAdd {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin-left: 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--notes-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tabAdd:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--notes-text-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .tabItem:hover { background: rgba(255, 255, 255, 0.06); }
+  .tabClose:hover { background: rgba(255, 255, 255, 0.12); }
+  .tabAdd:hover { background: rgba(255, 255, 255, 0.08); }
+}
+
+/* ── 快速打开器 ─────────────────────────────────── */
+.quickOpen {
+  position: fixed;
+  z-index: 200;
+  width: 308px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.quickOpenInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.045);
+  color: var(--notes-text-primary);
+  font-size: 13px;
+  font-family: var(--notes-font-sans);
+  outline: none;
+}
+
+.quickOpenInput::placeholder { color: var(--notes-text-muted); }
+
+.quickOpenList {
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.quickOpenItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--notes-font-sans);
+}
+
+.quickOpenItemSelected {
+  background: var(--notes-accent);
+}
+
+.quickOpenName {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--notes-text-primary);
+}
+
+.quickOpenPath {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--notes-text-muted);
+}
+
+.quickOpenItemSelected .quickOpenName,
+.quickOpenItemSelected .quickOpenPath {
+  color: #ffffff;
+}
+
+.quickOpenEmpty {
+  padding: 14px 10px;
+  font-size: 12.5px;
+  color: var(--notes-text-muted);
+  text-align: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  .quickOpen {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+  .quickOpenInput { background: rgba(255, 255, 255, 0.07); }
 }
 
 .readerHeaderLeft {
@@ -2848,9 +3054,30 @@ input, textarea { font-family: inherit; }
 
 .fellowPill:active { transform: translateY(0); }
 
+/* 面板展开时的按下态：浅紫填充，一眼可读「面板是它开的，再点即收起」 */
 .fellowPillActive {
-  border-color: rgba(124, 58, 237, 0.4);
-  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.05);
+  background: rgba(124, 58, 237, 0.1);
+  border-color: rgba(124, 58, 237, 0.45);
+  color: #7c3aed;
+}
+
+.fellowPillActive:hover {
+  background: rgba(124, 58, 237, 0.16);
+  border-color: rgba(124, 58, 237, 0.55);
+  box-shadow: none;
+  transform: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .fellowPillActive {
+    background: rgba(167, 139, 250, 0.16);
+    border-color: rgba(167, 139, 250, 0.45);
+    color: #c4b5fd;
+  }
+  .fellowPillActive:hover {
+    background: rgba(167, 139, 250, 0.24);
+    border-color: rgba(167, 139, 250, 0.6);
+  }
 }
 
 .ghostButton {

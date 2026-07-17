@@ -15,6 +15,7 @@ import { extractHeadings, type TocEntry } from "@/lib/noteToc";
 import dynamic from "next/dynamic";
 import NotesHtml from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
+import { NoteTabs, useNoteTabs } from "./NoteTabs";
 import NotesGit from "./NotesGit";
 import NotesDashboard from "./NotesDashboard";
 import styles from "./notes.module.css";
@@ -884,6 +885,8 @@ export default function NotesExplorer() {
   // 当前文件树的结构指纹，用于轮询比对，只在增/删/改名时才刷新
   const treeRevRef = useRef<string | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
+  // 轻量多标签：只是「已打开路径」的书签列表，文档状态仍由下方单例逻辑持有
+  const { tabs, ensureTab, removeTab: removeTabEntry, mapTabs, pruneTabs } = useNoteTabs();
   const [note, setNote] = useState<NotesFileResponse | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -1007,6 +1010,9 @@ export default function NotesExplorer() {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
+  // loadNote 切换窗口内为 true：loading 骨架/内容替换会把 scrollTop 钳制到 0，
+  // 此时的 scroll 事件不能写滚动快照，否则会覆盖旧文件的真实阅读位置
+  const suppressScrollSaveRef = useRef(false);
   const noteUpdatedAtRef = useRef<string | null>(null);
   const claudeFrameRef = useRef<HTMLIFrameElement>(null);
   const readerRef = useRef<HTMLElement>(null);
@@ -1080,6 +1086,13 @@ export default function NotesExplorer() {
     }
   }, [activePath]);
 
+  // 任何途径打开的文件（文件树、搜索、wiki 链接、草稿落盘…）都自动收进标签
+  useEffect(() => {
+    if (activePath) {
+      ensureTab(activePath);
+    }
+  }, [activePath, ensureTab]);
+
   useEffect(() => {
     if (!activePath) return;
     claudeFrameRef.current?.contentWindow?.postMessage(
@@ -1097,6 +1110,14 @@ export default function NotesExplorer() {
   }, [note?.path]);
 
   const files = useMemo(() => (tree ? collectFiles(tree) : []), [tree]);
+
+  // 文件树每次刷新后清理失效标签（外部删除/首次恢复 localStorage 里的旧标签）。
+  // 保留 activePath：新建/草稿落盘的文件可能先于文件树刷新出现。
+  useEffect(() => {
+    if (treeState !== "ready") return;
+    const existing = new Set(files.map((file) => file.path));
+    pruneTabs((path) => existing.has(path) || path === activePathRef.current);
+  }, [files, treeState, pruneTabs]);
 
   const refreshWikiIndex = useCallback(async () => {
     try {
@@ -1567,7 +1588,9 @@ export default function NotesExplorer() {
       }
       frame = window.requestAnimationFrame(() => {
         frame = 0;
-        saveCurrentScrollSnapshot();
+        if (!suppressScrollSaveRef.current) {
+          saveCurrentScrollSnapshot();
+        }
       });
     };
 
@@ -1602,11 +1625,15 @@ export default function NotesExplorer() {
 
   const loadNote = useCallback(
     async (path: string, hash?: string | null, options: LoadNoteOptions = {}) => {
+      // 进入切换窗口：暂停滚动快照写入，直到新内容提交并恢复滚动位置
+      suppressScrollSaveRef.current = true;
+
       // PDF / 图片：不拉文本，直接交给原生预览（见下方渲染分支）
       if (isPdfPath(path) || isImagePath(path)) {
         setError(null);
         pendingHashRef.current = null;
         noteUpdatedAtRef.current = null; // 让 2s 文本轮询对 PDF 直接跳过
+        activePathRef.current = path; // 同步认领，防止内容替换钳制 scrollTop 时把快照写到旧文件
         setNote(null);
         setActivePath(path);
         openAncestors(path);
@@ -1618,6 +1645,7 @@ export default function NotesExplorer() {
           window.history.replaceState(null, "", nextUrl);
           pushNavHistory(path);
         }
+        suppressScrollSaveRef.current = false;
         return;
       }
 
@@ -1651,12 +1679,21 @@ export default function NotesExplorer() {
           pushNavHistory(payload.path);
         }
 
-        const scrollSnapshot = options.preserveScroll
-          ? getReaderScrollSnapshot()
-          : options.restoreStoredScroll && !hash
-            ? readStoredScrollSnapshot(payload.path)
-            : null;
+        let scrollSnapshot: ScrollSnapshot | null = null;
+        if (options.preserveScroll) {
+          scrollSnapshot = getReaderScrollSnapshot();
+        } else if (options.restoreStoredScroll && !hash) {
+          // 无快照的文件（从未滚动过）落到顶部，避免继承上一篇的滚动位置
+          scrollSnapshot = readStoredScrollSnapshot(payload.path);
+          if (!scrollSnapshot) {
+            const current = getReaderScrollSnapshot();
+            scrollSnapshot = current ? { ...current, top: 0, left: 0 } : null;
+          }
+        }
         const commitNote = () => {
+          // 同步认领路径：内容替换会让浏览器钳制 scrollTop 并触发 scroll 事件，
+          // 若此时 ref 仍指向旧文件，钳制后的位置会覆盖旧文件的滚动快照
+          activePathRef.current = payload.path;
           setNote(payload);
           setActivePath(payload.path);
           openAncestors(payload.path);
@@ -1676,6 +1713,8 @@ export default function NotesExplorer() {
           setNoteState("error");
         }
         setError(loadError instanceof Error ? loadError.message : "Failed to load note.");
+      } finally {
+        suppressScrollSaveRef.current = false;
       }
     },
     [getReaderScrollSnapshot, openAncestors, pushNavHistory, restoreReaderScroll],
@@ -2508,6 +2547,25 @@ export default function NotesExplorer() {
     [isMobileViewport, loadNote, flushEditBeforeSwitch],
   );
 
+  const handleTabSelect = useCallback((path: string) => {
+    if (path === activePathRef.current) return;
+    // 标签切换恢复上次阅读位置（与文件树点击不同，这是标签的核心价值）
+    void flushEditBeforeSwitch().then(() => loadNote(path, null, { restoreStoredScroll: true }));
+  }, [flushEditBeforeSwitch, loadNote]);
+
+  const handleTabClose = useCallback((path: string) => {
+    const isActive = path === activePathRef.current;
+    const idx = tabs.indexOf(path);
+    const neighbor = isActive ? tabs[idx + 1] ?? tabs[idx - 1] ?? null : null;
+    removeTabEntry(path);
+    if (!isActive) return;
+    if (neighbor) {
+      void flushEditBeforeSwitch().then(() => loadNote(neighbor, null, { restoreStoredScroll: true }));
+    } else {
+      goHome();
+    }
+  }, [tabs, removeTabEntry, flushEditBeforeSwitch, loadNote, goHome]);
+
   const clearSearch = useCallback(() => {
     setSearchQuery("");
     setSearchResults([]);
@@ -2792,6 +2850,8 @@ export default function NotesExplorer() {
         throw new Error(data.error ?? "重命名失败");
       }
       const result = (await res.json()) as { oldPath: string; path: string; kind: TreeActionTarget["kind"] };
+      // 先映射标签路径再刷新文件树，否则刷新触发的失效清理会把旧路径标签删掉
+      mapTabs((p) => replaceMovedPath(p, result.oldPath, result.path, result.kind));
       await refreshTree();
 
       setExpandedFolders((prev) => {
@@ -2813,7 +2873,7 @@ export default function NotesExplorer() {
       setRenameError(err instanceof Error ? err.message : "重命名失败");
       renameInProgressRef.current = false;
     }
-  }, [flushEditBeforeSwitch, loadNote, refreshTree, renameName, renameTarget]);
+  }, [flushEditBeforeSwitch, loadNote, mapTabs, refreshTree, renameName, renameTarget]);
 
   const handleSelectTocHeading = useCallback(
     (slug: string) => {
@@ -3108,6 +3168,9 @@ export default function NotesExplorer() {
       }
       setDeleteConfirmOpen(false);
       setDeleteTarget(null);
+      pruneTabs((p) => target.kind === "file"
+        ? p !== target.path
+        : p !== target.path && !p.startsWith(`${target.path}/`));
       if (affectsActivePath) {
         skipNextFlushRef.current = true; // fix: goHome 里的 flushEditBeforeSwitch 不能 PATCH 已删除的文件
       }
@@ -3123,7 +3186,7 @@ export default function NotesExplorer() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [activePath, deleteTarget, goHome, refreshTree]);
+  }, [activePath, deleteTarget, goHome, pruneTabs, refreshTree]);
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
     "--sidebar-width": `${sidebarWidth}px`,
@@ -3792,6 +3855,16 @@ export default function NotesExplorer() {
             )}
           </div>
         </header>
+
+        {/* 多标签条：仅桌面端、非 git 视图。移动端保持单文档交互 */}
+        {!isMobileViewport && !isDesktopGitView ? (
+          <NoteTabs
+            tabs={tabs}
+            activePath={isDraft ? null : activePath}
+            onSelect={handleTabSelect}
+            onClose={handleTabClose}
+          />
+        ) : null}
 
         {/* 桌面端 git 详情内联视图 */}
         {isDesktopGitView ? (

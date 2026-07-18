@@ -923,43 +923,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   gap: 2px;
   min-width: max-content;
 }
-#rate-limit-chip {
-  display: none;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 13px;
-  border: 1px solid rgba(138,134,128,0.18);
-  background: rgba(138,134,128,0.07);
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-#rate-limit-chip.visible { display: inline-flex; }
-#rate-limit-chip.available {
-  border-color: rgba(26,122,63,0.18);
-  background: rgba(26,122,63,0.07);
-  color: var(--green);
-}
-#rate-limit-chip.warning {
-  border-color: rgba(146,96,10,0.24);
-  background: rgba(146,96,10,0.08);
-  color: var(--yellow);
-}
-#rate-limit-chip.critical {
-  border-color: rgba(192,57,43,0.22);
-  background: rgba(192,57,43,0.08);
-  color: var(--red);
-}
-#rate-limit-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.8;
-}
 .header-btn {
   width: 30px;
   height: 30px;
@@ -1175,18 +1138,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .picker-option-desc { font-size: 10.5px; color: var(--text-dim); }
 @media (max-width: 360px) {
-  #rate-limit-chip { padding: 0 6px; font-size: 10.5px; }
-  #rate-limit-dot { display: none; }
   .picker-btn {
     height: 25px;
     padding: 0 6px;
     font-size: 11px;
     max-width: 96px;
   }
-}
-@media (max-width: 300px) {
-  #rate-limit-chip { width: 28px; padding: 0; justify-content: center; }
-  #rate-limit-label { display: none; }
 }
 .history-head {
   display: flex;
@@ -1851,10 +1808,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 5 5-5 5"/><path d="m12 7 5 5-5 5"/></svg>
     </button>
     <div id="header-actions">
-      <div id="rate-limit-chip" aria-live="polite">
-        <span id="rate-limit-dot"></span>
-        <span id="rate-limit-label"></span>
-      </div>
       <button id="btn-settings" class="header-btn" title="账号设置" aria-label="账号设置">
         <svg width="17" height="17" viewBox="3 3 18 18" fill="currentColor" aria-hidden="true">
           <path fill-rule="evenodd" d="M10.45 6.2L9.93 4.27L14.07 4.27L13.55 6.2A6 6 0 0 1 16.24 7.76L17.66 6.34L19.73 9.93L17.8 10.45A6 6 0 0 1 17.8 13.55L19.73 14.07L17.66 17.66L16.24 16.24A6 6 0 0 1 13.55 17.8L14.07 19.73L9.93 19.73L10.45 17.8A6 6 0 0 1 7.76 16.24L6.34 17.66L4.27 14.07L6.2 13.55A6 6 0 0 1 6.2 10.45L4.27 9.93L6.34 6.34L7.76 7.76A6 6 0 0 1 10.45 6.2ZM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0Z"/>
@@ -2154,8 +2107,6 @@ const askUserQuestionEl = document.getElementById("ask-user-question");
 const contextChip = document.getElementById("context-chip");
 const ctxPathEl   = document.getElementById("ctx-path");
 const ctxToggle   = document.getElementById("ctx-toggle");
-const rateLimitChip  = document.getElementById("rate-limit-chip");
-const rateLimitLabel = document.getElementById("rate-limit-label");
 const quoteChip    = document.getElementById("quote-chip");
 const quoteTextEl  = document.getElementById("quote-text");
 const quoteLinesEl = document.getElementById("quote-lines");
@@ -3720,47 +3671,6 @@ function captureAssistantEvent(ev) {
   scrollBottom();
 }
 
-function formatResetTime(value) {
-  if (!value) return "";
-  const ms = value < 10_000_000_000 ? value * 1000 : value;
-  const date = new Date(ms);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function hideRateLimit() {
-  rateLimitLabel.textContent = "";
-  rateLimitChip.title = "";
-  rateLimitChip.classList.remove("visible", "available", "warning", "critical");
-}
-
-function updateRateLimit(info) {
-  if (!info || info.rateLimitType !== "five_hour") {
-    hideRateLimit();
-    return;
-  }
-  if (info.utilization == null) {
-    if (info.status !== "rejected") {
-      hideRateLimit();
-      return;
-    }
-    rateLimitLabel.textContent = "5小时 已用尽";
-    rateLimitChip.title = "Claude 5 小时额度已用尽";
-    rateLimitChip.classList.add("visible", "critical");
-    rateLimitChip.classList.remove("available", "warning");
-    return;
-  }
-  const usedPercent = info.utilization <= 1 ? info.utilization * 100 : info.utilization;
-  const remaining = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
-  rateLimitLabel.textContent = `5小时 ${remaining}%`;
-  const reset = formatResetTime(info.resetsAt);
-  const statusText = info.status === "rejected" ? "已用尽" : info.status === "allowed_warning" ? "接近上限" : "可用";
-  rateLimitChip.title = `Claude 5 小时额度：剩余约 ${remaining}%${reset ? `，${reset} 重置` : ""}（${statusText}）`;
-  rateLimitChip.classList.add("visible", "available");
-  rateLimitChip.classList.toggle("warning", remaining <= 25 && remaining > 10);
-  rateLimitChip.classList.toggle("critical", remaining <= 10 || info.status === "rejected");
-}
-
 // ── Event handling ────────────────────────────────────────
 function handleEvent(ev) {
   lastWsEventAt = Date.now();
@@ -3803,7 +3713,6 @@ function handleEvent(ev) {
   }
 
   if (ev.type === "rate_limit_event") {
-    updateRateLimit(ev.rate_limit_info);
     return;
   }
 

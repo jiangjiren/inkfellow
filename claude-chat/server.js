@@ -13,6 +13,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import Anthropic from "@anthropic-ai/sdk";
 import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
+import { PersistentQueryRuntime, isTaskLifecycleEvent } from "./agent-session.js";
 import { z } from "zod";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,11 +27,10 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
   ? process.env.CLAUDE_PERMISSION_MODE
   : "auto";
 
-// How long a query() stream can emit nothing at all before we consider it dead.
-// Resets on every SDK event (including api_retry backoff notices), so active tasks
-// of any total length — hours or days — are never killed. There is no total-duration
-// cap; only a stream that stays completely silent this long is treated as frozen.
-const STREAM_STALL_MS = 30 * 60_000; // 30 min with zero events → abort
+// One-shot background channels such as WeChat still use a dead-stream watchdog.
+// The desktop WebSocket runtime below intentionally has no silent-time abort and
+// remains alive until the user explicitly stops or resets the conversation.
+const STREAM_STALL_MS = 30 * 60_000;
 const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
 const USAGE_LIMIT_QUERY_TIMEOUT_MS = 12_000;
 
@@ -1097,6 +1097,20 @@ function normalizeAssistantHistoryBlocks(content, fallbackText = "") {
 
 let activeHistoryConversationId = null;
 let activeAssistantHistoryMessage = null;
+let activeHistoryTurnOpen = false;
+let activeHistoryTurnConversationId = null;
+const taskHistoryTargets = new Map();
+const taskHistoryTargetTimers = new Map();
+
+function scheduleTaskHistoryTargetCleanup(taskId) {
+  clearTimeout(taskHistoryTargetTimers.get(taskId));
+  const timer = setTimeout(() => {
+    taskHistoryTargetTimers.delete(taskId);
+    taskHistoryTargets.delete(taskId);
+  }, 5 * 60_000);
+  timer.unref?.();
+  taskHistoryTargetTimers.set(taskId, timer);
+}
 
 function beginServerConversationFromClient(msg) {
   const conversationId = normalizeHistoryId(msg.conversationId);
@@ -1106,6 +1120,8 @@ function beginServerConversationFromClient(msg) {
   const userMessageId = normalizeHistoryId(msg.userMessageId || makeHistoryMessageId("user"));
   activeHistoryConversationId = conversationId;
   activeAssistantHistoryMessage = null;
+  activeHistoryTurnOpen = true;
+  activeHistoryTurnConversationId = conversationId;
 
   const conv = ensureHistoryConversation(conversationId, { userText: displayText });
   if (!conv.messages.some(m => m.id === userMessageId)) {
@@ -1125,6 +1141,11 @@ function beginServerConversationFromClient(msg) {
 function clearActiveHistoryConversation() {
   activeHistoryConversationId = null;
   activeAssistantHistoryMessage = null;
+  activeHistoryTurnOpen = false;
+  activeHistoryTurnConversationId = null;
+  for (const timer of taskHistoryTargetTimers.values()) clearTimeout(timer);
+  taskHistoryTargetTimers.clear();
+  taskHistoryTargets.clear();
 }
 
 function ensureActiveAssistantHistoryMessage() {
@@ -1184,6 +1205,9 @@ function appendAssistantHistoryBlocks(blocks, rawEvent = null, { rawMessage = nu
 }
 
 function finalizeActiveAssistantHistory(status = "complete", cost = null) {
+  if (activeHistoryTurnConversationId) activeHistoryConversationId = activeHistoryTurnConversationId;
+  activeHistoryTurnOpen = false;
+  activeHistoryTurnConversationId = null;
   if (!activeAssistantHistoryMessage) return;
   activeAssistantHistoryMessage.status = status;
   activeAssistantHistoryMessage.updatedAt = new Date().toISOString();
@@ -1193,6 +1217,43 @@ function finalizeActiveAssistantHistory(status = "complete", cost = null) {
   conv.date = activeAssistantHistoryMessage.updatedAt;
   persistHistoryImmediate();
   activeAssistantHistoryMessage = null;
+}
+
+function appendTaskLifecycleHistoryEvent(ev) {
+  if (!activeHistoryConversationId || !isTaskLifecycleEvent(ev)) return;
+  const existingTarget = ev.task_id ? taskHistoryTargets.get(ev.task_id) : null;
+  const conversationId = existingTarget?.conversationId ?? activeHistoryConversationId;
+  const conv = ensureHistoryConversation(conversationId);
+  let target = existingTarget?.message;
+  if (!target || !conv.messages.includes(target)) {
+    target = activeHistoryTurnOpen && conversationId === activeHistoryConversationId
+      ? ensureActiveAssistantHistoryMessage()
+      : [...conv.messages].reverse().find(message => message.role === "assistant");
+  }
+  if (!target) return;
+  if (ev.task_id && !existingTarget) {
+    taskHistoryTargets.set(ev.task_id, { conversationId, message: target });
+  }
+  if (!Array.isArray(target.blocks)) target.blocks = [];
+  if (!Array.isArray(target.raw)) target.raw = [];
+  if (!Array.isArray(target.events)) target.events = [];
+  const raw = cloneHistoryJson(ev);
+  target.blocks.push({ type: "sdk_event", eventType: ev.subtype, raw });
+  target.raw.push(raw);
+  target.events.push(raw);
+  target.updatedAt = new Date().toISOString();
+  target.text = textFromHistoryBlocks(target.blocks);
+  conv.date = target.updatedAt;
+  persistHistoryDeferred();
+  const terminalUpdate = ev.subtype === "task_updated"
+    && ["completed", "failed", "killed"].includes(ev.patch?.status);
+  if (ev.subtype === "task_notification" && ev.task_id) {
+    clearTimeout(taskHistoryTargetTimers.get(ev.task_id));
+    taskHistoryTargetTimers.delete(ev.task_id);
+    taskHistoryTargets.delete(ev.task_id);
+  } else if (terminalUpdate && ev.task_id) {
+    scheduleTaskHistoryTargetCleanup(ev.task_id);
+  }
 }
 
 function updateActiveConversationSession(nextSessionId) {
@@ -1215,6 +1276,10 @@ function persistOutboundAgentEvent(ev) {
   if (!activeHistoryConversationId || !ev?.type) return;
   if (ev.type === "session" && ev.sessionId) {
     updateActiveConversationSession(ev.sessionId);
+    return;
+  }
+  if (isTaskLifecycleEvent(ev)) {
+    appendTaskLifecycleHistoryEvent(ev);
     return;
   }
   if (ev.type === "assistant") {
@@ -2212,6 +2277,34 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (url === "/api/run-state" && method === "GET") {
+    if (!DESKTOP_AGENT_TOKEN || queryParams.get("token") !== DESKTOP_AGENT_TOKEN) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ running: isAgentRunActive() }));
+    return;
+  }
+
+  if (url === "/api/prepare-restart" && method === "POST") {
+    if (!DESKTOP_AGENT_TOKEN || queryParams.get("token") !== DESKTOP_AGENT_TOKEN) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden" }));
+      return;
+    }
+    const lease = acquireRestartLease();
+    if (!lease) {
+      res.writeHead(409, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ running: true }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify(lease));
+    return;
+  }
+
   // ── WeChat Settings API ──
   if (url === "/api/wechat/status" && method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -2667,15 +2760,116 @@ let abortCtrl = null;
 let pendingAskUserQuestion = null;
 const DETACHED_BUFFER_MAX = 2000;
 let detachedBuffer = [];
+const RESTART_LEASE_MS = 15_000;
+let restartLease = null;
+let activeForegroundRequestId = null;
+let activeForegroundConversationId = null;
+let claudeRuntimeConversationId = null;
+let claudeAutoWakeOwner = null;
+let claudeAutoWakeOwnerTimer = null;
+const taskEventOwners = new Map();
+const taskEventOwnerTimers = new Map();
+const TASK_EVENT_OWNER_TTL_MS = 5 * 60_000;
+
+function getActiveRestartLease() {
+  if (restartLease && restartLease.expiresAt > Date.now()) return restartLease;
+  restartLease = null;
+  return null;
+}
+
+function acquireRestartLease() {
+  const existing = getActiveRestartLease();
+  if (existing) return existing;
+  if (isAgentWorkActive()) return null;
+  restartLease = {
+    lease: crypto.randomUUID(),
+    expiresAt: Date.now() + RESTART_LEASE_MS,
+  };
+  // The process is about to restart, so close an otherwise-idle persistent
+  // Query under the same atomic lease. This prevents a late autonomous SDK
+  // continuation from starting between the lease grant and process restart.
+  if (claudeRuntime.started) {
+    claudeRuntime.close();
+    claudeRuntimeSignature = null;
+    claudeRuntimeConversationId = null;
+  }
+  return restartLease;
+}
+
+function currentAgentEventOwner() {
+  if (activeForegroundRequestId || activeForegroundConversationId) {
+    return {
+      requestId: activeForegroundRequestId,
+      conversationId: activeForegroundConversationId,
+    };
+  }
+  if (claudeAutoWakeOwner) return claudeAutoWakeOwner;
+  return {
+    requestId: null,
+    conversationId: claudeRuntimeConversationId,
+  };
+}
+
+function scheduleTaskEventOwnerCleanup(taskId) {
+  clearTimeout(taskEventOwnerTimers.get(taskId));
+  const timer = setTimeout(() => {
+    taskEventOwnerTimers.delete(taskId);
+    taskEventOwners.delete(taskId);
+  }, TASK_EVENT_OWNER_TTL_MS);
+  timer.unref?.();
+  taskEventOwnerTimers.set(taskId, timer);
+}
+
+function ensureTaskEventOwner(event) {
+  if (!isTaskLifecycleEvent(event) || !event.task_id) return null;
+  let owner = taskEventOwners.get(event.task_id);
+  if (!owner) {
+    owner = currentAgentEventOwner();
+    taskEventOwners.set(event.task_id, owner);
+  }
+  const terminalUpdate = event.subtype === "task_updated"
+    && ["completed", "failed", "killed"].includes(event.patch?.status);
+  if (event.subtype === "task_notification" || terminalUpdate) {
+    scheduleTaskEventOwnerCleanup(event.task_id);
+  }
+  return owner;
+}
+
+function setClaudeAutoWakeOwner(owner) {
+  if (!owner) return;
+  claudeAutoWakeOwner = owner;
+  clearTimeout(claudeAutoWakeOwnerTimer);
+  claudeAutoWakeOwnerTimer = setTimeout(() => {
+    claudeAutoWakeOwner = null;
+    claudeAutoWakeOwnerTimer = null;
+  }, 30_000);
+  claudeAutoWakeOwnerTimer.unref?.();
+}
+
+function tagAgentEvent(obj) {
+  if (!obj || (obj.type === "system" && obj.subtype === "init")) return obj;
+  const owner = isTaskLifecycleEvent(obj)
+    ? (ensureTaskEventOwner(obj) ?? currentAgentEventOwner())
+    : currentAgentEventOwner();
+  const tagged = { ...obj };
+  if (!("userMessageId" in tagged) && owner?.requestId) tagged.userMessageId = owner.requestId;
+  if (!("conversationId" in tagged) && owner?.conversationId) tagged.conversationId = owner.conversationId;
+  return tagged;
+}
 
 const deliver = (obj) => {
   if (activeWs && activeWs.readyState === activeWs.OPEN) {
-    activeWs.send(JSON.stringify(obj));
-    return;
+    try {
+      activeWs.send(JSON.stringify(obj));
+      return;
+    } catch (error) {
+      console.warn("[Web Agent] WebSocket delivery failed; buffering until reconnect:", String(error));
+      activeWs = null;
+    }
   }
   // No client attached: buffer so the UI can catch up after reconnect, but only
   // while something is actually in flight (run or unanswered question).
-  if (abortCtrl || pendingAskUserQuestion) {
+  if (isAgentRunActive()) {
     detachedBuffer.push(obj);
     if (detachedBuffer.length > DETACHED_BUFFER_MAX) {
       detachedBuffer.splice(0, detachedBuffer.length - DETACHED_BUFFER_MAX);
@@ -2684,9 +2878,240 @@ const deliver = (obj) => {
 };
 
 const send = (obj) => {
-  persistOutboundAgentEvent(obj);
-  deliver(obj);
+  const tagged = tagAgentEvent(obj);
+  persistOutboundAgentEvent(tagged);
+  deliver(tagged);
 };
+
+const CLIENT_REQUEST_STATE_MAX = 500;
+const clientRequestStates = new Map();
+
+function getClientRequestId(msg) {
+  if (msg?.userMessageId == null || String(msg.userMessageId).trim() === "") return null;
+  return normalizeHistoryId(String(msg.userMessageId));
+}
+
+function rememberClientRequest(requestId, state) {
+  if (!requestId) return;
+  clientRequestStates.set(requestId, { state, updatedAt: Date.now() });
+  if (clientRequestStates.size <= CLIENT_REQUEST_STATE_MAX) return;
+  for (const [id, entry] of clientRequestStates) {
+    if (id === activeForegroundRequestId || entry.state === "queued" || entry.state === "running") continue;
+    clientRequestStates.delete(id);
+    if (clientRequestStates.size <= CLIENT_REQUEST_STATE_MAX) break;
+  }
+}
+
+function acknowledgeClientRequest(requestId, state) {
+  if (!requestId) return;
+  deliver({ type: "request_ack", userMessageId: requestId, state });
+}
+
+function startClientRequest(requestId, conversationId) {
+  activeForegroundRequestId = requestId;
+  activeForegroundConversationId = conversationId;
+  rememberClientRequest(requestId, "running");
+  acknowledgeClientRequest(requestId, "running");
+  deliver({ type: "request_started", userMessageId: requestId, conversationId });
+}
+
+function completeClientRequest(state, requestId = activeForegroundRequestId) {
+  if (requestId) rememberClientRequest(requestId, state);
+  if (activeForegroundRequestId === requestId) {
+    activeForegroundRequestId = null;
+    activeForegroundConversationId = null;
+  }
+}
+
+const FORWARDED_CLAUDE_SYSTEM_EVENTS = new Set([
+  "api_retry",
+  "status",
+  "session_state_changed",
+  "task_started",
+  "task_progress",
+  "task_updated",
+  "task_notification",
+]);
+
+let claudeRuntimeSignature = null;
+let claudeTurnCompletionPending = false;
+let claudeStopRequested = false;
+let claudeRecoveryContext = null;
+let claudePendingRecovery = null;
+let claudeErrorHandled = false;
+let claudeTaskWakeGraceUntil = 0;
+let claudeTurnEpoch = 0;
+const queuedClientPrompts = [];
+let queuedClientPromptDrain = null;
+let queuedClientPromptDrainTimer = null;
+
+function scheduleQueuedClientPromptDrain(delayMs = 0) {
+  // Never replace the task-wake grace timer with an earlier callback that can
+  // only return. This used to strand queued prompts forever after auto-wake.
+  const graceDelay = Math.max(0, claudeTaskWakeGraceUntil - Date.now() + 10);
+  const effectiveDelay = Math.max(delayMs, graceDelay);
+  clearTimeout(queuedClientPromptDrainTimer);
+  queuedClientPromptDrainTimer = setTimeout(() => {
+    queuedClientPromptDrainTimer = null;
+    queuedClientPromptDrain?.();
+  }, effectiveDelay);
+}
+
+function isThinkingSignatureError(error) {
+  const text = String(error);
+  return text.includes("signature") && text.includes("thinking");
+}
+
+function finishClaudeTurn() {
+  if (!claudeTurnCompletionPending) return;
+  const wasStopped = claudeStopRequested;
+  const completedRequestId = activeForegroundRequestId;
+  // Emit the terminal event while the run is still marked active so a detached
+  // desktop WebView buffers it and cannot reconnect stuck in generating state.
+  clearPendingAskUserQuestion("request finished");
+  send({ type: wasStopped ? "stopped" : "done" });
+  completeClientRequest(wasStopped ? "stopped" : "complete", completedRequestId);
+  claudeTurnCompletionPending = false;
+  claudeStopRequested = false;
+  claudeRecoveryContext = null;
+  claudeErrorHandled = false;
+  scheduleQueuedClientPromptDrain();
+}
+
+async function handlePersistentClaudeEvent(ev) {
+  const taskOwner = ensureTaskEventOwner(ev);
+  const terminalTaskUpdate = ev.type === "system"
+    && ev.subtype === "task_updated"
+    && ["completed", "failed", "killed"].includes(ev.patch?.status);
+  if (ev.type === "system" && ev.subtype === "task_notification") {
+    setClaudeAutoWakeOwner(taskOwner);
+  }
+  if (ev.type === "system" && ev.subtype === "init") {
+    if (claudeRuntimeConversationId) activeHistoryConversationId = claudeRuntimeConversationId;
+    saveSession(ev.session_id);
+    send({ type: "session", sessionId: ev.session_id });
+    const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
+      ? ev.skills
+      : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
+    if (skillsFromSdk.length > 0) cachedSkillsByProvider["claude"] = skillsFromSdk;
+    send({
+      type: "system",
+      subtype: "init",
+      slash_commands: skillsFromSdk,
+      skills: skillsFromSdk,
+    });
+    return;
+  }
+
+  if (ev.type === "system") {
+    if (ev.subtype === "task_notification" || terminalTaskUpdate) {
+      // A completed background task can immediately inject a synthetic message
+      // and wake the model. Keep restart deferral active across that tiny gap.
+      claudeTaskWakeGraceUntil = Date.now() + 5_000;
+      scheduleQueuedClientPromptDrain(5_050);
+    }
+    if (
+      ev.subtype === "session_state_changed"
+      && ev.state !== "idle"
+      && !claudeTurnCompletionPending
+    ) {
+      if (claudeRuntimeConversationId) activeHistoryConversationId = claudeRuntimeConversationId;
+      claudeTurnCompletionPending = true;
+      claudeStopRequested = false;
+      claudeErrorHandled = false;
+      activeHistoryTurnOpen = true;
+      activeHistoryTurnConversationId = claudeRuntimeConversationId;
+      activeAssistantHistoryMessage = null;
+    }
+    if (FORWARDED_CLAUDE_SYSTEM_EVENTS.has(ev.subtype)) send(ev);
+    if (ev.subtype === "session_state_changed" && ev.state === "idle") finishClaudeTurn();
+    return;
+  }
+
+  send(ev);
+}
+
+async function handlePersistentClaudeError(error) {
+  const recovery = claudeRecoveryContext;
+  if (
+    claudeTurnCompletionPending
+    && !claudeStopRequested
+    && recovery
+    && !recovery.attempted
+    && isThinkingSignatureError(error)
+  ) {
+    const message = recovery.buildMessage();
+    if (message) {
+      recovery.attempted = true;
+      clearSession();
+      const options = { ...recovery.options };
+      delete options.resume;
+      claudePendingRecovery = { message, options, signature: recovery.signature };
+      console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");
+      return;
+    }
+  }
+
+  claudeErrorHandled = true;
+  if (claudeStopRequested || error?.name === "AbortError") {
+    claudeStopRequested = true;
+  } else {
+    send({ type: "error", text: String(error) });
+  }
+  finishClaudeTurn();
+}
+
+async function handlePersistentClaudeClose() {
+  const recovery = claudePendingRecovery;
+  claudePendingRecovery = null;
+  if (recovery) {
+    try {
+      claudeRuntime.start(recovery.options);
+      claudeRuntimeSignature = recovery.signature;
+      claudeRuntime.send(recovery.message);
+      return;
+    } catch (error) {
+      send({ type: "error", text: String(error) });
+    }
+  }
+  claudeRuntimeSignature = null;
+  claudeRuntimeConversationId = null;
+  if (claudeTurnCompletionPending && !claudeErrorHandled) finishClaudeTurn();
+}
+
+const claudeRuntime = new PersistentQueryRuntime({
+  queryFactory: query,
+  onEvent: handlePersistentClaudeEvent,
+  onError: handlePersistentClaudeError,
+  onClose: handlePersistentClaudeClose,
+  onCallbackError: (error, context) => {
+    console.error(`[Web Agent] ${context.source} callback failed without stopping the Claude runtime:`, error);
+  },
+});
+
+function isForegroundRunActive() {
+  return Boolean(abortCtrl || claudeTurnCompletionPending || claudeRuntime.foregroundRunning || pendingAskUserQuestion);
+}
+
+function shouldQueueClientPrompt() {
+  return isForegroundRunActive() || Date.now() < claudeTaskWakeGraceUntil;
+}
+
+function isAgentWorkActive() {
+  return Boolean(
+    abortCtrl
+    || activeForegroundRequestId
+    || claudeTurnCompletionPending
+    || claudeRuntime.running
+    || pendingAskUserQuestion
+    || queuedClientPrompts.length > 0
+    || Date.now() < claudeTaskWakeGraceUntil
+  );
+}
+
+function isAgentRunActive() {
+  return isAgentWorkActive() || Boolean(getActiveRestartLease());
+}
 
 const clearPendingAskUserQuestion = (reason = "cancelled") => {
     if (!pendingAskUserQuestion) return;
@@ -2777,8 +3202,14 @@ wss.on("connection", (ws) => {
 
   // Reattach to an in-flight run: restore the generating UI, replay whatever
   // happened while detached, and re-show a still-unanswered question.
-  if (abortCtrl || pendingAskUserQuestion || detachedBuffer.length > 0) {
-    deliver({ type: "run_attached", running: !!abortCtrl });
+  const queuedAttachRequestId = getClientRequestId(queuedClientPrompts[0]);
+  const attachedRequestId = activeForegroundRequestId || queuedAttachRequestId;
+  const queuedAttachConversationId = queuedClientPrompts[0]?.conversationId
+    ? normalizeHistoryId(queuedClientPrompts[0].conversationId)
+    : null;
+  const attachedConversationId = activeForegroundConversationId || queuedAttachConversationId;
+  const reattachRunning = isForegroundRunActive() || Boolean(attachedRequestId);
+  if (isAgentRunActive() || detachedBuffer.length > 0) {
     const backlog = detachedBuffer;
     detachedBuffer = [];
     let questionInBacklog = false;
@@ -2797,8 +3228,24 @@ wss.on("connection", (ws) => {
       });
     }
   }
+  // Replay events under their original owner first, then publish the current
+  // foreground/queued snapshot. This prevents old backlog from being mistaken
+  // for the newly attached request.
+  deliver({
+    type: "run_attached",
+    running: reattachRunning,
+    userMessageId: attachedRequestId,
+    conversationId: attachedConversationId,
+  });
 
-  ws.on("message", (raw) => {
+  let handleClientMessage;
+  const drainThisConnection = () => {
+    if (activeWs !== ws || shouldQueueClientPrompt() || queuedClientPrompts.length === 0) return;
+    const next = queuedClientPrompts.shift();
+    handleClientMessage(JSON.stringify(next), true);
+  };
+  queuedClientPromptDrain = drainThisConnection;
+  handleClientMessage = (raw, fromQueue = false) => {
     if (activeWs !== ws) return;
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -2828,12 +3275,35 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.reset) {
+      claudeTurnEpoch += 1;
       clearPendingAskUserQuestion("session reset");
       finalizeActiveAssistantHistory("stopped");
       clearActiveHistoryConversation();
       clearSession();
       clearCodexThread();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+      claudeRuntime.close();
+      claudeRuntimeSignature = null;
+      claudeRuntimeConversationId = null;
+      claudeTurnCompletionPending = false;
+      claudeStopRequested = false;
+      claudeRecoveryContext = null;
+      claudePendingRecovery = null;
+      claudeTaskWakeGraceUntil = 0;
+      activeForegroundRequestId = null;
+      activeForegroundConversationId = null;
+      claudeAutoWakeOwner = null;
+      clearTimeout(claudeAutoWakeOwnerTimer);
+      claudeAutoWakeOwnerTimer = null;
+      for (const timer of taskEventOwnerTimers.values()) clearTimeout(timer);
+      taskEventOwnerTimers.clear();
+      taskEventOwners.clear();
+      queuedClientPrompts.length = 0;
+      clientRequestStates.clear();
+      detachedBuffer = [];
+      clearTimeout(queuedClientPromptDrainTimer);
+      queuedClientPromptDrainTimer = null;
+      deliver({ type: "reset_complete" });
       return;
     }
 
@@ -2844,8 +3314,8 @@ wss.on("connection", (ws) => {
         // A generation still streaming into a different conversation owns
         // activeHistoryConversationId until it finalizes — viewing another
         // conversation must not redirect its in-flight output.
-        const generatingElsewhere = activeAssistantHistoryMessage?.status === "running"
-          && activeHistoryConversationId !== nextConversationId;
+        const generatingElsewhere = activeHistoryTurnOpen
+          && activeHistoryTurnConversationId !== nextConversationId;
         if (!generatingElsewhere) {
           activeHistoryConversationId = nextConversationId;
           updateActiveConversationSession(String(msg.setSession));
@@ -2855,22 +3325,106 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.stop) {
+      const requestedStopId = getClientRequestId(msg);
+      if (requestedStopId) {
+        const queuedIndex = queuedClientPrompts.findIndex(item => getClientRequestId(item) === requestedStopId);
+        if (queuedIndex >= 0) {
+          queuedClientPrompts.splice(queuedIndex, 1);
+          rememberClientRequest(requestedStopId, "stopped");
+          deliver({ type: "stopped", userMessageId: requestedStopId });
+          scheduleQueuedClientPromptDrain();
+          return;
+        }
+        if (activeForegroundRequestId !== requestedStopId) {
+          const known = clientRequestStates.get(requestedStopId);
+          if (known) acknowledgeClientRequest(requestedStopId, known.state);
+          return;
+        }
+      }
       clearPendingAskUserQuestion("generation stopped");
-      finalizeActiveAssistantHistory("stopped");
-      if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
-      else send({ type: "stopped" });
+      const claudeTurnWasPending = claudeTurnCompletionPending;
+      claudeTurnEpoch += 1;
+      if (abortCtrl) {
+        const stoppedRequestId = activeForegroundRequestId;
+        const activeAbort = abortCtrl;
+        abortCtrl = null;
+        activeAbort.abort();
+        send({ type: "stopped" });
+        completeClientRequest("stopped", stoppedRequestId);
+        finalizeActiveAssistantHistory("stopped");
+        scheduleQueuedClientPromptDrain();
+      } else if (claudeTurnWasPending) {
+        claudeStopRequested = true;
+        if (claudeRuntime.foregroundRunning) {
+          claudeRuntime.interrupt().catch((error) => {
+            send({ type: "error", text: String(error) });
+            finishClaudeTurn();
+          });
+        } else {
+          finishClaudeTurn();
+        }
+      } else if (claudeRuntime.foregroundRunning) {
+        claudeRuntime.interrupt().catch((error) => {
+          send({ type: "error", text: String(error) });
+          finishClaudeTurn();
+        });
+      } else {
+        send({ type: "stopped", userMessageId: requestedStopId ?? null });
+        completeClientRequest("stopped", requestedStopId);
+      }
       return;
     }
 
-    // Cancel any in-flight query before starting a new one
-    clearPendingAskUserQuestion("new request started");
-    if (abortCtrl) {
-      finalizeActiveAssistantHistory("stopped");
-      abortCtrl.abort();
-      abortCtrl = null;
-    } else {
-      finalizeActiveAssistantHistory("complete");
+    // The frontend normally queues follow-ups. Keep this server-side guard so a
+    // stale or third-party client can never turn a new message into an implicit Stop.
+    const requestId = getClientRequestId(msg);
+    const knownRequest = requestId ? clientRequestStates.get(requestId) : null;
+    if (!fromQueue && knownRequest) {
+      acknowledgeClientRequest(requestId, knownRequest.state);
+      if (knownRequest.state === "queued") {
+        const position = queuedClientPrompts.findIndex(item => getClientRequestId(item) === requestId) + 1;
+        deliver({ type: "request_queued", reason: "busy", position: position || null, userMessageId: requestId });
+      } else if (knownRequest.state === "running") {
+        deliver({ type: "request_started", userMessageId: requestId });
+      }
+      return;
     }
+
+    const activeRestartLease = getActiveRestartLease();
+    if (activeRestartLease) {
+      deliver({
+        type: "request_retry",
+        reason: "sidecar_restarting",
+        userMessageId: requestId,
+        retryAfterMs: Math.max(100, activeRestartLease.expiresAt - Date.now() + 50),
+      });
+      return;
+    }
+
+    const incomingProfileData = readProfiles();
+    if (msg.profileId && incomingProfileData.profiles.some(p => p.id === msg.profileId)) {
+      incomingProfileData.activeProfileId = msg.profileId;
+    }
+    const incomingProvider = getActiveProfile(incomingProfileData)?.provider ?? "claude";
+    const crossesActiveClaudeTasks = incomingProvider === "codex" && claudeRuntime.taskIds.size > 0;
+    if (shouldQueueClientPrompt() || crossesActiveClaudeTasks) {
+      if (fromQueue) queuedClientPrompts.unshift(msg);
+      else queuedClientPrompts.push(msg);
+      rememberClientRequest(requestId, "queued");
+      acknowledgeClientRequest(requestId, "queued");
+      const position = queuedClientPrompts.findIndex(item => item === msg) + 1;
+      deliver({
+        type: "request_queued",
+        reason: crossesActiveClaudeTasks ? "provider_switch_wait" : "busy",
+        position: position || queuedClientPrompts.length,
+        userMessageId: requestId,
+      });
+      return;
+    }
+    const requestConversationId = normalizeHistoryId(msg.conversationId);
+    msg.conversationId = requestConversationId;
+    startClientRequest(requestId, requestConversationId);
+    finalizeActiveAssistantHistory("complete");
     beginServerConversationFromClient(msg);
 
     const schedulerRequest = hasSchedulerIntent(msg.prompt);
@@ -2890,10 +3444,10 @@ wss.on("connection", (ws) => {
       type: "user",
       message: { role: "user", content },
       parent_tool_use_id: null,
+      priority: "next",
     };
 
     const ac = new AbortController();
-    abortCtrl = ac;
     const permissionMode = PERMISSION_MODES.has(msg.permissionMode)
       ? msg.permissionMode
       : DEFAULT_PERMISSION_MODE;
@@ -2908,19 +3462,25 @@ wss.on("connection", (ws) => {
     if (activeProfile && activeProfile.provider !== "claude" && activeProfile.provider !== "codex" && !activeProfile.apiKey) {
       send({ type: "error", text: `${activeProfile.name} 的 API Key 还没有配置，请先在账号设置里保存。` });
       send({ type: "done" });
+      completeClientRequest("error", requestId);
       abortCtrl = null;
+      scheduleQueuedClientPromptDrain();
       return;
     }
     if (activeProfile?.provider === "codex" && !isCodexAuthAvailable()) {
       send({ type: "error", text: "Codex 还没有登录，请先打开 Codex 客户端或运行 codex login 完成 ChatGPT 账号登录。" });
       send({ type: "done" });
+      completeClientRequest("error", requestId);
       abortCtrl = null;
+      scheduleQueuedClientPromptDrain();
       return;
     }
     if (activeProfile?.provider === "codex" && schedulerRequest) {
       send({ type: "error", text: "定时任务目前需要 Claude 会员通道的 scheduler 工具。请切换到 Claude 会员后再创建、查看或修改提醒任务。" });
       send({ type: "done" });
+      completeClientRequest("error", requestId);
       abortCtrl = null;
+      scheduleQueuedClientPromptDrain();
       return;
     }
 
@@ -2954,6 +3514,21 @@ wss.on("connection", (ws) => {
 
     // ── Codex SDK 路径 ────────────────────────────────────────
     if (activeProfile?.provider === "codex") {
+      // The two providers share one UI/history/Stop state. Once Claude has no
+      // foreground or background work left, close its idle process before Codex
+      // starts so a late auto-continuation cannot create a second stream.
+      if (claudeRuntime.started) {
+        claudeRuntime.close();
+        claudeRuntimeSignature = null;
+        claudeRuntimeConversationId = null;
+      }
+      const codexTurnEpoch = ++claudeTurnEpoch;
+      abortCtrl = ac;
+      const isCurrentCodexTurn = () => (
+        codexTurnEpoch === claudeTurnEpoch
+        && abortCtrl === ac
+        && activeForegroundRequestId === requestId
+      );
       (async () => {
         try {
           const codex = new Codex();
@@ -2987,8 +3562,10 @@ wss.on("connection", (ws) => {
           }
 
           const { events } = await thread.runStreamed(input, { signal: ac.signal });
+          if (!isCurrentCodexTurn()) return;
           let codexResultSent = false;
           for await (const ev of events) {
+            if (!isCurrentCodexTurn()) return;
             if (ev.type === "thread.started") {
               saveCodexThread(ev.thread_id);
               send({ type: "session", sessionId: ev.thread_id });
@@ -3005,227 +3582,194 @@ wss.on("connection", (ws) => {
               throw new Error(ev.message || "Codex 请求失败");
             }
           }
+          if (!isCurrentCodexTurn()) return;
           if (!codexResultSent) send({ type: "result", subtype: "success", provider: "codex" });
           send({ type: "done" });
+          completeClientRequest("complete", requestId);
         } catch (err) {
+          if (!isCurrentCodexTurn()) return;
           if (err?.name === "AbortError") {
             send({ type: "stopped" });
+            completeClientRequest("stopped", requestId);
           } else {
             send({ type: "error", text: String(err) });
             send({ type: "done" });
+            completeClientRequest("error", requestId);
           }
         } finally {
           if (abortCtrl === ac) abortCtrl = null;
+          scheduleQueuedClientPromptDrain();
         }
       })();
       return;
     }
 
-    (async () => {
-      let stallTimer = null;
-      let isStallAbort = false;
-      let waitingForUserInput = false;
-      // Stall watchdog: resets on each SDK event. Catches truly frozen streams.
-      // There is deliberately no total-duration cap — tasks may run for hours or
-      // days as long as the stream keeps emitting events.
-      const resetStall = () => {
-        if (waitingForUserInput) return;
-        clearTimeout(stallTimer);
-        stallTimer = setTimeout(() => { isStallAbort = true; ac.abort(); }, STREAM_STALL_MS);
-      };
-      const pauseForUserInput = () => {
-        waitingForUserInput = true;
-        clearTimeout(stallTimer);
-      };
-      const resumeAfterUserInput = () => {
-        waitingForUserInput = false;
-        if (!ac.signal.aborted) resetStall();
-      };
+    const collectAskUserQuestionInput = async (input, context = {}) => {
+      const answer = await waitForAskUserQuestionAnswer(input, context);
+      const updatedInput = { ...input, questions: answer.questions };
+      if (answer.response && Object.keys(answer.answers).length === 0) {
+        updatedInput.response = answer.response;
+      } else {
+        updatedInput.answers = answer.answers;
+      }
+      return updatedInput;
+    };
 
-      const collectAskUserQuestionInput = async (input, context = {}) => {
-        pauseForUserInput();
-        try {
-          const answer = await waitForAskUserQuestionAnswer(input, context);
-          const updatedInput = {
-            ...input,
-            questions: answer.questions,
-          };
-          if (answer.response && Object.keys(answer.answers).length === 0) {
-            updatedInput.response = answer.response;
-          } else {
-            updatedInput.answers = answer.answers;
-          }
-          return updatedInput;
-        } finally {
-          resumeAfterUserInput();
-        }
-      };
-
-      options.hooks = {
-        ...(options.hooks ?? {}),
-        PreToolUse: [
-          ...((options.hooks?.PreToolUse) ?? []),
-          {
-            matcher: ASK_USER_QUESTION_TOOL,
-            hooks: [async (hookInput, toolUseID, hookContext = {}) => {
-              if (hookInput?.tool_name !== ASK_USER_QUESTION_TOOL) return {};
-              const existingInput = hookInput.tool_input && typeof hookInput.tool_input === "object"
-                ? hookInput.tool_input
-                : {};
-              if (existingInput.answers || existingInput.response) {
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: "PreToolUse",
-                    permissionDecision: "allow",
-                    updatedInput: existingInput,
-                  },
-                };
-              }
-              const updatedInput = await collectAskUserQuestionInput(existingInput, {
-                signal: hookContext.signal,
-                toolUseID: hookInput.tool_use_id ?? toolUseID,
-              });
+    options.hooks = {
+      ...(options.hooks ?? {}),
+      PreToolUse: [
+        ...((options.hooks?.PreToolUse) ?? []),
+        {
+          matcher: ASK_USER_QUESTION_TOOL,
+          hooks: [async (hookInput, toolUseID, hookContext = {}) => {
+            if (hookInput?.tool_name !== ASK_USER_QUESTION_TOOL) return {};
+            const existingInput = hookInput.tool_input && typeof hookInput.tool_input === "object"
+              ? hookInput.tool_input
+              : {};
+            if (existingInput.answers || existingInput.response) {
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse",
                   permissionDecision: "allow",
-                  updatedInput,
+                  updatedInput: existingInput,
                 },
               };
-            }],
-          },
-        ],
-      };
+            }
+            const updatedInput = await collectAskUserQuestionInput(existingInput, {
+              signal: hookContext.signal,
+              toolUseID: hookInput.tool_use_id ?? toolUseID,
+            });
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                updatedInput,
+              },
+            };
+          }],
+        },
+      ],
+    };
 
-      options.canUseTool = async (toolName, input, context = {}) => {
-        if (toolName !== ASK_USER_QUESTION_TOOL) {
-          // Log every denial so occasional "task gave up midway" reports can be
-          // traced back to a permission escalation the web UI couldn't display.
-          console.warn(`[Web Agent] Permission escalation denied for tool: ${toolName} (mode: ${permissionMode})`);
-          return {
-            behavior: "deny",
-            message: `此环境无法弹出「${toolName}」的人工授权确认。如果这一步是完成任务所必需的，请改用 ${ASK_USER_QUESTION_TOOL} 工具向用户说明情况并征询如何继续；如果有不需要额外授权的替代做法，也可以直接采用。不要因此放弃整个任务。`,
-          };
-        }
-
-        if (input?.answers || input?.response) {
-          return {
-            behavior: "allow",
-            updatedInput: input,
-            decisionClassification: "user_temporary",
-          };
-        }
-
+    options.canUseTool = async (toolName, input, context = {}) => {
+      if (toolName !== ASK_USER_QUESTION_TOOL) {
+        console.warn(`[Web Agent] Permission escalation denied for tool: ${toolName} (mode: ${permissionMode})`);
+        return {
+          behavior: "deny",
+          message: `此环境无法弹出「${toolName}」的人工授权确认。若这一步必不可少，请改用 ${ASK_USER_QUESTION_TOOL} 向用户说明并询问；若有不需要额外授权的替代方案，请直接采用。不要因此放弃整个任务。`,
+        };
+      }
+      if (input?.answers || input?.response) {
         return {
           behavior: "allow",
-          updatedInput: await collectAskUserQuestionInput(input, context),
+          updatedInput: input,
           decisionClassification: "user_temporary",
         };
+      }
+      return {
+        behavior: "allow",
+        updatedInput: await collectAskUserQuestionInput(input, context),
+        decisionClassification: "user_temporary",
       };
+    };
 
-      // Run one query() to completion, forwarding all events to the client.
-      const runQuery = async (promptMsg, queryOptions) => {
-        for await (const ev of query({
-          prompt: (async function* () { yield promptMsg; })(),
-          options: queryOptions,
-        })) {
-          // Every event resets the stall watchdog — including api_retry backoff
-          // notices, since the SDK has its own retry ceiling and will surface a
-          // real error when retries are exhausted. We only kill dead-silent streams.
-          resetStall();
-          if (ev.type === "system" && ev.subtype === "init") {
-            saveSession(ev.session_id);
-            send({ type: "session", sessionId: ev.session_id });
-            // ev.skills = skill slugs only; ev.slash_commands = skills + built-in names
-            const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
-              ? ev.skills
-              : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
-            if (skillsFromSdk.length > 0) cachedSkillsByProvider["claude"] = skillsFromSdk; // keep cache fresh
-            send({
-              type: "system",
-              subtype: "init",
-              slash_commands: skillsFromSdk,
-              skills: skillsFromSdk,
-            });
-            continue;
-          }
-          // Forward retry/status events so the frontend can show progress instead of silently spinning
-          if (ev.type === "system" && (ev.subtype === "api_retry" || ev.subtype === "status")) {
-            send(ev);
-            continue;
-          }
-          if (ev.type !== "system") send(ev);
-        }
+    const buildRecoveryMsg = () => {
+      const history = extractSessionTextHistory(sessionId);
+      if (history.length === 0) return null;
+      const historyText = history
+        .map(turn => `${turn.role === "user" ? "用户" : "助手"}：${turn.text}`)
+        .join("\n");
+      const injected = `以下是本次对话此前的历史记录（供你延续上下文）：\n${historyText}\n\n用户：${msg.prompt}`;
+      const recoveredContent = content
+        .filter(block => block.type !== "text")
+        .concat([{ type: "text", text: injected }]);
+      return {
+        type: "user",
+        message: { role: "user", content: recoveredContent },
+        parent_tool_use_id: null,
+        priority: "next",
       };
+    };
 
-      const isThinkingSignatureError = (err) => {
-        const s = String(err);
-        return s.includes("signature") && s.includes("thinking");
-      };
+    const runtimeSignature = crypto.createHash("sha256").update(JSON.stringify({
+      conversationId: activeHistoryConversationId,
+      cwd: resolvedCwd,
+      effort,
+      provider: activeProfile?.provider ?? "claude",
+      profileId: activeProfile?.id ?? null,
+      baseUrl: activeProfile?.baseUrl ?? null,
+      apiKey: activeProfile?.apiKey ?? null,
+      opusModel: activeProfile?.opusModel ?? null,
+      sonnetModel: activeProfile?.sonnetModel ?? null,
+      haikuModel: activeProfile?.haikuModel ?? null,
+      allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
+      schedulerRequest,
+    })).digest("hex");
+    const turnConversationId = activeHistoryConversationId;
+    const turnEpoch = ++claudeTurnEpoch;
+    const isCurrentTurn = () => turnEpoch === claudeTurnEpoch && claudeTurnCompletionPending;
 
-      // Rebuild the request as a fresh (no-resume) query that carries the prior
-      // conversation as injected text — preserving context while shedding the
-      // corrupted thinking blocks. Mirrors the WeChat path's history injection.
-      const buildRecoveryMsg = () => {
-        const history = extractSessionTextHistory(sessionId);
-        if (history.length === 0) return null;
-        const historyText = history
-          .map(t => `${t.role === "user" ? "用户" : "助手"}：${t.text}`)
-          .join("\n");
-        const injected = `以下是本次对话此前的历史记录（供你延续上下文）：\n${historyText}\n\n用户：${msg.prompt}`;
-        const recoveredContent = content
-          .filter(b => b.type !== "text")        // keep any images
-          .concat([{ type: "text", text: injected }]);
-        return { type: "user", message: { role: "user", content: recoveredContent }, parent_tool_use_id: null };
-      };
+    claudeTurnCompletionPending = true;
+    claudeStopRequested = false;
+    claudeErrorHandled = false;
+    claudeRecoveryContext = {
+      attempted: false,
+      buildMessage: buildRecoveryMsg,
+      options,
+      signature: runtimeSignature,
+    };
 
+    (async () => {
       try {
-        resetStall();
-        try {
-          await runQuery(userMsg, options);
-        } catch (err) {
-          // Thinking-signature 400 on resume: the session's thinking blocks are
-          // unverifiable after an interruption. Recover by replaying the turn on a
-          // fresh session with text-injected history, instead of losing all context.
-          if (!isThinkingSignatureError(err) || ac.signal.aborted) throw err;
-          const recoveryMsg = buildRecoveryMsg();
-          clearSession(); // abandon the corrupted session; the retry starts a clean one
-          if (!recoveryMsg) throw err; // nothing to inject → surface the original error
-          console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");
-          const recoveryOptions = { ...options };
-          delete recoveryOptions.resume; // start fresh; history is carried in the prompt
-          resetStall();
-          await runQuery(recoveryMsg, recoveryOptions);
-        }
-        send({ type: "done" });
-      } catch (err) {
-        if (err?.name === "AbortError") {
-          if (isStallAbort) {
-            console.warn(`[Web Agent] Stream emitted no events for ${STREAM_STALL_MS / 60_000} min; aborted as frozen.`);
-            send({ type: "error", text: `AI 响应流已中断（${STREAM_STALL_MS / 60_000} 分钟内没有任何事件），已停止本次任务。请重新发送消息。` });
-            send({ type: "done" });
-          } else {
-            send({ type: "stopped" });
+        if (!isCurrentTurn()) return;
+        if (claudeRuntime.started && claudeRuntimeSignature !== runtimeSignature) {
+          if (claudeRuntime.taskIds.size > 0) {
+            send({
+              type: "error",
+              text: "当前对话仍有后台任务运行，暂不能切换工作目录、账号、推理强度、权限能力或调度模式。请等待任务完成，或重置/新建对话后再切换。",
+            });
+            finishClaudeTurn();
+            return;
           }
-        } else {
-          send({ type: "error", text: String(err) });
-          send({ type: "done" });
+          claudeRuntime.close();
+          claudeRuntimeSignature = null;
+          claudeRuntimeConversationId = null;
         }
-      } finally {
-        clearTimeout(stallTimer);
-        clearPendingAskUserQuestion("request finished");
-        if (abortCtrl === ac) abortCtrl = null;
+
+        if (!claudeRuntime.started) {
+          if (!isCurrentTurn()) return;
+          claudeRuntime.start(options);
+          claudeRuntimeSignature = runtimeSignature;
+          claudeRuntimeConversationId = turnConversationId;
+        } else {
+          await claudeRuntime.query.setPermissionMode(permissionMode);
+          if (!isCurrentTurn()) return;
+          await claudeRuntime.query.setModel(msg.model || undefined);
+          if (!isCurrentTurn()) return;
+        }
+
+        if (!isCurrentTurn()) return;
+        claudeRuntime.send(userMsg);
+      } catch (error) {
+        if (!isCurrentTurn()) return;
+        send({ type: "error", text: String(error) });
+        finishClaudeTurn();
       }
     })();
-  });
+    return;
+
+  };
+  ws.on("message", raw => handleClientMessage(raw, false));
+  scheduleQueuedClientPromptDrain();
 
   ws.on("close", () => {
     clearInterval(pingTimer);
     if (activeWs === ws) {
       activeWs = null;
+      if (queuedClientPromptDrain === drainThisConnection) queuedClientPromptDrain = null;
       // Do NOT abort or clear the pending question: the run keeps going in the
       // background and reattaches when the client reconnects.
-      if (abortCtrl) {
+      if (isAgentRunActive()) {
         console.log("[Web Agent] Client detached; run continues in background, events buffered until reconnect.");
       }
     }

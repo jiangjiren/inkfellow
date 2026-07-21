@@ -2178,6 +2178,16 @@ function showInlineError(text) {
 
 let isGenerating = false;
 let isAwaitingAskUserQuestion = false;
+let stopRequested = false;
+let stopResendPending = false;
+let resetRequested = false;
+let pendingRequestDraft = null;
+let activeRequestId = null;
+let requestRetryTimer = null;
+const followUpQueue = [];
+let followUpDrainTimer = null;
+let errorCompletionTimer = null;
+let connectionStateSyncTimer = null;
 let genChipEl = null;
 let lastWsEventAt = 0; // timestamp of last event received from server, for stall detection
 let quotedText = null;
@@ -3203,6 +3213,9 @@ function blockTypeLabel(type) {
     permission_denied: "权限拒绝",
     prompt_suggestion: "提示建议",
     notification: "通知",
+    task_started: "子任务已启动",
+    task_progress: "子任务进行中",
+    task_updated: "子任务已更新",
     task_notification: "任务通知",
     status: "状态",
     refusal: "拒绝回复",
@@ -3307,6 +3320,11 @@ function appendAssistantBlock(body, block) {
     return;
   }
 
+  if (block.type === "task_status") {
+    body.appendChild(makeTaskStatusEl(block));
+    return;
+  }
+
   if (block.type === "sdk_event") {
     const label = blockTypeLabel(block.eventType) || "运行事件";
     body.appendChild(makeHistoryBlock(label, block.raw ?? block));
@@ -3322,8 +3340,13 @@ function renderAssistantBlocks(body, blocks) {
 
 function setGenerating(v, notifyParent = true) {
   isGenerating = v;
-  if (!v) removeGenChip();
-  sendBtn.disabled = false;
+  if (!v) {
+    stopRequested = false;
+    stopResendPending = false;
+    removeGenChip();
+  }
+
+  sendBtn.disabled = v && stopRequested && !stopResendPending;
   sendBtn.classList.toggle("stopping", v);
   sendBtn.setAttribute("aria-label", v ? "停止" : "发送");
   iconSend.style.display = v ? "none" : "";
@@ -3444,9 +3467,10 @@ window.addEventListener("message", (e) => {
     }
     renderMentionChips();
   }
-  if (e.data?.type === "note-context" && e.data.filePath) {
-    const isNewFile = currentNoteFile !== e.data.filePath;
-    currentNoteFile = e.data.filePath;
+  if (e.data?.type === "note-context") {
+    const nextFile = typeof e.data.filePath === "string" && e.data.filePath ? e.data.filePath : null;
+    const isNewFile = currentNoteFile !== nextFile;
+    currentNoteFile = nextFile;
     if (isNewFile) noteContextEnabled = true;
     renderNoteContext();
   }
@@ -3469,9 +3493,7 @@ window.addEventListener("message", (e) => {
     quoteChip.classList.remove("visible");
   }
   if (e.data?.type === "note-ask" && e.data.text) {
-    promptEl.value = e.data.text;
-    promptEl.dispatchEvent(new Event("input"));
-    sendBtn.click();
+    submitRequest(e.data.text, { consumeComposer: false, noteFile: e.data.filePath ?? null });
   }
   if (e.data?.type === "focus-input") {
     promptEl.focus();
@@ -3519,14 +3541,23 @@ let ws = null;
 function connect() {
   ws = new WebSocket(wsUrl);
   ws.onopen = () => {
-    setGenerating(false, false);
+    sendBtn.disabled = isGenerating && stopRequested && !stopResendPending;
+    if (resetRequested) sendResetRequest();
+    else resendPendingRequest();
     requestSkillRefresh(true);
     postParentMessage({ type: "agent-ready" });
+    clearTimeout(connectionStateSyncTimer);
+    connectionStateSyncTimer = setTimeout(() => {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      postParentMessage({ type: "ai-generating-state", isGenerating });
+      if (!isGenerating) scheduleFollowUpDrain();
+    }, 100);
   };
   ws.onclose = () => {
+    clearTimeout(connectionStateSyncTimer);
+    if (stopRequested) stopResendPending = true;
     postParentMessage({ type: "agent-not-ready" });
     sendBtn.disabled = true;
-    setGenerating(false, false);
     setTimeout(connect, 3000);
   };
   ws.onerror = () => { };
@@ -3671,6 +3702,115 @@ function captureAssistantEvent(ev) {
   scrollBottom();
 }
 
+function finishGenerationAndContinue(requestId = null) {
+  if (activeRequestId && requestId !== activeRequestId) return false;
+  if (pendingRequestDraft && (!requestId || pendingRequestDraft.userMessageId === requestId)) {
+    pendingRequestDraft = null;
+  }
+  activeRequestId = null;
+  clearTimeout(errorCompletionTimer);
+  errorCompletionTimer = null;
+  clearAskUserQuestion();
+  resetAssistantState();
+  setGenerating(false);
+  removeTyping();
+  scheduleFollowUpDrain();
+  return true;
+}
+
+function finishGenerationAfterError(requestId = null) {
+  clearTimeout(errorCompletionTimer);
+  // The server normally follows error with done. Waiting briefly prevents that
+  // old done from arriving after the next queued run has already started.
+  errorCompletionTimer = setTimeout(() => {
+    errorCompletionTimer = null;
+    finishGenerationAndContinue(requestId);
+  }, 1000);
+}
+
+const TASK_EVENT_TYPES = new Set([
+  "task_started",
+  "task_progress",
+  "task_updated",
+  "task_notification",
+]);
+
+function taskEventId(ev) {
+  return String(ev.task_id ?? ev.taskId ?? ev.tool_use_id ?? ev.toolUseID ?? "task");
+}
+
+function taskEventType(ev) {
+  return ev.type === "system" ? ev.subtype : ev.type;
+}
+
+function taskEventText(ev) {
+  const status = String(ev.status ?? ev.patch?.status ?? ev.task?.status ?? "").trim().toLowerCase();
+  const statusLabels = {
+    pending: "等待中",
+    running: "进行中",
+    in_progress: "进行中",
+    completed: "已完成",
+    complete: "已完成",
+    success: "已完成",
+    failed: "失败",
+    error: "失败",
+    stopped: "已停止",
+    killed: "已停止",
+    paused: "已暂停",
+    cancelled: "已取消",
+    canceled: "已取消",
+  };
+  const base = statusLabels[status] || blockTypeLabel(taskEventType(ev));
+  const candidates = [
+    ev.description,
+    ev.summary,
+    ev.message,
+    ev.subject,
+    ev.task?.description,
+    ev.task?.summary,
+    ev.patch?.description,
+    ev.patch?.error,
+    ev.data?.description,
+    ev.last_tool_name,
+  ];
+  const detail = candidates.find((value) => typeof value === "string" && value.trim())?.trim();
+  return detail ? `${base}：${detail.slice(0, 120)}` : base;
+}
+
+function taskEventIsDone(ev) {
+  const status = String(ev.status ?? ev.patch?.status ?? ev.task?.status ?? "").trim().toLowerCase();
+  return taskEventType(ev) === "task_notification"
+    || ["completed", "complete", "success", "failed", "error", "stopped", "killed", "cancelled", "canceled"].includes(status);
+}
+
+function renderTaskStatusEvent(ev) {
+  const taskId = taskEventId(ev);
+  const block = {
+    type: "task_status",
+    eventType: taskEventType(ev),
+    taskId,
+    text: taskEventText(ev),
+    done: taskEventIsDone(ev),
+    raw: cloneJson(ev),
+  };
+  assistantEvents.push(block.raw);
+  const existingIndex = assistantBlocks.findIndex((item) => item.type === "task_status" && item.taskId === taskId);
+  if (existingIndex >= 0) assistantBlocks[existingIndex] = block;
+  else assistantBlocks.push(block);
+
+  if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+  const body = assistantEl.querySelector(".msg-body");
+  const selector = `.task-status[data-task-status-id="${cssEscapeValue(taskId)}"]`;
+  const existing = body.querySelector(selector);
+  const next = makeTaskStatusEl(block);
+  if (existing) existing.replaceWith(next);
+  else body.appendChild(next);
+  if (!genChipEl && isGenerating) showGenChip(block.text);
+  else updateGenChip(block.text);
+  reanchorGenChip();
+  scrollBottom();
+}
+
 // ── Event handling ────────────────────────────────────────
 function handleEvent(ev) {
   lastWsEventAt = Date.now();
@@ -3679,15 +3819,127 @@ function handleEvent(ev) {
   // dead-socket detector below never fires on a healthy connection.
   if (ev.type === "ping") return;
 
+  if (ev.type === "reset_complete") {
+    resetRequested = false;
+    pendingRequestDraft = null;
+    activeRequestId = null;
+    clearTimeout(requestRetryTimer);
+    requestRetryTimer = null;
+    clearTimeout(errorCompletionTimer);
+    errorCompletionTimer = null;
+    clearAskUserQuestion();
+    resetAssistantState();
+    setGenerating(false);
+    removeTyping();
+    messagesEl.innerHTML = "";
+    messageLog = [];
+    currentConvId = null;
+    currentSessionId = null;
+    scheduleFollowUpDrain();
+    return;
+  }
+
+  // Reset is a generation boundary. Events already buffered by the old socket
+  // must not be allowed to repopulate the freshly cleared conversation.
+  if (resetRequested) return;
+
+  if (ev.type === "request_ack") {
+    if (pendingRequestDraft?.userMessageId === ev.userMessageId) {
+      pendingRequestDraft = null;
+      clearTimeout(requestRetryTimer);
+      requestRetryTimer = null;
+    }
+    if (ev.state === "queued" || ev.state === "running") {
+      activeRequestId = ev.userMessageId || activeRequestId;
+      setGenerating(true);
+      if (!document.getElementById("typing")) addTyping();
+      if (stopRequested && stopResendPending) sendStopRequest();
+    } else if (activeRequestId && ev.userMessageId === activeRequestId) {
+      finishGenerationAndContinue(ev.userMessageId);
+    }
+    if (!isGenerating) scheduleFollowUpDrain();
+    return;
+  }
+
+  if (ev.type === "request_started") {
+    if (pendingRequestDraft?.userMessageId === ev.userMessageId) {
+      pendingRequestDraft = null;
+      clearTimeout(requestRetryTimer);
+      requestRetryTimer = null;
+    }
+    activeRequestId = ev.userMessageId || activeRequestId;
+    setGenerating(true);
+    if (!document.getElementById("typing")) addTyping();
+    return;
+  }
+
+  if (ev.type === "request_retry") {
+    if (pendingRequestDraft?.userMessageId !== ev.userMessageId) return;
+    updateTypingStatus("AI 服务正在安全重启，消息会自动重试...");
+    if (stopRequested) stopResendPending = true;
+    clearTimeout(requestRetryTimer);
+    requestRetryTimer = setTimeout(() => {
+      requestRetryTimer = null;
+      if (!pendingRequestDraft || !resendPendingRequest()) return;
+      if (stopRequested) {
+        stopResendPending = true;
+        sendStopRequest();
+      }
+    }, Math.max(100, Number(ev.retryAfterMs) || 1000));
+    return;
+  }
+
   // Reconnected while the server still has a run in flight (or a finished run
   // whose events we missed). Restore the generating UI; buffered events replay
   // immediately after this message.
   if (ev.type === "run_attached") {
-    if (ev.running) {
-      setGenerating(true, false);
+    if (ev.userMessageId) activeRequestId = ev.userMessageId;
+    if (pendingRequestDraft) {
+      setGenerating(true);
       if (!document.getElementById("typing")) addTyping();
+      if (stopRequested) sendStopRequest();
+      return;
+    }
+    if (ev.running) {
+      setGenerating(true);
+      if (!document.getElementById("typing")) addTyping();
+      // A Stop frame may have raced with the disconnect. Re-send it after the
+      // server confirms that the foreground run is still alive.
+      if (stopRequested) sendStopRequest();
+    } else if (isGenerating) {
+      // The server's idle snapshot is authoritative after reconnect. If the
+      // terminal frame was lost, close whichever local request was still open.
+      finishGenerationAndContinue(activeRequestId);
+    } else {
+      setGenerating(false);
+      scheduleFollowUpDrain();
     }
     return;
+  }
+
+  if (ev.type === "request_queued") {
+    if (ev.userMessageId) activeRequestId = ev.userMessageId;
+    setGenerating(true);
+    updateTypingStatus(`服务端排队中${ev.position ? `（第 ${ev.position} 条）` : ""}...`);
+    return;
+  }
+
+  const lifecycleEvent = TASK_EVENT_TYPES.has(ev.type)
+    || (ev.type === "system" && TASK_EVENT_TYPES.has(ev.subtype));
+  if (ev.conversationId && currentConvId && ev.conversationId !== currentConvId) {
+    return;
+  }
+  if (lifecycleEvent && activeRequestId && ev.userMessageId !== activeRequestId) {
+    // Show cross-turn task progress transiently, but never append A's task block
+    // to B's assistantBlocks/history payload.
+    updateTypingStatus(`后台任务：${taskEventText(ev)}`);
+    return;
+  }
+  if (!lifecycleEvent && activeRequestId) {
+    if (ev.userMessageId && ev.userMessageId !== activeRequestId) return;
+    // An owned conversation event without a request ID is a synthetic/background
+    // continuation. Do not merge it into the queued foreground request bubble.
+    if (!ev.userMessageId && ev.conversationId) return;
   }
 
   if (ev.type === "system" && ev.subtype === "api_retry") {
@@ -3713,6 +3965,21 @@ function handleEvent(ev) {
   }
 
   if (ev.type === "rate_limit_event") {
+    return;
+  }
+
+  if (ev.type === "system" && ev.subtype === "session_state_changed") {
+    if (ev.state === "running" || ev.state === "requires_action") {
+      setGenerating(true);
+      if (!assistantEl && !document.getElementById("typing")) addTyping();
+    } else if (ev.state === "idle") {
+      updateTypingStatus("");
+    }
+    return;
+  }
+
+  if (ev.type === "system" && TASK_EVENT_TYPES.has(ev.subtype)) {
+    renderTaskStatusEvent(ev);
     return;
   }
 
@@ -3920,6 +4187,11 @@ function handleEvent(ev) {
     return;
   }
 
+  if (TASK_EVENT_TYPES.has(ev.type) || (ev.type === "system" && TASK_EVENT_TYPES.has(ev.subtype))) {
+    renderTaskStatusEvent(ev);
+    return;
+  }
+
   if (ev.type === "result") {
     const savedText = assistantTxt;
     const savedBlocks = cloneJson(assistantBlocks);
@@ -3931,16 +4203,15 @@ function handleEvent(ev) {
     }
     resetAssistantState();
     if (savedText || savedBlocks?.length) {
-      messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status: "complete" });
+      const resultWasStopped = stopRequested && ev.userMessageId && ev.userMessageId === activeRequestId;
+      messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status: resultWasStopped ? "stopped" : "complete" });
       saveCurrentConversation();
     }
     return;
   }
 
   if (ev.type === "done" || ev.type === "stopped") {
-    clearAskUserQuestion();
-    resetAssistantState();
-    setGenerating(false); removeTyping();
+    finishGenerationAndContinue(ev.userMessageId ?? null);
     return;
   }
 
@@ -3948,7 +4219,10 @@ function handleEvent(ev) {
     clearAskUserQuestion();
     cleanupRunningTools();
     showInlineError(ev.text?.trim() || "发生错误");
-    setGenerating(false); removeTyping();
+    if (!activeRequestId || ev.userMessageId === activeRequestId) {
+      finishGenerationAfterError(ev.userMessageId ?? null);
+    }
+    return;
   }
 
   if (ev.type === "session" && ev.sessionId) {
@@ -4004,6 +4278,22 @@ function makeToolEl(tool) {
   inp.textContent = String(preview).slice(0, 120);
   inp.title = JSON.stringify(raw, null, 2);
   el.appendChild(name); el.appendChild(inp);
+  return el;
+}
+
+function makeTaskStatusEl(block) {
+  const el = document.createElement("div");
+  el.className = "tool-call task-status";
+  el.dataset.taskStatusId = block.taskId;
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = blockTypeLabel(block.eventType);
+  const detail = document.createElement("span");
+  detail.className = "tool-input";
+  detail.textContent = block.text;
+  detail.title = jsonPreview(block.raw ?? block);
+  el.append(name, detail);
+  if (!block.done && isGenerating) markToolRunning(el);
   return el;
 }
 
@@ -4261,14 +4551,8 @@ function selectItem(i) {
   }
   // /clear is handled locally; everything else is sent to claude
   if (item.name === "clear") {
-    saveCurrentConversation();
-    messagesEl.innerHTML = "";
-    messageLog = []; currentConvId = null; currentSessionId = null;
-    promptEl.value = "";
-    promptEl.style.height = "36px";
-    clearMentionNotes();
     hidePopup();
-    ws?.send(JSON.stringify({ reset: true }));
+    submitRequest("/clear", { consumeComposer: true });
     return;
   }
   // commands with no args: send immediately; skills need args typed first
@@ -4344,82 +4628,209 @@ document.addEventListener("mousedown", (e) => {
 });
 
 // ── Send ──────────────────────────────────────────────────
-function send() {
-  const text = promptEl.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+function takeRequestDraft(textOverride = null, { consumeComposer = textOverride == null, noteFile = undefined } = {}) {
+  const text = String(textOverride ?? promptEl.value).trim();
+  if (!text) return null;
+  const draft = {
+    text,
+    mentionedNotes: consumeComposer ? [...selectedMentionNotes.values()] : [],
+    images: consumeComposer ? pendingImages.map((image) => ({ ...image })) : [],
+    noteFile: noteFile !== undefined
+      ? noteFile
+      : (currentNoteFile && noteContextEnabled ? currentNoteFile : null),
+    quote: consumeComposer && quotedText ? {
+      text: quotedText,
+      section: quotedSection,
+      prefix: quotedPrefix,
+      suffix: quotedSuffix,
+    } : null,
+    model: selectedModel,
+    permissionMode: selectedPermissionMode,
+    effort: selectedEffort,
+    profileId: _profileData.activeProfileId,
+    conversationId: currentConvId,
+  };
 
-  if (text === "/clear") {
-    saveCurrentConversation();
-    messagesEl.innerHTML = "";
-    messageLog = []; currentConvId = null; currentSessionId = null;
+  if (consumeComposer) {
     promptEl.value = "";
     promptEl.style.height = "36px";
     clearMentionNotes();
-    ws.send(JSON.stringify({ reset: true }));
-    hidePopup();
-    return;
-  }
-
-  hidePopup();
-  const mentionedNotes = [...selectedMentionNotes.values()];
-  if (!currentConvId) currentConvId = genId();
-  const userMessageId = genId();
-  const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
-  // If a previous request froze without a done/stopped event, assistantEl still
-  // points to the old AI message element. Clear it so the upcoming response is
-  // appended after this new user message, not inside the old AI bubble.
-  resetAssistantState();
-  const displayText = mentionedNotes.length > 0
-    ? `${text}\n\n引用笔记：${mentionedNotes.map((note) => `@${note.title}`).join(" · ")}`
-    : text;
-  addMessage("user", displayText, imagePreviewUrls);
-  messageLog.push({ id: userMessageId, role: "user", text: displayText, cost: null });
-  promptEl.value = "";
-  promptEl.style.height = "36px";
-  addTyping();
-  setGenerating(true);
-  lastWsEventAt = Date.now();
-
-  const parts = [];
-  if (currentNoteFile && noteContextEnabled) parts.push(`当前查看的文件：${currentNoteFile}`);
-  if (mentionedNotes.length > 0) {
-    parts.push(
-      "用户指定以下 vault 笔记作为本轮上下文。请优先读取这些文件，并基于其中内容回答：\n"
-      + mentionedNotes.map((note) => `- ${JSON.stringify(note.path)}`).join("\n"),
-    );
-    clearMentionNotes();
-  }
-  if (quotedText) {
-    const sectionHint = quotedSection ? `（「${quotedSection}」章节）` : "";
-    let anchor = "";
-    if (quotedPrefix || quotedSuffix) {
-      const pre = quotedPrefix ? `…${quotedPrefix}` : "";
-      const suf = quotedSuffix ? `${quotedSuffix}…` : "";
-      anchor = `\n位置锚点：${pre}【${quotedText}】${suf}`;
-    }
-    parts.push(`用户引用了以下文段${sectionHint}：\n"${quotedText}"${anchor}`);
+    clearImages();
     quotedText = null;
     quotedSection = null;
     quotedPrefix = null;
     quotedSuffix = null;
     quoteChip.classList.remove("visible");
   }
-  parts.push(text);
+  return draft;
+}
+
+function showFollowUpQueueStatus() {
+  if (followUpQueue.length === 0) return;
+  const text = `已排队 ${followUpQueue.length} 条后续消息`;
+  updateTypingStatus(text);
+  if (assistantEl) {
+    if (!genChipEl) showGenChip(text);
+    else updateGenChip(text);
+  }
+}
+
+function enqueueFollowUp(draft) {
+  followUpQueue.push(draft);
+  showFollowUpQueueStatus();
+}
+
+function resendPendingRequest() {
+  if (
+    !pendingRequestDraft?.wsPayload
+    || resetRequested
+    || !ws
+    || ws.readyState !== WebSocket.OPEN
+  ) return false;
+  try {
+    ws.send(JSON.stringify(pendingRequestDraft.wsPayload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function dispatchRequestDraft(draft) {
+  if (
+    !draft
+    || isGenerating
+    || resetRequested
+    || pendingRequestDraft
+    || !ws
+    || ws.readyState !== WebSocket.OPEN
+  ) return false;
+
+  if (draft.text === "/clear") {
+    resetRequested = true;
+    if (!sendResetRequest()) return false;
+    saveCurrentConversation();
+    resetAssistantState();
+    messagesEl.innerHTML = "";
+    messageLog = []; currentConvId = null; currentSessionId = null;
+    pendingRequestDraft = null;
+    activeRequestId = null;
+    clearTimeout(requestRetryTimer);
+    requestRetryTimer = null;
+    hidePopup();
+    scheduleFollowUpDrain();
+    return true;
+  }
+
+  hidePopup();
+  const mentionedNotes = draft.mentionedNotes;
+  if (!draft.conversationId) draft.conversationId = currentConvId || genId();
+  if (!currentConvId) currentConvId = draft.conversationId;
+  const userMessageId = draft.userMessageId || genId();
+  draft.userMessageId = userMessageId;
+  const imagePreviewUrls = draft.images.map((image) => image.previewUrl);
+  const displayText = draft.displayText || (mentionedNotes.length > 0
+    ? `${draft.text}\n\n引用笔记：${mentionedNotes.map((note) => `@${note.title}`).join(" · ")}`
+    : draft.text);
+  draft.displayText = displayText;
+  if (!draft.rendered) {
+    // If a previous request froze without a done/stopped event, assistantEl still
+    // points to the old AI message element. Clear it so the upcoming response is
+    // appended after this new user message, not inside the old AI bubble.
+    resetAssistantState();
+    addMessage("user", displayText, imagePreviewUrls);
+    messageLog.push({ id: userMessageId, role: "user", text: displayText, cost: null });
+    draft.rendered = true;
+  }
+  addTyping();
+  setGenerating(true);
+  lastWsEventAt = Date.now();
+
+  const parts = [];
+  if (draft.noteFile) parts.push(`当前查看的文件：${draft.noteFile}`);
+  if (mentionedNotes.length > 0) {
+    parts.push(
+      "用户指定以下 vault 笔记作为本轮上下文。请优先读取这些文件，并基于其中内容回答：\n"
+      + mentionedNotes.map((note) => `- ${JSON.stringify(note.path)}`).join("\n"),
+    );
+  }
+  if (draft.quote) {
+    const sectionHint = draft.quote.section ? `（「${draft.quote.section}」章节）` : "";
+    let anchor = "";
+    if (draft.quote.prefix || draft.quote.suffix) {
+      const pre = draft.quote.prefix ? `…${draft.quote.prefix}` : "";
+      const suf = draft.quote.suffix ? `${draft.quote.suffix}…` : "";
+      anchor = `\n位置锚点：${pre}【${draft.quote.text}】${suf}`;
+    }
+    parts.push(`用户引用了以下文段${sectionHint}：\n"${draft.quote.text}"${anchor}`);
+  }
+  parts.push(draft.text);
   const wsPayload = {
-    conversationId: currentConvId,
+    conversationId: draft.conversationId,
     userMessageId,
     displayText,
     prompt: parts.join("\n\n"),
-    model: selectedModel,
-    permissionMode: selectedPermissionMode,
-    effort: selectedEffort,
-    profileId: _profileData.activeProfileId,
+    model: draft.model,
+    permissionMode: draft.permissionMode,
+    effort: draft.effort,
+    profileId: draft.profileId,
   };
-  if (pendingImages.length > 0) {
-    wsPayload.images = pendingImages.map(img => ({ data: img.data, mediaType: img.mediaType }));
-    clearImages();
+  if (draft.images.length > 0) {
+    wsPayload.images = draft.images.map((image) => ({ data: image.data, mediaType: image.mediaType }));
   }
-  ws.send(JSON.stringify(wsPayload));
+  draft.wsPayload = wsPayload;
+  pendingRequestDraft = draft;
+  activeRequestId = userMessageId;
+  try {
+    ws.send(JSON.stringify(wsPayload));
+  } catch {
+    if (pendingRequestDraft === draft) pendingRequestDraft = null;
+    if (activeRequestId === userMessageId) activeRequestId = null;
+    removeTyping();
+    setGenerating(false);
+    return false;
+  }
+  if (followUpQueue.length > 0) showFollowUpQueueStatus();
+  return true;
+}
+
+function scheduleFollowUpDrain(delay = 0) {
+  clearTimeout(followUpDrainTimer);
+  followUpDrainTimer = null;
+  if (followUpQueue.length === 0) return;
+  followUpDrainTimer = setTimeout(() => {
+    followUpDrainTimer = null;
+    if (isGenerating || resetRequested || pendingRequestDraft || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const next = followUpQueue.shift();
+    if (!dispatchRequestDraft(next)) {
+      followUpQueue.unshift(next);
+      showFollowUpQueueStatus();
+      return;
+    }
+    if (!isGenerating) scheduleFollowUpDrain();
+  }, delay);
+}
+
+function submitRequest(textOverride = null, options = {}) {
+  const text = String(textOverride ?? promptEl.value).trim();
+  if (!text) return false;
+  const shouldQueue = isGenerating || resetRequested || pendingRequestDraft || followUpQueue.length > 0;
+  if (!shouldQueue && (!ws || ws.readyState !== WebSocket.OPEN)) return false;
+  const draft = takeRequestDraft(textOverride, options);
+  if (!draft) return false;
+  if (shouldQueue) {
+    enqueueFollowUp(draft);
+    if (!isGenerating) scheduleFollowUpDrain();
+    return true;
+  }
+  if (dispatchRequestDraft(draft)) return true;
+  // The socket can close between the OPEN check and send(). Keep the already
+  // rendered draft and retry it once the reconnect state is known.
+  enqueueFollowUp(draft);
+  return true;
+}
+
+function send() {
+  return submitRequest(null, { consumeComposer: true });
 }
 
 // ── Git Change Banner ─────────────────────────────────────────
@@ -4550,11 +4961,51 @@ if (window.visualViewport) {
 if (!_embedded) syncHeight();
 else _appEl.style.height = "";
 
+function sendResetRequest() {
+  if (!resetRequested || !ws || ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    ws.send(JSON.stringify({ reset: true }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sendStopRequest() {
+  if (!isGenerating) {
+    stopRequested = false;
+    stopResendPending = false;
+    setGenerating(false);
+    return false;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    stopRequested = true;
+    stopResendPending = true;
+    return false;
+  }
+  stopRequested = true;
+  stopResendPending = false;
+  sendBtn.disabled = true;
+  sendBtn.setAttribute("aria-label", "正在停止");
+  updateTypingStatus("正在停止...");
+  if (!genChipEl && assistantEl) showGenChip("正在停止...");
+  else updateGenChip("正在停止...");
+  try {
+    ws.send(JSON.stringify({ stop: true, userMessageId: activeRequestId }));
+    return true;
+  } catch {
+    stopResendPending = true;
+    sendBtn.disabled = false;
+    sendBtn.setAttribute("aria-label", "重试停止");
+    updateTypingStatus("停止请求未送达，请重试");
+    return false;
+  }
+}
+
 sendBtn.addEventListener("click", () => {
   if (isGenerating) {
-    ws?.send(JSON.stringify({ stop: true }));
-    setGenerating(false);
-    removeTyping();
+    if (stopRequested && !stopResendPending) return;
+    sendStopRequest();
   } else {
     send();
   }
@@ -4749,6 +5200,10 @@ async function deleteConversation(id) {
 }
 
 async function loadConversation(conv) {
+  if (isGenerating || followUpQueue.length > 0) {
+    showInlineError("当前回答或后续消息仍在处理中，请等待完成，或新建对话以明确取消。 ");
+    return;
+  }
   await saveCurrentConversation();
   clearMentionNotes();
   // 列表接口只返回摘要，点击时按需拉取完整内容
@@ -4787,14 +5242,26 @@ async function loadConversation(conv) {
 
 async function startNewConversation() {
   await saveCurrentConversation();
+  pendingRequestDraft = null;
+  activeRequestId = null;
+  clearTimeout(requestRetryTimer);
+  requestRetryTimer = null;
+  followUpQueue.length = 0;
+  clearTimeout(followUpDrainTimer);
+  followUpDrainTimer = null;
+  clearTimeout(errorCompletionTimer);
+  errorCompletionTimer = null;
+  clearAskUserQuestion();
+  resetAssistantState();
+  setGenerating(false);
+  removeTyping();
   clearMentionNotes();
   messagesEl.innerHTML = "";
   messageLog = [];
   currentConvId = null;
   currentSessionId = null;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ reset: true }));
-  }
+  resetRequested = true;
+  sendResetRequest();
 }
 
 async function openHistoryPanel() {

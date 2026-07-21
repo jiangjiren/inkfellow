@@ -54,9 +54,12 @@ const state = {
   gitHistoryLoading: false,
   gitDiscardPath: null,
   gitDiscarding: false,
+  docRenderGeneration: 0,
   treeRefreshTimer: null,
   vaultNotesSignature: null,
   agentReady: false,
+  agentGenerating: false,
+  agentGenerationKnown: false,
   agentToken: null,
 };
 
@@ -371,19 +374,6 @@ function updateEditButton() {
   btn.classList.toggle("editBtnActive", state.editMode);
 }
 
-/* 编辑/预览共用 doc-area 作为滚动容器，切换时按比例保持阅读位置 */
-function getDocScrollRatio() {
-  const el = qs("doc-area");
-  const max = el.scrollHeight - el.clientHeight;
-  return max > 0 ? el.scrollTop / max : 0;
-}
-
-function applyDocScrollRatio(ratio) {
-  const el = qs("doc-area");
-  const max = el.scrollHeight - el.clientHeight;
-  el.scrollTop = ratio * max;
-}
-
 /* 把光标放到当前可视区域顶部附近，避免输入时视图跳走 */
 function placeCaretAtVisibleArea() {
   const cm = state.editor;
@@ -432,22 +422,23 @@ function placeCaretAtEditTarget(target) {
 }
 
 async function setEditMode(on, target = null) {
-  const ratio = getDocScrollRatio();
   if (!(await flushPendingSave())) return;
+  const docArea = qs("doc-area");
+  const scrollTop = docArea.scrollTop;
   state.editMode = on;
   updateEditButton();
   localStorage.setItem(EDIT_MODE_KEY, on ? "1" : "0");
-  renderDocArea();
-  applyDocScrollRatio(ratio);
-  // CodeMirror 初次渲染后高度才稳定，下一帧再校准一次
-  requestAnimationFrame(() => {
-    applyDocScrollRatio(ratio);
-    if (on && target != null && state.editor) {
-      placeCaretAtEditTarget(target);
-    } else {
-      placeCaretAtVisibleArea();
-    }
-  });
+  renderDocArea({ silent: !on });
+  docArea.scrollTop = scrollTop;
+  if (on) {
+    requestAnimationFrame(() => {
+      if (target != null && state.editor) {
+        placeCaretAtEditTarget(target);
+      } else {
+        placeCaretAtVisibleArea();
+      }
+    });
+  }
 }
 
 /* ── Wiki Links ──────────────────────────────────── */
@@ -597,11 +588,11 @@ async function createWikiNote(target) {
 }
 
 /** Append backlinks panel below the article (async). */
-async function renderBacklinksPanel(notePath) {
+async function renderBacklinksPanel(notePath, renderGeneration) {
   try {
     const backlinks = await invoke("wiki_backlinks", { path: notePath });
     // Guard: note may have changed while waiting
-    if (state.activeNote?.path !== notePath) return;
+    if (state.activeNote?.path !== notePath || state.docRenderGeneration !== renderGeneration) return;
     const container = qs("prose-content");
     if (!container) return;
 
@@ -1070,11 +1061,16 @@ function updateActiveTocLink() {
 }
 
 /* ── Document area render ────────────────────────── */
-function renderDocArea() {
+function renderDocArea(options = {}) {
   const docArea = qs("doc-area");
+  const silent = options.silent === true;
+  const renderGeneration = ++state.docRenderGeneration;
+  const docAreaClass = (...classes) => ["docArea", ...classes, silent ? "docAreaSilentRefresh" : ""]
+    .filter(Boolean)
+    .join(" ");
 
   if (!state.activeNote) {
-    docArea.className = "docArea";
+    docArea.className = docAreaClass();
     docArea.innerHTML = renderDashboard();
     wireDashboard();
     qs("btn-toggle-mode").hidden = true;
@@ -1089,7 +1085,7 @@ function renderDocArea() {
   state.editor = null;
 
   if (state.editMode && isText) {
-    docArea.className = "docArea docAreaEdit";
+    docArea.className = docAreaClass("docAreaEdit");
     docArea.innerHTML = `<div class="document"><div id="cm-container" class="cmContainer"></div></div>`;
     const cm = CodeMirror(qs("cm-container"), {
       value: state.activeNote.content,
@@ -1133,7 +1129,7 @@ function renderDocArea() {
     cm.on("cursorActivity", sendSelectionContext);
     cm.getInputField().focus({ preventScroll: true });
   } else {
-    docArea.className = "docArea";
+    docArea.className = docAreaClass();
     if (ext === "md") {
       const { data: frontMatterData, body: markdownBody, bodyStartLine } = parseFrontMatter(state.activeNote.content);
       const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
@@ -1141,11 +1137,12 @@ function renderDocArea() {
       docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
       wrapMarkdownTables();
-      resolveMarkdownImages(state.activeNote.path);
+      reuseMarkdownImages(qs("prose-content"), options.imageNodes);
+      resolveMarkdownImages(state.activeNote.path, renderGeneration);
       wireWikiLinks(buildNoteIndex());
-      renderBacklinksPanel(state.activeNote.path);
+      renderBacklinksPanel(state.activeNote.path, renderGeneration);
     } else if (/^html?$/.test(ext)) {
-      docArea.className = "docArea docAreaHtml";
+      docArea.className = docAreaClass("docAreaHtml");
       docArea.innerHTML = `<iframe id="html-frame" class="htmlFrame"></iframe>`;
       const frame = document.getElementById("html-frame");
       frame.addEventListener("load", () => {
@@ -1339,7 +1336,9 @@ function wireDashboard() {
     const text = input?.value.trim();
     openFellowPanel();
     setTimeout(() => {
-      const accepted = postAgentMessage(text ? { type: "note-ask", text } : { type: "note-ask" });
+      const accepted = postAgentMessage(text
+        ? { type: "note-ask", text, filePath: state.activePath ?? null }
+        : { type: "note-ask", filePath: state.activePath ?? null });
       if (accepted && input) {
         input.value = "";
         syncAskReady();
@@ -1390,17 +1389,52 @@ function resolveRelativePath(base, rel) {
   return out.join("/");
 }
 
-async function resolveMarkdownImages(notePath) {
+function nextMarkdownImageKey(src, occurrences) {
+  const occurrence = occurrences.get(src) ?? 0;
+  occurrences.set(src, occurrence + 1);
+  return `${src}\u0000${occurrence}`;
+}
+
+function captureMarkdownImages(container = qs("prose-content")) {
+  const images = new Map();
+  const occurrences = new Map();
+  container?.querySelectorAll("img").forEach((img) => {
+    const src = img.dataset.markdownSource || (img.getAttribute("src") || "").trim();
+    images.set(nextMarkdownImageKey(src, occurrences), img);
+  });
+  return images;
+}
+
+function reuseMarkdownImages(container, preservedImages = new Map()) {
+  if (!container || preservedImages.size === 0) return;
+  const occurrences = new Map();
+  container.querySelectorAll("img").forEach((img) => {
+    const src = (img.getAttribute("src") || "").trim();
+    const preserved = preservedImages.get(nextMarkdownImageKey(src, occurrences));
+    if (!preserved) return;
+    for (const attr of ["alt", "title"]) {
+      if (img.hasAttribute(attr)) preserved.setAttribute(attr, img.getAttribute(attr));
+      else preserved.removeAttribute(attr);
+    }
+    img.replaceWith(preserved);
+  });
+}
+
+async function resolveMarkdownImages(notePath, renderGeneration) {
   const container = qs("prose-content");
   if (!container) return;
   const imgs = container.querySelectorAll("img");
   if (!imgs.length) return;
 
   const noteDir = notePath.includes("/") ? notePath.split("/").slice(0, -1).join("/") : "";
+  const occurrences = new Map();
 
   for (const img of imgs) {
     // marked.js 会对路径做 URL 编码（中文、空格等），需先解码再传给 Rust
-    const encodedSrc = (img.getAttribute("src") || "").trim();
+    const encodedSrc = img.dataset.markdownSource || (img.getAttribute("src") || "").trim();
+    img.dataset.markdownSource = encodedSrc;
+    nextMarkdownImageKey(encodedSrc, occurrences);
+    if (img.dataset.markdownResolved === encodedSrc && img.complete && img.naturalWidth > 0) continue;
     let raw = encodedSrc;
     try { raw = decodeURIComponent(encodedSrc); } catch {}
     // 跳过外部协议、data/blob URL、协议相对 URL和锚点
@@ -1414,8 +1448,11 @@ async function resolveMarkdownImages(notePath) {
     img.style.opacity = "0.3";
     try {
       const asset = await invoke("read_asset", { path: assetPath });
+      if (state.docRenderGeneration !== renderGeneration || !img.isConnected) return;
       img.src = asset.dataUrl;
+      img.dataset.markdownResolved = encodedSrc;
     } catch {
+      if (state.docRenderGeneration !== renderGeneration || !img.isConnected) return;
       img.classList.add("imgBroken");
     } finally {
       img.style.opacity = "";
@@ -2166,6 +2203,7 @@ function clearActiveNote() {
   renderDocArea();
   renderTree();
   renderTabs();
+  sendNoteContext();
 }
 
 async function saveNote() {
@@ -2479,15 +2517,20 @@ function postAgentMessage(message) {
   }
 }
 
-function flushAgentMessages() {
+function flushAgentMessages({ includeAgentRequests = true } = {}) {
   if (!state.agentReady) return;
   const queued = pendingAgentMessages.splice(0);
-  for (const message of queued) postAgentMessage(message);
+  for (const message of queued) {
+    if (!includeAgentRequests && message?.type === "note-ask") {
+      pendingAgentMessages.push(message);
+      continue;
+    }
+    postAgentMessage(message);
+  }
 }
 
 function sendNoteContext() {
-  if (!state.activePath) return;
-  postAgentMessage({ type: "note-context", filePath: state.activePath });
+  postAgentMessage({ type: "note-context", filePath: state.activePath ?? null });
 }
 
 function sendVaultNotes(force = false) {
@@ -2616,60 +2659,75 @@ async function refreshGitStatus() {
 }
 
 const _pendingChangedPaths = new Set();
+let _treeRefreshRunning = false;
 
 function scheduleTreeRefresh(changedPaths = []) {
   for (const p of changedPaths) _pendingChangedPaths.add(p);
   clearTimeout(state.treeRefreshTimer);
-  state.treeRefreshTimer = setTimeout(async () => {
-    const accumulated = [..._pendingChangedPaths];
-    _pendingChangedPaths.clear();
-    try {
-      const activePath = state.activePath;
-      await loadTree(false);
-      // 精准判断：检查防抖期间所有变化路径，Windows 大小写不敏感
-      const activePathLower = activePath?.toLowerCase();
-      const activeChanged = activePath && (
-        accumulated.length === 0 ||
-        accumulated.some(p => {
-          const changed = p.toLowerCase();
-          return changed === activePathLower || activePathLower.startsWith(changed + "/");
-        })
-      );
-      if (activeChanged && !(state.editMode && state.dirty)) {
-        const stillExists = flattenFiles(state.tree)
-          .some(file => file.path.toLowerCase() === activePathLower);
-        if (!stillExists) {
-          clearActiveNote();
-          showToast("当前文件已被外部删除");
-          return;
-        }
-        try {
-          const isImage = isImageExt(extOf(activePath));
-          const command = isImage ? "read_asset" : "read_note";
-          const note = await invoke(command, { path: activePath });
-          const changed = isImage
-            ? note.updatedAt !== state.activeNote?.updatedAt ||
-              note.size !== state.activeNote?.size ||
-              note.dataUrl !== state.activeNote?.dataUrl
-            : note.content !== state.activeNote?.content;
-          if (changed) {
-            const oldBlockTexts = collectDiffBlocks().map((block) => block.text);
-            const scrollRatio = getDocScrollRatio();
-            state.activeNote = note;
-            renderDocArea();
-            applyDocScrollRatio(scrollRatio); // 同步恢复，避免浏览器画出滚动=0的中间帧
-            if (state.outlineOpen) renderToc();
-            flashChangedPreviewBlocks(oldBlockTexts);
-          }
-        } catch {}
-      }
-    } catch (err) {
-      console.warn("Failed to refresh file tree after vault change", err);
-    }
+  state.treeRefreshTimer = setTimeout(() => {
+    state.treeRefreshTimer = null;
+    void flushTreeRefresh();
   }, 300);
 }
 
-/* ── 同步引擎：触发只是入队，调度与执行在 Rust 侧 ── */
+async function flushTreeRefresh() {
+  if (_treeRefreshRunning || _pendingChangedPaths.size === 0) return;
+  _treeRefreshRunning = true;
+  const accumulated = [..._pendingChangedPaths];
+  _pendingChangedPaths.clear();
+
+  try {
+    const activePath = state.activePath;
+    await loadTree(false);
+    const activePathLower = activePath?.toLowerCase();
+    if (!activePathLower || state.activePath?.toLowerCase() !== activePathLower) return;
+
+    // 精准判断：检查防抖期间所有变化路径，Windows 大小写不敏感
+    const activeChanged = accumulated.length === 0 || accumulated.some((p) => {
+      const changed = p.toLowerCase();
+      return changed === activePathLower || activePathLower.startsWith(changed + "/");
+    });
+    if (!activeChanged || (state.editMode && state.dirty)) return;
+
+    const stillExists = flattenFiles(state.tree)
+      .some((file) => file.path.toLowerCase() === activePathLower);
+    if (!stillExists) {
+      clearActiveNote();
+      showToast("当前文件已被外部删除");
+      return;
+    }
+
+    const isImage = isImageExt(extOf(activePath));
+    const command = isImage ? "read_asset" : "read_note";
+    const note = await invoke(command, { path: activePath });
+    if (state.activePath?.toLowerCase() !== activePathLower) return;
+
+    const changed = isImage
+      ? note.updatedAt !== state.activeNote?.updatedAt ||
+        note.size !== state.activeNote?.size ||
+        note.dataUrl !== state.activeNote?.dataUrl
+      : note.content !== state.activeNote?.content;
+    if (!changed) return;
+
+    const docArea = qs("doc-area");
+    const scrollTop = docArea.scrollTop;
+    const oldBlockTexts = collectDiffBlocks().map((block) => block.text);
+    const imageNodes = captureMarkdownImages();
+    state.activeNote = note;
+    renderDocArea({ silent: true, imageNodes });
+    docArea.scrollTop = scrollTop;
+    if (state.outlineOpen) renderToc();
+    flashChangedPreviewBlocks(oldBlockTexts);
+  } catch (err) {
+    console.warn("Failed to refresh file tree after vault change", err);
+  } finally {
+    _treeRefreshRunning = false;
+    if (_pendingChangedPaths.size > 0 && state.treeRefreshTimer == null) {
+      scheduleTreeRefresh();
+    }
+  }
+}
+
 function requestAutoPull() {
   if (state.gitStatus && !state.gitStatus.initialized) return;
   // 正在编辑时不拉取，保护沉浸状态
@@ -3472,6 +3530,8 @@ function applyDesktopState(desktop) {
     state.vaultNotesSignature = null;
     pendingAgentMessages.length = 0;
     state.agentReady = false;
+    state.agentGenerating = false;
+    state.agentGenerationKnown = false;
   }
   state.vaultPath = desktop.vaultPath;
   state.agentUrl = desktop.agentUrl;
@@ -3622,8 +3682,15 @@ function wireEvents() {
     const frame = qs("agent-frame");
     if (event.source !== frame.contentWindow || event.origin !== agentOrigin()) return;
     if (!state.agentToken || event.data?.__token !== state.agentToken) return;
+    if (event.data?.type === "ai-generating-state") {
+      state.agentGenerating = event.data.isGenerating === true;
+      state.agentGenerationKnown = true;
+      if (state.agentReady && !state.agentGenerating) flushAgentMessages();
+      return;
+    }
     if (event.data?.type === "agent-not-ready") {
       state.agentReady = false;
+      state.agentGenerationKnown = false;
       setAgentLoading(true, "Fellow 连接已断开，正在重连...");
       return;
     }
@@ -3634,7 +3701,9 @@ function wireEvents() {
     if (event.data?.type !== "agent-ready") return;
     state.agentReady = true;
     setAgentLoading(false);
-    flushAgentMessages();
+    flushAgentMessages({
+      includeAgentRequests: state.agentGenerationKnown && !state.agentGenerating,
+    });
     sendNoteContext();
     sendVaultNotes(true);
   });

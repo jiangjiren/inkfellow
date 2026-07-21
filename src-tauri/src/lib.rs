@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
-use std::net::TcpStream;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{mpsc, Mutex};
@@ -34,6 +34,7 @@ const MAX_PASTED_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 struct AppState {
     processes: Mutex<Vec<Child>>,
+    agent_restart_lock: Mutex<()>,
     claude_port: u16,
     agent_token: String,
     sync_tx: Mutex<Option<mpsc::Sender<SyncJob>>>,
@@ -850,6 +851,173 @@ fn configure_proxy_environment(command: &mut Command) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarRunState {
+    Running,
+    Idle,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyRestartAction {
+    Wait,
+    Restart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarRestartPermit {
+    Granted,
+    Busy,
+    Unreachable,
+}
+
+const PROXY_RESTART_IDLE_CONFIRMATIONS: u8 = 2;
+const PROXY_RESTART_UNREACHABLE_CONFIRMATIONS: u8 = 3;
+
+#[derive(Deserialize)]
+struct SidecarRunStateResponse {
+    running: bool,
+}
+
+#[derive(Deserialize)]
+struct SidecarRestartLeaseResponse {
+    lease: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: u64,
+}
+
+fn parse_sidecar_run_state_response(response: &str) -> Result<SidecarRunState, String> {
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .or_else(|| response.split_once("\n\n"))
+        .ok_or_else(|| "sidecar run-state response is missing an HTTP body".to_string())?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "sidecar run-state response has an invalid HTTP status".to_string())?;
+    if status != 200 {
+        return Err(format!("sidecar run-state endpoint returned HTTP {status}"));
+    }
+
+    let response = serde_json::from_str::<SidecarRunStateResponse>(body.trim())
+        .map_err(|err| format!("invalid sidecar run-state JSON: {err}"))?;
+    Ok(if response.running {
+        SidecarRunState::Running
+    } else {
+        SidecarRunState::Idle
+    })
+}
+
+fn proxy_restart_action(
+    run_state: SidecarRunState,
+    idle_confirmations: u8,
+    unreachable_confirmations: u8,
+) -> ProxyRestartAction {
+    match run_state {
+        SidecarRunState::Running => ProxyRestartAction::Wait,
+        SidecarRunState::Idle if idle_confirmations >= PROXY_RESTART_IDLE_CONFIRMATIONS => {
+            ProxyRestartAction::Restart
+        }
+        SidecarRunState::Unreachable
+            if unreachable_confirmations >= PROXY_RESTART_UNREACHABLE_CONFIRMATIONS =>
+        {
+            ProxyRestartAction::Restart
+        }
+        SidecarRunState::Idle | SidecarRunState::Unreachable => ProxyRestartAction::Wait,
+    }
+}
+
+fn query_sidecar_run_state(port: u16, agent_token: &str) -> SidecarRunState {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let timeout = Duration::from_millis(1_500);
+    let result = (|| -> Result<SidecarRunState, String> {
+        let mut stream = TcpStream::connect_timeout(&address, timeout)
+            .map_err(|err| format!("failed to connect to sidecar run-state endpoint: {err}"))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|err| format!("failed to configure sidecar read timeout: {err}"))?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|err| format!("failed to configure sidecar write timeout: {err}"))?;
+
+        let request = format!(
+            "GET /api/run-state?token={agent_token} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|err| format!("failed to query sidecar run state: {err}"))?;
+
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|err| format!("failed to read sidecar run state: {err}"))?;
+        parse_sidecar_run_state_response(&response)
+    })();
+
+    result.unwrap_or(SidecarRunState::Unreachable)
+}
+
+fn parse_sidecar_restart_lease_response(response: &str) -> Result<SidecarRestartPermit, String> {
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .or_else(|| response.split_once("\n\n"))
+        .ok_or_else(|| "sidecar restart response is missing an HTTP body".to_string())?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "sidecar restart response has an invalid HTTP status".to_string())?;
+    if status == 409 {
+        return Ok(SidecarRestartPermit::Busy);
+    }
+    if status != 200 {
+        return Err(format!(
+            "sidecar prepare-restart endpoint returned HTTP {status}"
+        ));
+    }
+    let lease = serde_json::from_str::<SidecarRestartLeaseResponse>(body.trim())
+        .map_err(|err| format!("invalid sidecar restart lease JSON: {err}"))?;
+    if lease.lease.trim().is_empty() || lease.expires_at == 0 {
+        return Err("sidecar returned an invalid restart lease".to_string());
+    }
+    Ok(SidecarRestartPermit::Granted)
+}
+
+fn prepare_sidecar_restart(port: u16, agent_token: &str) -> SidecarRestartPermit {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let timeout = Duration::from_millis(1_500);
+    let mut stream = match TcpStream::connect_timeout(&address, timeout) {
+        Ok(stream) => stream,
+        Err(_) => return SidecarRestartPermit::Unreachable,
+    };
+    let result = (|| -> Result<SidecarRestartPermit, String> {
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|err| format!("failed to configure sidecar read timeout: {err}"))?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|err| format!("failed to configure sidecar write timeout: {err}"))?;
+        let request = format!(
+            "POST /api/prepare-restart?token={agent_token} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|err| format!("failed to request a sidecar restart lease: {err}"))?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|err| format!("failed to read sidecar restart lease: {err}"))?;
+        parse_sidecar_restart_lease_response(&response)
+    })();
+    // Once a process accepted the TCP connection, any timeout, auth failure, or
+    // malformed response is conservatively treated as busy. Only a refused/
+    // unreachable port is safe to restart without a lease.
+    result.unwrap_or(SidecarRestartPermit::Busy)
+}
+
 #[cfg(target_os = "windows")]
 fn start_system_proxy_watcher(app: AppHandle) {
     if env_var_is_set(&["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"]) {
@@ -858,16 +1026,73 @@ fn start_system_proxy_watcher(app: AppHandle) {
 
     std::thread::spawn(move || {
         let mut previous = windows_system_proxy();
+        let mut restart_pending = false;
+        let mut idle_confirmations = 0_u8;
+        let mut unreachable_confirmations = 0_u8;
         loop {
             std::thread::sleep(Duration::from_secs(3));
             let current = windows_system_proxy();
-            if current == previous {
+            if current != previous {
+                previous = current;
+                if !restart_pending {
+                    eprintln!(
+                        "[inkfellow] Windows system proxy changed; AI sidecar restart queued"
+                    );
+                }
+                restart_pending = true;
+                idle_confirmations = 0;
+                unreachable_confirmations = 0;
+            }
+
+            if !restart_pending {
                 continue;
             }
 
-            previous = current;
-            eprintln!("[inkfellow] Windows system proxy changed; restarting AI sidecar");
-            restart_agent(&app);
+            let (port, agent_token) = {
+                let state = app.state::<AppState>();
+                (state.claude_port, state.agent_token.clone())
+            };
+            let run_state = query_sidecar_run_state(port, &agent_token);
+            match run_state {
+                SidecarRunState::Running => {
+                    idle_confirmations = 0;
+                    unreachable_confirmations = 0;
+                }
+                SidecarRunState::Idle => {
+                    idle_confirmations = idle_confirmations.saturating_add(1);
+                    unreachable_confirmations = 0;
+                }
+                SidecarRunState::Unreachable => {
+                    idle_confirmations = 0;
+                    unreachable_confirmations = unreachable_confirmations.saturating_add(1);
+                }
+            }
+            if proxy_restart_action(run_state, idle_confirmations, unreachable_confirmations)
+                == ProxyRestartAction::Wait
+            {
+                continue;
+            }
+
+            match restart_agent_when_sidecar_safe(&app) {
+                SidecarRestartPermit::Granted => {
+                    eprintln!(
+                        "[inkfellow] AI sidecar granted an idle restart lease; applied pending system proxy restart"
+                    );
+                }
+                SidecarRestartPermit::Unreachable => {
+                    eprintln!(
+                        "[inkfellow] AI sidecar run-state endpoint is unreachable; restarting sidecar"
+                    );
+                }
+                SidecarRestartPermit::Busy => {
+                    idle_confirmations = 0;
+                    unreachable_confirmations = 0;
+                    continue;
+                }
+            }
+            restart_pending = false;
+            idle_confirmations = 0;
+            unreachable_confirmations = 0;
         }
     });
 }
@@ -1016,9 +1241,31 @@ fn spawn_agent(app: &AppHandle) {
     }
 }
 
-fn restart_agent(app: &AppHandle) {
+fn restart_agent_locked(app: &AppHandle) {
     kill_processes(app);
     spawn_agent(app);
+}
+
+fn restart_agent(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let _restart_guard = state
+        .agent_restart_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    restart_agent_locked(app);
+}
+
+fn restart_agent_when_sidecar_safe(app: &AppHandle) -> SidecarRestartPermit {
+    let state = app.state::<AppState>();
+    let _restart_guard = state
+        .agent_restart_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let permit = prepare_sidecar_restart(state.claude_port, &state.agent_token);
+    if permit != SidecarRestartPermit::Busy {
+        restart_agent_locked(app);
+    }
+    permit
 }
 
 fn agent_ready(port: u16) -> bool {
@@ -2269,6 +2516,7 @@ pub fn run() {
         )
         .manage(AppState {
             processes: Mutex::new(Vec::new()),
+            agent_restart_lock: Mutex::new(()),
             claude_port,
             agent_token,
             sync_tx: Mutex::new(None),
@@ -2352,6 +2600,76 @@ mod proxy_tests {
         assert_eq!(proxy.http_proxy, "http://127.0.0.1:8080");
         assert_eq!(proxy.https_proxy, "https://proxy.example:8443");
         assert_eq!(proxy.no_proxy, "localhost,127.0.0.1,::1");
+    }
+    #[test]
+    fn parses_sidecar_running_and_idle_responses() {
+        let running = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"running\":true}";
+        let idle = "HTTP/1.0 200 OK\n\n{\"running\":false}";
+
+        assert_eq!(
+            parse_sidecar_run_state_response(running).unwrap(),
+            SidecarRunState::Running
+        );
+        assert_eq!(
+            parse_sidecar_run_state_response(idle).unwrap(),
+            SidecarRunState::Idle
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_sidecar_run_state_responses() {
+        assert!(parse_sidecar_run_state_response(
+            "HTTP/1.0 401 Unauthorized\r\n\r\n{\"running\":false}"
+        )
+        .is_err());
+        assert!(
+            parse_sidecar_run_state_response("HTTP/1.0 200 OK\r\n\r\n{\"running\":\"yes\"}")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_restart_lease_and_busy_responses() {
+        let granted = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"lease\":\"lease-1\",\"expiresAt\":123}";
+        let busy =
+            "HTTP/1.0 409 Conflict\r\nContent-Type: application/json\r\n\r\n{\"running\":true}";
+
+        assert_eq!(
+            parse_sidecar_restart_lease_response(granted).unwrap(),
+            SidecarRestartPermit::Granted
+        );
+        assert_eq!(
+            parse_sidecar_restart_lease_response(busy).unwrap(),
+            SidecarRestartPermit::Busy
+        );
+        assert!(parse_sidecar_restart_lease_response(
+            "HTTP/1.0 200 OK\r\n\r\n{\"lease\":\"\",\"expiresAt\":0}"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn proxy_restart_waits_only_for_a_running_sidecar() {
+        assert_eq!(
+            proxy_restart_action(SidecarRunState::Running, 10, 10),
+            ProxyRestartAction::Wait
+        );
+        assert_eq!(
+            proxy_restart_action(SidecarRunState::Idle, 1, 0),
+            ProxyRestartAction::Wait
+        );
+        assert_eq!(
+            proxy_restart_action(SidecarRunState::Idle, 2, 0),
+            ProxyRestartAction::Restart
+        );
+        assert_eq!(
+            proxy_restart_action(SidecarRunState::Unreachable, 0, 2),
+            ProxyRestartAction::Wait
+        );
+        assert_eq!(
+            proxy_restart_action(SidecarRunState::Unreachable, 0, 3),
+            ProxyRestartAction::Restart
+        );
     }
 }
 

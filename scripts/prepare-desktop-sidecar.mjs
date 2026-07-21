@@ -28,7 +28,7 @@ const excludedNames = new Set([
 function copyRecursive(from, to) {
   const stat = fs.statSync(from);
   const name = path.basename(from);
-  if (excludedNames.has(name)) {
+  if (excludedNames.has(name) || name.endsWith(".test.js")) {
     return;
   }
 

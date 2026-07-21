@@ -1210,6 +1210,7 @@ input, textarea { font-family: inherit; }
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overflow-anchor: none;
 }
 
 .docArea::-webkit-scrollbar { width: 6px; }
@@ -1623,6 +1624,11 @@ input, textarea { font-family: inherit; }
   animation: paperSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.docAreaSilentRefresh .document,
+.docAreaSilentRefresh .imageViewer {
+  animation: none;
+}
+
 .imageViewer {
   min-height: calc(100vh - 44px);
   padding: 28px 40px 44px;
@@ -1951,6 +1957,7 @@ input, textarea { font-family: inherit; }
 
 .prose img {
   max-width: 100%;
+  height: auto;
   border-radius: var(--notes-radius-item);
   box-shadow: var(--notes-shadow-card);
 }

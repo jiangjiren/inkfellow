@@ -2619,43 +2619,29 @@ input, textarea { font-family: inherit; }
   to { opacity: 1; }
 }
 
-.gitWorkspaceHeader {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 52px;
-  flex: 0 0 auto;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--notes-border);
-}
-
-.gitWorkspaceHeader h2 {
-  margin: 0;
-  color: var(--notes-text-primary);
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.gitWorkspaceBack {
+.noteMetaSyncBack {
   display: inline-grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--notes-text-secondary);
   cursor: pointer;
+  margin-right: 2px;
 }
 
-.gitWorkspaceBack:hover {
-  border-color: var(--notes-border);
+.noteMetaSyncBack:hover {
   background: var(--notes-accent-bg);
   color: var(--notes-accent);
 }
 
 .readerSyncWorkspaceOpen #btn-toggle-mode,
-.readerSyncWorkspaceOpen #btn-more-menu {
+.readerSyncWorkspaceOpen #btn-more-menu,
+.readerSyncWorkspaceOpen #tab-strip,
+.readerSyncWorkspaceOpen .navButtons {
   display: none;
 }
 
@@ -3394,12 +3380,29 @@ input, textarea { font-family: inherit; }
   cursor: default;
 }
 
+.gitFileSubLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .gitFilePath {
   color: var(--notes-text-muted);
   font-size: 11.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gitFileKindTag {
+  flex-shrink: 0;
+  color: var(--notes-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--notes-accent-bg);
 }
 
 .gitHoverActions {

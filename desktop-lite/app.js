@@ -1464,14 +1464,18 @@ async function resolveMarkdownImages(notePath, renderGeneration) {
 function renderNoteMeta() {
   const titleEl = qs("note-title");
   const metaEl = qs("note-meta");
+  const backBtn = qs("btn-close-git-workspace");
 
   if (state.gitWorkspaceOpen) {
     titleEl.textContent = "同步";
     metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
+    if (backBtn) backBtn.hidden = false;
     qs("btn-more-menu").disabled = true;
     toggleMoreMenu(false);
     return;
   }
+
+  if (backBtn) backBtn.hidden = true;
 
   if (!state.activeNote) {
     titleEl.textContent = "inkfellow Desktop";
@@ -2586,7 +2590,8 @@ async function waitForAgent() {
 }
 
 /* ── Git ─────────────────────────────────────────── */
-function gitStateLabel(value) {
+function gitStateLabel(value, kind) {
+  if (kind === "folder" && value === "added") return "新文件夹";
   return {
     modified: "已修改",
     added: "新笔记",
@@ -2890,7 +2895,7 @@ function renderGitQuickPopover() {
                 <span class="gitStateDot ${gitStateDotClass(file.state)}"></span>
                 <span class="gitQuickFileText">
                   <strong>${escapeHtml(stripExt(file.name))}</strong>
-                  <span>${escapeHtml(gitStateLabel(file.state))}</span>
+                  <span>${escapeHtml(gitStateLabel(file.state, file.kind))}</span>
                 </span>
               </button>
             </li>`).join("")}
@@ -2972,10 +2977,14 @@ function renderGitFileItem(file) {
   return `
     <li class="gitFileItem ${confirming ? "gitFileItemConfirming" : ""}" data-path="${escapeHtml(file.path)}">
       <div class="gitFileRowContent">
-        <span class="gitStateDot ${gitStateDotClass(file.state)}" title="${escapeHtml(gitStateLabel(file.state))}"></span>
+        <span class="gitStateDot ${gitStateDotClass(file.state)}" title="${escapeHtml(gitStateLabel(file.state, file.kind))}"></span>
         <div class="gitFileInfo">
           <button class="gitFileNameBtn" type="button" data-action="diff" data-path="${escapeHtml(file.path)}" ${file.kind === "folder" ? "disabled" : ""}>${escapeHtml(stripExt(file.name))}</button>
-          ${parent ? `<span class="gitFilePath">${escapeHtml(parent)}</span>` : ""}
+          ${file.kind === "folder" || parent ? `
+          <span class="gitFileSubLine">
+            ${file.kind === "folder" ? `<span class="gitFileKindTag">文件夹</span>` : ""}
+            ${parent ? `<span class="gitFilePath">${escapeHtml(parent)}</span>` : ""}
+          </span>` : ""}
         </div>
         <div class="gitHoverActions">
           ${file.state !== "deleted" && file.kind !== "folder" ? `<button class="gitCircleBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}" title="打开文件"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg></button>` : ""}
@@ -3347,10 +3356,7 @@ async function openGitWorkspace() {
   qs("doc-area").hidden = true;
   qs("git-workspace").hidden = false;
   qs("reader").classList.add("readerSyncWorkspaceOpen");
-  qs("note-meta").querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
-  qs("note-title").textContent = "同步";
-  qs("btn-more-menu").disabled = true;
-  toggleMoreMenu(false);
+  renderNoteMeta();
   qs("btn-toggle-mode").hidden = true;
   renderGitPanel();
   void refreshGitStatus();

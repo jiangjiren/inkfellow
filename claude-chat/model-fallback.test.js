@@ -93,6 +93,9 @@ test("failures are classified into channel / model / task", () => {
   assert.equal(kindOf("Unknown model claude-retired"), "model");
   assert.equal(kindOf('effort is not supported for model "claude-opus-4-6-thinking"'), "model");
   assert.equal(kindOf("Failed to write report.md"), "task");
+  // 生产上抓到的原文，2026-09-07：这两条以前一个被判成 task 直接终止链条
+  assert.equal(kindOf("You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:51 PM."), "channel");
+  assert.equal(kindOf("Claude Code returned an error result: Failed to authenticate: OAuth session expired and could not be refreshed"), "channel");
   assert.equal(classifyCandidateError(Object.assign(new Error("x"), { code: "MODEL_FALLBACK_TIMEOUT" })).kind, "timeout");
   // 用户主动中断也是 AbortError，绝不能被当成可降级错误
   assert.equal(classifyCandidateError(Object.assign(new Error("aborted"), { name: "AbortError" })).kind, "task");
@@ -174,6 +177,17 @@ test("cooldowns honour the reset timestamp the provider reports", () => {
   const at = cooldowns.mark("p_claude", new Error("Claude AI usage limit reached|1800000600"), { reason: "quota" });
   assert.equal(at, 1_800_000_600_000);
   assert.equal(cooldowns.mark("p_codex", new Error("rate limited, retry in 45s"), { reason: "rate_limit" }), nowMs + 45_000);
+});
+
+// Codex 报的是墙上时间，不是时间戳
+test("cooldowns understand Codex's wall-clock reset time", () => {
+  const noon = new Date(2026, 8, 7, 12, 0, 0, 0).getTime();
+  const cooldowns = createChannelCooldowns({ now: () => noon });
+  const at = cooldowns.mark("p_codex", new Error("try again at 3:51 PM."), { reason: "quota" });
+  assert.equal(at, new Date(2026, 8, 7, 15, 51, 0, 0).getTime());
+  // 已经过去的点位算到明天，别把冷却记成负数；但再远也不超过 6 小时上限——
+  // 解析错一次不该把一条通道永久踢出链条，到点重新探一下的代价很小
+  assert.equal(cooldowns.mark("p_other", new Error("try again at 9:30 AM."), { reason: "quota" }), noon + 6 * 3600_000);
 });
 
 // 通道自己缓过来了就该立刻放回链条，不用等冷却到点

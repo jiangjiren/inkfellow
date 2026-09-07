@@ -29,7 +29,12 @@ const REASON_RULES = [
   ]],
   ["quota", [
     /requires? usage credits?/i,
-    /usage limit reached/i,
+    // Codex 的原话是 "You've hit your usage limit. Upgrade to Pro ... try again at 3:51 PM."，
+    // Claude 的是 "Claude AI usage limit reached|<epoch>"。别再要求后面跟 reached/exceeded：
+    // 2026-09-07 生产上就是因为这条不匹配，额度用尽被当成任务失败，整条链停在第二个候选。
+    /usage limit/i,
+    /hit (?:your|the)[^\n]*limit/i,
+    /purchase more credits/i,
     /(?:usage|monthly|daily|weekly) limit[^\n]*(?:reached|exceeded)/i,
     /(?:quota|credits?|balance)[^\n]*(?:exceeded|exhausted|depleted|too low|insufficient)/i,
     /insufficient[^\n]*(?:quota|credits?|balance|funds)/i,
@@ -186,6 +191,18 @@ function parseRetryAt(text, nowMs) {
 
   const retryAfter = text.match(/retry[- ]?after["':\s]+(\d+)/i);
   if (retryAfter) return nowMs + Number(retryAfter[1]) * 1000;
+
+  // Codex 报的是墙上时间：`try again at 3:51 PM`
+  const wallClock = text.match(/(?:try again|resets?)\s+at\s+(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+  if (wallClock) {
+    const meridiem = wallClock[3]?.toLowerCase();
+    let hour = Number(wallClock[1]) % 12;
+    if (meridiem === "pm") hour += 12;
+    else if (!meridiem) hour = Number(wallClock[1]) % 24;
+    const at = new Date(nowMs);
+    at.setHours(hour, Number(wallClock[2]), 0, 0);
+    return at.getTime() <= nowMs ? at.getTime() + 24 * 3600_000 : at.getTime();
+  }
 
   const relative = text.match(/(?:try again|retry|resets?)\s+in\s+(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\b/i);
   if (relative) {

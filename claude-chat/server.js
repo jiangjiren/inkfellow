@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
-import { buildModelCandidates, runWithModelFallback } from "./model-fallback.js";
+import { buildModelCandidates, describeFailure, runWithModelFallback } from "./model-fallback.js";
 import { BackgroundTaskTurnGate, PersistentQueryRuntime } from "./agent-session.js";
 import * as eventLog from "./core/event-log.js";
 import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
@@ -38,6 +38,15 @@ const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSI
 // 工具执行期间（assistant tool_use 之后、tool_result 之前）两个看门狗都会暂停：
 // 工具可能合法地运行数小时，期间 SDK 本来就不产生事件。
 const STREAM_STALL_MS = 180_000; // 3 min with no events → abort
+// 微信是一问一答，人在那头等着：一轮问答最多花两分钟在「换通道重试」上。
+// 这个预算管的是还要不要再起一次尝试，不打断已经在正常出事件的那一次；
+// 它还会顺带收紧每次尝试的静默超时——用户能感觉到的是「多久没动静」。
+const WECHAT_FALLBACK_BUDGET_MS = 120_000;
+const WECHAT_MIN_STALL_MS = 20_000; // 预算见底时也要给最后一次尝试一点时间
+function wechatStallMs(remainingMs) {
+  if (remainingMs == null) return STREAM_STALL_MS;
+  return Math.max(WECHAT_MIN_STALL_MS, Math.min(STREAM_STALL_MS, remainingMs));
+}
 const MAX_AGENT_RUN_MS = 8 * 60_000; // 单个 API 阶段（不含工具执行）的硬上限，兜底无限 api_retry
 // 网页 Codex 面向深度研究和长时间编辑，SDK 在模型推理期间可能数分钟不产出事件。
 // 默认不使用墙上时钟自动终止：0 = 关闭。运维若确实需要资源上限，可按实例显式配置。
@@ -2021,6 +2030,81 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
   });
 }
 
+/**
+ * 跑一轮 Antigravity，只取最终那段回复。
+ *
+ * 无人值守渠道（微信、定时任务）不关心过程事件，只需要一段文本和一个静默看门狗：
+ * agy 是子进程，卡住时不会自己退出，必须由这边掐掉。权限上取 acceptEdits
+ * （= CLI 沙箱 + 自动接受编辑），和 Codex 那条链的 workspace-write 对齐，
+ * 不给无人值守渠道开全自动放行。
+ */
+export async function runAntigravityText({ prompt, images = [], cwd, model, effort = "medium", signal, stallMs = STREAM_STALL_MS }) {
+  const controller = new AbortController();
+  let stalled = false;
+  let stallTimer = null;
+  const onAbort = () => controller.abort();
+  const resetStall = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, stallMs);
+  };
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    resetStall();
+    await getAgyCatalog();          // 首次要起进程查目录，约 7 秒；启动时已预热
+    const result = await runAntigravity({
+      prompt,
+      images,
+      cwd,
+      model: resolveAgyModel(model),
+      effort,
+      permissionMode: "acceptEdits",
+      signal: controller.signal,
+      onEvent: resetStall,
+    });
+    return result.text || "";
+  } catch (error) {
+    if (stalled) {
+      const stallError = new Error("AI 响应超时，请稍后重试。", { cause: error });
+      stallError.code = "WECHAT_STALL_TIMEOUT";
+      stallError.timeout = true;
+      throw stallError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(stallTimer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+// Antigravity 的模型不在 profile 那三个档位字段里，唯一真相源是 agy 自己的目录。
+// 无人值守渠道排两档就够：快的那个当通道代表，旗舰留作同通道内的下一手。
+// 没装二进制／没登录时返回空数组，这条通道就整条不进链。
+export function antigravityFallbackModels() {
+  if (!agyProvider.isAuthAvailable()) return [];
+  const gemini = agyProvider.menuModels().map(entry => entry.model).filter(model => model.startsWith("gemini-"));
+  return [...gemini.filter(m => m.endsWith("-flash")), ...gemini.filter(m => !m.endsWith("-flash"))].slice(0, 2);
+}
+
+async function runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs }) {
+  const attachmentSummary = formatWechatMediaSummary(mediaFiles);
+  const images = mediaFiles
+    .filter(file =>
+      file.kind === "image" &&
+      Object.values(WECHAT_IMAGE_MIME_BY_EXT).includes(file.mime) &&
+      file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES)
+    .map(file => ({ mediaType: file.mime, data: file.data.toString("base64") }));
+  return await runAntigravityText({
+    prompt: `${wechatSystemPrompt}\n\n${fullPrompt}${attachmentSummary ? `\n\n附件：\n${attachmentSummary}` : ""}`,
+    images,
+    cwd: wechatCwd,
+    model: candidate.model,
+    signal: abortSignal,
+    stallMs,
+  });
+}
+
 async function runWechatClaudeCandidate({
   candidate,
   profileData,
@@ -2031,6 +2115,7 @@ async function runWechatClaudeCandidate({
   extraMcpServers,
   wechatSystemPrompt,
   hasScheduler,
+  stallMs = STREAM_STALL_MS,
 }) {
   const candidateProfiles = { ...profileData, activeProfileId: candidate.profileId };
   const agentEnv = buildAgentEnv(candidateProfiles, "medium", candidate.model);
@@ -2055,7 +2140,7 @@ async function runWechatClaudeCandidate({
     stallTimer = setTimeout(() => {
       stalled = true;
       queryAbortController.abort();
-    }, STREAM_STALL_MS);
+    }, stallMs);
   };
 
   if (abortSignal.aborted) queryAbortController.abort();
@@ -2098,6 +2183,7 @@ async function runWechatClaudeCandidate({
     if (stalled && error?.name === "AbortError") {
       const stallError = new Error("AI 响应超时，请稍后重试。", { cause: error });
       stallError.code = "WECHAT_STALL_TIMEOUT";
+      stallError.timeout = true;
       throw stallError;
     }
     throw error;
@@ -2107,7 +2193,7 @@ async function runWechatClaudeCandidate({
   }
 }
 
-async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt }) {
+async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs = STREAM_STALL_MS }) {
   const codex = new Codex();
   const thread = codex.startThread({
     workingDirectory: wechatCwd,
@@ -2130,7 +2216,7 @@ async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wech
     stallTimer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, STREAM_STALL_MS);
+    }, stallMs);
   };
   if (abortSignal.aborted) controller.abort();
   else abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -2168,6 +2254,7 @@ async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wech
     if (timedOut && error?.name === "AbortError") {
       const stallError = new Error("AI 响应超时，请稍后重试。", { cause: error });
       stallError.code = "WECHAT_STALL_TIMEOUT";
+      stallError.timeout = true;
       throw stallError;
     }
     throw error;
@@ -2203,6 +2290,8 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
     }, 6000);
 
     let finalResponse = "";
+    let answeredBy = null;
+    const degraded = [];
     try {
       const wechatCwd = resolveAllowedCwd("");
       let fullPrompt = prompt;
@@ -2213,17 +2302,25 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       const extraMcpServers = hasScheduler
         ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
         : {};
-      // Codex SDK 目前不能注入这个进程内的 scheduler MCP，涉及定时任务时跳过 Codex，
-      // 其余场景仍可按动态配置把它作为 fallback。
+      // Codex SDK 和 agy 都注入不了这个进程内的 scheduler MCP，涉及定时任务时把
+      // 两条通道都跳过——不跳的话定时任务会在这些通道上静默失效。
+      // 其余场景仍按动态配置把它们排进降级链。
       const candidates = buildModelCandidates(profileData, {
-        excludedProviders: hasScheduler ? ["codex"] : [],
+        excludedProviders: hasScheduler ? ["codex", "antigravity"] : [],
+        providerModels: { antigravity: antigravityFallbackModels() },
       });
-      console.log(`[WeChat Agent] model chain: ${candidates.map(candidate => `${candidate.profileName}/${candidate.model}`).join(" -> ")}`);
       finalResponse = await runWithModelFallback(
         candidates,
-        candidate => candidate.provider === "codex"
-          ? runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt })
-          : runWechatClaudeCandidate({
+        (candidate, info) => {
+          answeredBy = candidate;
+          const stallMs = wechatStallMs(info.remainingMs);
+          if (candidate.provider === "codex") {
+            return runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+          }
+          if (candidate.provider === "antigravity") {
+            return runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+          }
+          return runWechatClaudeCandidate({
             candidate,
             profileData,
             fullPrompt,
@@ -2233,18 +2330,28 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
             extraMcpServers,
             wechatSystemPrompt,
             hasScheduler,
-          }),
-        { logPrefix: "WeChat Agent" },
+            stallMs,
+          });
+        },
+        {
+          logPrefix: "WeChat Agent",
+          budgetMs: WECHAT_FALLBACK_BUDGET_MS,
+          onCandidateFailed: failure => degraded.push(failure),
+        },
       );
+      // 降级要可见，但只在真降级时可见：不同通道的答案质量和语气是用户能感觉到的，
+      // 不说一声，他只会以为「AI 今天变笨了」。
+      if (degraded.length > 0 && finalResponse.trim()) {
+        finalResponse = `${finalResponse.trimEnd()}\n\n—— 本条由${answeredBy.profileName}回答（${describeFailure(degraded[0])}）`;
+      }
     } catch (err) {
       if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
-      if (err?.code === "WECHAT_STALL_TIMEOUT") {
-        console.warn("[WeChat Agent] Stream stalled, timed out after 3 min.");
-        finalResponse = "⚠️ AI 响应超时，请稍后重试。";
-      } else {
-        console.error("[WeChat Agent] Error:", err);
-        finalResponse = `⚠️ 助手发生错误: ${err.message}`;
-      }
+      console.error("[WeChat Agent] Error:", err);
+      // 微信那头是个人，不是开发者：能说清楚是哪条通道怎么了就说，
+      // 说不清楚也别把原始英文报错糊他一脸。
+      if (err?.userMessage) finalResponse = `⚠️ ${err.userMessage}`;
+      else if (err?.code === "WECHAT_STALL_TIMEOUT") finalResponse = "⚠️ AI 响应超时，请稍后重试。";
+      else finalResponse = `⚠️ 助手没能完成这次请求：${err.message}`;
     } finally {
       clearInterval(typingInterval);
       await sendWechatTyping(baseUrl, token, sender, 2, contextToken);
@@ -2297,6 +2404,12 @@ if (existsSync(WECHAT_CONFIG_FILE)) {
   }
 }
 
+// agy 第一次查目录要起进程走一遍登录，实测 7 秒。降级链上现查太贵，
+// 启动后在后台预热一次；失败也不影响启动，真要用时会再查一遍。
+if (agyProvider.isAuthAvailable()) {
+  getAgyCatalog().catch(err => console.warn("[Antigravity] Catalog prewarm failed:", err.message));
+}
+
 
 // ── Scheduler init ────────────────────────────────────────
 scheduler.init({
@@ -2309,6 +2422,8 @@ scheduler.init({
   resolveWechatDeliveryPeers,
   queueWechatPendingDelivery,
   buildAgentEnv,
+  runAntigravityText,
+  antigravityFallbackModels,
   getActiveProfile,
   readProfiles,
   appendChatHistoryEntry,

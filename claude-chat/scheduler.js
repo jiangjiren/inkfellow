@@ -385,25 +385,40 @@ async function _runAgent(job) {
 
   const cwd = ctx.resolveAllowedCwd("");
   const profileData = ctx.readProfiles();
-  const candidates = buildModelCandidates(profileData);
+  const candidates = buildModelCandidates(profileData, {
+    providerModels: { antigravity: ctx.antigravityFallbackModels?.() ?? [] },
+  });
   return await runWithModelFallback(
     candidates,
     candidate => _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd),
-    { logPrefix: `Scheduler ${job.id.slice(0, 8)}` },
+    // 没人在等结果，所以预算给得宽：最多够两个候选各卡满一次，
+    // 再往后就该让这次任务失败、等下一个触发点，而不是无限往下试。
+    { logPrefix: `Scheduler ${job.id.slice(0, 8)}`, budgetMs: 2 * AGENT_RUN_TIMEOUT_MS },
   );
 }
 
 // 每个候选独享完整超时预算，而不是整条链共享一份——否则前面的候选把时间耗光，
-// 真正干活的那个只剩几十秒。这不会让总时长变成 N × 5 分钟：降级只在候选不可用
-// （凭证失效／模型下线）时触发，这类错误立即返回；而超时本身抛 AbortError，
-// 不属于可降级错误，会直接终止整条链。
+// 真正干活的那个只剩几十秒。卡住的候选按「这条通道现在不行」处理：跳到下一个通道
+// 并记一段冷却，链条整体仍受 _runAgent 那份总预算约束。
 async function _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd) {
   const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), AGENT_RUN_TIMEOUT_MS);
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; ac.abort(); }, AGENT_RUN_TIMEOUT_MS);
   try {
+    if (candidate.provider === "antigravity") {
+      return await ctx.runAntigravityText({
+        prompt: fullPrompt, cwd, model: candidate.model, signal: ac.signal, stallMs: AGENT_RUN_TIMEOUT_MS,
+      });
+    }
     return candidate.provider === "codex"
       ? await _runCodexCandidate(candidate, fullPrompt, cwd, ac.signal)
       : await _runClaudeCandidate(candidate, profileData, fullPrompt, cwd, ac);
+  } catch (err) {
+    if (!timedOut) throw err;
+    const error = new Error(`${candidate.profileName} 在 ${AGENT_RUN_TIMEOUT_MS / 60000} 分钟内没有完成`, { cause: err });
+    error.code = "MODEL_FALLBACK_TIMEOUT";
+    error.timeout = true;
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

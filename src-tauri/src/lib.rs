@@ -1224,6 +1224,32 @@ fn workspace_root() -> PathBuf {
     }
 }
 
+/// 剥掉 Windows 的 `\\?\` 扩展长度前缀（verbatim 路径）。
+///
+/// Tauri 的 `resource_dir()` 在 Windows 上返回的就是这种形式
+/// （`\\?\D:\Program Files\...`）。当可执行文件传给 CreateProcess 没问题，但
+/// **Node 不接受它作为主模块**：realpathSync 那一步会炸成
+/// `EISDIR: illegal operation on a directory, lstat 'D:'`，sidecar 起来就死，
+/// 界面上没有任何提示，AI 对话直接不可用。
+///
+/// 平时撞不上，是因为快捷方式的起始目录正好是安装目录，find_chat_dir 在轮到
+/// resource_dir 那几条候选之前就用 cwd 找到了。换个工作目录启动就必现。
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        // Unix 的文件名理论上能包含反斜杠，别在那边乱动
+        return path;
+    }
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    // `\\?\UNC\server\share` 的等价普通形式是 `\\server\share`
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    PathBuf::from(rest.to_string())
+}
+
 fn get_node_path(app: &AppHandle) -> PathBuf {
     #[cfg(target_os = "windows")]
     let node_bin = "node.exe";
@@ -1231,7 +1257,7 @@ fn get_node_path(app: &AppHandle) -> PathBuf {
     let node_bin = "node";
 
     if let Ok(res_dir) = app.path().resource_dir() {
-        let bundled = res_dir.join("bin").join(node_bin);
+        let bundled = strip_verbatim_prefix(res_dir.join("bin").join(node_bin));
         if bundled.exists() {
             return bundled;
         }
@@ -1260,6 +1286,9 @@ fn find_chat_dir(app: &AppHandle) -> PathBuf {
     ];
 
     if let Ok(res_dir) = app.path().resource_dir() {
+        // 这几条是从 resource_dir 推出来的，必须剥掉 verbatim 前缀再交出去：
+        // server.js 的路径是要当 node 的主模块用的（见 strip_verbatim_prefix）
+        let res_dir = strip_verbatim_prefix(res_dir);
         candidates.push(
             res_dir
                 .join("_up_")
@@ -3238,6 +3267,58 @@ pub fn run() {
             kill_processes(app_handle);
         }
     });
+}
+
+#[cfg(test)]
+mod verbatim_path_tests {
+    use super::*;
+
+    /* 这个 bug 的症状是「AI 对话打不开，界面上什么都不说」：node 拿到
+       verbatim 路径当主模块会炸成 EISDIR，sidecar 秒退。平时撞不上，是因为
+       快捷方式的起始目录恰好是安装目录，轮不到 resource_dir 那几条候选。 */
+
+    #[test]
+    fn strips_verbatim_prefix_from_drive_path() {
+        if !cfg!(windows) {
+            return;
+        }
+        let stripped = strip_verbatim_prefix(PathBuf::from(
+            r"\\?\D:\Program Files\inkfellow\_up_\desktop-bundle\claude-chat",
+        ));
+        assert_eq!(
+            stripped,
+            PathBuf::from(r"D:\Program Files\inkfellow\_up_\desktop-bundle\claude-chat"),
+        );
+    }
+
+    #[test]
+    fn rewrites_verbatim_unc_to_plain_unc() {
+        if !cfg!(windows) {
+            return;
+        }
+        let stripped = strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\app"));
+        assert_eq!(stripped, PathBuf::from(r"\\server\share\app"));
+    }
+
+    #[test]
+    fn leaves_ordinary_paths_alone() {
+        // 走 cwd 那几条候选本来就是普通形式，不该被动过
+        let plain = PathBuf::from(r"D:\Program Files\inkfellow");
+        assert_eq!(strip_verbatim_prefix(plain.clone()), plain);
+
+        let relative = PathBuf::from("claude-chat");
+        assert_eq!(strip_verbatim_prefix(relative.clone()), relative);
+    }
+
+    #[test]
+    fn keeps_spaces_and_unicode_intact() {
+        if !cfg!(windows) {
+            return;
+        }
+        // 安装目录带空格正是触发这个 bug 的现场，别在剥前缀时把它改坏了
+        let stripped = strip_verbatim_prefix(PathBuf::from(r"\\?\D:\Program Files\墨友\server.js"));
+        assert_eq!(stripped, PathBuf::from(r"D:\Program Files\墨友\server.js"));
+    }
 }
 
 #[cfg(test)]

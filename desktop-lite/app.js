@@ -3481,10 +3481,10 @@ function showGitFeedback(msg, isError = false) {
 }
 
 async function gitCommitPush() {
-  const message = state.gitMessage.trim() || "Update notes";
+  const message = state.gitMessage.trim();
   state.gitBusy = true;
   renderGitPanel();
-  showGitFeedback("正在同步到云端…");
+  showGitFeedback(message ? "正在同步到云端…" : "正在同步并生成 AI 摘要…");
   try {
     // 只入队，执行结果由 sync-state 事件回推
     await invoke("sync_commit_and_push", { message });
@@ -3729,7 +3729,7 @@ function renderGitMessageBar() {
   return `
     <div class="gitMessageBar">
       <div class="gitMessageDisplay">
-        <span class="gitMessageLabel">${state.gitMessage ? `自定义日志：${escapeHtml(state.gitMessage)}` : "同步日志：由 AI 提取自动总结"}</span>
+        <span class="gitMessageLabel">${state.gitMessage ? `自定义日志：${escapeHtml(state.gitMessage)}` : "同步日志：AI 自动总结，失败时使用普通说明"}</span>
         <button id="btn-git-message-edit" class="gitMsgEditBtn" type="button">修改</button>
       </div>
     </div>`;

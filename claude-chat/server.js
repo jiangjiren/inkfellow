@@ -25,6 +25,7 @@ import { DispatchAbortRegistry } from "./dispatch-abort-registry.js";
 import { fetchMaybeViaProxy } from "./proxy-fetch.js";
 import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
 import { z } from "zod";
+import { handleSyncSummary } from "./sync-summary.js";
 import { withConversationContext } from "./conversation-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3523,6 +3524,15 @@ const http = createServer((req, res) => {
   ) {
     res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Forbidden");
+    return;
+  }
+
+  if (url === "/api/sync-summary" && method === "POST") {
+    handleSyncSummary(req, res, {
+      token: DESKTOP_AGENT_TOKEN,
+      suppliedToken: queryParams.get("token"),
+      profiles: readProfiles,
+    });
     return;
   }
 

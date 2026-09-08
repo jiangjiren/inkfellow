@@ -16,6 +16,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
+mod sync_summary;
 
 #[cfg(target_os = "windows")]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -2594,6 +2595,10 @@ fn do_git_commit(path: &Path, message: &str) -> Result<GitOutput, String> {
         });
     }
 
+    commit_staged(path, message)
+}
+
+fn commit_staged(path: &Path, message: &str) -> Result<GitOutput, String> {
     let clean_message = if message.trim().is_empty() {
         "Update notes"
     } else {
@@ -2611,6 +2616,85 @@ fn do_git_commit(path: &Path, message: &str) -> Result<GitOutput, String> {
             clean_message,
         ],
     )
+}
+
+// Stage once: edits made while the model is responding belong to the next sync.
+fn commit_with_summary(
+    path: &Path,
+    message: &str,
+    summarize: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<(GitOutput, String), String> {
+    if !message.trim().is_empty() {
+        return Ok((
+            do_git_commit(path, message)?,
+            "已同步，使用自定义说明。".into(),
+        ));
+    }
+    let add = run_git(path, &["add", "-A"])?;
+    if !add.success {
+        return Ok((add, String::new()));
+    }
+    let names = run_git(path, &["diff", "--cached", "--name-only", "-z"])?;
+    if !names.success {
+        return Ok((names, String::new()));
+    }
+    if names.stdout.is_empty() {
+        return Ok((
+            GitOutput {
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+                code: Some(0),
+            },
+            "已同步，没有新的本地变更。".into(),
+        ));
+    }
+    let tree = run_git(path, &["write-tree"])?;
+    if !tree.success {
+        return Ok((tree, String::new()));
+    }
+    let diff = run_git(
+        path,
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--stat",
+            "--patch",
+            "--unified=2",
+        ],
+    )?;
+    if !diff.success {
+        return Ok((diff, String::new()));
+    }
+    let files: Vec<_> = names
+        .stdout
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .collect();
+    let first = files
+        .first()
+        .and_then(|name| Path::new(name).file_stem())
+        .and_then(OsStr::to_str)
+        .unwrap_or("笔记");
+    let fallback = format!(
+        "更新《{}》等 {} 个文件",
+        first.chars().take(40).collect::<String>(),
+        files.len()
+    );
+    let (message, feedback) = match summarize(&diff.stdout) {
+        Ok(message) => {
+            let feedback = format!("已同步，AI 摘要：{message}");
+            (message, feedback)
+        }
+        Err(reason) => (fallback, format!("已同步，使用普通说明（{reason}）。")),
+    };
+    let current_tree = run_git(path, &["write-tree"])?;
+    if !current_tree.success || current_tree.stdout != tree.stdout {
+        return Err("生成摘要期间暂存区发生变化，请重新同步。".into());
+    }
+    Ok((commit_staged(path, &message)?, feedback))
 }
 
 /* ── 同步引擎：单一后台 worker 串行调度所有同步动作 ── */
@@ -2782,6 +2866,7 @@ fn sync_worker(app: AppHandle, rx: mpsc::Receiver<SyncJob>) {
             }
             SyncJob::CommitPush { message } => {
                 emit_sync_phase(&app, "syncing", "commitPush");
+                let mut summary_feedback = String::new();
                 let result = (|| -> Result<(GitOutput, Vec<GitOutput>), String> {
                     let pull = do_git_pull(&vault)?;
                     if !pull.success {
@@ -2792,7 +2877,11 @@ fn sync_worker(app: AppHandle, rx: mpsc::Receiver<SyncJob>) {
                         };
                         return Err(detail.trim().to_string());
                     }
-                    let commit = do_git_commit(&vault, &message)?;
+                    let (commit, feedback) = commit_with_summary(&vault, &message, |diff| {
+                        let state = app.state::<AppState>();
+                        sync_summary::request(state.claude_port, &state.agent_token, diff)
+                    })?;
+                    summary_feedback = feedback;
                     if !commit.success {
                         let detail = if commit.stderr.trim().is_empty() {
                             commit.stdout.clone()
@@ -2824,7 +2913,9 @@ fn sync_worker(app: AppHandle, rx: mpsc::Receiver<SyncJob>) {
                             .join("\n")
                             .trim()
                             .to_string();
-                        let feedback = if summary.is_empty() {
+                        let feedback = if !summary_feedback.is_empty() {
+                            summary_feedback
+                        } else if summary.is_empty() {
                             "已同步。".to_string()
                         } else {
                             summary
@@ -3402,6 +3493,106 @@ mod sync_conflict_tests {
         configure_identity(&b, "device-b");
 
         (base, a, b)
+    }
+
+    #[test]
+    fn sync_summary_covers_new_files_and_preserves_edits_during_generation() {
+        let base = unique_dir("sync-summary");
+        fs::create_dir_all(&base).unwrap();
+        run_git(&base, &["init"]).unwrap();
+        configure_identity(&base, "summary-test");
+        fs::write(base.join("新增笔记.md"), "年度阅读计划\n").unwrap();
+        let (out, feedback) = commit_with_summary(&base, "", |diff| {
+            assert!(diff.contains("+年度阅读计划"));
+            fs::write(base.join("新增笔记.md"), "年度阅读计划\n后续编辑\n").unwrap();
+            Ok("新增年度阅读计划".into())
+        })
+        .unwrap();
+        assert!(out.success, "{}", out.stderr);
+        assert!(feedback.contains("AI 摘要"));
+        assert_eq!(
+            run_git(&base, &["log", "-1", "--format=%s"])
+                .unwrap()
+                .stdout
+                .trim(),
+            "新增年度阅读计划"
+        );
+        assert!(!run_git(&base, &["show", "HEAD:新增笔记.md"])
+            .unwrap()
+            .stdout
+            .contains("后续编辑"));
+        assert!(run_git(&base, &["diff"])
+            .unwrap()
+            .stdout
+            .contains("+后续编辑"));
+        let (out, feedback) =
+            commit_with_summary(&base, "", |_| Err("AI 请求超时".into())).unwrap();
+        assert!(out.success);
+        assert!(feedback.contains("普通说明（AI 请求超时）"));
+        assert!(run_git(&base, &["log", "-1", "--format=%s"])
+            .unwrap()
+            .stdout
+            .contains("新增笔记"));
+        let (out, _) =
+            commit_with_summary(&base, "", |_| panic!("clean tree must not call AI")).unwrap();
+        assert!(out.success);
+        fs::write(base.join("新增笔记.md"), "自定义提交\n").unwrap();
+        let (out, _) = commit_with_summary(&base, "我的说明", |_| {
+            panic!("custom message must bypass AI")
+        })
+        .unwrap();
+        assert!(out.success);
+        assert_eq!(
+            run_git(&base, &["log", "-1", "--format=%s"])
+                .unwrap()
+                .stdout
+                .trim(),
+            "我的说明"
+        );
+        fs::write(base.join("新增笔记.md"), "摘要前\n").unwrap();
+        assert!(commit_with_summary(&base, "", |_| {
+            fs::write(base.join("新增笔记.md"), "外部修改暂存区\n").unwrap();
+            run_git(&base, &["add", "-A"]).unwrap();
+            Ok("摘要前".into())
+        })
+        .err()
+        .unwrap()
+        .contains("暂存区发生变化"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly started live sidecar with API credentials"]
+    fn live_sync_summary_commits_real_ai_response() {
+        let port = std::env::var("INKFELLOW_TEST_SUMMARY_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let token = std::env::var("INKFELLOW_TEST_SUMMARY_TOKEN").unwrap();
+        let base = unique_dir("live-sync-summary");
+        fs::create_dir_all(&base).unwrap();
+        run_git(&base, &["init"]).unwrap();
+        configure_identity(&base, "summary-test");
+        fs::write(
+            base.join("阅读计划.md"),
+            "# 九月阅读计划\n阅读《心流》，每周记录感悟，月底回顾专注习惯。\n",
+        )
+        .unwrap();
+        let (out, feedback) =
+            commit_with_summary(&base, "", |diff| sync_summary::request(port, &token, diff))
+                .unwrap();
+        assert!(out.success, "{}", out.stderr);
+        assert!(feedback.contains("AI 摘要"), "{feedback}");
+        let message = run_git(&base, &["log", "-1", "--format=%s"])
+            .unwrap()
+            .stdout;
+        assert!(!message.contains("Update notes"));
+        assert!(
+            message.contains("心流") || message.contains("阅读") || message.contains("专注"),
+            "{message}"
+        );
+        println!("Live AI commit: {}", message.trim());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

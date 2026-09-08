@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import * as wire from "./providers/wire.js";
 import * as codex from "./providers/codex.js";
 import * as agy from "./providers/antigravity.js";
@@ -126,11 +130,131 @@ test("codex: contentBlock 覆盖各 item 类型", () => {
   assert.equal(codex.contentBlock({ type: "brand_new" }).type, "codex_brand_new");
 });
 
+test("codex: 启动期的提醒不当错误显示，真错误照旧", () => {
+  const notice = (message) => ({ id: "item_0", type: "error", message });
+
+  // 每轮都来一遍的那两条，丢掉：既不发事件，也不进历史
+  assert.equal(codex.isStartupNotice(notice("Under-development features enabled: respect_system_proxy. …")), true);
+  assert.equal(codex.isStartupNotice(notice("Skill descriptions were shortened to fit the skills context budget.")), true);
+  assert.equal(codex.contentBlock(notice("Under-development features enabled: respect_system_proxy.")), null);
+  assert.deepEqual(codex.itemEvents("item.completed", notice("Skill descriptions were shortened…")), []);
+
+  // 真错误一律照旧
+  const real = notice("stream disconnected before completion");
+  assert.equal(codex.isStartupNotice(real), false);
+  assert.equal(codex.contentBlock(real).type, "codex_error");
+  assert.equal(codex.itemEvents("item.completed", real).length, 1);
+  // 只认前缀，提到这几个字眼的真错误不该被吞掉
+  assert.equal(codex.isStartupNotice(notice("failed to load skills: Skill descriptions were shortened")), false);
+  assert.equal(codex.isStartupNotice({ type: "agent_message", message: "Under-development features enabled: x" }), false);
+});
+
 test("codex: sandbox 模式跟着权限档位走", () => {
   assert.equal(codex.sandboxMode("plan"), "read-only");
   assert.equal(codex.sandboxMode("bypassPermissions"), "danger-full-access");
   assert.equal(codex.sandboxMode("auto"), "workspace-write");
   assert.equal(codex.sandboxMode(undefined), "workspace-write");
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Codex 模型目录（~/.codex/models_cache.json → 菜单 + 三档默认值）
+   ══════════════════════════════════════════════════════════════════ */
+
+// 真实的 models_cache.json 摘录：只留下解析用得到的字段，顺序也照它给的
+const CODEX_MODELS_CACHE = {
+  fetched_at: "2026-09-06T14:10:24.576429100Z",
+  models: [
+    { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "Our most capable model.", visibility: "list", priority: 1, upgrade: null },
+    { slug: "gpt-reserve", display_name: "GPT-Reserve", description: "Internal.", visibility: "hide", priority: 3, upgrade: null },
+    { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", description: "Reliable agentic workhorse.", visibility: "list", priority: 6, upgrade: null },
+    { slug: "gpt-5.6-terra", display_name: "GPT-5.6-Terra", description: "Balanced agentic coding model.", visibility: "list", priority: 7, upgrade: null },
+    { slug: "gpt-5.6-luna", display_name: "GPT-5.6-Luna", description: "Fast and affordable.", visibility: "list", priority: 8, upgrade: null },
+    { slug: "gpt-5.5", display_name: "GPT-5.5", description: "Previous generation.", visibility: "list", priority: 12, upgrade: null },
+    { slug: "gpt-5.4-mini", display_name: "GPT-5.4-Mini", description: "Small and fast.", visibility: "list", priority: 23, upgrade: { model: "gpt-5.6-luna" } },
+  ],
+};
+
+test("codex 目录: 解析缓存文件，hide 和已弃用的不上菜单", () => {
+  const catalog = codex.parseModelsCache(CODEX_MODELS_CACHE);
+  // 全目录一个不落——对话里还选着 gpt-5.4-mini 时要认得出它
+  assert.equal(catalog.length, 7);
+  assert.equal(codex.setCatalog(catalog), true);
+  assert.equal(codex.hasLiveCatalog(), true);
+
+  const menu = codex.menuModels();
+  // 按 OpenAI 给的 priority 排，只取前四个：5.5 和被标了 upgrade 的 5.4-mini 落榜，
+  // 内部模型 gpt-reserve 也不该冒出来
+  assert.deepEqual(menu.map(item => item.model), [
+    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+  ]);
+  assert.equal(menu[0].name, "GPT-6-Astra");
+  assert.equal(menu[0].desc, "旗舰最强");
+  assert.ok(codex.knownModels().includes("gpt-5.4-mini"));
+
+  // 三档槽位跟着目录走：opus = 最强的那个，haiku = 菜单末尾最经济的那个
+  assert.deepEqual(codex.defaultModels(), {
+    opusModel: "gpt-6-astra",
+    sonnetModel: "gpt-5.6-sol",
+    haikuModel: "gpt-5.6-luna",
+  });
+
+  codex._resetCatalog();
+});
+
+test("codex 目录: 认不出的输入不能把好目录顶掉", () => {
+  codex.setCatalog(codex.parseModelsCache(CODEX_MODELS_CACHE));
+  assert.equal(codex.parseModelsCache(null), null);
+  assert.equal(codex.parseModelsCache({}), null);
+  assert.equal(codex.parseModelsCache({ models: [{ display_name: "没有 slug" }] }), null);
+  assert.equal(codex.setCatalog([]), false);
+  assert.equal(codex.setCatalog(null), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+  codex._resetCatalog();
+});
+
+test("codex 目录: 新模型没有中文说明时退回缓存里那句英文，不把它挡在菜单外", () => {
+  codex.setCatalog(codex.parseModelsCache({
+    models: [{ slug: "gpt-7-nova", display_name: "GPT-7-Nova", description: "Next generation.", visibility: "list", priority: 1 }],
+  }));
+  const menu = codex.menuModels();
+  assert.deepEqual(menu.map(item => item.model), ["gpt-7-nova"]);
+  assert.equal(menu[0].desc, "Next generation.");
+  // 菜单只有一个模型时三档都落在它身上，不能出现空槽位
+  assert.deepEqual(codex.defaultModels(), {
+    opusModel: "gpt-7-nova", sonnetModel: "gpt-7-nova", haikuModel: "gpt-7-nova",
+  });
+  codex._resetCatalog();
+});
+
+test("codex 目录: 文件读不到时用兜底表，菜单不会空", () => {
+  codex._resetCatalog();
+  assert.equal(codex.refreshCatalog(join(tmpdir(), "inkfellow-no-such-models-cache.json")), false);
+  assert.equal(codex.hasLiveCatalog(), false);
+  const menu = codex.menuModels();
+  assert.ok(menu.length >= 3);
+  assert.ok(menu.every(item => item.model && item.name && item.desc));
+  assert.equal(menu[0].model, "gpt-6-astra");
+});
+
+test("codex 目录: 从磁盘读一次就够，文件没动过不重复解析", async () => {
+  codex._resetCatalog();
+  const dir = await mkdtemp(join(tmpdir(), "inkfellow-codex-models-"));
+  const file = join(dir, "models_cache.json");
+  await writeFile(file, JSON.stringify(CODEX_MODELS_CACHE), "utf8");
+
+  assert.equal(codex.refreshCatalog(file), true);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+  // 同一个文件再读：没变化就返回 false（省掉 240KB 的重复解析），目录照旧
+  assert.equal(codex.refreshCatalog(file), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+
+  // 写坏了也不能把已经读到的目录清空
+  await writeFile(file, "{ 这不是 JSON", "utf8");
+  assert.equal(codex.refreshCatalog(file), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+
+  await rm(dir, { recursive: true, force: true });
+  codex._resetCatalog();
 });
 
 /* ══════════════════════════════════════════════════════════════════

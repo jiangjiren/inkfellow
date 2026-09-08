@@ -3472,6 +3472,43 @@ async function loadAgyModelCatalog() {
   }
 }
 
+/* ChatGPT 会员通道能选的模型。跟 Antigravity 同理，这里不写死——真相源是
+   Codex CLI 自己维护的 ~/.codex/models_cache.json，由 /api/codex/models 送过来
+   （解析和菜单规则在 providers/codex.js）。GPT 出新版本时这里什么都不用改。
+
+   之所以不像别家那样从账号的 opus/sonnet/haiku 三档推菜单：Codex 那边同时挂着
+   四个以上的模型，三个槽位装不下。三档现在只用来定默认值和账号卡片上的显示。
+
+   下面是首帧兜底，接口一到就整份换掉，所以它旧一点没关系。 */
+let CODEX_MODELS = [
+  { model: "gpt-6-astra",   label: "GPT-6-Astra",   name: "GPT-6-Astra",   desc: "旗舰最强" },
+  { model: "gpt-5.6-sol",   label: "GPT-5.6-Sol",   name: "GPT-5.6-Sol",   desc: "综合可靠" },
+  { model: "gpt-5.6-terra", label: "GPT-5.6-Terra", name: "GPT-5.6-Terra", desc: "均衡通用" },
+  { model: "gpt-5.6-luna",  label: "GPT-5.6-Luna",  name: "GPT-5.6-Luna",  desc: "快速经济" },
+];
+// 全目录，含菜单上撤下来的旧版本——还选着旧模型的对话要认得出它属于这个账号
+let CODEX_MODEL_IDS = CODEX_MODELS.map(o => o.model);
+
+/* 拉一次真目录。服务端读的是本地文件（毫秒级），不像 agy 那条要起进程，
+   但一样不挡渲染：先用兜底表把菜单撑起来，回来了再换掉。 */
+let _codexModelsLoaded = false;
+async function loadCodexModelCatalog() {
+  if (_codexModelsLoaded) return;
+  _codexModelsLoaded = true;
+  try {
+    const res = await fetch("api/codex/models", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data?.models) || !data.models.length) return;
+    CODEX_MODELS = data.models;
+    if (Array.isArray(data.all) && data.all.length) CODEX_MODEL_IDS = data.all;
+    // 目录换了，当前选中的可能已经不在菜单里，重渲染会把它落回默认
+    renderModelOptions(getActiveProfile());
+  } catch {
+    _codexModelsLoaded = false;   // 网络抖一下就放开，下次切到这个账号还能再试
+  }
+}
+
 // null = 这家不限制，五档随便选
 function effortLevelsForCurrentModel() {
   if ((getActiveProfile()?.provider || "claude") !== "antigravity") return null;
@@ -3600,6 +3637,8 @@ function profileIdOwningModel(model) {
     if (p.provider === "claude") return CLAUDE_MODELS.some(o => o.model === (MODEL_MIGRATIONS[model] ?? model));
     // 认全目录而不是菜单：从菜单上撤下来的旧版本仍然属于这个账号
     if (p.provider === "antigravity") return Object.prototype.hasOwnProperty.call(AGY_EFFORT_LEVELS, model);
+    // Codex 同理：菜单只露前几个，撤下来的旧版本仍然属于这个账号
+    if (p.provider === "codex") return CODEX_MODEL_IDS.includes(model) || [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
     return [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
   };
   if (owns(getActiveProfile())) return activeProfileId();
@@ -3645,6 +3684,10 @@ function renderModelOptions(activeProfile) {
     // 档位由界面上的 effort 选择器控制，不该再挤进模型名里。
     loadAgyModelCatalog();   // 第一次切到这个通道时才去拉真目录，回来后自己重渲染
     options = AGY_MODELS;
+  } else if (provider === "codex") {
+    // 同样不走 opus/sonnet/haiku 三档：Codex 那边挂着四个以上的模型，装不下
+    loadCodexModelCatalog();
+    options = CODEX_MODELS;
   } else {
     // 收集三档模型，相同模型合并显示 tier 标签
     const tierEntries = [
@@ -3658,14 +3701,9 @@ function renderModelOptions(activeProfile) {
       if (!modelTiers[m]) modelTiers[m] = [];
       modelTiers[m].push(tier);
     }
-    const GPT_DESCS = {
-      "gpt-5.6-sol": "旗舰最强",
-      "gpt-5.6-terra": "均衡通用",
-      "gpt-5.6-luna": "快速经济",
-    };
     options = Object.entries(modelTiers).map(([model, tiers]) => {
       const shortName = model.split("/").pop() || model;
-      const desc = provider === "codex" ? (GPT_DESCS[model] || model) : tiers.join("/");
+      const desc = tiers.join("/");
       return { model, label: shortName, name: shortName, desc };
     });
     if (!options.length) options = CLAUDE_MODELS;

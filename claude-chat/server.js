@@ -226,11 +226,42 @@ const WECHAT_MIME_BY_EXT = {
   ".zip": "application/zip",
 };
 
-const CODEX_DEFAULT_MODELS = {
-  opusModel: "gpt-5.6-sol",
-  sonnetModel: "gpt-5.6-terra",
-  haikuModel: "gpt-5.6-luna",
-};
+/* Codex 能选哪些 GPT，真相源是 Codex CLI 自己维护的 ~/.codex/models_cache.json
+   （解析和菜单规则在 providers/codex.js）。读一个本地文件就够了，不像 agy 那样
+   要起进程，所以这里不需要那套「磁盘缓存 + 后台刷新」：启动读一次，之后按 TTL
+   顺手 stat 一下，文件没动过连解析都省掉。
+
+   这一套同样是为了「模型升级不用改代码」：GPT-6 上线那天 CLI 刷新它自己的缓存，
+   最迟一分钟后菜单、三档默认值、账号卡片一起变新。 */
+const CODEX_MODELS_TTL_MS = 60_000;
+let _codexModelsCheckedAt = 0;
+
+/** 目录过期了就重读一次本地缓存；返回是不是真换了一份。永不抛。 */
+function refreshCodexModelCatalog({ force = false } = {}) {
+  if (!force && Date.now() - _codexModelsCheckedAt < CODEX_MODELS_TTL_MS) return false;
+  _codexModelsCheckedAt = Date.now();
+  return codexProvider.refreshCatalog();
+}
+refreshCodexModelCatalog({ force: true });
+
+// 写成函数而不是常量，理由同 agyDefaultModels：让它跟着目录刷新走。
+// 用户存下来的 profile 每次读都拿这三个值强制覆盖一遍（见 normalizeProfiles）。
+function codexDefaultModels() {
+  refreshCodexModelCatalog();
+  return codexProvider.defaultModels();
+}
+
+/* codex 0.153 起会把启动期的提醒当成一条 error item 发出来，桌面端于是每开一轮
+   对话先弹一张红色的「Codex 错误」卡片。其中「Under-development features enabled:
+   respect_system_proxy」这条它自己给了开关，这里按 --config 传进去。
+
+   刻意不去改 ~/.codex/config.toml：那是用户自己的全局配置（respect_system_proxy
+   是他为走代理特意开的），改了会连他在命令行里的提醒一起吞掉。走 SDK 的 config
+   只作用于本应用起的这些进程。
+
+   压不掉的那几条（比如技能描述被截断的提醒）在 providers/codex.js 里按内容过滤。 */
+const CODEX_CLIENT_OPTIONS = { config: { suppress_unstable_features_warning: true } };
+
 const CODEX_PROFILE_NAME = "ChatGPT 会员";
 const LEGACY_CODEX_PROFILE_NAMES = new Set([
   "Codex（GPT 会员）",
@@ -265,7 +296,8 @@ const PROVIDER_PRESETS = {
   anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5",                   sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
-  codex:      { baseUrl: "",                                    ...CODEX_DEFAULT_MODELS },
+  // getter：同 antigravity，目录刷新后取到的就是新的
+  get codex() { return { baseUrl: "", ...codexDefaultModels() }; },
   // getter：目录刷新后取到的就是新的，别在这里把值定死
   get antigravity() { return { baseUrl: "", ...agyDefaultModels() }; },
 };
@@ -829,7 +861,7 @@ function migrateOldFormat(old) {
   }
 
   if (isCodexAuthAvailable()) {
-    profiles.push({ id: "p_codex", name: CODEX_PROFILE_NAME, provider: "codex", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.codex, ...CODEX_DEFAULT_MODELS });
+    profiles.push({ id: "p_codex", name: CODEX_PROFILE_NAME, provider: "codex", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.codex, ...codexDefaultModels() });
   }
   if (isAgyAuthAvailable()) {
     profiles.push({ id: "p_agy", name: "Gemini（Antigravity）", provider: "antigravity", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.antigravity, ...agyDefaultModels() });
@@ -861,9 +893,9 @@ function normalizeProfiles(raw) {
   const existingCodex = profiles.find(p => p.provider === "codex");
   if (isCodexAuthAvailable()) {
     if (existingCodex) {
-      Object.assign(existingCodex, CODEX_DEFAULT_MODELS);
+      Object.assign(existingCodex, codexDefaultModels());
     } else {
-      profiles.push({ id: "p_codex", name: CODEX_PROFILE_NAME, provider: "codex", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.codex, ...CODEX_DEFAULT_MODELS });
+      profiles.push({ id: "p_codex", name: CODEX_PROFILE_NAME, provider: "codex", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.codex, ...codexDefaultModels() });
     }
   }
   // Antigravity 同理：装了并登录过就注入，模型字段同样强制对齐
@@ -2672,7 +2704,7 @@ export function resolveDispatchProfile(profileData, selector) {
 function dispatchModelForProfile(profile) {
   if (!profile) return "";
   if (profile.provider === "codex") {
-    return profile.opusModel || profile.sonnetModel || profile.haikuModel || CODEX_DEFAULT_MODELS.opusModel;
+    return profile.opusModel || profile.sonnetModel || profile.haikuModel || codexDefaultModels().opusModel;
   }
   if (profile.provider === "antigravity") {
     return profile.opusModel || profile.sonnetModel || profile.haikuModel || agyDefaultModels().opusModel;
@@ -2927,7 +2959,7 @@ async function executeProviderDispatch({
 
   try {
   if (targetProfile.provider === "codex") {
-    const codex = new Codex();
+    const codex = new Codex(CODEX_CLIENT_OPTIONS);
     const threadOptions = {
       workingDirectory: cwd,
       approvalPolicy: "never",
@@ -3736,6 +3768,24 @@ const http = createServer((req, res) => {
       }));
     };
     if (wait) refresh.then(respond, respond); else respond();
+    return;
+  }
+
+  /* ChatGPT 会员能选哪些模型。前端拿它填模型菜单，所以那边不再写死一张表——
+     模型升级由 Codex CLI 自己的 models_cache.json 带过来。
+       models  菜单要显示的（按 OpenAI 的 priority 取前几个，弃用的不算）
+       all     全目录，含内部模型和已下线的旧版本：还选着旧模型的对话要认得出
+               它属于这个账号，不然反推会把它算到别家头上
+       live    false = 还在用 provider 里那张兜底表，缓存文件一次都没读到过
+     读的是本地文件（毫秒级），不像 agy 那条要起进程，所以没有 ?wait 这一说。 */
+  if (url === "/api/codex/models" && method === "GET") {
+    refreshCodexModelCatalog();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      live: codexProvider.hasLiveCatalog(),
+      models: codexProvider.menuModels(),
+      all: codexProvider.knownModels(),
+    }));
     return;
   }
 
@@ -5708,7 +5758,7 @@ wss.on("connection", (ws) => {
       );
       (async () => {
         try {
-          const codex = new Codex();
+          const codex = new Codex(CODEX_CLIENT_OPTIONS);
           const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
           const threadOptions = {
             workingDirectory: resolvedCwd,

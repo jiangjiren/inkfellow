@@ -88,7 +88,10 @@ test("WebSocket requests are acknowledged and duplicate IDs are not executed twi
     const providerPayload = await providersResponse.json();
     assert.ok(Array.isArray(providerPayload.providers));
     const codexProvider = providerPayload.providers.find(profile => profile.provider === "codex");
-    assert.equal(codexProvider?.model, "gpt-5.6-sol");
+    // 三档被强制覆盖成模型目录里的当代 GPT——具体是哪个由 ~/.codex/models_cache.json
+    // 决定，别在这里钉死某个版本，否则每次 OpenAI 上新都要来改这行
+    assert.match(codexProvider?.model || "", /^gpt-/);
+    assert.notEqual(codexProvider?.model, "gpt-5.4", "旧数据里的模型名不该留下来");
     assert.match(codexProvider?.goodAt || "", /重构|多文件/);
     assert.ok(providerPayload.providers.every(profile => typeof profile.goodAt === "string" && profile.goodAt.length > 0));
     const profileUpdateResponse = await fetch(

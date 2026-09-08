@@ -287,6 +287,62 @@ const PROGRESS_ITEM_TYPES = new Set(["command_execution", "mcp_tool_call", "todo
  * 之所以返回数组而不是直接 send：纯函数可以单测，喂一段录制的 item 流就能
  * 断言归一化结果。原先内联在 server.js 里时，这段逻辑只能靠人肉跑起来验证。
  */
+/* ── app-server 的形状 → SDK 的形状 ──────────────────────────
+   常驻那条路（codex-runtime.js）走的是 `codex app-server` 的 JSON-RPC，
+   通知和 item 跟 SDK 的 thread event 同源，但命名风格换了一套：
+
+     item.completed          ←→  item/completed
+     agent_message           ←→  agentMessage
+     aggregated_output       ←→  aggregatedOutput
+     reasoning.text（一段）   ←→  reasoning.content（一个数组）
+     todo_list.items         ←→  plan.text
+
+   在这里翻回 SDK 的形状，下面 itemEvents 那套就一个字都不用改，前端和历史
+   自然也不用动。翻不出来的 item 类型返回 null，调用方直接跳过——app-server
+   比 SDK 多出好些新类型（subAgentActivity、imageGeneration…），一股脑塞给
+   前端只会渲染成一堆看不懂的卡片。 */
+
+const APP_SERVER_ITEM_TYPES = {
+  agentMessage: "agent_message",
+  reasoning: "reasoning",
+  commandExecution: "command_execution",
+  mcpToolCall: "mcp_tool_call",
+  webSearch: "web_search",
+  fileChange: "file_change",
+  plan: "todo_list",
+};
+
+/** item/started | item/updated | item/completed → SDK 的那三个名字。 */
+export function fromAppServerMethod(method) {
+  if (method === "item/started") return "item.started";
+  if (method === "item/updated") return "item.updated";
+  if (method === "item/completed") return "item.completed";
+  return null;
+}
+
+/** app-server 的 item → SDK 形状的 item；认不出的类型给 null。 */
+export function fromAppServerItem(item) {
+  const type = APP_SERVER_ITEM_TYPES[item?.type];
+  if (!type) return null;
+  const out = { ...item, type };
+  if (type === "reasoning") {
+    /* SDK 那边 reasoning 是一整段文字，这边是按段落切开的数组。
+       content 是完整的推理，summary 是模型自己给的摘要；有 content 用
+       content，没有才退回 summary（高强度档位下只发 summary）。 */
+    const parts = Array.isArray(item.content) && item.content.length ? item.content : item.summary;
+    out.text = Array.isArray(parts) ? parts.filter(Boolean).join("\n") : (parts ?? "");
+  }
+  if (type === "command_execution") {
+    out.aggregated_output = item.aggregatedOutput ?? item.aggregated_output ?? "";
+  }
+  if (type === "todo_list") {
+    // plan 只有一段 markdown 文本，没有 SDK 那种结构化的 items 数组
+    out.items = Array.isArray(item.items) ? item.items : [];
+    out.text = typeof item.text === "string" ? item.text : "";
+  }
+  return out;
+}
+
 export function itemEvents(eventType, item) {
   if (!item) return [];
 

@@ -14,6 +14,14 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
 import { PersistentQueryRuntime, SteeringQueue, isTaskLifecycleEvent } from "./agent-session.js";
+import { PersistentCodexRuntime } from "./codex-runtime.js";
+import {
+  PersistentAgyRuntime,
+  AGY_PRINT_TIMEOUT,
+  agyRuntimeSignature,
+  agyPersistentArgs,
+  agyRuntimeReusable,
+} from "./agy-runtime.js";
 import * as codexProvider from "./providers/codex.js";
 import * as agyProvider from "./providers/antigravity.js";
 import { spawnWithHiddenConsole } from "./hidden-console.js";
@@ -64,6 +72,8 @@ const sessions = new SessionRegistry({
         console.error(`[Web Agent] ${context.source} callback failed without stopping the Claude runtime:`, error);
       },
     }),
+    createAgyRuntime: () => new PersistentAgyRuntime({ killProcess: killAgyProcess }),
+    createCodexRuntime: () => new PersistentCodexRuntime({ killProcess: killAgyProcess }),
   }),
   isBusy: (candidate) => sessionIsBusy(candidate),
 });
@@ -264,6 +274,9 @@ function codexDefaultModels() {
    压不掉的那几条（比如技能描述被截断的提醒）在 providers/codex.js 里按内容过滤。 */
 const CODEX_CLIENT_OPTIONS = { config: { suppress_unstable_features_warning: true } };
 
+// 界面上的五档推理强度 → codex 认识的四档。max 压到 xhigh，它没有更高的。
+const CODEX_EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+
 const CODEX_PROFILE_NAME = "ChatGPT 会员";
 const LEGACY_CODEX_PROFILE_NAMES = new Set([
   "Codex（GPT 会员）",
@@ -406,6 +419,151 @@ function createAgyEventSender(send) {
   return (ev) => { for (const out of translate(ev)) send(out); };
 }
 
+/* ── 常驻 codex（app-server）────────────────────────────────
+   codex-sdk 每轮 runStreamed 都 spawn 一个 `codex exec`，实测到 thread.started
+   要 3.3 秒；最贵的一段是把用户 ~/.codex/config.toml 里配的 MCP server 全部
+   重启一遍。常驻之后这些只在开进程时付一次，之后每轮 turn/start 到开跑只要
+   70 毫秒左右。详见 codex-runtime.js 顶部。
+
+   协议是 experimental，所以这条路是并联而不是替换：起不来就整个退回 SDK。 */
+
+/** 常驻这条路关掉的开关。出了怪问题时可以一键退回老路径。 */
+const CODEX_PERSISTENT_ENABLED = process.env.CODEX_PERSISTENT !== "0";
+
+/* app-server 试过之后发现用不了，就别再一遍遍地试——每次失败都要白等一个
+   进程起来的时间。按 sidecar 进程记一次，重启应用会重新给它一次机会。 */
+let _codexPersistentBroken = false;
+
+function codexAppServerBinary() {
+  /* 指定一个别的可执行文件。留这个口子一半是为了测试（喂一个假的 app-server
+     进来，就能在不烧额度的前提下跑通整条翻译链路），一半是给「想用自己那份
+     codex」的人。 */
+  if (process.env.CODEX_APP_SERVER_BIN) return process.env.CODEX_APP_SERVER_BIN;
+  /* 默认跟着 SDK 自带的那个二进制走，而不是 PATH 上的 codex：模型清单、鉴权、
+     协议版本都得跟 @openai/codex-sdk 对得上（providers/codex.js 里那段关于
+     models_cache.json 的注释说的是同一件事）。 */
+  const platformPackage = `codex-${process.platform}-${process.arch}`;
+  const target = process.platform === "win32" ? "x86_64-pc-windows-msvc"
+    : process.platform === "darwin" ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
+    : (process.arch === "arm64" ? "aarch64-unknown-linux-musl" : "x86_64-unknown-linux-musl");
+  const exe = process.platform === "win32" ? "codex.exe" : "codex";
+  const candidate = join(__dirname, "node_modules", "@openai", platformPackage, "vendor", target, "bin", exe);
+  return existsSync(candidate) ? candidate : null;
+}
+
+/** thread 级参数的指纹。模型和推理档位不在里面——那两个每轮单独传就行。 */
+function codexThreadSignature({ cwd, permissionMode }) {
+  return JSON.stringify({ cwd, permissionMode });
+}
+
+/** 收掉这个对话的 codex app-server。没建过就什么都不做。 */
+function killCodexRuntime() {
+  if (!session.hasCodexRuntime) return;
+  try { session.codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
+  session.codexThreadSignature = null;
+}
+
+/**
+ * 用常驻 app-server 跑一轮 Codex。
+ *
+ * 事件翻完之后走的还是 sendCodexItemEvent，跟 SDK 那条路发出去的是同一批
+ * wire 事件，前端和历史都分不出这轮是走哪条路跑的。
+ *
+ * @returns {Promise<{usage}>}
+ * @throws 起不来 / 协议对不上时抛，调用方负责退回 SDK
+ */
+async function runCodexPersistentTurn({
+  input,
+  cwd,
+  permissionMode,
+  effort,
+  model,
+  signal,
+  send,
+  isCurrentTurn,
+  onProduced,
+}) {
+  const bin = codexAppServerBinary();
+  if (!bin) throw new Error("找不到 codex 二进制（@openai/codex-<platform> 没装上）");
+
+  const runtime = session.codexRuntime;
+  if (!runtime.started) {
+    runtime.start({
+      signature: bin,
+      spawn: () => spawnWithHiddenConsole(bin, [
+        "app-server",
+        // 同 CODEX_CLIENT_OPTIONS：压掉每轮开头那条 under-development 提醒。
+        // 走 -c 而不是改 ~/.codex/config.toml，那是用户自己的全局配置。
+        "-c", "suppress_unstable_features_warning=true",
+        /* 刻意不给进程设 cwd：这个进程要服务这个对话之后的每一轮，而工作目录
+           是 thread 级的参数（thread/start 的 cwd），进程自己钉在哪个目录上
+           反而会误导——signature 里也没有 cwd，进程不会因为换目录而重起。 */
+      ], { windowsHide: true, env: { ...process.env } }),
+    });
+    await runtime.initialize({ name: "inkfellow", title: "Inkfellow", version: "1.0.0" });
+    session.codexThreadSignature = null;
+    // 同 agy 那条日志：常驻一旦悄悄失效，用户只会觉得「怎么又变慢了」
+    console.log("[codex] 起新的 app-server 进程");
+  }
+
+  const threadSignature = codexThreadSignature({ cwd, permissionMode });
+  const threadParams = {
+    cwd,
+    approvalPolicy: "never",
+    sandbox: codexSandboxMode(permissionMode),
+  };
+  /* 工作目录或权限模式变了，手上这条 thread 就是按旧参数建的，得重开一条。
+     清掉 runtime.threadId 让 ensureThread 走 resume/start，而不是直接复用。 */
+  if (session.codexThreadSignature !== threadSignature) runtime.threadId = null;
+  const { threadId } = await runtime.ensureThread({
+    threadId: session.codexThreadId,
+    params: threadParams,
+  });
+  session.codexThreadSignature = threadSignature;
+  if (threadId !== session.codexThreadId) {
+    saveCodexThread(threadId);
+    if (isCurrentTurn()) send({ type: "session", sessionId: threadId, provider: "codex" });
+  }
+
+  let statusSent = false;
+  const result = await runtime.runTurn({
+    input,
+    params: {
+      ...(model ? { model } : {}),
+      effort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
+    },
+    signal,
+    onEvent: (method, params) => {
+      if (!isCurrentTurn()) return;
+      if (method === "turn/started") {
+        if (statusSent) return;
+        statusSent = true;
+        send({ type: "system", subtype: "status", status: "requesting" });
+        return;
+      }
+      const sdkEventType = codexProvider.fromAppServerMethod(method);
+      if (!sdkEventType) return;
+      const item = codexProvider.fromAppServerItem(params?.item);
+      // 认不出的 item 类型直接跳过——app-server 比 SDK 多出好些新类型，
+      // 一股脑塞给前端只会渲染成一堆看不懂的卡片
+      if (!item) return;
+      onProduced?.();
+      sendCodexItemEvent(send, sdkEventType, item);
+    },
+  });
+
+  const turn = result.turn;
+  if (turn?.status === "failed" || turn?.error) {
+    /* 这是模型那边说不行（额度用完、内容策略、上游报错），不是常驻这条路的毛病。
+       打上标记让调用方直接把话转给用户——退回 SDK 重跑一遍只会再失败一次，
+       用户白等一轮，额度白烧一次。 */
+    const err = new Error(turn?.error?.message || turn?.error || "Codex 请求失败");
+    err.codexTurnFailed = true;
+    throw err;
+  }
+  return { usage: result.usage };
+}
+
 // ── Antigravity CLI（agy）────────────────────────────────
 // 官方没出 Node SDK（只有 Python 版，而且那个不认 CLI 的登录、只认 API key），
 // 所以这里走官方文档化的 headless 模式：起子进程，读 stream-json。
@@ -491,12 +649,12 @@ function resolveAgyModel(requested, profile) {
 }
 
 
-// print 模式默认 5 分钟就把 agent 掐了。桌面端这条链路本来就不设静默超时
-// （见文件顶部 STREAM_STALL_MS 的注释），一律等用户自己点停止，所以这里给一个
-// 实质无限的值——注意不能写 0，agy 把 0 当成「立刻超时」而不是「不限」。
-const AGY_PRINT_TIMEOUT = process.env.AGY_PRINT_TIMEOUT || "8760h";
-// agy 只能从命令行参数收 prompt（试过管道和 `-p -`，都被当字面量），
-// 而 Windows 的命令行有 32767 字符上限，长输入必须先落盘再让它自己读
+/* 一次性那条路（runAgy）只能从命令行参数收 prompt，而 Windows 的命令行有
+   32767 字符上限，长输入必须先落盘再让 agy 自己去读。
+
+   常驻那条路走 stdin，本来没有这个限制；但两条路共用 composeAgyPrompt，
+   而且落盘之后 agy 是用 view_file 读的，读到的内容两边一致。等哪天一次性
+   那条路退役了，这里可以连同落盘一起去掉。 */
 const AGY_INLINE_PROMPT_LIMIT = 12000;
 
 function writeAgyTempFile(prefix, buffer, ext) {
@@ -560,6 +718,130 @@ function killAgyProcess(proc) {
     } catch { /* taskkill 不在就退回普通 kill */ }
   }
   try { proc.kill("SIGTERM"); } catch { /* 已经退了 */ }
+}
+
+/* ── 常驻 agy 进程 ──────────────────────────────────────────
+   起一次 agy 要 11~20 秒（实测，见 agy-runtime.js 顶部），原来每轮都重付。
+   下面这套让主对话走常驻：参数没变、会话没换，就往同一条 stdin 再写一行。
+   派发（executeProviderDispatch）仍走上面那个一次性的 runAgy——它每次的
+   cwd/模型都可能不同，本来就是一次性任务，常驻没有意义。 */
+
+/** 收掉这个对话的常驻 agy 进程。没建过就什么都不做，别把它顺手建出来。 */
+function killAgyRuntime() {
+  if (!session.hasAgyRuntime) return;
+  try { session.agyRuntime.kill(); } catch { /* 已经没了就算了 */ }
+}
+
+/**
+ * 用常驻进程跑一轮。返回值同 runAgy，调用方不用关心进程是新起的还是接着用的。
+ *
+ * 两种情况会自动重起再试一次，都只在「这一轮一个字都还没吐出来」时才做，
+ * 免得把已经执行过的工具调用重放一遍：
+ *   1. 档位表过期——agy 在启动阶段就拒绝，改表后重试（同 runAgy 的老逻辑）
+ *   2. 进程在写完 stdin 后立刻没了——常驻进程可能是上一轮之后被外力收掉的，
+ *      这种情况下重起一个是对的，不该让用户看到一条莫名其妙的报错
+ */
+async function runAgyPersistent({
+  prompt,
+  images = [],
+  cwd,
+  model,
+  effort = "medium",
+  permissionMode = DEFAULT_PERMISSION_MODE,
+  signal = null,
+  onEvent = null,
+  onSession = null,
+}) {
+  const bin = findAgyBinary();
+  if (!bin) throw new Error("没有找到 Antigravity CLI（agy），请先安装并登录，或用 AGY_BIN 指定可执行文件路径。");
+
+  let composed;
+  try {
+    composed = composeAgyPrompt({ prompt, images });
+  } catch (err) {
+    throw new Error(`准备 Antigravity 输入失败：${String(err?.message || err)}`);
+  }
+  const { text: finalPrompt, temps } = composed;
+
+  /* 「这一轮已经吐过东西了吗」。重试的前提是没吐过——否则重发会把上半轮
+     已经执行过的工具调用再跑一遍。放在 attempt 外面，因为 attempt 抛异常时
+     解构赋值不会执行，写在里面就带不出来。 */
+  let produced = false;
+
+  const attempt = async () => {
+    const runtime = session.agyRuntime;
+    const resumeConversationId = session.agyConversationId;
+    const signature = agyRuntimeSignature({ bin, cwd, model, effort, permissionMode });
+    const reusable = runtime.started && agyRuntimeReusable(runtime, signature, resumeConversationId);
+    if (runtime.started && !reusable) runtime.kill();
+    /* 每轮记一句「接着用」还是「重起」。常驻这条路一旦悄悄失效，用户只会觉得
+       「怎么又变慢了」，没有别的信号能看出来。 */
+    console.log(`[agy] ${reusable ? "复用常驻进程" : "起新进程"}（会话 ${resumeConversationId ?? "新建"}）`);
+    if (!runtime.started) {
+      const args = agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId });
+      try {
+        runtime.start({
+          signature,
+          resumeConversationId,
+          spawn: () => {
+            const proc = spawnWithHiddenConsole(bin, args, {
+              cwd: cwd || undefined,
+              windowsHide: true,
+              // 隐藏控制台由启动器预先创建，agy 的后续命令可以继承它。
+              env: { ...process.env, NO_COLOR: "1", TERM: "dumb" },
+            });
+            // sidecar 被杀时子进程会变孤儿挂在后台继续烧额度，登记下来统一清
+            ACTIVE_AGY_PROCESSES.add(proc);
+            proc.on("close", () => ACTIVE_AGY_PROCESSES.delete(proc));
+            return proc;
+          },
+        });
+      } catch (err) {
+        throw new Error(`启动 Antigravity CLI 失败：${String(err?.message || err)}`);
+      }
+    }
+    return runtime.runTurn({
+      message: { event: "user", message: { role: "user", content: [{ type: "text", text: finalPrompt }] } },
+      onSession,
+      onEvent: (ev) => {
+        produced = true;
+        if (onEvent) onEvent(ev);
+      },
+      signal,
+    });
+  };
+
+  try {
+    let run;
+    try {
+      run = await attempt();
+    } catch (err) {
+      /* 只有「进程在这一轮里没了、而且一个字都没吐出来」才重来一次。
+         这涵盖两种真实情况：档位表过期（agy 在启动阶段就拒绝，learnEfforts
+         顺手把表改对）、以及上一轮之后进程被外力收掉。其余的错误照实报，
+         重试解决不了还多烧一次额度。 */
+      if (err?.name === "AbortError" || produced || !err?.agyProcessDied) throw err;
+      const message = String(err?.message || err);
+      if (learnAgyEffortsFromError(model, message)) {
+        console.log(`Antigravity effort table corrected for ${model}, retrying once`);
+      } else {
+        console.log(`agy 常驻进程这轮没能起来，重起一个再试：${message.slice(0, 200)}`);
+      }
+      killAgyRuntime();
+      run = await attempt();
+    }
+    if (run.status && run.status !== "SUCCESS") {
+      const raw = run.error || run.text || `Antigravity 请求失败（${run.status}）`;
+      // 失败原样记一条，不然出了问题只能翻 agy 自己的 cli.log
+      console.error(`[agy] ${run.status}: ${String(raw).slice(0, 300)}`);
+      throw new Error(explainAgyFailure(raw));
+    }
+    return { conversationId: run.conversationId, text: run.text, usage: run.usage };
+  } finally {
+    for (const path of temps) {
+      try { unlinkSync(path); } catch { /* 已经不在就算了 */ }
+    }
+  }
 }
 
 /**
@@ -4159,6 +4441,27 @@ const taskEventOwners = new Map();
 const taskEventOwnerTimers = new Map();
 const TASK_EVENT_OWNER_TTL_MS = 5 * 60_000;
 
+/* runtime 没了，挂在它身上的记录就都不作数了：signature 是它按哪套参数起的，
+   conversationId 是它属于哪个对话，applied* 是它当前的 permissionMode / model。
+   分散着一处处置空，漏掉一个就会拿旧记录去判断新进程——applied* 尤其危险，
+   它一旦漏清，下一轮会以为「值没变」而跳过 setModel，新进程就跑在错的模型上。 */
+function forgetClaudeRuntimeBinding() {
+  session.claudeRuntimeSignature = null;
+  session.claudeRuntimeConversationId = null;
+  session.claudeRuntimeAppliedPermissionMode = null;
+  session.claudeRuntimeAppliedModel = null;
+}
+
+/* runtime 刚按 options 起来：记下它此刻在跑的 permissionMode / model，
+   下一轮拿来比对。model 在 options 里可能是 undefined（第三方 provider 走
+   env 的 ANTHROPIC_MODEL，不设 options.model），undefined 本身就是有效记录。 */
+function noteClaudeRuntimeStarted(signature, conversationId, options) {
+  session.claudeRuntimeSignature = signature;
+  session.claudeRuntimeConversationId = conversationId;
+  session.claudeRuntimeAppliedPermissionMode = options.permissionMode;
+  session.claudeRuntimeAppliedModel = options.model;
+}
+
 function getActiveRestartLease() {
   if (restartLease && restartLease.expiresAt > Date.now()) return restartLease;
   restartLease = null;
@@ -4178,8 +4481,7 @@ function acquireRestartLease() {
   // continuation from starting between the lease grant and process restart.
   if (session.claudeRuntime.started) {
     session.claudeRuntime.close();
-    session.claudeRuntimeSignature = null;
-    session.claudeRuntimeConversationId = null;
+    forgetClaudeRuntimeBinding();
   }
   return restartLease;
 }
@@ -4734,16 +5036,16 @@ async function handlePersistentClaudeClose() {
   session.claudePendingRecovery = null;
   if (recovery) {
     try {
-      session.claudeRuntime.start(recovery.options, { conversationId: recovery.conversationId ?? session.claudeRuntimeConversationId });
-      session.claudeRuntimeSignature = recovery.signature;
+      const recoveryConversationId = recovery.conversationId ?? session.claudeRuntimeConversationId;
+      session.claudeRuntime.start(recovery.options, { conversationId: recoveryConversationId });
+      noteClaudeRuntimeStarted(recovery.signature, recoveryConversationId, recovery.options);
       session.claudeRuntime.send(recovery.message);
       return;
     } catch (error) {
       send({ type: "error", text: String(error) });
     }
   }
-  session.claudeRuntimeSignature = null;
-  session.claudeRuntimeConversationId = null;
+  forgetClaudeRuntimeBinding();
   if (session.claudeTurnCompletionPending && !session.claudeErrorHandled) finishClaudeTurn();
 }
 
@@ -5121,10 +5423,14 @@ wss.on("connection", (ws) => {
       clearSession();
       clearCodexThread();
       clearAgyConversation();
+      /* 两家的常驻进程都绑死在一条会话上，重置之后那条上下文就不是用户要的了。
+         不 kill 也不会串台（下一轮各自的复用检查都会对不上），但那样会白留
+         一个进程挂在后台等指令。 */
+      killAgyRuntime();
+      killCodexRuntime();
       if (session.abortCtrl) { session.abortCtrl.abort(); session.abortCtrl = null; }
       session.claudeRuntime.close();
-      session.claudeRuntimeSignature = null;
-      session.claudeRuntimeConversationId = null;
+      forgetClaudeRuntimeBinding();
       session.claudeTurnCompletionPending = false;
       session.claudeStopRequested = false;
       session.claudeRecoveryContext = null;
@@ -5707,8 +6013,7 @@ wss.on("connection", (ws) => {
       // 免得它的自动续跑再开一条流出来
       if (session.claudeRuntime.started) {
         session.claudeRuntime.close();
-        session.claudeRuntimeSignature = null;
-        session.claudeRuntimeConversationId = null;
+        forgetClaudeRuntimeBinding();
       }
       const agyTurnEpoch = ++session.claudeTurnEpoch;
       session.abortCtrl = ac;
@@ -5721,14 +6026,16 @@ wss.on("connection", (ws) => {
         try {
           const emit = createAgyEventSender((ev) => { if (isCurrentAgyTurn()) send(ev); });
           send({ type: "system", subtype: "status", status: "requesting" });
-          const run = await runAgy({
+          /* 走常驻进程：起一次 agy 要十几秒，一个对话只该付一次。接哪条会话由
+             它自己从 session.agyConversationId 取——这轮结束前那个值还可能被
+             下面的 onSession 改写，在这里先取会取到旧的。 */
+          const run = await runAgyPersistent({
             prompt: providerPrompt,
             images: msg.images ?? (msg.image ? [msg.image] : []),
             cwd: resolvedCwd,
             model: resolveAgyModel(msg.model, activeProfile),
             effort,
             permissionMode,
-            resumeConversationId: session.agyConversationId,
             signal: ac.signal,
             // id 在 init 事件里就有，先记下来——中断时这条会话仍然有效
             onSession: (id) => {
@@ -5766,8 +6073,7 @@ wss.on("connection", (ws) => {
       // starts so a late auto-continuation cannot create a second stream.
       if (session.claudeRuntime.started) {
         session.claudeRuntime.close();
-        session.claudeRuntimeSignature = null;
-        session.claudeRuntimeConversationId = null;
+        forgetClaudeRuntimeBinding();
       }
       const codexTurnEpoch = ++session.claudeTurnEpoch;
       session.abortCtrl = ac;
@@ -5777,15 +6083,49 @@ wss.on("connection", (ws) => {
         && session.abortCtrl === ac
         && session.activeForegroundRequestId === requestId
       );
+      const codexImages = msg.images ?? (msg.image ? [msg.image] : []);
       (async () => {
+        /* 已经往前端吐过东西的那一轮不能重跑：退回 SDK 会把同一段回答再发一遍。
+           声明在 try 外面，catch 里要读它。 */
+        let persistentProduced = false;
         try {
+          /* 常驻优先。带图那一轮直接走 SDK：app-server 的图片入参是个 url，
+             本地文件路径能不能喂进去没验证过，而 SDK 的 local_image 是跑通了的。 */
+          if (CODEX_PERSISTENT_ENABLED && !_codexPersistentBroken && codexImages.length === 0) {
+            try {
+              const { usage } = await runCodexPersistentTurn({
+                input: [{ type: "text", text: providerPrompt }],
+                cwd: resolvedCwd,
+                permissionMode,
+                effort,
+                model: msg.model || null,
+                signal: ac.signal,
+                send,
+                isCurrentTurn: isCurrentCodexTurn,
+                onProduced: () => { persistentProduced = true; },
+              });
+              if (!isCurrentCodexTurn()) return;
+              send({ type: "result", subtype: "success", usage: usage ?? null, provider: "codex" });
+              send({ type: "done" });
+              completeClientRequest("complete", requestId);
+              return;
+            } catch (err) {
+              // 模型自己说不行的，原样报给用户；只有这条路本身出问题才退回 SDK
+              if (err?.name === "AbortError" || err?.codexTurnFailed || persistentProduced) throw err;
+              /* app-server 是 experimental，起不来、协议对不上、跑一半崩了，
+                 都在这里兜住：本进程之后一律走 SDK。慢，但不会断。 */
+              _codexPersistentBroken = true;
+              console.warn(`[codex] app-server 用不了，本进程之后退回 SDK 逐轮启动：${String(err?.message || err).slice(0, 300)}`);
+              killCodexRuntime();
+            }
+          }
+
           const codex = new Codex(CODEX_CLIENT_OPTIONS);
-          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
           const threadOptions = {
             workingDirectory: resolvedCwd,
             approvalPolicy: "never",
             sandboxMode: codexSandboxMode(permissionMode),
-            modelReasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
+            modelReasoningEffort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
             ...(msg.model ? { model: msg.model } : {}),
           };
           const thread = session.codexThreadId
@@ -5793,7 +6133,7 @@ wss.on("connection", (ws) => {
             : codex.startThread(threadOptions);
 
           // 图片：base64 → 临时本地文件（codex-sdk 只支持 local_image）
-          const imgList = msg.images ?? (msg.image ? [msg.image] : []);
+          const imgList = codexImages;
           let input;
           if (imgList.length > 0) {
             const parts = [];
@@ -6004,20 +6344,30 @@ wss.on("connection", (ws) => {
             return;
           }
           session.claudeRuntime.close();
-          session.claudeRuntimeSignature = null;
-          session.claudeRuntimeConversationId = null;
+          forgetClaudeRuntimeBinding();
         }
 
         if (!session.claudeRuntime.started) {
           if (!isCurrentTurn()) return;
           session.claudeRuntime.start(options, { conversationId: turnConversationId });
-          session.claudeRuntimeSignature = runtimeSignature;
-          session.claudeRuntimeConversationId = turnConversationId;
+          noteClaudeRuntimeStarted(runtimeSignature, turnConversationId, options);
         } else {
-          await session.claudeRuntime.query.setPermissionMode(permissionMode);
-          if (!isCurrentTurn()) return;
-          await session.claudeRuntime.query.setModel(msg.model || undefined);
-          if (!isCurrentTurn()) return;
+          /* 复用现成的进程。这两个 setter 各是一趟到子进程的同步往返，而绝大
+             多数轮次这两个值跟上一轮一模一样——无条件发一遍就是白等，直接
+             加在首字延迟上。所以只在真的变了才发。
+
+             赋值放在 await 之后：setter 抛了就不算应用过，下一轮还会重试。 */
+          const nextModel = msg.model || undefined;
+          if (session.claudeRuntimeAppliedPermissionMode !== permissionMode) {
+            await session.claudeRuntime.query.setPermissionMode(permissionMode);
+            session.claudeRuntimeAppliedPermissionMode = permissionMode;
+            if (!isCurrentTurn()) return;
+          }
+          if (session.claudeRuntimeAppliedModel !== nextModel) {
+            await session.claudeRuntime.query.setModel(nextModel);
+            session.claudeRuntimeAppliedModel = nextModel;
+            if (!isCurrentTurn()) return;
+          }
         }
 
         if (!isCurrentTurn()) return;

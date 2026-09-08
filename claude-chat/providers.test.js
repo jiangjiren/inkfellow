@@ -589,3 +589,81 @@ test("agy 用量: 解析不出配额时返回 null，不返回空壳", () => {
     command: { data: { groups: [{ name: "Gemini Models", buckets: [{ id: "gemini-weekly", window: "weekly" }] }] } },
   })), null);
 });
+
+// ── app-server（常驻那条路）的形状归一化 ─────────────────────
+// 这几条是常驻 codex 的正确性底线：翻错了前端就渲染不出东西，或者渲染成
+// 一堆看不懂的卡片。
+
+test("app-server 的方法名翻回 SDK 的三个生命周期名", () => {
+  assert.equal(codex.fromAppServerMethod("item/started"), "item.started");
+  assert.equal(codex.fromAppServerMethod("item/updated"), "item.updated");
+  assert.equal(codex.fromAppServerMethod("item/completed"), "item.completed");
+  assert.equal(codex.fromAppServerMethod("turn/completed"), null, "不是 item 事件的一律跳过");
+  assert.equal(codex.fromAppServerMethod("thread/started"), null);
+});
+
+test("agentMessage 翻成 agent_message，文本原样", () => {
+  const item = codex.fromAppServerItem({ type: "agentMessage", id: "m1", text: "你好" });
+  assert.equal(item.type, "agent_message");
+  assert.equal(codex.itemText(item), "你好");
+  const block = codex.contentBlock(item);
+  assert.equal(block.type, "text");
+  assert.equal(block.text, "你好");
+});
+
+test("reasoning 的 content 是数组，要拼成 SDK 那样的一整段", () => {
+  const item = codex.fromAppServerItem({ type: "reasoning", id: "r1", content: ["先看这个", "再看那个"], summary: ["摘要"] });
+  assert.equal(item.type, "reasoning");
+  assert.equal(item.text, "先看这个\n再看那个", "有 content 就用 content");
+  const onlySummary = codex.fromAppServerItem({ type: "reasoning", id: "r2", content: [], summary: ["只有摘要"] });
+  assert.equal(onlySummary.text, "只有摘要", "高强度档位下只发 summary，不能因此丢掉思考过程");
+});
+
+test("commandExecution 的 aggregatedOutput 要翻成 SDK 的下划线名", () => {
+  const item = codex.fromAppServerItem({
+    type: "commandExecution", id: "c1", command: "ls -la", aggregatedOutput: "总用量 4", status: "completed",
+  });
+  assert.equal(item.type, "command_execution");
+  assert.deepEqual(codex.toolInput(item), { command: "ls -la" });
+  assert.equal(codex.toolName(item), "Bash");
+  // 翻错这个字段的话，命令跑完了工具卡片里是空的
+  assert.equal(codex.contentBlock(item).content, "总用量 4");
+});
+
+test("mcpToolCall 的字段名本来就一致，别翻坏了", () => {
+  const item = codex.fromAppServerItem({
+    type: "mcpToolCall", id: "m1", server: "chrome-devtools", tool: "take_snapshot",
+    arguments: { a: 1 }, result: { content: "ok" },
+  });
+  assert.equal(item.type, "mcp_tool_call");
+  assert.equal(codex.toolName(item), "take_snapshot");
+  assert.deepEqual(codex.toolInput(item), { a: 1 });
+});
+
+test("webSearch 和 fileChange 直接过", () => {
+  assert.equal(codex.fromAppServerItem({ type: "webSearch", id: "w", query: "天气" }).type, "web_search");
+  assert.equal(codex.fromAppServerItem({ type: "fileChange", id: "f", changes: [], status: "completed" }).type, "file_change");
+});
+
+test("认不出的 item 类型返回 null——宁可不显示，也别渲染成看不懂的卡片", () => {
+  // app-server 比 SDK 多出这些新类型，一股脑塞给前端只会是一堆噪音
+  for (const type of ["userMessage", "subAgentActivity", "imageGeneration", "contextCompaction", "hookPrompt"]) {
+    assert.equal(codex.fromAppServerItem({ type, id: "x" }), null, type);
+  }
+  assert.equal(codex.fromAppServerItem(null), null);
+  assert.equal(codex.fromAppServerItem({}), null);
+});
+
+test("翻完之后走的是原来那套 itemEvents，前端收到的事件跟 SDK 那条路一模一样", () => {
+  const appServer = codex.fromAppServerItem({ type: "commandExecution", id: "c1", command: "ls", aggregatedOutput: "" });
+  const sdk = { type: "command_execution", id: "c1", command: "ls", aggregated_output: "" };
+  const strip = ev => { const { raw, ...rest } = ev; return rest; };   // raw 是原始 item，两条路本来就不同
+  const a = codex.itemEvents("item.started", appServer);
+  const b = codex.itemEvents("item.started", sdk);
+  assert.equal(a.length, 1);
+  assert.deepEqual(a.map(strip), b.map(strip), "除了 raw，发给前端的每个字段都得对得上");
+
+  const doneA = codex.itemEvents("item.completed", codex.fromAppServerItem({ type: "agentMessage", id: "m", text: "答案" }));
+  const doneB = codex.itemEvents("item.completed", { type: "agent_message", id: "m", text: "答案" });
+  assert.equal(doneA[0].message.content[0].text, doneB[0].message.content[0].text);
+});

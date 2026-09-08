@@ -113,6 +113,43 @@ The settings panel can start a QR-code login flow. After confirmation, the servi
 
 WeChat state and downloaded media are stored below `CLAUDE_CHAT_DATA_DIR`. Treat the bot configuration as a credential. The integration depends on the configured Tencent iLink endpoints and should not be exposed as an unauthenticated public API.
 
+## Provider Process Reuse
+
+All three providers keep one process per conversation instead of starting one per turn.
+Starting a provider process is by far the largest fixed cost in time-to-first-token, and
+it used to be paid again on every message.
+
+Measured on one machine, same account, same network (a Windows box behind an HTTP proxy):
+
+| Provider | Mechanism | First turn | Later turns |
+| --- | --- | --- | --- |
+| Claude | Agent SDK persistent `query` | ~2-3 s | reused |
+| Codex | `codex app-server` JSON-RPC over stdio | ~3 s (`thread/start`, incl. MCP servers) | ~70 ms to `turn/started` |
+| Antigravity | `agy --input-format stream-json` | 11-20 s to `init` | ~0.2 s to the first step |
+
+The Antigravity number is the one that mattered most: `agy` spends 11 to 20 seconds
+starting up before it looks at the prompt at all. End-to-end, first token went from
+13.8 s to 1.6 s on the second and later turns of the same conversation.
+
+For Codex the expensive part is the MCP servers declared in `~/.codex/config.toml`;
+every `codex exec` restarted all of them.
+
+A process is retired when the parameters baked into its command line change (model,
+reasoning effort, permission mode, working directory) or when the conversation is
+reset. Model and reasoning effort do not retire the Codex process: `turn/start` accepts
+them per turn.
+
+`codex app-server` is marked experimental upstream, so that path is wired in parallel
+rather than as a replacement. If it fails to start, fails the handshake, or dies
+mid-turn *before any output reached the client*, the server logs it, marks the path
+unusable for the rest of the process, and falls back to the original per-turn
+`codex-sdk` path. Turns that fail on the model's side (usage limits, content policy)
+are reported to the user as-is and never trigger that fallback. Set `CODEX_PERSISTENT=0`
+to skip the persistent path entirely.
+
+Requests carrying images always take the `codex-sdk` path: the app-server image input
+takes a URL, and only the SDK's `local_image` handling is verified here.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -124,6 +161,8 @@ WeChat state and downloaded media are stored below `CLAUDE_CHAT_DATA_DIR`. Treat
 | `CLAUDE_CHAT_DATA_DIR` | `claude-chat/data` | Sessions, history, schedules, run logs, WeChat state, media, and Codex thread data. |
 | `CLAUDE_CHAT_AUTH_PROFILE_FILE` | `claude-chat/auth-profile.json` | Provider profiles and API keys. |
 | `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history.json` | Optional override for the merged conversation history file. |
+| `CODEX_PERSISTENT` | `1` | Set to `0` to disable the persistent `codex app-server` and always spawn a fresh `codex exec` per turn. See Provider Process Reuse. |
+| `AGY_PRINT_TIMEOUT` | `8760h` | Per-turn timeout handed to the Antigravity CLI. The persistent process has no other deadline; stopping is the user's job. |
 | `DESKTOP_AGENT_TOKEN` | empty | Tauri-only access token for embedded HTTP/WebSocket requests. Set by the desktop host, not by normal deployments. |
 | `WECHAT_CDN_BASE_URL` | Tencent CDN URL | Override for WeChat media downloads. |
 | `WECHAT_MAX_INLINE_IMAGE_BYTES` | `5242880` | Maximum image size embedded directly into an agent request. |

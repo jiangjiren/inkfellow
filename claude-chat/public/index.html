@@ -4269,7 +4269,7 @@ async function activateProfile(id) {
        之后——那一步才把 selectedModel 落到新厂商的清单里，早记会把旧厂商的模型
        一起写进去，下次切回来又得退一次默认。 */
     rememberConvModelPrefs();
-    if (d.resetSession) { currentSessionId = null; currentSessionProvider = null; markResetLanding(); wsSend({ reset: true }); }
+    if (d.resetSession) resetProviderSession();
     setAuthStatus("saved", "已切换");
     setTimeout(closeAuthDialog, 600);
   } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
@@ -4286,7 +4286,7 @@ async function deleteProfile(id) {
     // 别的对话还记着这个账号；留着死 id 只会让每次切进去都白判断一次「它还在吗」
     forgetProfileFromConvPrefs(id);
     renderProfileList(d.data);
-    if (d.resetSession) { currentSessionId = null; currentSessionProvider = null; markResetLanding(); wsSend({ reset: true }); }
+    if (d.resetSession) resetProviderSession();
     setAuthStatus("saved", "已删除");
   } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "删除失败"); }
 }
@@ -4431,7 +4431,7 @@ addSubmitBtn.addEventListener("click", async () => {
     // 新增的账号服务端会直接设为当前，跟手点切换是一回事；编辑不动当前是谁
     renderProfileList(d.data, { adopt: !isEdit });
     if (!isEdit) rememberConvModelPrefs();
-    if (d.resetSession) { currentSessionId = null; currentSessionProvider = null; markResetLanding(); wsSend({ reset: true }); }
+    if (d.resetSession) resetProviderSession();
     showListView();
     setAuthStatus("saved", isEdit ? "已保存" : "已添加", false);
   } catch (err) {
@@ -5198,11 +5198,46 @@ function connect() {
     setTimeout(connect, 3000);
   };
   ws.onerror = () => { };
-  ws.onmessage = (e) => {
-    try { handleEvent(JSON.parse(e.data)); } catch { }
-    // 每有动静就校正一次"在跑就有指示器"，省得逐条渲染路径去补
+  ws.onmessage = (e) => processSocketMessage(e.data);
+}
+
+function logSocketMessageError(stage, ev, error) {
+  // 不记录原始帧、聊天正文或异常 message：JSON 解析错误也可能包含正文片段。
+  const identifier = value => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value)
+    ? value : null;
+  // 仅保留栈里的调用位置，移除 URL 查询参数（其中可能带桌面鉴权 token）。
+  const frames = typeof error?.stack === "string"
+    ? error.stack.split("\n").filter(line => /^\s+at\s/.test(line))
+      .slice(0, 8).map(line => line.replace(/[?#][^\s)]*/g, "").slice(0, 300))
+    : [];
+  console.error("[AI chat] WebSocket message processing failed", {
+    timestamp: new Date().toISOString(),
+    stage,
+    eventType: identifier(ev?.type),
+    conversationId: identifier(ev?.conversationId),
+    currentConversationId: identifier(currentConvId),
+    requestId: identifier(ev?.userMessageId),
+    errorName: identifier(error?.name) || "Error",
+    frames,
+  });
+}
+
+function processSocketMessage(raw) {
+  let ev;
+  let stage = "parse";
+  try {
+    ev = JSON.parse(raw);
+    stage = "handle";
+    handleEvent(ev);
+  } catch (error) {
+    logSocketMessageError(stage, ev, error);
+  }
+  // 处理失败也继续校正指示器；指示器自身出错时单独记录，避免掩盖前一个异常。
+  try {
     ensureProgressIndicator();
-  };
+  } catch (error) {
+    logSocketMessageError("progress", ev, error);
+  }
 }
 connect();
 syncComposerAction();
@@ -6509,11 +6544,18 @@ function handleEvent(ev) {
     clearTimeout(errorCompletionTimer);
     errorCompletionTimer = null;
     clearAskUserQuestion();
+    if (ev.preserveMessages && (assistantTxt || assistantBlocks.length)) {
+      messageLog.push({ id: genId(), role: "assistant", text: assistantTxt,
+        blocks: cloneJson(assistantBlocks), raw: cloneJson(assistantRawMessages),
+        events: cloneJson(assistantEvents), cost: null, status: "stopped" });
+    }
     resetAssistantState();
     setGenerating(false);
     removeTyping();
-    messagesEl.innerHTML = "";
-    messageLog = [];
+    if (!ev.preserveMessages) {
+      messagesEl.innerHTML = "";
+      messageLog = [];
+    }
     /* 只在真的没有 id 时才生成。走到这一步的两条路——startNewConversation
        和 /clear——都已经给这个空对话分配过身份了；再 genId 一次，前一个 id
        就成了没人认领的孤儿，还占着标签栏的位置。 */
@@ -6524,6 +6566,10 @@ function handleEvent(ev) {
     steeringRemovalPending.clear();
     steeringEditingId = null;
     renderSteeringTray();
+    if (ev.preserveMessages) {
+      cacheCurrentConversationView();
+      void saveCurrentConversation();
+    }
     return;
   }
 
@@ -8469,6 +8515,14 @@ else _appEl.style.height = "";
 let resetLandingConvId = null;
 
 function markResetLanding() { resetLandingConvId = currentConvId; }
+
+// 换账号只作废厂商的运行会话，不能把用户的聊天记录当成 /clear 清掉。
+function resetProviderSession() {
+  currentSessionId = null;
+  currentSessionProvider = null;
+  markResetLanding();
+  wsSend({ reset: true, preserveMessages: true, conversationId: currentConvId });
+}
 
 function sendResetRequest() {
   if (!resetRequested) return false;

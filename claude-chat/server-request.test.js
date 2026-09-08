@@ -83,6 +83,15 @@ test("WebSocket requests are acknowledged and duplicate IDs are not executed twi
       ws.once("error", reject);
     });
 
+    ws.send(JSON.stringify({ reset: true, preserveMessages: true, conversationId: "provider-switch-probe" }));
+    const providerReset = await waitForMessage(events, event => event.type === "reset_complete");
+    assert.equal(providerReset.preserveMessages, true);
+    assert.equal(providerReset.conversationId, "provider-switch-probe");
+    const resetIndex = events.length;
+    ws.send(JSON.stringify({ reset: true }));
+    const clearReset = await waitForMessage(events, event => event.type === "reset_complete", resetIndex);
+    assert.equal(clearReset.preserveMessages, undefined);
+
     const providersResponse = await fetch(`http://127.0.0.1:${port}/api/providers?token=${encodeURIComponent(token)}`);
     assert.equal(providersResponse.status, 200);
     const providerPayload = await providersResponse.json();
@@ -625,6 +634,24 @@ test("Claude steering applies at tool/idle safe points, survives reconnect, and 
     assert.equal(promptTexts.filter(text => text === steer.prompt).length, 1, "duplicate steering is not sent twice");
     assert.ok(promptTexts.indexOf(first.prompt) < promptTexts.indexOf(steer.prompt));
     assert.ok(promptTexts.indexOf(idleFirst.prompt) < promptTexts.indexOf(idleSteer.prompt));
+
+    // 模拟换厂商后的原生会话重置：新的 SDK 会话必须收到 UI 中已有的历史文字。
+    const contextStart = connection.events.length;
+    connection.ws.send(JSON.stringify({ reset: true, preserveMessages: true, conversationId: idleFirst.conversationId }));
+    await waitForMessage(connection.events, event => event.type === "reset_complete", contextStart);
+    const continuation = { ...idleFirst, userMessageId: "user_after_provider_reset", prompt: "继续刚才的内容", displayText: "继续刚才的内容" };
+    connection.ws.send(JSON.stringify(continuation));
+    await waitForMessage(connection.events, event => event.type === "done" && event.userMessageId === continuation.userMessageId, contextStart);
+    const contextLog = (await readFile(mockLogFile, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const injected = contextLog.filter(entry => entry.kind === "prompt").at(-1).text;
+    assert.match(injected, /<conversation_history>/);
+    assert.ok(injected.includes(idleSteer.prompt));
+    assert.ok(injected.includes("partial before idle"));
+    assert.ok(!injected.includes("first tool turn"), "不能带入其他对话的历史");
+    assert.ok(injected.endsWith(continuation.prompt));
+    const savedContext = await (await fetch(`${apiUrl}/api/history/${idleFirst.conversationId}?token=${token}`)).json();
+    assert.equal(savedContext.messages.find(message => message.id === continuation.userMessageId).text, continuation.prompt,
+      "注入内容只发给模型，不污染聊天记录");
   } finally {
     connection?.ws.close();
     if (child.exitCode == null) {

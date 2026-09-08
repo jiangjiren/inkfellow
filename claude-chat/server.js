@@ -25,6 +25,7 @@ import { DispatchAbortRegistry } from "./dispatch-abort-registry.js";
 import { fetchMaybeViaProxy } from "./proxy-fetch.js";
 import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
 import { z } from "zod";
+import { withConversationContext } from "./conversation-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -5133,7 +5134,9 @@ wss.on("connection", (ws) => {
       detachedBuffer = [];
       clearTimeout(session.queuedClientPromptDrainTimer);
       session.queuedClientPromptDrainTimer = null;
-      deliver({ type: "reset_complete" });
+      deliver({ type: "reset_complete", ...(msg.preserveMessages === true
+        ? { preserveMessages: true, conversationId: resetConversationId }
+        : {}) });
       return;
     }
 
@@ -5420,13 +5423,21 @@ wss.on("connection", (ws) => {
       runtimeKey: incomingRuntimeKey,
     };
     finalizeActiveAssistantHistory("complete");
+    const nativeSession = incomingProvider === "codex" ? session.codexThreadId
+      : incomingProvider === "antigravity" ? session.agyConversationId
+      : session.sessionId || session.claudeRuntime.started;
+    const providerPrompt = msg.dispatchProvider ? msg.prompt : withConversationContext(
+      msg.prompt,
+      readHistory().find(conv => conv.id === requestConversationId)?.messages || [],
+      { resume: Boolean(nativeSession), userMessageId: msg.userMessageId },
+    );
     beginServerConversationFromClient(msg);
 
     const schedulerRequest = hasSchedulerIntentForMessage(msg);
 
     // Build message content — text only, or images + text
     const images = msg.images ?? (msg.image ? [msg.image] : []);
-    const userMsg = buildClaudeUserMessage(msg);
+    const userMsg = buildClaudeUserMessage({ ...msg, prompt: providerPrompt });
     const content = userMsg.message.content;
 
     const ac = new AbortController();
@@ -5701,7 +5712,7 @@ wss.on("connection", (ws) => {
           const emit = createAgyEventSender((ev) => { if (isCurrentAgyTurn()) send(ev); });
           send({ type: "system", subtype: "status", status: "requesting" });
           const run = await runAgy({
-            prompt: msg.prompt,
+            prompt: providerPrompt,
             images: msg.images ?? (msg.image ? [msg.image] : []),
             cwd: resolvedCwd,
             model: resolveAgyModel(msg.model, activeProfile),
@@ -5791,10 +5802,10 @@ wss.on("connection", (ws) => {
               codexTempImagePaths.push(tmpPath);
               parts.push({ type: "local_image", path: tmpPath });
             }
-            parts.push({ type: "text", text: msg.prompt });
+            parts.push({ type: "text", text: providerPrompt });
             input = parts;
           } else {
-            input = msg.prompt;
+            input = providerPrompt;
           }
 
           const { events } = await thread.runStreamed(input, { signal: ac.signal });

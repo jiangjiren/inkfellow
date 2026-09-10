@@ -4221,14 +4221,6 @@ export default function NotesExplorer() {
                     )}
                   </div>
                 ) : null}
-                {!isMobileViewport && isAssistantPanelOpen ? (
-                  <button type="button" className={styles.iconButton} onClick={enterChatFocus}
-                    aria-label="专注聊天" title="专注聊天（Ctrl/⌘ + \）">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-                    </svg>
-                  </button>
-                ) : null}
                 <button
                   type="button"
                   className={`${styles.fellowPill} ${isAssistantPanelOpen ? styles.fellowPillActive : ""} ${aiStatus === "thinking" ? styles.fellowPillThinking : ""} ${aiStatus === "done" ? styles.fellowPillDone : ""}`}
@@ -4791,6 +4783,22 @@ export default function NotesExplorer() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <polyline points="13 17 18 12 13 7" />
                   <polyline points="6 17 11 12 6 7" />
+                </svg>
+              </button>
+            )}
+            {/* 进入专注就近放在对话面板顶部，和收起按钮同一排：开关都在对话这一侧，
+                不必回到笔记头部去找 */}
+            {!isMobileViewport && (
+              <button
+                type="button"
+                className={`${styles.assistantPanelFocus} ${isChildOverlayOpen ? styles.assistantPanelCollapseHidden : ""}`}
+                onClick={enterChatFocus}
+                aria-label="专注聊天"
+                title="专注聊天（Ctrl/⌘ + \）"
+                tabIndex={isAssistantPanelOpen && !isChildOverlayOpen ? 0 : -1}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
                 </svg>
               </button>
             )}

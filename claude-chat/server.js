@@ -1,3 +1,7 @@
+import { isAllowedBrowserOrigin } from "./request-origin.js";
+import { assertSuccessfulResult } from "./sdk-result.js";
+import { KeyedTaskQueue } from "./keyed-task-queue.js";
+import { prepareConversationContext } from "./conversation-context.js";
 import { createServer } from "node:http";
 import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
 import { extname } from "node:path";
@@ -1002,6 +1006,8 @@ function historyMessagesEquivalent(left, right) {
 function updateHistoryConversationMeta(id, current, conv) {
   const patch = {};
   for (const key of ["title", "date", "sessionId", "sessionProvider", "model", "profileId"]) {
+    if (key === "title" && Object.hasOwn(conv, "messages") && current.title && current.title !== "新对话") continue;
+    if (current.sessionBinding && ["sessionId", "sessionProvider", "model", "profileId"].includes(key)) continue;
     if (Object.hasOwn(conv, key) && conv[key] !== undefined) patch[key] = conv[key];
   }
   eventLog.updateMeta(id, patch);
@@ -1014,7 +1020,7 @@ function upsertHistoryConversation(conv) {
   if (!conv || typeof conv !== "object" || !conv.id) return null;
   const id = normalizeHistoryId(conv.id);
   const current = eventLog.project(id);
-  if (current && (!Object.hasOwn(conv, "messages")
+  if (current && (current.sessionBinding || !Object.hasOwn(conv, "messages")
     || historyMessagesEquivalent(current.messages, conv.messages)
     || !shouldAcceptIncomingMessages(current.messages, conv.messages))) {
     // 新客户端仍会在 result 时调用旧的 saveCurrentConversation()。内容没有
@@ -1045,6 +1051,8 @@ function beginRunHistory(run, msg) {
   eventLog.ensureConversation(conversationId, { title: displayText });
   eventLog.updateMeta(conversationId, {
     model: typeof msg.model === "string" && msg.model.trim() ? msg.model.trim() : null,
+    profileId: run.profileId ?? null,
+    effort: run.effort ?? null,
   });
   run.historyConversationId = conversationId;
   run.turnId = crypto.randomUUID();
@@ -1056,6 +1064,7 @@ function beginRunHistory(run, msg) {
       payload: {
         id: userMessageId,
         text: displayText,
+        contextText: String(msg.prompt || ""),
         createdAt: new Date().toISOString(),
         ...(Array.isArray(msg.images) && msg.images.length ? { images: msg.images } : {}),
       },
@@ -1067,6 +1076,8 @@ function beginRunHistory(run, msg) {
 
 function beginSteeringHistory(run, msg) {
   finalizeRunHistory(run, "continued");
+  if (run.requestId) run.steeringRequestIds.add(run.requestId);
+  run.requestId = msg.userMessageId;
   beginRunHistory(run, msg);
 }
 
@@ -1104,12 +1115,18 @@ function persistRunEvent(run, event) {
   }
 
   if (!PERSISTED_EVENT_TYPES(event)) return null;
+  if (event.type === "session" && event.sessionId) {
+    event.sessionBinding = {
+      sessionId: event.sessionId, sessionProvider: event.provider || "claude",
+      profileId: run.profileId ?? null, model: event.model ?? run.model ?? null,
+    };
+  }
   const { seq } = eventLog.appendEvent(convId, "sdk", event);
   // result/done/stopped/error 同时也是轮次终点，补一条 turn 事件，
   // 让重连的客户端只看 meta.turn 就知道"还在不在跑"。
   if (event.type === "result") {
     run.turnFinalized = false;
-    finalizeRunHistory(run, event.subtype === "success" || !event.is_error ? "complete" : "error",
+    finalizeRunHistory(run, event.is_error || (event.subtype && event.subtype !== "success") ? "error" : "complete",
       event.total_cost_usd ?? null);
   }
   return seq;
@@ -1835,7 +1852,15 @@ function summarizeWechatHistoryPrompt(prompt, mediaFiles) {
   return summary ? `${prompt}\n\n附件：\n${summary}` : prompt;
 }
 
-async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
+const wechatInboundQueue = new KeyedTaskQueue();
+function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
+  return wechatInboundQueue.run(msg?.from_user_id, () => {
+    if (abortSignal.aborted) return;
+    return processWechatInboundMessage(baseUrl, token, msg, abortSignal);
+  });
+}
+
+async function processWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   const sender = msg.from_user_id;
   const contextToken = msg.context_token;
   if (!sender) return;
@@ -1877,7 +1902,7 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
     return;
   }
 
-  processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles);
+  return processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles);
 }
 
 async function startWechatPolling(baseUrl, token, initialBuf = "") {
@@ -2164,6 +2189,7 @@ async function runWechatClaudeCandidate({
     });
     resetStall();
     for await (const ev of generator) {
+      assertSuccessfulResult(ev);
       if (ev.type === "assistant") {
         const blocks = ev.message?.content || ev.content || [];
         if (Array.isArray(blocks) && blocks.some(block => block?.type === "tool_use")) toolRunning = true;
@@ -2435,6 +2461,11 @@ const http = createServer((req, res) => {
   const url = (req.url ?? "/").split("?")[0];
   const queryParams = new URLSearchParams((req.url ?? "/").split("?")[1] ?? "");
   const method = req.method?.toUpperCase() ?? "GET";
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !isAllowedBrowserOrigin(req)) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "不允许跨站修改对话或设置" }));
+    return;
+  }
 
   // ── WeChat Settings API ──
   if (url === "/api/wechat/status" && method === "GET") {
@@ -2781,12 +2812,10 @@ const http = createServer((req, res) => {
           return;
         }
 
-        const changed = JSON.stringify(current) !== JSON.stringify(next);
         writeProfiles(next);
-        if (changed) clearAllSessions();
 
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, resetSession: changed, data: toPublicProfiles(next) }));
+        res.end(JSON.stringify({ ok: true, resetSession: false, data: toPublicProfiles(next) }));
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "bad request" }));
@@ -2815,6 +2844,7 @@ const http = createServer((req, res) => {
       req.on("end", () => {
         try {
           const conv = JSON.parse(body);
+          if (!conv || conv.id !== id) throw new Error("会话 ID 与请求路径不一致");
           upsertHistoryConversation(conv);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -2826,11 +2856,35 @@ const http = createServer((req, res) => {
       return;
     }
     if (method === "DELETE") {
+      const live = liveRunsByConversation.get(id);
+      if (live && !live.finished) {
+        live.send({ type: "stopped" });
+        finalizeRunHistory(live, "stopped");
+        live.discarded = true;
+        live.ac.abort();
+        live.finish();
+      }
       eventLog.deleteConversation(id);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+  }
+
+  if (url === "/purify.min.js") {
+    // 依赖没装全时不能让 readFileSync 在请求处理器里裸抛——进程没有
+    // uncaughtException 兜底，一抛整个聊天服务就没了。让它退化成 404，
+    // 前端 renderMarkdown 会回落到纯文本。
+    const purifyPath = new URL("node_modules/dompurify/dist/purify.min.js", import.meta.url);
+    if (existsSync(purifyPath)) {
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
+      res.end(readFileSync(purifyPath));
+      return;
+    }
+    console.error("[Web] dompurify 缺失，Markdown 将退化为纯文本渲染");
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("purify.min.js not installed");
+    return;
   }
 
   // ── Static assets ─────────────────────────────────────────
@@ -2853,7 +2907,7 @@ const http = createServer((req, res) => {
 
 // ── WebSocket ─────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server: http });
+const wss = new WebSocketServer({ server: http, verifyClient: ({ req }, done) => done(isAllowedBrowserOrigin(req), 403, "Forbidden") });
 
 // 心跳：探测半死连接。移动端 NAT/基站切换常常静默掐断 TCP，
 // 服务端永远等不到 close 事件，run 也就一直挂着。两个周期没有 pong 即 terminate，
@@ -2924,11 +2978,11 @@ const liveRunsByConversation = new Map(); // convId -> run，只放还没结束�
 function currentTurnSnapshot(convId, meta = eventLog.getMeta(convId)) {
   const turn = meta?.turn ?? null;
   if (!turn) return null;
-  if (turn.status !== "running") return turn;
   const live = liveRunsByConversation.get(convId);
   if (live && !live.finished) {
     return {
       ...turn,
+      status: "running",
       startedAt: live.startedAt ?? null,
       lastActivityAt: live.lastActivityAt ?? live.startedAt ?? null,
       provider: live.provider ?? null,
@@ -2936,7 +2990,7 @@ function currentTurnSnapshot(convId, meta = eventLog.getMeta(convId)) {
       effort: live.effort ?? null,
     };
   }
-  return { ...turn, status: "interrupted" };
+  return turn.status === "running" ? { ...turn, status: "interrupted" } : turn;
 }
 const CLIENT_REQUEST_STATE_MAX = 500;
 const clientRequestStates = new Map(); // userMessageId -> { state, runId, updatedAt }
@@ -3017,6 +3071,9 @@ function claudeRuntimeSignatureOf(options) {
     systemPrompt: options.systemPrompt ?? null,
     // env 里只有这些会改变 agent 行为；整个 env 参与指纹会因无关变量频繁误重启
     env: {
+      auth: crypto.createHash("sha256").update(JSON.stringify([
+        options.env?.ANTHROPIC_AUTH_TOKEN ?? null, options.env?.ANTHROPIC_API_KEY ?? null,
+      ])).digest("hex"),
       base: options.env?.ANTHROPIC_BASE_URL ?? null,
       model: options.env?.ANTHROPIC_MODEL ?? null,
       effort: options.env?.CLAUDE_CODE_EFFORT_LEVEL ?? null,
@@ -3081,7 +3138,13 @@ const claudeRuntime = new PersistentQueryRuntime({
   },
 });
 
+async function collectCurrentClaudeQuestion(input, context) {
+  if (!claudeTurn?.collectQuestion) throw makeAbortError("当前没有等待输入的对话轮次");
+  return claudeTurn.collectQuestion(input, context);
+}
+
 function resetClaudeRuntime() {
+  claudeTurn?.fail(makeAbortError("会话已重置"));
   claudeTurnEpoch += 1;
   claudeTurn = null;
   claudeTurnGate.reset();
@@ -3094,15 +3157,7 @@ function resetClaudeRuntime() {
 // 长驻 query 的 AbortController 属于 runtime 而不是某一轮：用每轮的 ac 会导致
 // 第一轮结束时把整条会话一起 abort 掉。停止单轮走 interrupt()。
 let claudeRuntimeAbort = null;
-
-// 返回 true 表示已按"长驻会话"的方式停掉前台轮，调用方不要再 abort。
-function interruptClaudeTurn() {
-  if (!claudeRuntime.started || !claudeTurn) return false;
-  claudeRuntime.interrupt().catch(err => {
-    console.warn(`[Web Agent] interrupt 失败：${err?.message || err}`);
-  });
-  return true;
-}
+let claudeRuntimeConversationId = null;
 
 function createRun(runId, ws, ac) {
   const startedAt = Date.now();
@@ -3118,6 +3173,7 @@ function createRun(runId, ws, ac) {
     ac,
     ws,
     buffer: [],
+    bufferExpired: false,
     graceTimer: null,
     finished: false,
     discarded: false,
@@ -3127,7 +3183,7 @@ function createRun(runId, ws, ac) {
       // ACK 只是传输控制帧（重连时也会补发），不能装成 Agent 有了新进展。
       if (obj.type !== "request_ack") this.lastActivityAt = Date.now();
       // 所有事件带上 runId：客户端据此丢弃被新请求取代的旧 run 的迟到事件
-      const tagged = { ...obj, runId: this.id };
+      const tagged = { ...obj, runId: this.id, conversationId: this.historyConversationId ?? null };
       if (this.requestId && !tagged.userMessageId) tagged.userMessageId = this.requestId;
       if (this.turnId && !tagged.turnId) tagged.turnId = this.turnId;
       if (obj.type === "error" && this.requestId) rememberClientRequest(this.requestId, "error", this.id);
@@ -3140,7 +3196,7 @@ function createRun(runId, ws, ac) {
         tagged.seq = seq;
       }
       if (this.ws && this.ws.readyState === this.ws.OPEN) this.ws.send(JSON.stringify(tagged));
-      else this.buffer.push(tagged);
+      else if (!this.bufferExpired) this.buffer.push(tagged);
     },
     detach() {
       this.ws = null;
@@ -3151,6 +3207,7 @@ function createRun(runId, ws, ac) {
         // buffer 只是"没连上时的加速通道"；事件本身已经落进事件日志，
         // 丢掉它不会丢内容，客户端靠 hello/sync 的游标补齐。
         this.buffer.length = 0;
+        this.bufferExpired = true;
         if (this.pendingAskUserQuestion) {
           const pending = this.pendingAskUserQuestion;
           this.pendingAskUserQuestion = null;
@@ -3165,11 +3222,12 @@ function createRun(runId, ws, ac) {
     },
     // replayBuffer=false 用于 hello 路径：那边已经拿事件日志把客户端补到
     // meta.lastSeq 了，再重放一遍 buffer 就是同样的事件发两次。
-    attach(newWs, { replayBuffer = true } = {}) {
+    attach(newWs, { replayBuffer = true, replayControls = true } = {}) {
       clearTimeout(this.graceTimer);
       this.graceTimer = null;
       orphanRuns.delete(this.id);
       this.ws = newWs;
+      this.bufferExpired = false;
       if (!replayBuffer) this.buffer.length = 0;
       // buffer 中已经是带 runId 且已落历史的最终事件；重放只做网络投递，
       // 不能再走 send()，否则一次重连会把 assistant blocks 重复写一遍。
@@ -3177,7 +3235,7 @@ function createRun(runId, ws, ac) {
         if (this.ws.readyState === this.ws.OPEN) this.ws.send(JSON.stringify(obj));
         else this.buffer.push(obj);
       }
-      if (this.requestId) {
+      if (replayControls && this.requestId) {
         this.send({
           type: "request_ack",
           userMessageId: this.requestId,
@@ -3185,7 +3243,7 @@ function createRun(runId, ws, ac) {
         });
       }
       // 断线期间未回答的澄清问题重新推给新页面
-      if (this.pendingAskUserQuestion) {
+      if (replayControls && this.pendingAskUserQuestion) {
         const p = this.pendingAskUserQuestion;
         this.send({ type: "ask_user_question", requestId: p.requestId, toolUseID: p.toolUseID ?? null, questions: p.questions });
       }
@@ -3326,6 +3384,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
 
     // run 可能已被另一条重连 socket 接管。旧 socket 的闭包里仍留着指针，
     // 但它不再有权 stop/reset/回答澄清问题；收到任何后续消息先撤销陈旧绑定。
@@ -3342,9 +3401,21 @@ wss.on("connection", (ws) => {
     // 客户端只报 {conversationId, lastSeq}，服务端补差量。刷新、锁屏、换设备、
     // 隔几天回来全是这一条路径——没有宽限期、没有 runId 记忆、没有"领回失败"。
     if (msg.type === "hello") {
+      const sendSync = payload => {
+        const meta = eventLog.getMeta(payload.conversationId);
+        const metadata = meta ? {
+          id: meta.id, title: meta.title, profileId: meta.profileId, model: meta.model,
+          sessionId: meta.sessionId, sessionProvider: meta.sessionProvider, effort: meta.effort,
+        } : null;
+        send({ ...payload, metadata, helloId: msg.helloId ?? null });
+        if (activeRun?.pendingAskUserQuestion && activeRun.historyConversationId === payload.conversationId) {
+          const p = activeRun.pendingAskUserQuestion;
+          activeRun.send({ type: "ask_user_question", requestId: p.requestId, toolUseID: p.toolUseID ?? null, questions: p.questions });
+        }
+      };
       const convId = eventLog.normalizeConvId(msg.conversationId);
       if (!convId) {
-        send({ type: "sync", conversationId: msg.conversationId ?? null, lastSeq: 0, turn: null, events: [] });
+        sendSync({ type: "sync", conversationId: msg.conversationId ?? null, lastSeq: 0, turn: null, events: [] });
         return;
       }
       const live = liveRunsByConversation.get(convId);
@@ -3356,7 +3427,7 @@ wss.on("connection", (ws) => {
       }
       const meta = eventLog.getMeta(convId);
       if (!meta) {
-        send({ type: "sync", conversationId: convId, lastSeq: 0, turn: null, events: [] });
+        sendSync({ type: "sync", conversationId: convId, lastSeq: 0, turn: null, events: [] });
         return;
       }
       const since = Number.isFinite(msg.lastSeq) && msg.lastSeq > 0 ? msg.lastSeq : 0;
@@ -3368,23 +3439,23 @@ wss.on("connection", (ws) => {
       // 全同步执行，attach 与下面读日志之间不会有新事件插进来。
       if (live && !live.finished) {
         activeRun = live;
-        live.attach(ws, { replayBuffer: false });
+        live.attach(ws, { replayBuffer: false, replayControls: false });
       }
 
       // 客户端游标超前（服务端数据被删过/重建过）或落后太多：给完整快照，
       // 一条明确的降级路径，好过让两边悄悄地不一致。
       if (since > meta.lastSeq) {
-        send({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn,
+        sendSync({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn,
           reset: true, snapshot: eventLog.project(convId) });
         return;
       }
       const { events, truncated } = eventLog.readEventsSince(convId, since);
       if (truncated) {
-        send({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn,
+        sendSync({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn,
           reset: true, snapshot: eventLog.project(convId) });
         return;
       }
-      send({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn, events });
+      sendSync({ type: "sync", conversationId: convId, lastSeq: meta.lastSeq, turn, events });
       return;
     }
 
@@ -3423,6 +3494,7 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "ask_user_question_cancel") {
+      if (msg.requestId && msg.requestId !== activeRun?.pendingAskUserQuestion?.requestId) return;
       clearPendingAskUserQuestion(activeRun, "用户取消了澄清问题");
       return;
     }
@@ -3433,12 +3505,8 @@ wss.on("connection", (ws) => {
         activeRun.discarded = true;
         finalizeRunHistory(activeRun, "stopped");
       }
-      clearAllSessions();
-      // 重置是要丢弃整条会话，长驻 runtime 必须一起关掉，否则下一条消息会
-      // 复用旧 session 的上下文。
-      resetClaudeRuntime();
-      clientRequestStates.clear();
-      backgroundHistoryRuns.clear();
+      if (activeRun && claudeTurn?.run === activeRun) resetClaudeRuntime();
+      if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id);
       if (activeRun && !activeRun.finished) activeRun.ac.abort();
       activeRun = null;
       send({ type: "reset_complete" });
@@ -3448,7 +3516,7 @@ wss.on("connection", (ws) => {
     if (msg.setSession != null) {
       const id = String(msg.setSession);
       const provider = resolveSessionProvider(msg.sessionProvider, id);
-      setProviderSession(provider, id, msg.model);
+      // Legacy browser metadata only; actual SDK ownership is selected by conversationId.
       send({ type: "session", sessionId: id, provider });
       return;
     }
@@ -3456,18 +3524,31 @@ wss.on("connection", (ws) => {
     if (msg.stop) {
       clearPendingAskUserQuestion(activeRun, "用户停止了生成");
       if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id);
-      // Claude 走长驻会话：只中断本轮，保留 query 供后续消息复用。
-      // Codex 仍是每请求一条流，只能 abort。
-      if (!["codex", "antigravity"].includes(activeRun?.provider) && interruptClaudeTurn()) { activeRun = null; return; }
-      if (activeRun && !activeRun.finished) { activeRun.ac.abort(); activeRun = null; }
+      // Cancel only this run. Claude closes its iterator and resumes the saved native session next turn.
+      if (activeRun && !activeRun.finished) { activeRun.ac.abort(); }
       else send({ type: "stopped" });
+      return;
+    }
+
+    if (msg.type || typeof msg.prompt !== "string" || !msg.prompt.trim()
+      || ["model", "profileId", "cwd", "runId", "displayText"].some(key => msg[key] != null && typeof msg[key] !== "string")
+      || ["conversationId", "userMessageId"].some(key => msg[key] != null && !eventLog.normalizeConvId(msg[key]))
+      || (msg.images != null && (!Array.isArray(msg.images) || msg.images.length > 20
+        || msg.images.some(image => !image || typeof image.data !== "string" || !/^image\/(png|jpeg|webp|gif)$/.test(image.mediaType))))
+      || (msg.image != null && (!msg.image || typeof msg.image.data !== "string" || !/^image\/(png|jpeg|webp|gif)$/.test(msg.image.mediaType)))) {
+      if (msg.userMessageId) send({ type: "request_ack", state: "error", userMessageId: msg.userMessageId, conversationId: msg.conversationId ?? null });
+      send({ type: "error", text: "消息格式无效，请检查文字或图片后重试。", userMessageId: msg.userMessageId ?? null, conversationId: msg.conversationId ?? null });
       return;
     }
 
     const requestId = clientRequestId(msg) ?? `user_${crypto.randomUUID()}`;
     msg.userMessageId = requestId;
-    const knownRequest = clientRequestStates.get(requestId);
-    if (knownRequest && !(knownRequest.state === "queued" && !activeRun)) {
+    const inMemoryRequest = clientRequestStates.get(requestId);
+    const savedRequest = inMemoryRequest ? null : eventLog.getRequestState(msg.conversationId, requestId);
+    const knownRequest = inMemoryRequest || (savedRequest ? {
+      state: savedRequest === "running" || savedRequest === "continued" ? "stopped" : savedRequest, runId: null,
+    } : null);
+    if (knownRequest && !(knownRequest.state === "queued" && (!activeRun || activeRun.finished))) {
       send({
         type: "request_ack",
         userMessageId: requestId,
@@ -3478,16 +3559,36 @@ wss.on("connection", (ws) => {
     }
 
     const incomingProfileData = readProfiles();
+    if (msg.profileId && !incomingProfileData.profiles.some(profile => profile.id === msg.profileId)) {
+      rememberClientRequest(requestId, "error");
+      send({ type: "request_ack", state: "error", userMessageId: requestId, conversationId: msg.conversationId });
+      send({ type: "error", text: "所选账号已不存在，请重新选择账号。", userMessageId: requestId, conversationId: msg.conversationId });
+      return;
+    }
     if (msg.profileId && incomingProfileData.profiles.some(profile => profile.id === msg.profileId)) {
       incomingProfileData.activeProfileId = msg.profileId;
     }
     const incomingProvider = getActiveProfile(incomingProfileData)?.provider ?? "claude";
+    const requestedLive = liveRunsByConversation.get(eventLog.normalizeConvId(msg.conversationId));
+    const runtimeBusy = !["codex", "antigravity"].includes(incomingProvider) && claudeTurn?.run;
+    if ((requestedLive && !requestedLive.finished && requestedLive !== activeRun)
+      || (runtimeBusy && runtimeBusy !== activeRun)) {
+      rememberClientRequest(requestId, "queued");
+      send({ type: "request_ack", userMessageId: requestId, state: "queued", conversationId: msg.conversationId });
+      send({ type: "request_queued", userMessageId: requestId, reason: "busy", conversationId: msg.conversationId });
+      return;
+    }
 
     if (activeRun && !activeRun.finished) {
       const canSteerClaude = incomingProvider !== "codex"
         && activeRun.provider !== "codex"
         && incomingProvider !== "antigravity"
         && activeRun.provider !== "antigravity"
+        && activeRun.historyConversationId === eventLog.normalizeConvId(msg.conversationId)
+        && activeRun.profileId === (getActiveProfile(incomingProfileData)?.id ?? null)
+        && activeRun.model === (typeof msg.model === "string" && msg.model ? msg.model : null)
+        && activeRun.permissionMode === (PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE)
+        && activeRun.effort === (EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium")
         && claudeRuntime.started
         && !!claudeTurn
         && !activeRun.pendingAskUserQuestion;
@@ -3538,14 +3639,9 @@ wss.on("connection", (ws) => {
 
     // Cancel any in-flight query before starting a new one
     clearPendingAskUserQuestion(activeRun, "新的请求已开始");
-    if (!interruptClaudeTurn() && activeRun && !activeRun.finished) activeRun.ac.abort();
     activeRun = null;
 
     const schedulerRequest = hasSchedulerIntentForMessage(msg);
-
-    // Build message content — text only, or images + text
-    const userMsg = buildUserMessage(msg);
-    const content = userMsg.message.content;
 
     const ac = new AbortController();
     // runId 由客户端生成并随消息带上，断线重连时凭它领回本次生成
@@ -3566,6 +3662,22 @@ wss.on("connection", (ws) => {
     run.provider = activeProfile?.provider ?? "claude";
     run.model = typeof msg.model === "string" && msg.model ? msg.model : null;
     run.effort = effort;
+    run.permissionMode = permissionMode;
+    run.profileId = activeProfile?.id ?? null;
+    const previousId = eventLog.normalizeConvId(msg.conversationId);
+    const previousConversation = previousId ? eventLog.project(previousId) : null;
+    const context = prepareConversationContext(previousConversation, {
+      provider: run.provider, profileId: run.profileId, model: run.model, prompt: msg.prompt,
+    });
+    // Never take the global persisted ID as the identity of this request.
+    if (context.sessionProvider === "claude") {
+      if (claudeRuntimeConversationId !== previousId || !context.sessionId || sessionId !== context.sessionId) resetClaudeRuntime();
+      if (context.sessionId) saveSession(context.sessionId);
+      else clearSession();
+      claudeRuntimeConversationId = previousId;
+    }
+    const userMsg = buildUserMessage({ ...msg, prompt: context.prompt });
+    const content = userMsg.message.content;
     msg.conversationId = beginRunHistory(run, msg);
     rememberClientRequest(requestId, "running", run.id);
     run.send({ type: "request_ack", userMessageId: requestId, state: "running" });
@@ -3607,14 +3719,13 @@ wss.on("connection", (ws) => {
           const model = resolveAgyModel(msg.model);
           run.model = model;
           eventLog.updateMeta(msg.conversationId, { model, profileId: activeProfile.id });
-          const previous = eventLog.getMeta(msg.conversationId);
           const translate = agyProvider.createTranslator();
           let hasAnswer = false;
           const result = await runAntigravity({
             prompt: content.filter(b => b.type === "text").map(b => b.text).join("\n\n"),
             images: content.filter(b => b.type === "image").map(b => ({ mediaType: b.source.media_type, data: b.source.data })),
             cwd: resolvedCwd, model, effort, permissionMode, signal: ac.signal,
-            resumeConversationId: previous?.sessionProvider === "antigravity" ? previous.sessionId : null,
+            resumeConversationId: context.sessionId,
             onSession: id => run.send({ type: "session", sessionId: id, provider: "antigravity", model }),
             onEvent: ev => {
               for (const event of translate(ev)) {
@@ -3659,7 +3770,7 @@ wss.on("connection", (ws) => {
       options.systemPrompt = { type: "preset", preset: "claude_code", append: INKFELLOW_SCHEDULER_PROMPT };
       options.disallowedTools = ["Bash"];
     }
-    if (sessionId) options.resume = sessionId;
+    if (context.sessionId) options.resume = context.sessionId;
     if (!activeProfile || activeProfile.provider === "claude") {
       if (msg.model) options.model = msg.model;
     }
@@ -3705,22 +3816,8 @@ wss.on("connection", (ws) => {
           const requestedModel = typeof msg.model === "string" && msg.model.trim()
             ? msg.model.trim()
             : null;
-          if (codexThreadId && codexThreadModel && requestedModel
-              && codexThreadModel !== requestedModel) {
-            const previousModel = codexThreadModel;
-            console.log(`[Web Agent] Codex 模型从 ${previousModel} 切换到 ${requestedModel}，新建 thread。`);
-            clearCodexThread();
-            send({
-              type: "system",
-              subtype: "status",
-              status: "new_thread",
-              reason: "model_changed",
-              previousModel,
-              model: requestedModel,
-            });
-          }
-          const thread = codexThreadId
-            ? codex.resumeThread(codexThreadId, threadOptions)
+          const thread = context.sessionId
+            ? codex.resumeThread(context.sessionId, threadOptions)
             : codex.startThread(threadOptions);
 
           // 图片：base64 → 临时本地文件（codex-sdk 只支持 local_image）
@@ -3736,10 +3833,10 @@ wss.on("connection", (ws) => {
               tempImagePaths.push(tmpPath);
               parts.push({ type: "local_image", path: tmpPath });
             }
-            parts.push({ type: "text", text: msg.prompt });
+            parts.push({ type: "text", text: context.prompt });
             input = parts;
           } else {
-            input = msg.prompt;
+            input = context.prompt;
           }
 
           resetStall();
@@ -3771,7 +3868,7 @@ wss.on("connection", (ws) => {
               throw new Error(ev.message || "Codex 请求失败");
             }
           }
-          if (!codexResultSent) send({ type: "result", subtype: "success", provider: "codex" });
+          if (!codexResultSent) throw new Error("Codex 流意外结束，未收到完成确认。请重试。");
           send({ type: "done" });
         } catch (err) {
           if (err?.name === "AbortError") {
@@ -3811,10 +3908,10 @@ wss.on("connection", (ws) => {
       const resetStall = () => {
         clearTimeout(stallTimer);
         if (waitingForUserInput || toolRunning || backgroundOnlyWaiting) return;
-        // 长驻会话下只中断本轮；abort 会连整条 query 一起杀掉
+        // Abort is owned by this turn; its native session remains available for resume.
         stallTimer = setTimeout(() => {
           isStallAbort = true;
-          if (!interruptClaudeTurn()) ac.abort();
+          ac.abort();
         }, STREAM_STALL_MS);
       };
       const resetHardTimer = () => {
@@ -3822,7 +3919,7 @@ wss.on("connection", (ws) => {
         if (waitingForUserInput || toolRunning || backgroundOnlyWaiting) return;
         hardTimer = setTimeout(() => {
           isHardAbort = true;
-          if (!interruptClaudeTurn()) ac.abort();
+          ac.abort();
         }, MAX_AGENT_RUN_MS);
       };
       // 工具开始执行（assistant 消息带 tool_use）→ 两个看门狗全部暂停；
@@ -3897,7 +3994,7 @@ wss.on("connection", (ws) => {
                   },
                 };
               }
-              const updatedInput = await collectAskUserQuestionInput(existingInput, {
+              const updatedInput = await collectCurrentClaudeQuestion(existingInput, {
                 signal: hookContext.signal,
                 toolUseID: hookInput.tool_use_id ?? toolUseID,
               });
@@ -3931,7 +4028,7 @@ wss.on("connection", (ws) => {
 
         return {
           behavior: "allow",
-          updatedInput: await collectAskUserQuestionInput(input, context),
+          updatedInput: await collectCurrentClaudeQuestion(input, context),
           decisionClassification: "user_temporary",
         };
       };
@@ -3955,6 +4052,7 @@ wss.on("connection", (ws) => {
         const settle = (fn, arg) => {
           if (settled) return;
           settled = true;
+          ac.signal.removeEventListener("abort", onAbort);
           if (claudeTurn?.epoch === epoch) {
             claudeTurn = null;
             claudeTurnGate.reset();
@@ -3962,13 +4060,22 @@ wss.on("connection", (ws) => {
           fn(arg);
         };
 
+        const onAbort = () => {
+          const ownsRuntime = claudeTurn?.epoch === epoch;
+          settle(reject, makeAbortError("用户停止了生成"));
+          if (ownsRuntime) resetClaudeRuntime();
+        };
         claudeTurn = {
           epoch,
+          run,
+          collectQuestion: collectAskUserQuestionInput,
           onEvent: (ev) => { try { handleClaudeEvent(ev); } catch (err) { settle(reject, err); } },
           finish: () => settle(resolve, undefined),
           fail: (err) => settle(reject, err),
         };
 
+        ac.signal.addEventListener("abort", onAbort, { once: true });
+        if (ac.signal.aborted) { onAbort(); return; }
         try {
           claudeTurnGate.markForegroundStart();
           claudeRuntime.send(promptMsg);
@@ -3980,6 +4087,7 @@ wss.on("connection", (ws) => {
       // 单条事件的处理：从原来的 for-await 循环体搬过来，语义不变，
       // 只是循环里的 continue 变成了 return。
       const handleClaudeEvent = (ev) => {
+        assertSuccessfulResult(ev);
         if (ev.type === "system" && ev.subtype === "session_state_changed") {
           if (ev.state === "idle" && claudeRuntime.taskIds.size > 0) {
             backgroundOnlyWaiting = true;
@@ -4059,6 +4167,7 @@ wss.on("connection", (ws) => {
           // fresh session with text-injected history, instead of losing all context.
           if (!isThinkingSignatureError(err) || ac.signal.aborted) throw err;
           const recoveryMsg = buildRecoveryMsg();
+          resetClaudeRuntime();
           clearSession(); // abandon the corrupted session; the retry starts a clean one
           if (!recoveryMsg) throw err; // nothing to inject → surface the original error
           console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");

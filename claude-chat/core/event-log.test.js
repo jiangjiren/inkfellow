@@ -414,3 +414,60 @@ test("project 返回的是副本，改它不会污染缓存", () => {
     assert.equal(log.project(id).messages[0].text, "原文");
   } finally { store.cleanup(); }
 });
+
+test("stopping a partial stream retains text and final text replaces streamed text", () => {
+  const store = freshStore();
+  try {
+    const id = "partial-stream";
+    log.appendEvent(id, "turn", { turnId: "turn-one", status: "running" });
+    const stream = event => log.appendEvent(id, "sdk", { type: "stream_event", event });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "已经生成的文字" } });
+    assert.equal(log.project(id).messages[0].text, "已经生成的文字");
+    log.appendEvent(id, "sdk", { type: "assistant", message: { content: [{ type: "text", text: "已经生成的文字。" }] } });
+    assert.equal(log.project(id).messages[0].text, "已经生成的文字。");
+    stream({ type: "message_start" });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "未完成的下一段" } });
+    log.appendEvent(id, "sdk", { type: "stopped" });
+    const message = log.project(id).messages[0];
+    assert.equal(message.text, "已经生成的文字。\n\n未完成的下一段");
+    assert.equal(message.status, "stopped");
+  } finally { store.cleanup(); }
+});
+
+test("an empty failed turn never changes the preceding assistant message ID", () => {
+  const store = freshStore();
+  try {
+    const id = "empty-turn";
+    log.appendEvent(id, "turn", { turnId: "first-turn", status: "running" });
+    log.appendEvent(id, "sdk", { type: "assistant", message: { content: [{ type: "text", text: "first" }] } });
+    log.appendEvent(id, "turn", { turnId: "first-turn", status: "complete" });
+    log.appendEvent(id, "turn", { turnId: "second-turn", status: "running" });
+    log.appendEvent(id, "turn", { turnId: "second-turn", status: "error" });
+    assert.equal(log.project(id).messages[0].id, "first-turn");
+    log.updateMeta(id, { title: "Renamed title" });
+    assert.equal(log.project(id).title, "Renamed title");
+  } finally { store.cleanup(); }
+});
+
+test("child-agent output does not become parent answer text", () => {
+  const store = freshStore();
+  try {
+    const id = "child-output";
+    log.appendEvent(id, "sdk", { type: "assistant", parent_tool_use_id: "tool-child", message: { content: [{ type: "text", text: "child internal" }] } });
+    log.appendEvent(id, "sdk", { type: "assistant", message: { content: [{ type: "text", text: "parent answer" }] } });
+    assert.equal(log.project(id).messages[0].text, "parent answer");
+  } finally { store.cleanup(); }
+});
+
+test("request deduplication survives an event-store reload", () => {
+  const store = freshStore();
+  try {
+    log.appendEvent("durable-request", "turn", { requestId: "original-request", turnId: "original-turn", status: "running" });
+    log.appendEvent("durable-request", "turn", { requestId: "original-request", turnId: "original-turn", status: "complete" });
+    log.configure({ dataDir: store.dir });
+    assert.equal(log.getRequestState("durable-request", "original-request"), "complete");
+    assert.equal(log.getRequestState("durable-request", "new-request"), null);
+  } finally { store.cleanup(); }
+});

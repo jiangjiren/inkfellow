@@ -1,3 +1,4 @@
+import { assertSuccessfulResult } from "./sdk-result.js";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import crypto from "node:crypto";
@@ -277,7 +278,15 @@ function _validateRunAtMs(runAtMs) {
   return ts;
 }
 
+const executingJobs = new Set();
 async function _executeJob(job) {
+  if (executingJobs.has(job.id)) return;
+  executingJobs.add(job.id);
+  try { return await _executeJobOnce(job); }
+  finally { executingJobs.delete(job.id); }
+}
+
+async function _executeJobOnce(job) {
   const startMs = Date.now();
   console.log(`[Scheduler] Running job "${job.description}" (${job.id})`);
 
@@ -448,6 +457,7 @@ async function _runClaudeCandidate(candidate, profileData, fullPrompt, cwd, abor
       ...(candidate.provider === "claude" ? { model: candidate.model } : {}),
     },
   })) {
+    assertSuccessfulResult(ev);
     if (ev.type === "assistant") {
       const text = (ev.message?.content || ev.content || [])
         .filter(b => b.type === "text").map(b => b.text).join("");

@@ -155,6 +155,7 @@ export function updateMeta(convId, patch = {}) {
   // lastSeq 只由 appendEvent 维护，外部 patch 不得覆盖，否则游标会错乱
   const { lastSeq: _ignored, ...safe } = patch;
   const next = { ...current, ...safe, id };
+  if (Object.keys(safe).some(key => JSON.stringify(current[key]) !== JSON.stringify(safe[key]))) projectionCache.delete(id);
   return writeMeta(id, next);
 }
 
@@ -247,6 +248,7 @@ export function appendEvents(convId, entries) {
     if (entry.kind !== "sdk" || entry.payload?.type !== "session") continue;
     if (entry.payload.sessionId) patch.sessionId = entry.payload.sessionId;
     if (entry.payload.provider) patch.sessionProvider = entry.payload.provider;
+    if (entry.payload.sessionBinding) patch.sessionBinding = entry.payload.sessionBinding;
   }
   // 首条 user 事件定标题
   if ((meta.title === "新对话" || !meta.title)) {
@@ -291,6 +293,7 @@ function normalizeAssistantBlocks(content) {
     if (item.type === "thinking") {
       return { type: "thinking", thinking: item.thinking ?? "", signature: item.signature ?? null, raw };
     }
+    if (item.type === "refusal") return { type: "refusal", text: item.refusal ?? "", raw };
     if (item.type === "text") {
       return { type: "text", text: item.text ?? "", citations: item.citations ?? null, raw };
     }
@@ -358,6 +361,7 @@ function createProjectionState(convId) {
     title: null,
     date: null,
     currentTurnId: null,
+    streamBlocks: new Map(),
   };
 }
 
@@ -408,6 +412,7 @@ function finalize(state, status = "complete", cost = null, ts = Date.now()) {
   if (cost != null) message.cost = cost;
   state.last = message;
   state.current = null;
+  state.streamBlocks.clear();
 }
 
 // 与 server.js 的 persistRunEvent 逐分支对齐
@@ -417,9 +422,44 @@ function applySdkEvent(state, event, ts) {
   if (event.type === "session") {
     if (event.sessionId) state.sessionId = event.sessionId;
     if (event.provider) state.sessionProvider = event.provider;
+    if (event.sessionBinding) state.sessionBinding = event.sessionBinding;
+    return;
+  }
+  // Child-agent output is diagnostic content, not the parent assistant's answer.
+  if (event.parent_tool_use_id) {
+    if (event.type !== "stream_event") appendBlocks(state, [{ type: "sdk_event", eventType: event.type, raw: clone(event) }], event, ts);
+    return;
+  }
+  if (event.type === "stream_event") {
+    const part = event.event;
+    if (part?.type === "message_start") state.streamBlocks.clear();
+    if (part?.type === "content_block_start") {
+      const block = normalizeAssistantBlocks([part.content_block])[0];
+      if (block && ["text", "thinking"].includes(block.type)) {
+        const message = ensureAssistant(state, ts);
+        message.blocks.push(block);
+        state.streamBlocks.set(part.index, block);
+      }
+    }
+    if (part?.type === "content_block_delta") {
+      const block = state.streamBlocks.get(part.index);
+      const delta = part.delta;
+      if (block?.type === "text" && delta?.type === "text_delta") block.text += delta.text || "";
+      if (block?.type === "thinking" && delta?.type === "thinking_delta") block.thinking += delta.thinking || "";
+    }
+    if (state.current) {
+      state.current.text = state.current.blocks.filter(b => b.type === "text" || b.type === "refusal").map(b => b.text || "").filter(Boolean).join("\n\n");
+      state.current.updatedAt = new Date(ts).toISOString();
+    }
     return;
   }
   if (event.type === "assistant") {
+    // Replace provisional streaming blocks with the authoritative completed message.
+    if (state.current && state.streamBlocks.size) {
+      const provisional = new Set(state.streamBlocks.values());
+      state.current.blocks = state.current.blocks.filter(block => !provisional.has(block));
+      state.streamBlocks.clear();
+    }
     appendBlocks(state, normalizeAssistantBlocks(event.message?.content ?? event.content), event, ts);
     return;
   }
@@ -438,7 +478,7 @@ function applySdkEvent(state, event, ts) {
     return;
   }
   if (event.type === "result") {
-    finalize(state, event.subtype === "success" || !event.is_error ? "complete" : "error",
+    finalize(state, event.is_error || (event.subtype && event.subtype !== "success") ? "error" : "complete",
       event.total_cost_usd ?? null, ts);
     return;
   }
@@ -475,6 +515,7 @@ export function project(convId) {
         id: payload.id ?? `user_${crypto.randomUUID()}`,
         role: "user",
         text: payload.text ?? "",
+        ...(payload.contextText ? { contextText: payload.contextText } : {}),
         ...(Array.isArray(payload.images) && payload.images.length ? { images: clone(payload.images) } : {}),
         cost: null,
         createdAt: payload.createdAt ?? new Date(ts).toISOString(),
@@ -495,7 +536,7 @@ export function project(convId) {
         continue;
       }
       if (TERMINAL_TURN_STATUSES.has(status)) {
-        const target = state.current ?? state.last;
+        const target = state.current;
         if (target && payload.turnId) target.id = payload.turnId;
         finalize(state, status, payload.cost ?? null, ts);
         state.currentTurnId = null;
@@ -503,14 +544,21 @@ export function project(convId) {
     }
   }
 
+  if (state.current && state.streamBlocks.size) {
+    state.current.streamState = [...state.streamBlocks].map(([index, block]) => ({
+      index, blockIndex: state.current.blocks.indexOf(block),
+    }));
+  }
+
   const conversation = {
     id,
-    title: state.title || meta?.title || "新对话",
+    title: meta?.title || state.title || "新对话",
     date: state.date || meta?.date || new Date().toISOString(),
     sessionId: state.sessionId ?? meta?.sessionId ?? null,
     sessionProvider: state.sessionProvider ?? meta?.sessionProvider ?? null,
     model: state.model ?? meta?.model ?? null,
     profileId: meta?.profileId ?? null,
+    ...((state.sessionBinding ?? meta?.sessionBinding) ? { sessionBinding: state.sessionBinding ?? meta.sessionBinding } : {}),
     messages: state.messages,
   };
 
@@ -519,6 +567,17 @@ export function project(convId) {
     projectionCache.delete(projectionCache.keys().next().value);
   }
   return clone(conversation);
+}
+
+// Look up durable request state after a restart or in-memory dedup eviction.
+export function getRequestState(convId, requestId) {
+  const id = normalizeConvId(convId);
+  if (!id || !requestId || !existsSync(convDir(id))) return null;
+  let status = null;
+  for (const entry of iterateEntries(id)) {
+    if (entry.kind === "turn" && entry.payload?.requestId === requestId) status = entry.payload.status;
+  }
+  return status;
 }
 
 // ── 会话集合操作 ───────────────────────────────────────────

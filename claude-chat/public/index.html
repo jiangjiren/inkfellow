@@ -12,6 +12,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 <title>inkfellow</title>
 <script src="marked.min.js"></script>
+<script src="purify.min.js"></script>
 <script src="pending-queue.js"></script>
 <script src="account-status.js"></script>
 <style>
@@ -2894,7 +2895,10 @@ function selectConversationProfile(id) {
   rememberConvModelPrefs();
 }
 
+let conversationLoadVersion = 0;
+
 function beginConversationDraft() {
+  conversationLoadVersion += 1;
   currentConversationMeta = null;
   currentConvId = genId();
   resetCursor(currentConvId);
@@ -3991,7 +3995,9 @@ function renderMarkdown(text) {
   if (!_markedReady) return `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
   try {
     const result = marked.parse(text);
-    return typeof result === "string" ? result : `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
+    return typeof result === "string" && typeof DOMPurify !== "undefined"
+      ? DOMPurify.sanitize(result, { USE_PROFILES: { html: true }, FORBID_TAGS: ["style", "form", "input", "button"], FORBID_ATTR: ["style"] })
+      : `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
   } catch {
     return `<pre style="white-space:pre-wrap">${renderPlain(text)}</pre>`;
   }
@@ -4485,6 +4491,8 @@ function scheduleReconnect(delayMs = 3000) {
 
 // 上一次 hello 是从 seq 0 要起的 —— 回来的 sync 是整份内容，得先清屏再铺，否则会叠一遍
 let helloExpectsFullRebuild = false;
+let latestHelloId = 0;
+let isSyncPending = false;
 
 // 报游标。连上就发，不管是不是生成中——刷新后 isGenerating 必然是 false，
 // 但服务端可能还有轮次在跑，真实状态由随后的 sync 决定。
@@ -4498,9 +4506,12 @@ function sendHello() {
     ? (syncCursor.lastSeq ?? 0)
     : 0;
   helloExpectsFullRebuild = lastSeq === 0;
+  isSyncPending = true;
+  const helloId = ++latestHelloId;
   try {
     ws.send(JSON.stringify({
       type: "hello",
+      helloId,
       conversationId,
       lastSeq,
     }));
@@ -4629,6 +4640,7 @@ function requestSkillRefresh(force = false) {
 // ── State ─────────────────────────────────────────────────
 let assistantEl   = null;
 let assistantTxt  = "";   // full text across all turns (for saving)
+let currentAssistantTurnId = null;
 let assistantBlocks = [];  // rich blocks for history restore
 let assistantRawMessages = []; // original assistant messages for maximum-fidelity history
 let assistantEvents = []; // non-content SDK events that still explain the AI turn
@@ -4710,6 +4722,7 @@ let assistantEvents = []; // non-content SDK events that still explain the AI tu
   }
 
 function resetAssistantState() {
+  currentAssistantTurnId = null;
   cleanupRunningTools();
   removeGenChip();
   // 上一回合遗留的编队卡不该被下一回合的派生复用
@@ -5528,9 +5541,11 @@ function subagentIngest(ev) {
 // 服务端按我们报的游标补齐差量，或在落后太多时直接给整份快照。
 // 无论哪种，ev.turn 都是"这一轮到底还在不在跑"的权威答案。
 function handleSyncEvent(ev) {
+  if (ev.helloId != null && ev.helloId !== latestHelloId) return;
   const convId = typeof ev.conversationId === "string" && ev.conversationId ? ev.conversationId : null;
   // 同步在途时用户切走了会话，这份 sync 已经过期，丢掉
   if (convId && currentConvId && convId !== currentConvId) return;
+  isSyncPending = false;
   const fullRebuild = helloExpectsFullRebuild;
   helloExpectsFullRebuild = false;
 
@@ -5557,7 +5572,10 @@ function handleSyncEvent(ev) {
         appendSyncedUserMessage(payload);
         continue;
       }
-      if (entry.kind === "turn") continue; // 轮次状态统一由 ev.turn 决定
+      if (entry.kind === "turn") {
+        if (payload.status !== "running") finishAssistantMessage(payload.status, payload.turnId, payload.cost);
+        continue; // Generation state still comes from the authoritative ev.turn.
+      }
       if (typeof payload.type !== "string") continue;
       try {
         handleEvent({
@@ -5576,6 +5594,7 @@ function handleSyncEvent(ev) {
     saveCursor();
   }
 
+  if (ev.metadata) currentConversationMeta = ev.metadata;
   applyConvModelPrefs();
   applySyncTurn(ev.turn);
 }
@@ -5588,11 +5607,38 @@ function applySyncSnapshot(snapshot, convId) {
   renderConversationMessages(snapshot);
   currentConvId = snapshot.id || convId || currentConvId;
   currentConversationMeta = snapshot;
-  if (snapshot.sessionId) currentSessionId = snapshot.sessionId;
+  currentSessionId = snapshot.sessionId ?? null;
+  currentSessionProvider = null;
   if (["codex", "claude", "antigravity"].includes(snapshot.sessionProvider)) {
     currentSessionProvider = snapshot.sessionProvider;
   }
   currentSessionModel = typeof snapshot.model === "string" ? snapshot.model : null;
+  const active = snapshot.messages.at(-1);
+  if (active?.role === "assistant" && active.status === "running") {
+    // A snapshot already contains partial output. Rebuild its live block map so
+    // the very next delta continues this bubble instead of disappearing.
+    messageLog.pop();
+    currentAssistantTurnId = active.id;
+    assistantEl = messagesEl.lastElementChild;
+    const streaming = Array.isArray(active.streamState) ? active.streamState : [];
+    const indices = new Set(streaming.map(entry => entry.blockIndex));
+    assistantBlocks = cloneJson((active.blocks || []).filter((_, index) => !indices.has(index)));
+    assistantRawMessages = cloneJson(active.raw || []);
+    assistantEvents = cloneJson(active.events || []);
+    assistantTxt = textFromAssistantBlocks(assistantBlocks);
+    prevTurnTexts = assistantTxt ? [assistantTxt] : [];
+    const body = assistantEl.querySelector(".msg-body");
+    body.innerHTML = "";
+    renderAssistantBlocks(body, assistantBlocks);
+    for (const entry of streaming) {
+      const block = active.blocks[entry.blockIndex];
+      if (!block || !["text", "thinking"].includes(block.type)) continue;
+      handleEvent({ type: "stream_event", event: { type: "content_block_start", index: entry.index, content_block: { type: block.type } } });
+      handleEvent({ type: "stream_event", event: { type: "content_block_delta", index: entry.index, delta: block.type === "text"
+        ? { type: "text_delta", text: block.text || "" }
+        : { type: "thinking_delta", thinking: block.thinking || "" } } });
+    }
+  }
   scrollBottom();
 }
 
@@ -5633,10 +5679,29 @@ function applySyncTurn(turn) {
     return;
   }
   clearAskUserQuestion();
+  finishAssistantMessage(turn?.status || "complete", turn?.turnId);
   setGenerating(false);
   removeTyping();
   activeRequestId = null;
   scheduleQueuedFollowUpDrain();
+}
+
+function finishAssistantMessage(status, turnId, cost = null) {
+  turnId = turnId || currentAssistantTurnId;
+  const blocks = cloneJson(assistantBlocks);
+  for (const block of Object.values(blockMap)) {
+    if (block.type === "text" && block.accumulated) blocks.push({ type: "text", text: block.accumulated });
+    if (block.type === "thinking" && block.accumulated) blocks.push({ type: "thinking", thinking: block.accumulated });
+  }
+  const text = textFromAssistantBlocks(blocks) || assistantTxt;
+  if (text || blocks.length) {
+    const message = { id: turnId ?? undefined, role: "assistant", text, blocks, raw: cloneJson(assistantRawMessages), events: cloneJson(assistantEvents), cost, status };
+    const index = turnId ? messageLog.findIndex(m => m.role === "assistant" && m.id === turnId) : -1;
+    if (index >= 0) messageLog[index] = message;
+    else messageLog.push(message);
+    saveCurrentConversation();
+  }
+  resetAssistantState();
 }
 
 // ── Event handling ────────────────────────────────────────
@@ -5647,6 +5712,14 @@ function handleEvent(ev) {
 
   if (ev.type === "sync") {
     handleSyncEvent(ev);
+    return;
+  }
+
+  if (ev.type === "request_ack" && ev.conversationId && ev.conversationId !== currentConvId) {
+    const payload = unackedRequests.get(ev.userMessageId) || queuedFollowUps.get(ev.userMessageId);
+    if (ev.state === "queued" && payload) queuedFollowUps.set(ev.userMessageId, { ...payload, queueState: "pending" });
+    clearUnackedRequest(ev.userMessageId);
+    if (ev.state !== "queued") queuedFollowUps.delete(ev.userMessageId);
     return;
   }
 
@@ -5674,8 +5747,8 @@ function handleEvent(ev) {
   if (ev.runId && ev.type !== "request_ack") noteRunProgress();
 
   if (ev.type === "reset_complete") {
+    if (activeRequestId && unackedRequests.get(activeRequestId)?.conversationId === currentConvId) return;
     clearAllUnackedRequests();
-    queuedFollowUps.clearConversation(currentConvId);
     clearTimeout(followUpDrainTimer);
     currentRunId = null;
     activeRequestId = null;
@@ -5687,8 +5760,10 @@ function handleEvent(ev) {
 
   if (ev.type === "request_ack") {
     const requestId = ev.userMessageId;
+    const originalPayload = unackedRequests.get(requestId);
     if (requestId) clearUnackedRequest(requestId);
     if (ev.state === "queued") {
+      if (!queuedFollowUps.has(requestId) && originalPayload) queuedFollowUps.set(requestId, { ...originalPayload, queueState: "pending" });
       const queued = queuedFollowUps.get(requestId);
       if (queued) queuedFollowUps.set(requestId, { ...queued, queueState: "pending" });
       updateGenChip("下一条消息已排队");
@@ -5698,9 +5773,16 @@ function handleEvent(ev) {
         currentRunId = null;
         setGenerating(false);
         removeTyping();
-        scheduleQueuedFollowUpDrain(120);
+        scheduleQueuedFollowUpDrain(1000);
       }
     } else if (ev.state === "steering") {
+      const boundary = messageLog.findIndex(message => message.id === requestId);
+      const count = messageLog.length;
+      finishAssistantMessage("continued", currentAssistantTurnId);
+      if (boundary >= 0 && messageLog.length > count) {
+        const previousAnswer = messageLog.pop();
+        messageLog.splice(boundary, 0, previousAnswer);
+      }
       queuedFollowUps.delete(requestId);
       updateGenChip("已追加，将在下一工具边界生效");
     } else if (ev.state === "running") {
@@ -5820,6 +5902,8 @@ function handleEvent(ev) {
     subagentIngest(ev);
     return;
   }
+
+  if (ev.turnId && ["stream_event", "assistant", "server_tool_use", "mcp_tool_use", "tool_use"].includes(ev.type)) currentAssistantTurnId = ev.turnId;
 
   // ── Streaming deltas ──────────────────────────────────────
   if (ev.type === "stream_event") {
@@ -5964,7 +6048,14 @@ function handleEvent(ev) {
     subagentIngest(ev);   // 认领其中的 Task 工具派生，其余内容照常渲染
     const content = ev.message?.content ?? [];
     const turnBlocks = normalizeAssistantBlocks(content, "");
-    if (turnBlocks.length) assistantBlocks.push(...turnBlocks);
+    for (const block of turnBlocks) {
+      const id = block.id || block.raw?.id || block.raw?.call_id || block.raw?.tool_use_id;
+      const index = id ? assistantBlocks.findIndex(old => old.type === block.type && (old.id || old.raw?.id || old.raw?.call_id || old.raw?.tool_use_id) === id) : -1;
+      if (index >= 0) assistantBlocks[index] = block;
+      else assistantBlocks.push(block);
+    }
+    blockMap = {};
+    prevTurnTexts = [];
     assistantRawMessages.push(cloneJson(ev.message ?? ev));
 
     if (!assistantEl) {
@@ -6031,34 +6122,13 @@ function handleEvent(ev) {
   }
 
   if (ev.type === "result") {
-    const savedText = assistantTxt;
-    const savedBlocks = cloneJson(assistantBlocks);
-    const savedRawMessages = cloneJson(assistantRawMessages);
-    const savedEvents = cloneJson(assistantEvents);
-    let resultCost = null;
-    if (ev.total_cost_usd != null) {
-      resultCost = ev.total_cost_usd;
-    }
-    resetAssistantState();
-    if (savedText || savedBlocks?.length) {
-      messageLog.push({
-        id: ev.turnId ?? undefined,
-        role: "assistant",
-        text: savedText,
-        blocks: savedBlocks,
-        raw: savedRawMessages,
-        events: savedEvents,
-        cost: resultCost,
-        status: ev.subtype === "success" || !ev.is_error ? "complete" : "error",
-      });
-      saveCurrentConversation();
-    }
+    finishAssistantMessage(ev.is_error || (ev.subtype && ev.subtype !== "success") ? "error" : "complete", ev.turnId, ev.total_cost_usd);
     return;
   }
 
   if (ev.type === "done" || ev.type === "stopped") {
     clearAskUserQuestion();
-    resetAssistantState();
+    finishAssistantMessage(ev.type === "stopped" ? "stopped" : "complete", ev.turnId);
     setGenerating(false); removeTyping();
     currentRunId = null;
     activeRequestId = null;
@@ -6072,13 +6142,13 @@ function handleEvent(ev) {
     showInlineError(ev.text?.trim() || "发生错误");
     setGenerating(false); removeTyping();
     currentRunId = null;
+    return;
   }
 
   if (ev.type === "session" && ev.sessionId) {
     currentSessionId = ev.sessionId;
     currentSessionProvider = ["codex", "antigravity"].includes(ev.provider) ? ev.provider : "claude";
     if (isGenerating) currentRunProvider = currentSessionProvider;
-    alignProfileToSessionProvider(currentSessionProvider);
     return;
   }
 
@@ -6820,7 +6890,7 @@ function scheduleQueuedFollowUpDrain(delayMs = 0) {
   clearTimeout(followUpDrainTimer);
   followUpDrainTimer = setTimeout(() => {
     followUpDrainTimer = null;
-    if (isGenerating || !queuedFollowUps.size || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (isSyncPending || isGenerating || !queuedFollowUps.size || !ws || ws.readyState !== WebSocket.OPEN) return;
     if (editingQueuedId) return;
     const next = queuedFollowUps.forConversation(currentConvId)[0];
     if (!next) return;
@@ -7298,10 +7368,26 @@ const historyDropdown = document.getElementById("history-dropdown");
 const historyBackdrop = document.getElementById("history-backdrop");
 
 async function deleteConversation(id) {
-  try { await fetch(`api/history/${id}`, { method: "DELETE" }); } catch { }
+  try {
+    const response = await fetch(`api/history/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("删除失败");
+  } catch {
+    showInlineError("删除对话失败，请重试。");
+    renderHistoryList();
+    return;
+  }
+  queuedFollowUps.clearConversation(id);
+  for (const [requestId, payload] of unackedRequests) if (payload.conversationId === id) clearUnackedRequest(requestId);
   convModelPrefs.delete(id);
   persistConvModelPrefs();
-  if (currentConvId === id) { currentConvId = null; currentConversationMeta = null; resetCursor(); }
+  if (currentConvId === id) {
+    resetAssistantState(); clearAskUserQuestion();
+    messageLog = []; messagesEl.innerHTML = "";
+    currentSessionId = null; currentSessionProvider = null; currentSessionModel = null;
+    currentRunId = null; activeRequestId = null; setGenerating(false);
+    beginConversationDraft();
+    sendHello();
+  }
   if (syncCursor.conversationId === id) resetCursor();
   if (_historyCache !== null) {
     _historyCache = _historyCache.filter(h => h.id !== id);
@@ -7345,17 +7431,29 @@ function renderConversationMessages(conv) {
 }
 
 async function loadConversation(conv) {
+  const loadVersion = ++conversationLoadVersion;
   rememberConvModelPrefs();
   await saveCurrentConversation();
+  if (loadVersion !== conversationLoadVersion) return;
   clearAskUserQuestion();
   clearMentionFiles();
   // 列表接口只返回摘要，点击时按需拉取完整内容
   if (!conv.messages) {
     try {
       const res = await fetch(`api/history/${conv.id}`);
-      if (res.ok) conv = await res.json();
-    } catch { }
+      if (!res.ok) throw new Error("历史对话加载失败");
+      conv = await res.json();
+    } catch {
+      if (loadVersion === conversationLoadVersion) alert("历史对话加载失败，请重试。");
+      return;
+    }
   }
+  if (loadVersion !== conversationLoadVersion) return;
+  resetAssistantState();
+  currentRunId = null;
+  activeRequestId = null;
+  setGenerating(false);
+  currentConversationMeta = conv;
   renderConversationMessages(conv);
   currentConvId = conv.id;
   editingQueuedId = null;
@@ -7373,28 +7471,17 @@ async function loadConversation(conv) {
         ? (["codex", "antigravity"].includes(savedProfile.provider) ? savedProfile.provider : "claude")
         : null;
   applyConvModelPrefs(conv);
-  if (currentSessionProvider) {
-    alignProfileToSessionProvider(currentSessionProvider, conv.profileId);
-  }
-  if (conv.sessionId && ws && ws.readyState === WebSocket.OPEN) {
-    const payload = {
-      setSession: conv.sessionId,
-      model: conv.model ?? null,
-    };
-    if (currentSessionProvider) payload.sessionProvider = currentSessionProvider;
-    ws.send(JSON.stringify(payload));
-  } else if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ reset: true }));
-  }
   sendHello();
   closeHistoryPanel();
   scrollBottom();
 }
 
 async function startNewConversation() {
+  const loadVersion = ++conversationLoadVersion;
   editingQueuedId = null;
   rememberConvModelPrefs();
   await saveCurrentConversation();
+  if (loadVersion !== conversationLoadVersion) return;
   clearAskUserQuestion();
   clearMentionFiles();
   messagesEl.innerHTML = "";
@@ -7521,7 +7608,7 @@ function startInlineRename(item, convId) {
         fetch(`api/history/${convId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(conv),
+          body: JSON.stringify({ id: convId, title: newTitle }),
         }).catch(() => {});
       }
     }

@@ -40,13 +40,13 @@ const PROBE_PROFILES = {
 };
 
 // 起一个隔离的 server.js：临时 data 目录 + 临时 auth-profile，绝不碰真实 vault/凭证
-async function startServer() {
+async function startServer({ mockSdk = false } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-chat-test-"));
   const authFile = join(scratch, "auth-profile.json");
   await writeFile(authFile, JSON.stringify(PROBE_PROFILES), "utf8");
   const port = await reservePort();
 
-  const child = spawn(process.execPath, ["server.js"], {
+  const child = spawn(process.execPath, [...(mockSdk ? ["--experimental-loader", new URL("fixtures/sdk-loader.mjs", HERE).pathname] : []), "server.js"], {
     cwd: HERE,
     env: {
       ...process.env,
@@ -298,13 +298,13 @@ test("领回未知的 run 会收到 run_not_found 而不是静默丢弃", { time
 });
 
 test("相同 userMessageId 重发只回 ACK，不重复写入或执行", { timeout: 30_000 }, async () => {
-  const server = await startServer();
+  const server = await startServer({ mockSdk: true });
   let ws;
   try {
     const conn = await connect(server.port);
     ws = conn.ws;
     const payload = {
-      prompt: "request-idempotency-probe",
+      prompt: "hold",
       displayText: "request-idempotency-probe",
       conversationId: "conv_idempotency_probe",
       userMessageId: "user_idempotency_probe",
@@ -360,4 +360,106 @@ test("相同 userMessageId 重发只回 ACK，不重复写入或执行", { timeo
     ws?.close();
     await server.stop();
   }
+});
+
+let probeId = 0;
+function probeTurn(prompt, conversationId = "lifecycle-conv") {
+  return { prompt, conversationId, userMessageId: `probe-user-${++probeId}`, runId: `probe-run-${probeId}`, profileId: "p_claude", model: "probe-model" };
+}
+async function submitTurn(conn, payload) {
+  const start = conn.events.length;
+  conn.ws.send(JSON.stringify(payload));
+  return waitForMessage(conn.events, e => e.type === "done" && e.userMessageId === payload.userMessageId, start);
+}
+
+test("persistent Claude callbacks use the second turn and survive question reconnect", { timeout: 20000 }, async () => {
+  const server = await startServer({ mockSdk: true });
+  const sockets = [];
+  try {
+    const conn = await connect(server.port); sockets.push(conn.ws);
+    await submitTurn(conn, probeTurn("first"));
+    const second = probeTurn("ask");
+    conn.ws.send(JSON.stringify(second));
+    const question = await waitForMessage(conn.events, e => e.type === "ask_user_question");
+    assert.equal(question.userMessageId, second.userMessageId);
+    const resumed = await connect(server.port); sockets.push(resumed.ws);
+    resumed.ws.send(JSON.stringify({ type: "hello", conversationId: second.conversationId, lastSeq: 0, helloId: 17 }));
+    const sync = await waitForMessage(resumed.events, e => e.type === "sync");
+    const restored = await waitForMessage(resumed.events, e => e.type === "ask_user_question");
+    assert.equal(sync.helloId, 17);
+    assert.equal(sync.turn.status, "running");
+    assert.ok(resumed.events.indexOf(restored) > resumed.events.indexOf(sync));
+    resumed.ws.send(JSON.stringify({ type: "ask_user_question_response", requestId: restored.requestId, answers: { "选哪一个？": "甲" } }));
+    await waitForMessage(resumed.events, e => e.type === "done" && e.userMessageId === second.userMessageId);
+  } finally { sockets.forEach(ws => ws.close()); await server.stop(); }
+});
+
+test("stopping and resetting Claude settle the run; another tab cannot reset it", { timeout: 20000 }, async () => {
+  const server = await startServer({ mockSdk: true });
+  const sockets = [];
+  try {
+    const conn = await connect(server.port); sockets.push(conn.ws);
+    const hold = probeTurn("hold"); conn.ws.send(JSON.stringify(hold));
+    await waitForMessage(conn.events, e => e.type === "stream_event");
+    const other = await connect(server.port); sockets.push(other.ws);
+    other.ws.send(JSON.stringify({ reset: true }));
+    await waitForMessage(other.events, e => e.type === "reset_complete");
+    conn.ws.send(JSON.stringify({ type: "hello", conversationId: hold.conversationId, lastSeq: 0 }));
+    assert.equal((await waitForMessage(conn.events, e => e.type === "sync")).turn.status, "running");
+    const queued = probeTurn("other", "other-conversation"); other.ws.send(JSON.stringify(queued));
+    assert.equal((await waitForMessage(other.events, e => e.type === "request_ack" && e.userMessageId === queued.userMessageId)).state, "queued");
+    conn.ws.send(JSON.stringify({ stop: true }));
+    await waitForMessage(conn.events, e => e.type === "stopped");
+    const history = await (await fetch(`http://127.0.0.1:${server.port}/api/history/${hold.conversationId}`)).json();
+    assert.equal(history.messages.at(-1).text, "partial before stop");
+    assert.equal(history.messages.at(-1).status, "stopped");
+    await submitTurn(other, queued);
+    await submitTurn(conn, probeTurn("next"));
+    const resetHold = probeTurn("hold"); conn.ws.send(JSON.stringify(resetHold));
+    await waitForMessage(conn.events, e => e.type === "stream_event" && e.userMessageId === resetHold.userMessageId);
+    conn.ws.send(JSON.stringify({ reset: true }));
+    await waitForMessage(conn.events, e => e.type === "reset_complete");
+    await submitTurn(conn, probeTurn("after reset", "fresh-conversation"));
+  } finally { sockets.forEach(ws => ws.close()); await server.stop(); }
+});
+
+test("malformed WebSocket payloads cannot crash the service", { timeout: 20000 }, async () => {
+  const server = await startServer({ mockSdk: true }); let ws;
+  try {
+    const conn = await connect(server.port); ws = conn.ws;
+    for (const payload of [null, [], 4, "text", {}, { prompt: "bad", images: {} }, { prompt: "bad", images: [null] }]) ws.send(JSON.stringify(payload));
+    ws.send(JSON.stringify({ type: "ping" }));
+    await waitForMessage(conn.events, e => e.type === "pong");
+    await submitTurn(conn, probeTurn("still works"));
+  } finally { ws?.close(); await server.stop(); }
+});
+
+test("deleting a generating conversation cancels it without recreating its history", { timeout: 20000 }, async () => {
+  const server = await startServer({ mockSdk: true }); let ws;
+  try {
+    const conn = await connect(server.port); ws = conn.ws;
+    const payload = probeTurn("hold", "delete-live"); ws.send(JSON.stringify(payload));
+    await waitForMessage(conn.events, e => e.type === "stream_event");
+    const url = `http://127.0.0.1:${server.port}/api/history/delete-live`;
+    assert.equal((await fetch(url, { method: "DELETE" })).status, 200);
+    await waitForMessage(conn.events, e => e.type === "stopped");
+    await delay(50);
+    assert.equal((await fetch(url)).status, 404);
+    await submitTurn(conn, probeTurn("new", "after-delete"));
+  } finally { ws?.close(); await server.stop(); }
+});
+
+test("foreign browser origins cannot open a WebSocket or delete history", { timeout: 20000 }, async () => {
+  const server = await startServer({ mockSdk: true });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/history/origin-test`, { method: "DELETE", headers: { Origin: "https://foreign.example" } });
+    assert.equal(response.status, 403);
+    await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${server.port}`, { origin: "https://foreign.example" });
+      socket.once("open", () => { socket.close(); reject(new Error("Foreign WebSocket was accepted")); });
+      socket.once("error", error => {
+        try { assert.match(error.message, /403/); resolve(); } catch (error) { reject(error); }
+      });
+    });
+  } finally { await server.stop(); }
 });

@@ -115,40 +115,41 @@ WeChat state and downloaded media are stored below `CLAUDE_CHAT_DATA_DIR`. Treat
 
 ## Provider Process Reuse
 
-All three providers keep one process per conversation instead of starting one per turn.
-Starting a provider process is by far the largest fixed cost in time-to-first-token, and
-it used to be paid again on every message.
+Claude uses an Agent SDK persistent query, and Antigravity uses a persistent
+stream-json process. Antigravity waits for its previous process to close before
+restarting with changed parameters.
 
-Measured on one machine, same account, same network (a Windows box behind an HTTP proxy):
+ChatGPT membership conversations always use Codex SDK for both text and images.
+Each turn starts a fresh codex exec process. Subsequent turns resume the saved
+thread ID, preserving conversation history. There is no app-server routing or
+fallback, and legacy CODEX_PERSISTENT / CODEX_APP_SERVER_BIN settings have no effect.
+The tradeoff is repeated process and MCP initialization on each turn (previously
+measured at about 3.3 seconds on one Windows machine; actual latency varies).
 
-| Provider | Mechanism | First turn | Later turns |
-| --- | --- | --- | --- |
-| Claude | Agent SDK persistent `query` | ~2-3 s | reused |
-| Codex | `codex app-server` JSON-RPC over stdio | ~3 s (`thread/start`, incl. MCP servers) | ~70 ms to `turn/started` |
-| Antigravity | `agy --input-format stream-json` | 11-20 s to `init` | ~0.2 s to the first step |
+## Per-Conversation Model Selection
 
-The Antigravity number is the one that mattered most: `agy` spends 11 to 20 seconds
-starting up before it looks at the prompt at all. End-to-end, first token went from
-13.8 s to 1.6 s on the second and later turns of the same conversation.
+Provider account, model, and reasoning effort are remembered per conversation
+rather than globally. Changing the model in one conversation does not move any
+other conversation.
 
-For Codex the expensive part is the MCP servers declared in `~/.codex/config.toml`;
-every `codex exec` restarted all of them.
+The selection is stored in two places. The browser keeps the most recent 60
+conversations in `localStorage` (`convModelPrefs-v1`), and each conversation
+record in the server history carries `profileId`, `model`, and `effort` next to
+its `sessionId` and `sessionProvider`. Opening a conversation prefers the local
+entry, because it is written on every change; when there is none — a different
+machine, cleared site data, or a conversation older than the local cap — the
+server record is adopted and written back to `localStorage`. A `profileId`
+pointing at a deleted account is ignored, and the conversation falls back to the
+account that supplies its model.
 
-A process is retired when the parameters baked into its command line change (model,
-reasoning effort, permission mode, working directory) or when the conversation is
-reset. Model and reasoning effort do not retire the Codex process: `turn/start` accepts
-them per turn.
-
-`codex app-server` is marked experimental upstream, so that path is wired in parallel
-rather than as a replacement. If it fails to start, fails the handshake, or dies
-mid-turn *before any output reached the client*, the server logs it, marks the path
-unusable for the rest of the process, and falls back to the original per-turn
-`codex-sdk` path. Turns that fail on the model's side (usage limits, content policy)
-are reported to the user as-is and never trigger that fallback. Set `CODEX_PERSISTENT=0`
-to skip the persistent path entirely.
-
-Requests carrying images always take the `codex-sdk` path: the app-server image input
-takes a URL, and only the SDK's `local_image` handling is verified here.
+Switching models keeps the earlier conversation. Within one provider the native
+session continues, so context is never re-sent: Claude applies the new model to
+the live query, Codex resumes the saved thread, and Antigravity restarts its
+process with `--conversation`. When the target provider has no native session for
+that conversation — switching vendors, or opening a conversation last used
+elsewhere — the server prepends the recent visible text of the conversation to
+the prompt (`conversation-context.js`). Tool calls, thinking, and raw SDK payloads
+are never included, and the stored user messages are not rewritten.
 
 ## Configuration
 
@@ -161,7 +162,6 @@ takes a URL, and only the SDK's `local_image` handling is verified here.
 | `CLAUDE_CHAT_DATA_DIR` | `claude-chat/data` | Sessions, history, schedules, run logs, WeChat state, media, and Codex thread data. |
 | `CLAUDE_CHAT_AUTH_PROFILE_FILE` | `claude-chat/auth-profile.json` | Provider profiles and API keys. |
 | `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history.json` | Optional override for the merged conversation history file. |
-| `CODEX_PERSISTENT` | `1` | Set to `0` to disable the persistent `codex app-server` and always spawn a fresh `codex exec` per turn. See Provider Process Reuse. |
 | `AGY_PRINT_TIMEOUT` | `8760h` | Per-turn timeout handed to the Antigravity CLI. The persistent process has no other deadline; stopping is the user's job. |
 | `DESKTOP_AGENT_TOKEN` | empty | Tauri-only access token for embedded HTTP/WebSocket requests. Set by the desktop host, not by normal deployments. |
 | `WECHAT_CDN_BASE_URL` | Tencent CDN URL | Override for WeChat media downloads. |

@@ -14,7 +14,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
 import { PersistentQueryRuntime, SteeringQueue, isTaskLifecycleEvent } from "./agent-session.js";
-import { PersistentCodexRuntime } from "./codex-runtime.js";
+import { stopRuntime } from "./runtime-stop.js";
 import {
   PersistentAgyRuntime,
   AGY_PRINT_TIMEOUT,
@@ -73,7 +73,6 @@ const sessions = new SessionRegistry({
       },
     }),
     createAgyRuntime: () => new PersistentAgyRuntime({ killProcess: killAgyProcess }),
-    createCodexRuntime: () => new PersistentCodexRuntime({ killProcess: killAgyProcess }),
   }),
   isBusy: (candidate) => sessionIsBusy(candidate),
 });
@@ -419,151 +418,6 @@ function createAgyEventSender(send) {
   return (ev) => { for (const out of translate(ev)) send(out); };
 }
 
-/* ── 常驻 codex（app-server）────────────────────────────────
-   codex-sdk 每轮 runStreamed 都 spawn 一个 `codex exec`，实测到 thread.started
-   要 3.3 秒；最贵的一段是把用户 ~/.codex/config.toml 里配的 MCP server 全部
-   重启一遍。常驻之后这些只在开进程时付一次，之后每轮 turn/start 到开跑只要
-   70 毫秒左右。详见 codex-runtime.js 顶部。
-
-   协议是 experimental，所以这条路是并联而不是替换：起不来就整个退回 SDK。 */
-
-/** 常驻这条路关掉的开关。出了怪问题时可以一键退回老路径。 */
-const CODEX_PERSISTENT_ENABLED = process.env.CODEX_PERSISTENT !== "0";
-
-/* app-server 试过之后发现用不了，就别再一遍遍地试——每次失败都要白等一个
-   进程起来的时间。按 sidecar 进程记一次，重启应用会重新给它一次机会。 */
-let _codexPersistentBroken = false;
-
-function codexAppServerBinary() {
-  /* 指定一个别的可执行文件。留这个口子一半是为了测试（喂一个假的 app-server
-     进来，就能在不烧额度的前提下跑通整条翻译链路），一半是给「想用自己那份
-     codex」的人。 */
-  if (process.env.CODEX_APP_SERVER_BIN) return process.env.CODEX_APP_SERVER_BIN;
-  /* 默认跟着 SDK 自带的那个二进制走，而不是 PATH 上的 codex：模型清单、鉴权、
-     协议版本都得跟 @openai/codex-sdk 对得上（providers/codex.js 里那段关于
-     models_cache.json 的注释说的是同一件事）。 */
-  const platformPackage = `codex-${process.platform}-${process.arch}`;
-  const target = process.platform === "win32" ? "x86_64-pc-windows-msvc"
-    : process.platform === "darwin" ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
-    : (process.arch === "arm64" ? "aarch64-unknown-linux-musl" : "x86_64-unknown-linux-musl");
-  const exe = process.platform === "win32" ? "codex.exe" : "codex";
-  const candidate = join(__dirname, "node_modules", "@openai", platformPackage, "vendor", target, "bin", exe);
-  return existsSync(candidate) ? candidate : null;
-}
-
-/** thread 级参数的指纹。模型和推理档位不在里面——那两个每轮单独传就行。 */
-function codexThreadSignature({ cwd, permissionMode }) {
-  return JSON.stringify({ cwd, permissionMode });
-}
-
-/** 收掉这个对话的 codex app-server。没建过就什么都不做。 */
-function killCodexRuntime() {
-  if (!session.hasCodexRuntime) return;
-  try { session.codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
-  session.codexThreadSignature = null;
-}
-
-/**
- * 用常驻 app-server 跑一轮 Codex。
- *
- * 事件翻完之后走的还是 sendCodexItemEvent，跟 SDK 那条路发出去的是同一批
- * wire 事件，前端和历史都分不出这轮是走哪条路跑的。
- *
- * @returns {Promise<{usage}>}
- * @throws 起不来 / 协议对不上时抛，调用方负责退回 SDK
- */
-async function runCodexPersistentTurn({
-  input,
-  cwd,
-  permissionMode,
-  effort,
-  model,
-  signal,
-  send,
-  isCurrentTurn,
-  onProduced,
-}) {
-  const bin = codexAppServerBinary();
-  if (!bin) throw new Error("找不到 codex 二进制（@openai/codex-<platform> 没装上）");
-
-  const runtime = session.codexRuntime;
-  if (!runtime.started) {
-    runtime.start({
-      signature: bin,
-      spawn: () => spawnWithHiddenConsole(bin, [
-        "app-server",
-        // 同 CODEX_CLIENT_OPTIONS：压掉每轮开头那条 under-development 提醒。
-        // 走 -c 而不是改 ~/.codex/config.toml，那是用户自己的全局配置。
-        "-c", "suppress_unstable_features_warning=true",
-        /* 刻意不给进程设 cwd：这个进程要服务这个对话之后的每一轮，而工作目录
-           是 thread 级的参数（thread/start 的 cwd），进程自己钉在哪个目录上
-           反而会误导——signature 里也没有 cwd，进程不会因为换目录而重起。 */
-      ], { windowsHide: true, env: { ...process.env } }),
-    });
-    await runtime.initialize({ name: "inkfellow", title: "Inkfellow", version: "1.0.0" });
-    session.codexThreadSignature = null;
-    // 同 agy 那条日志：常驻一旦悄悄失效，用户只会觉得「怎么又变慢了」
-    console.log("[codex] 起新的 app-server 进程");
-  }
-
-  const threadSignature = codexThreadSignature({ cwd, permissionMode });
-  const threadParams = {
-    cwd,
-    approvalPolicy: "never",
-    sandbox: codexSandboxMode(permissionMode),
-  };
-  /* 工作目录或权限模式变了，手上这条 thread 就是按旧参数建的，得重开一条。
-     清掉 runtime.threadId 让 ensureThread 走 resume/start，而不是直接复用。 */
-  if (session.codexThreadSignature !== threadSignature) runtime.threadId = null;
-  const { threadId } = await runtime.ensureThread({
-    threadId: session.codexThreadId,
-    params: threadParams,
-  });
-  session.codexThreadSignature = threadSignature;
-  if (threadId !== session.codexThreadId) {
-    saveCodexThread(threadId);
-    if (isCurrentTurn()) send({ type: "session", sessionId: threadId, provider: "codex" });
-  }
-
-  let statusSent = false;
-  const result = await runtime.runTurn({
-    input,
-    params: {
-      ...(model ? { model } : {}),
-      effort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
-    },
-    signal,
-    onEvent: (method, params) => {
-      if (!isCurrentTurn()) return;
-      if (method === "turn/started") {
-        if (statusSent) return;
-        statusSent = true;
-        send({ type: "system", subtype: "status", status: "requesting" });
-        return;
-      }
-      const sdkEventType = codexProvider.fromAppServerMethod(method);
-      if (!sdkEventType) return;
-      const item = codexProvider.fromAppServerItem(params?.item);
-      // 认不出的 item 类型直接跳过——app-server 比 SDK 多出好些新类型，
-      // 一股脑塞给前端只会渲染成一堆看不懂的卡片
-      if (!item) return;
-      onProduced?.();
-      sendCodexItemEvent(send, sdkEventType, item);
-    },
-  });
-
-  const turn = result.turn;
-  if (turn?.status === "failed" || turn?.error) {
-    /* 这是模型那边说不行（额度用完、内容策略、上游报错），不是常驻这条路的毛病。
-       打上标记让调用方直接把话转给用户——退回 SDK 重跑一遍只会再失败一次，
-       用户白等一轮，额度白烧一次。 */
-    const err = new Error(turn?.error?.message || turn?.error || "Codex 请求失败");
-    err.codexTurnFailed = true;
-    throw err;
-  }
-  return { usage: result.usage };
-}
-
 // ── Antigravity CLI（agy）────────────────────────────────
 // 官方没出 Node SDK（只有 Python 版，而且那个不认 CLI 的登录、只认 API key），
 // 所以这里走官方文档化的 headless 模式：起子进程，读 stream-json。
@@ -773,7 +627,7 @@ async function runAgyPersistent({
     const resumeConversationId = session.agyConversationId;
     const signature = agyRuntimeSignature({ bin, cwd, model, effort, permissionMode });
     const reusable = runtime.started && agyRuntimeReusable(runtime, signature, resumeConversationId);
-    if (runtime.started && !reusable) runtime.kill();
+    if (runtime.proc && !reusable) await stopRuntime(runtime);
     /* 每轮记一句「接着用」还是「重起」。常驻这条路一旦悄悄失效，用户只会觉得
        「怎么又变慢了」，没有别的信号能看出来。 */
     console.log(`[agy] ${reusable ? "复用常驻进程" : "起新进程"}（会话 ${resumeConversationId ?? "新建"}）`);
@@ -4028,9 +3882,13 @@ const http = createServer((req, res) => {
   // ── REST API: history ─────────────────────────────────────
   if (url === "/api/history" && method === "GET") {
     const history = readHistory();
-    // 列表只返回摘要，不带消息内容，避免传输几MB JSON
-    const summaries = history.map(({ id, title, date, sessionId, sessionProvider, messages }) => ({
+    /* 列表只返回摘要，不带消息内容，避免传输几MB JSON。
+       model/effort/profileId 是这条对话上次用的那套选择：前端的 localStorage
+       只存最近 60 条、且换台机器或清一次缓存就没了，而历史能存很久——从历史
+       里翻出一条旧对话时，还原模型只能靠这里这份。 */
+    const summaries = history.map(({ id, title, date, sessionId, sessionProvider, model, effort, profileId, messages }) => ({
       id, title, date, sessionId: sessionId ?? null, sessionProvider: sessionProvider ?? null,
+      model: model ?? null, effort: effort ?? null, profileId: profileId ?? null,
       messageCount: messages ? messages.length : 0,
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -5423,11 +5281,10 @@ wss.on("connection", (ws) => {
       clearSession();
       clearCodexThread();
       clearAgyConversation();
-      /* 两家的常驻进程都绑死在一条会话上，重置之后那条上下文就不是用户要的了。
+      /* 常驻进程绑定会话，重置后关闭旧进程。
          不 kill 也不会串台（下一轮各自的复用检查都会对不上），但那样会白留
          一个进程挂在后台等指令。 */
       killAgyRuntime();
-      killCodexRuntime();
       if (session.abortCtrl) { session.abortCtrl.abort(); session.abortCtrl = null; }
       session.claudeRuntime.close();
       forgetClaudeRuntimeBinding();
@@ -6085,41 +5942,8 @@ wss.on("connection", (ws) => {
       );
       const codexImages = msg.images ?? (msg.image ? [msg.image] : []);
       (async () => {
-        /* 已经往前端吐过东西的那一轮不能重跑：退回 SDK 会把同一段回答再发一遍。
-           声明在 try 外面，catch 里要读它。 */
-        let persistentProduced = false;
+        // 文字和图片共用 SDK 生命周期，并续接同一个已保存的 thread ID。
         try {
-          /* 常驻优先。带图那一轮直接走 SDK：app-server 的图片入参是个 url，
-             本地文件路径能不能喂进去没验证过，而 SDK 的 local_image 是跑通了的。 */
-          if (CODEX_PERSISTENT_ENABLED && !_codexPersistentBroken && codexImages.length === 0) {
-            try {
-              const { usage } = await runCodexPersistentTurn({
-                input: [{ type: "text", text: providerPrompt }],
-                cwd: resolvedCwd,
-                permissionMode,
-                effort,
-                model: msg.model || null,
-                signal: ac.signal,
-                send,
-                isCurrentTurn: isCurrentCodexTurn,
-                onProduced: () => { persistentProduced = true; },
-              });
-              if (!isCurrentCodexTurn()) return;
-              send({ type: "result", subtype: "success", usage: usage ?? null, provider: "codex" });
-              send({ type: "done" });
-              completeClientRequest("complete", requestId);
-              return;
-            } catch (err) {
-              // 模型自己说不行的，原样报给用户；只有这条路本身出问题才退回 SDK
-              if (err?.name === "AbortError" || err?.codexTurnFailed || persistentProduced) throw err;
-              /* app-server 是 experimental，起不来、协议对不上、跑一半崩了，
-                 都在这里兜住：本进程之后一律走 SDK。慢，但不会断。 */
-              _codexPersistentBroken = true;
-              console.warn(`[codex] app-server 用不了，本进程之后退回 SDK 逐轮启动：${String(err?.message || err).slice(0, 300)}`);
-              killCodexRuntime();
-            }
-          }
-
           const codex = new Codex(CODEX_CLIENT_OPTIONS);
           const threadOptions = {
             workingDirectory: resolvedCwd,

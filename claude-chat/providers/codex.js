@@ -288,7 +288,7 @@ const PROGRESS_ITEM_TYPES = new Set(["command_execution", "mcp_tool_call", "todo
  * 断言归一化结果。原先内联在 server.js 里时，这段逻辑只能靠人肉跑起来验证。
  */
 /* ── app-server 的形状 → SDK 的形状 ──────────────────────────
-   常驻那条路（codex-runtime.js）走的是 `codex app-server` 的 JSON-RPC，
+   历史常驻实现（codex-runtime.js，现仅用于回归测试）走的是 `codex app-server` 的 JSON-RPC，
    通知和 item 跟 SDK 的 thread event 同源，但命名风格换了一套：
 
      item.completed          ←→  item/completed

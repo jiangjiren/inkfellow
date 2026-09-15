@@ -1,7 +1,12 @@
 /**
  * ══════════════════════════════════════════════════════════════════════
- * PersistentCodexRuntime —— 一个 codex app-server 进程连续跑多轮
+ * PersistentCodexRuntime —— 已退出生产路径的 app-server 协议实现
  * ══════════════════════════════════════════════════════════════════════
+ *
+ * 仅保留给 codex-runtime.test.js 的协议回归测试和 runtime-stop.test.js 的
+ * 进程退出测试。生产环境的文字、图片统一走 Codex SDK，避免混用两条生命周期
+ * 导致同一 thread 的 active writer 冲突。ConversationSession 不再提供此入口。
+ * 以下性能数据和设计说明来自旧实现，不代表当前生产路由。
  *
  * codex-sdk 的 Thread 每次 runStreamed 都 spawn 一个 `codex exec`，于是每轮
  * 对话都要从头付一遍启动开销。实测（同一台机器，同一个账号）：
@@ -18,10 +23,7 @@
  * `codex app-server daemon` 在 Windows 直接报 "only supported on Unix"。
  * 剩下能常驻的就是自己起 `codex app-server`，跟它说行分隔的 JSON-RPC。
  *
- * ── 协议是 experimental，所以留了退路 ────────────────────────
- * `codex app-server` 官方标着 [experimental]，方法名和事件形状都可能随版本
- * 变。所以这条路不是替换而是并联：起不来、握手失败、跑一半崩了，调用方都能
- * 退回原来的 codex-sdk 路径（见 server.js 的 codex 分支）。宁可慢，不可断。
+ * 旧实现曾与 SDK 并联并提供失败回退；server.js 现已移除这条路由。
  *
  * ── 事件形状 ──────────────────────────────────────────────
  * app-server 的通知和 SDK 的 thread event 是同源的，只是命名风格不同

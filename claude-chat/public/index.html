@@ -4644,6 +4644,12 @@ async function saveCurrentConversation() {
     date: new Date().toISOString(),
     sessionId: currentSessionId,
     sessionProvider: currentSessionProvider,
+    /* 这条对话用的是哪家、哪个模型、哪个档位。localStorage 那份（convModelPrefs）
+       只存最近 60 条，换台机器或清一次缓存就没了；从历史里翻出旧对话时要还原
+       模型，得靠服务端这份。两边都写，本地那份优先——它每次改动都写，更新。 */
+    model: selectedModel,
+    effort: selectedEffort,
+    profileId: activeProfileId(),
   };
   const messageCount = messageLog.length;
   try {
@@ -4909,9 +4915,17 @@ function appendAssistantBlock(body, block) {
   if (block.type === "squad") {
     // 从实例状态重建整张卡 —— assistant 事件的全量重渲染不会丢展开态。
     // 历史回放时实例已不在（新会话），用 block 里的快照还原。
+    const scopedId = scopedSquadId(block.squadId);
     let card = squadCards.get(block.squadId);
-    if (!card && block.snapshot) card = SquadCard.fromSnapshot(block.squadId, block.snapshot);
-    if (card) body.appendChild(card.render());
+    if (card?.ownerConversationId !== currentConvId) card = squadCards.get(scopedId);
+    if (!card && block.snapshot) card = SquadCard.fromSnapshot(scopedId, block.snapshot);
+    if (card) {
+      block.squadId = card.id;
+      card.block = block;
+    }
+    /* 只画露过面的卡。块在 spawn 时就登记了（切走前的快照要有它），但 800ms
+       内跑完的派生当轮从没出过卡，全量重渲染和历史回放也不该把它画出来。 */
+    if (card?.shown) body.appendChild(card.render());
     return;
   }
 
@@ -5516,6 +5530,21 @@ const squadTaskAlias = new Map();   // task_id -> 归一后的项 id
    识别靠正文里回带的 task_id，不靠那句英文：换措辞或换语言都不受影响，
    而同步执行的派生返回真结果时不含这个 id，照常 settle。 */
 const asyncAgentItems = new Map();
+function scopedSquadId(id) {
+  const prefix = `${currentConvId}:`;
+  let bareId = String(id);
+  while (bareId.startsWith(prefix)) bareId = bareId.slice(prefix.length);
+  return prefix + bareId;
+}
+const settledSquadItems = new Map();
+function rememberSettledSquadItem(id, conversationId) {
+  const key = JSON.stringify([conversationId, id]);
+  settledSquadItems.set(key, true);
+  if (settledSquadItems.size > 2048) settledSquadItems.delete(settledSquadItems.keys().next().value);
+}
+function wasSquadItemSettled(id, conversationId) {
+  return settledSquadItems.has(JSON.stringify([conversationId, id]));
+}
 let activeSquad = null;
 let squadSeq = 0;
 
@@ -5664,10 +5693,15 @@ class SquadCard {
     this.finishedAt = 0;
     this.mountArmed = false;
     this.block = null;
+    /* 这张卡露过面没有。登记进历史（ensureBlock）必须赶在 SHOW_DELAY 之前——
+       否则切走时快照里没有它；但"登记了"不等于"该画出来"：短任务当轮不出卡，
+       历史回放也不该凭空多出一张。渲染只认这个标记，由 mount() 置位。 */
+    this.shown = false;
     // 这张卡属于哪一轮请求。后台子任务允许跨回合存活（见 resetSquads），
     // 所以"停止/出错时收尾卡片"必须只收本轮的，否则会把上一轮真在跑的任务
     // 误标成已停止，之后真实进度到达时又因状态已终结被忽略，UI 永久失真。
     this.ownerRequestId = typeof activeRequestId !== "undefined" ? activeRequestId : null;
+    this.ownerConversationId = currentConvId;
   }
 
   has(id) { return this.state.has(id); }
@@ -5683,15 +5717,17 @@ class SquadCard {
   }
 
   spawn(id, label, origin = null) {
-    if (this.state.has(id)) return;
+    if (this.state.has(id) || wasSquadItemSettled(id, this.ownerConversationId)) return;
     this.state.set(id, { status: "running", steps: [], result: null, origin, startAt: Date.now(), endAt: 0 });
     this.labels.set(id, label);
     this.order.push(id);
     squadOfTask.set(id, this.id);
+    // 历史登记不能等 800ms 的视觉延迟，否则切走前的快照会漏掉这张卡。
+    this.ensureBlock();
     if (this.el) this.addRow(id, this.order.length - 1);
     // 跨厂商归属是产品语义，不应被“短任务不闪卡”的延迟规则吞掉；
     // 即使很快完成，也要让用户一眼看到这段工作由谁执行。
-    else if (origin) this.mount();
+    else if (origin && this.ownerConversationId === currentConvId) this.mount();
     else this.armMount();
     this.refresh();
     this.syncBlock();
@@ -5702,7 +5738,8 @@ class SquadCard {
     if (this.mountArmed) return;
     this.mountArmed = true;
     setTimeout(() => {
-      if (this.counts.live > 0 && !this.el) this.mount();
+      this.mountArmed = false;
+      if (this.ownerConversationId === currentConvId && this.counts.live > 0 && !this.el) this.mount();
     }, SHOW_DELAY);
   }
 
@@ -5718,6 +5755,7 @@ class SquadCard {
   /* 子任务的进度由活动条报，gen chip 让位。同一件事在两处喊，眼睛不知道看哪个 ——
      而且 gen chip 长在消息流里，会随消息滚走，活动条不会。 */
   syncChip() {
+    if (this.ownerConversationId !== currentConvId) return;
     if (this.counts.live > 0) updateGenChip("");
   }
 
@@ -5725,6 +5763,10 @@ class SquadCard {
     const s = this.state.get(id);
     if (!s || s.status === "done" || s.status === "failed") return;
     s.status = status;
+    rememberSettledSquadItem(id, this.ownerConversationId);
+    for (const [taskId, itemId] of squadTaskAlias) {
+      if (itemId === id) rememberSettledSquadItem(taskId, this.ownerConversationId);
+    }
     s.result = result;
     if (origin) s.origin = origin;
     // 自动派发时是否续接只能从结果里得知，这时才把标记补到标题上。
@@ -5747,7 +5789,7 @@ class SquadCard {
   /* 把自己登记成一个 assistantBlock：既支撑 assistant 事件的全量重渲染，
      也让快照进入历史，刷新后仍能把卡片还原出来 */
   ensureBlock() {
-    if (this.block) return;
+    if (this.block || this.ownerConversationId !== currentConvId) return;
     this.block = { type: "squad", squadId: this.id, snapshot: this.snapshot() };
     assistantBlocks.push(this.block);
   }
@@ -5760,6 +5802,10 @@ class SquadCard {
       state: [...this.state].map(([k, v]) => [k, { status: v.status, result: v.result, origin: v.origin ?? null, steps: [...v.steps], startAt: v.startAt, endAt: v.endAt }]),
       startAt: this.startAt,
       finishedAt: this.finishedAt,
+      ownerRequestId: this.ownerRequestId,
+      shown: this.shown,
+      taskAliases: [...squadTaskAlias].filter(([, itemId]) => this.has(itemId)),
+      asyncItems: [...asyncAgentItems].filter(([itemId]) => this.has(itemId)),
     };
   }
 
@@ -5777,13 +5823,23 @@ class SquadCard {
     }]));
     card.startAt = snap.startAt ?? Date.now();
     card.finishedAt = snap.finishedAt ?? 0;
+    card.ownerRequestId = snap.ownerRequestId ?? null;
+    // 老快照只有 mount 过才存在，缺这个字段的一律当已露过面
+    card.shown = snap.shown ?? true;
+    for (const itemId of card.order) squadOfTask.set(itemId, id);
+    for (const [taskId, itemId] of snap.taskAliases ?? []) squadTaskAlias.set(taskId, itemId);
+    for (const [itemId, taskId] of snap.asyncItems ?? []) asyncAgentItems.set(itemId, taskId);
     squadCards.set(id, card);
     return card;
   }
 
   mount() {
-    if (this.el) return;
+    if (this.el || this.ownerConversationId !== currentConvId) return;
+    this.shown = true;
     this.ensureBlock();
+    // 块可能是 spawn 时建的，那份快照里 shown 还是 false；立刻刷一遍，
+    // 免得刚挂上就切走、DOM 缓存又被淘汰时，回放按旧快照把卡藏掉。
+    this.syncBlock();
     if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
     // typing 一走，进行中指示器必须立刻接上，否则会出现一段
     // "正在跑、但消息流里看不出在跑"的空窗
@@ -6054,7 +6110,7 @@ class SquadCard {
         this.el.classList.add("done");
         this.paintSummary();
         this.syncBlock();   // 把定格的耗时一起写进历史快照
-        scrollBottom();
+        if (this.ownerConversationId === currentConvId) scrollBottom();
       }, 420);
     }, wait);
   }
@@ -6071,6 +6127,7 @@ class SquadCard {
  */
 function settleRunningSquadTasks(reason = "已停止", requestId = null) {
   for (const card of squadCards.values()) {
+    if (card.ownerConversationId !== currentConvId) continue;
     // 只收本轮的卡。跨回合存活的后台任务不归这次停止管——它们还在真跑，
     // 标成"已停止"之后真实进度到达时会被 settle 的终态判断吞掉，UI 就再也
     // 追不回来了。owner 为空的是早于本机制创建的卡，保守起见也放过。
@@ -6087,6 +6144,53 @@ function settleRunningSquadTasks(reason = "已停止", requestId = null) {
 function squadOwning(itemId) {
   const card = squadCards.get(squadOfTask.get(itemId));
   return card?.has(itemId) ? card : null;
+}
+
+// tool_use_id 是可选字段，可能直到完成通知才出现。补别名时也要搬走旧行。
+function linkSquadTask(taskId, toolUseId) {
+  const oldId = squadTaskAlias.get(taskId) ?? taskId;
+  const oldCard = squadOwning(oldId);
+  const target = squadOwning(toolUseId) ?? oldCard;
+  squadTaskAlias.set(taskId, toolUseId);
+  if (!oldCard || !target || oldId === toolUseId) return;
+  const oldState = oldCard.state.get(oldId);
+  const existing = target.state.get(toolUseId);
+  if (!existing) {
+    target.state.set(toolUseId, oldState);
+    target.labels.set(toolUseId, oldCard.labels.get(oldId));
+    const oldIndex = target === oldCard ? target.order.indexOf(oldId) : -1;
+    target.order.splice(oldIndex < 0 ? target.order.length : oldIndex, 0, toolUseId);
+  } else {
+    existing.steps = [...oldState.steps, ...existing.steps];
+    if (existing.status === "running" && oldState.status !== "running") {
+      Object.assign(existing, oldState, { steps: existing.steps });
+    }
+  }
+  oldCard.state.delete(oldId);
+  oldCard.labels.delete(oldId);
+  oldCard.order = oldCard.order.filter(id => id !== oldId);
+  if (oldCard.openId === oldId) oldCard.openId = null;
+  squadOfTask.delete(oldId);
+  squadOfTask.set(toolUseId, target.id);
+  if (target.state.get(toolUseId)?.status !== "running") {
+    rememberSettledSquadItem(toolUseId, target.ownerConversationId);
+    rememberSettledSquadItem(taskId, target.ownerConversationId);
+  }
+  if (asyncAgentItems.delete(oldId)) asyncAgentItems.set(toolUseId, taskId);
+  for (const card of new Set([oldCard, target])) {
+    card.syncBlock();
+    if (card.el?.isConnected) card.el.replaceWith(card.render());
+  }
+}
+
+// 只更新已有的后台卡片，绝不能把旧请求的内容写进当前 assistantBlocks。
+function ingestOwnedTaskEvent(ev) {
+  if (!TASK_EVENT_TYPES.has(taskEventType(ev))) return false;
+  const taskId = taskEventId(ev);
+  const itemId = ev.tool_use_id ?? ev.toolUseID ?? squadTaskAlias.get(taskId) ?? taskId;
+  const card = squadOwning(itemId) ?? squadOwning(taskId);
+  if (!card || (ev.conversationId && card.ownerConversationId !== ev.conversationId)) return false;
+  return subagentIngest(ev);
 }
 
 // 跨厂商派发的步骤归位：MCP 工具内部没有自己的 tool_use_id，只能靠
@@ -6133,9 +6237,9 @@ function taskIdForDispatchKey(key) {
 }
 
 function currentSquad(create) {
-  if (activeSquad && squadCards.has(activeSquad)) return squadCards.get(activeSquad);
+  if (activeSquad && squadCards.get(activeSquad)?.ownerConversationId === currentConvId) return squadCards.get(activeSquad);
   if (!create) return null;
-  const id = `sq_${++squadSeq}`;
+  const id = `${currentConvId}:sq_${++squadSeq}`;
   const card = new SquadCard(id);
   squadCards.set(id, card);
   activeSquad = id;
@@ -6145,8 +6249,9 @@ function currentSquad(create) {
 /* 回合结束时的清理。后台任务（system/task_*）会跨回合继续跑 —— 主 agent 的
    前台轮结束不代表它们结束，所以还在运行的卡必须留着，否则它后续的
    task_progress / task_notification 会另起一张孤卡。 */
-function resetSquads() {
+function pruneSettledSquads(includeCurrent = false) {
   for (const [id, card] of [...squadCards]) {
+    if (!includeCurrent && card.ownerConversationId === currentConvId) continue;
     if (card.counts.live > 0) continue;          // 仍在后台跑，留着
     squadCards.delete(id);
     for (const [taskId, sid] of [...squadOfTask]) {
@@ -6160,6 +6265,15 @@ function resetSquads() {
   for (const id of [...asyncAgentItems.keys()]) {
     if (!squadOfTask.has(id)) asyncAgentItems.delete(id);
   }
+  for (const [key, ids] of dispatchKeyToTaskId) {
+    const kept = ids.filter(id => squadOfTask.has(id));
+    if (kept.length) dispatchKeyToTaskId.set(key, kept);
+    else dispatchKeyToTaskId.delete(key);
+  }
+}
+
+function resetSquads() {
+  pruneSettledSquads(true);
   activeSquad = null;   // 下一轮的前台派生另起一张，不混进上一轮
   todoListEl = null;
 }
@@ -6189,7 +6303,9 @@ function ensureBgActivityEl() {
 
 function liveBackgroundTasks() {
   let live = 0;
-  squadCards.forEach((card) => { live += card.counts.live; });
+  squadCards.forEach((card) => {
+    if (card.ownerConversationId === currentConvId) live += card.counts.live;
+  });
   return live;
 }
 
@@ -6241,7 +6357,9 @@ function updateBackgroundActivity() {
    同时滤掉 DOM 已失联的（会话切换会清空 #messages），免得点了跳不过去。 */
 function liveSquadCards() {
   const out = [];
-  squadCards.forEach((card) => { if (card.el?.isConnected) out.push(card); });
+  squadCards.forEach((card) => {
+    if (card.ownerConversationId === currentConvId && card.el?.isConnected) out.push(card);
+  });
   return out;
 }
 
@@ -6377,7 +6495,7 @@ function subagentIngest(ev) {
   // ── A · 子 agent 自己的事件：靠 parent_tool_use_id 归位。
   //    默认 forwardSubagentText:false 时这里只有 tool_use/tool_result，
   //    已经够喂 L2；开了才有 text/thinking。无论如何都不该漏进主流。
-  if (ev.parent_tool_use_id) {
+  if (ev.parent_tool_use_id && !TASK_EVENT_TYPES.has(taskEventType(ev))) {
     const card = squadOwning(ev.parent_tool_use_id);
     if (card) {
       for (const b of ev.message?.content ?? []) {
@@ -6395,8 +6513,8 @@ function subagentIngest(ev) {
   if (ev.type === "assistant") {
     const tasks = (ev.message?.content ?? []).filter((b) => b.type === "tool_use" && isSubagentTool(b.name));
     if (tasks.length) {
-      const card = currentSquad(true);
       tasks.forEach((b) => {
+        const card = squadOwning(b.id) ?? currentSquad(true);
         card.spawn(
           b.id,
           isDispatchTool(b.name)
@@ -6431,20 +6549,24 @@ function subagentIngest(ev) {
   }
 
   // ── B · 后台异步任务。可能跨回合回来，先按 taskId 找回它原来那张卡
-  if (ev.type === "system" && TASK_EVENT_TYPES.has(ev.subtype)) {
+  if (TASK_EVENT_TYPES.has(taskEventType(ev))) {
     const taskId = taskEventId(ev);
     /* 归一到 tool_use_id：A2 已经用它建过项了（或稍后会用它来建），
        而子 agent 自身事件的 parent_tool_use_id 也是它 —— 一个键贯穿三条流。 */
     const toolUseId = ev.tool_use_id ?? ev.toolUseID ?? null;
-    if (toolUseId) squadTaskAlias.set(taskId, toolUseId);
+    if (toolUseId) linkSquadTask(taskId, toolUseId);
     const id = squadTaskAlias.get(taskId) ?? taskId;
+    const conversationId = ev.conversationId ?? currentConvId;
+    if (!squadOwning(id) && (wasSquadItemSettled(id, conversationId)
+        || wasSquadItemSettled(taskId, conversationId))) return true;
     const card = squadOwning(id) ?? currentSquad(true);
     const status = String(ev.status ?? ev.patch?.status ?? ev.task?.status ?? "").trim().toLowerCase();
     const desc = taskEventDetail(ev);
     if (!card.has(id)) card.spawn(id, desc || "后台任务");
     if (taskEventIsDone(ev)) {
       asyncAgentItems.delete(id);
-      card.settle(id, (status === "failed" || status === "error") ? "failed" : "done", desc || "已完成");
+      const unsuccessful = ["failed", "error", "stopped", "killed", "cancelled", "canceled"].includes(status);
+      card.settle(id, unsuccessful ? "failed" : "done", desc || (unsuccessful ? "已停止或未成功" : "已完成"));
     } else {
       asyncAgentItems.set(id, taskId);   // 记下 task_id，供识别启动回执
       if (desc) card.step(id, desc);
@@ -6501,6 +6623,7 @@ function handleEvent(ev) {
      它们只用来更新会话列表上的状态点和未读标记。
      没带 conversationId 的是连接级事件（init、快照之类），不受此限。 */
   if (ev.conversationId && currentConvId && ev.conversationId !== currentConvId) {
+    ingestOwnedTaskEvent(ev);
     if (ev.type === "ask_user_question") renderAskUserQuestion(ev);
     if (ev.type === "ask_user_question_cancelled" || ev.type === "ask_user_question_error") {
       clearAskUserQuestion(ev.conversationId, ev.requestId ?? null);
@@ -6668,9 +6791,8 @@ function handleEvent(ev) {
     return;
   }
   if (lifecycleEvent && activeRequestId && ev.userMessageId !== activeRequestId) {
-    // Show cross-turn task progress transiently, but never append A's task block
-    // to B's assistantBlocks/history payload.
-    updateTypingStatus(`后台任务：${taskEventText(ev)}`);
+    // 回合号变化不代表后台任务结束；完成信号仍要落到原来的卡片上。
+    ingestOwnedTaskEvent(ev);
     return;
   }
   if (!lifecycleEvent && activeRequestId) {
@@ -8695,6 +8817,51 @@ function rememberConvModelPrefs() {
     profileId: activeProfileId(),
   });
   persistConvModelPrefs();
+  persistConvPrefsToServer();
+}
+
+/**
+ * 把这套选择补写进服务端那份历史，让「换个模型但这轮没发消息」也留得住。
+ *
+ * 只补服务端已经有的对话：还没发过消息的对话那边没有记录，PUT 会凭空建出一条
+ * 空对话来。那种情况不用管——第一条消息落地时 saveCurrentConversation 会带上。
+ * 刻意带上原来的 date：不带的话服务端会盖一个新的，换个模型就把这条对话顶到
+ * 历史列表最前面去了。
+ */
+function persistConvPrefsToServer() {
+  if (!currentConvId || _historyCache === null) return;
+  const entry = _historyCache.find(h => h.id === currentConvId);
+  if (!entry) return;
+  const pref = { model: selectedModel, effort: selectedEffort, profileId: activeProfileId() };
+  if (entry.model === pref.model && entry.effort === pref.effort && entry.profileId === pref.profileId) return;
+  Object.assign(entry, pref);
+  fetch(`api/history/${currentConvId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...pref, date: entry.date }),
+  }).catch(() => { /* 下一条消息的 saveCurrentConversation 会再带一遍 */ });
+}
+
+/**
+ * 把服务端历史里存的那套选择接回本地。
+ *
+ * localStorage 那份只存最近 60 条，而且换台机器、清一次缓存就整个没了；
+ * 服务端那份跟着对话本身走。所以从历史里翻出一条旧对话时，本地没记录就认它的。
+ * 本地有记录时一律不动——本地每次改模型都写，一定比服务端那份新。
+ */
+function adoptServerConvPrefs(conv) {
+  if (!conv?.id || convModelPrefs.has(conv.id)) return;
+  const pref = {};
+  if (typeof conv.model === "string" && conv.model) pref.model = conv.model;
+  if (typeof conv.effort === "string" && conv.effort) pref.effort = conv.effort;
+  /* 账号可能已经被删了。指着一个不存在的 id 会让 applyConvModelPrefs 每次切进来
+     都白判断一次「它还在吗」，不如不记——那条路会就地退回当前账号。 */
+  if (conv.profileId && _profileData?.profiles?.some(p => p.id === conv.profileId)) {
+    pref.profileId = conv.profileId;
+  }
+  if (!Object.keys(pref).length) return;
+  convModelPrefs.set(conv.id, pref);
+  persistConvModelPrefs();
 }
 
 /** 账号被删了，所有记着它的对话退回默认。留着死 id 只会让每次切进去都白判断
@@ -9136,6 +9303,30 @@ function restoreConversationRuntime(cached) {
        同一段回答从中间劈成两块。 */
     ? [...messagesEl.querySelectorAll(".msg.msg-assistant")].pop() ?? null
     : null;
+  // innerHTML 缓存会复制节点，卡片实例仍指向旧 DOM；重新渲染以恢复引用和按钮。
+  const blocks = [...(cached?.messageLog ?? []).flatMap(message => message.blocks ?? []), ...assistantBlocks];
+  for (const el of messagesEl.querySelectorAll(".squad[data-squad-id]")) {
+    let card = squadCards.get(el.dataset.squadId);
+    if (!card) {
+      const block = blocks.find(block => block.type === "squad" && scopedSquadId(block.squadId) === scopedSquadId(el.dataset.squadId));
+      if (block?.snapshot) {
+        card = SquadCard.fromSnapshot(scopedSquadId(block.squadId), block.snapshot);
+        block.squadId = card.id;
+        card.block = block;
+      }
+    }
+    // DOM 里已经有它，说明这张卡露过面；快照里的 shown 以此为准回填。
+    if (card?.ownerConversationId === currentConvId) {
+      card.shown = true;
+      card.syncBlock();
+      el.replaceWith(card.render());
+    }
+  }
+  // 切走时尚未到显示延迟的卡没有 DOM，必须单独重新排队挂载。
+  for (const card of squadCards.values()) {
+    if (card.ownerConversationId === currentConvId && card.counts.live > 0 && !card.el) card.armMount();
+  }
+  activeSquad = null;
 }
 
 function cacheCurrentConversationView() {
@@ -9663,7 +9854,11 @@ async function loadConversation(conv) {
  *   还得再试一次。
  */
 function finishConversationSwitch(conv, { rebuilt = true } = {}) {
+  pruneSettledSquads();
   updateJumpToLatest();
+  /* 本地没记录的（换了机器、清过缓存、或者早于 60 条上限被挤掉）先把服务端
+     历史里那份接回来，下面这一串反推和 applyConvModelPrefs 才有东西可认。 */
+  adoptServerConvPrefs(conv);
   /* 必须赶在 applyConvModelPrefs() 之前取：那个函数对还没有记录的对话会当场
      把「此刻激活的账号」记成它的，取晚了就再也分不清「这个对话自己记着的
      厂商」和「上一个对话恰好用着的厂商」。 */
@@ -9743,6 +9938,7 @@ async function startNewConversation() {
   currentConvId = genId();
   currentSessionId = null;
   currentSessionProvider = null;
+  updateBackgroundActivity();
   restoreComposerDraft(currentConvId);
   scrollBottom(true);
   /* 新窗口继承你此刻用着的那个模型——多半是接着做同一件事，

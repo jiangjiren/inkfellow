@@ -19,7 +19,7 @@ function fixture() {
     setGenerating() {}, removeTyping() {}, renderSteeringTray() {},
     cacheCurrentConversationView() { c.calls.push("cache"); },
     saveCurrentConversation() { c.calls.push("save"); },
-    handleSteeringEvent() { return false; }, noteBackgroundEvent() {},
+    handleSteeringEvent() { return false; }, noteBackgroundEvent() {}, ingestOwnedTaskEvent() {},
     wsSend(msg) { c.calls.push(msg); }, genId() { return "fragment"; },
     cloneJson: value => JSON.parse(JSON.stringify(value)),
   });

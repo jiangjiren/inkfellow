@@ -23,20 +23,14 @@ export class ConversationSession {
    * @param {function} [options.createRuntime] 造这个会话专属的 Claude 持久 runtime。
    *   懒创建：大多数会话只是躺在历史里，没必要为它们各起一个 SDK 子进程。
    * @param {function} [options.createAgyRuntime] 同上，Antigravity（Gemini）那条路的。
-   * @param {function} [options.createCodexRuntime] 同上，Codex（ChatGPT 会员）那条路的。
    */
-  constructor({ conversationId = null, createRuntime = null, createAgyRuntime = null, createCodexRuntime = null } = {}) {
+  constructor({ conversationId = null, createRuntime = null, createAgyRuntime = null } = {}) {
     this.conversationId = conversationId;
     this._createRuntime = createRuntime;
     this._claudeRuntime = null;
     this._createAgyRuntime = createAgyRuntime;
     this._agyRuntime = null;
-    this._createCodexRuntime = createCodexRuntime;
-    this._codexRuntime = null;
-    /* codex 常驻进程手上那条 thread 是按哪套参数建的（工作目录、权限模式）。
-       这些在 thread/start 时就定死了，变了要重新建一条。模型和推理档位不在
-       里面——那两个 app-server 允许每轮单独传。 */
-    this.codexThreadSignature = null;
+    // Codex 的文字和图片统一使用 SDK；这里只保留续接所需的 thread ID。
     /* ── provider 侧的会话标识 ────────────────────────────────
        同一个对话在三家 provider 那儿各有一条自己的线，续接时各认各的 id。 */
     this.sessionId = null;              // Claude Agent SDK 的 session
@@ -131,31 +125,8 @@ export class ConversationSession {
     return this._agyRuntime !== null;
   }
 
-  /**
-   * 这个会话专属的 codex app-server 进程，第一次用到才建。
-   * 理由同上：起一次要几秒（大头是把 MCP server 全部重启一遍），一个对话
-   * 只该付一次；但绝不能全局共用一个，两个对话会抢同一条 thread。
-   */
-  get codexRuntime() {
-    if (!this._codexRuntime) {
-      if (!this._createCodexRuntime) throw new Error("ConversationSession 没有 createCodexRuntime，无法建立 codex runtime");
-      this._codexRuntime = this._createCodexRuntime(this);
-    }
-    return this._codexRuntime;
-  }
-
-  /** codex runtime 建过了吗。判断忙碌状态时不该顺手把它建出来。 */
-  get hasCodexRuntime() {
-    return this._codexRuntime !== null;
-  }
-
   /** 丢弃这个会话前把子进程收掉，别留下孤儿。 */
   disposeRuntime() {
-    if (this._codexRuntime) {
-      try { this._codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
-      this._codexRuntime = null;
-      this.codexThreadSignature = null;
-    }
     if (this._agyRuntime) {
       try { this._agyRuntime.kill(); } catch { /* 已经没了就算了 */ }
       this._agyRuntime = null;

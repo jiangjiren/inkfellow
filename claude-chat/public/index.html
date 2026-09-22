@@ -3110,16 +3110,16 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <span class="picker-option-name">Sonnet 5</span>
                 <span class="picker-option-desc">快速均衡</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-opus-5" data-label="Opus 5" role="option" aria-selected="false">
-                <span class="picker-option-name">Opus 5</span>
+              <button class="picker-option model-option" data-model="claude-opus-5-5" data-label="Opus 5.5" role="option" aria-selected="false">
+                <span class="picker-option-name">Opus 5.5</span>
                 <span class="picker-option-desc">最强推理</span>
               </button>
               <button class="picker-option model-option" data-model="claude-opus-4-6" data-label="Opus 4.6" role="option" aria-selected="false">
                 <span class="picker-option-name">Opus 4.6</span>
                 <span class="picker-option-desc">经典旧版</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-fable-5" data-label="Fable 5" role="option" aria-selected="false">
-                <span class="picker-option-name">Fable 5</span>
+              <button class="picker-option model-option" data-model="claude-fable-5-1" data-label="Fable 5.1" role="option" aria-selected="false">
+                <span class="picker-option-name">Fable 5.1</span>
                 <span class="picker-option-desc">旗舰最强</span>
               </button>
               <div class="picker-divider"></div>
@@ -3415,9 +3415,9 @@ async function fetchHistory() {
 // ── Auth: 账号配置列表 ────────────────────────────────────────
 const CLAUDE_MODELS = [
   { model: "claude-sonnet-5",            label: "Sonnet 5",   name: "Sonnet 5",   desc: "快速均衡" },
-  { model: "claude-opus-5",              label: "Opus 5",     name: "Opus 5",     desc: "最强推理" },
+  { model: "claude-opus-5-5",            label: "Opus 5.5",   name: "Opus 5.5",   desc: "最强推理" },
   { model: "claude-opus-4-6",            label: "Opus 4.6",   name: "Opus 4.6",   desc: "经典旧版" },
-  { model: "claude-fable-5",             label: "Fable 5",    name: "Fable 5",    desc: "旗舰最强" },
+  { model: "claude-fable-5-1",           label: "Fable 5.1",  name: "Fable 5.1",  desc: "旗舰最强" },
 ];
 
 /* Antigravity 通道能选的模型，以及每个模型认哪些推理档位。
@@ -3482,9 +3482,8 @@ async function loadAgyModelCatalog() {
    下面是首帧兜底，接口一到就整份换掉，所以它旧一点没关系。 */
 let CODEX_MODELS = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   name: "GPT-6-Astra",   desc: "旗舰最强" },
-  { model: "gpt-5.6-sol",   label: "GPT-5.6-Sol",   name: "GPT-5.6-Sol",   desc: "综合可靠" },
-  { model: "gpt-5.6-terra", label: "GPT-5.6-Terra", name: "GPT-5.6-Terra", desc: "均衡通用" },
-  { model: "gpt-5.6-luna",  label: "GPT-5.6-Luna",  name: "GPT-5.6-Luna",  desc: "快速经济" },
+  { model: "gpt-6-sol",     label: "GPT-6-Sol",     name: "GPT-6-Sol",     desc: "综合可靠" },
+  { model: "gpt-6-luna",    label: "GPT-6-Luna",    name: "GPT-6-Luna",    desc: "快速经济" },
 ];
 // 全目录，含菜单上撤下来的旧版本——还选着旧模型的对话要认得出它属于这个账号
 let CODEX_MODEL_IDS = CODEX_MODELS.map(o => o.model);
@@ -3530,7 +3529,11 @@ function effectiveEffort(levels) {
 }
 
 // 旧模型 ID → 新模型 ID，保留用户此前选中的档位
-const MODEL_MIGRATIONS = { "claude-opus-4-8": "claude-opus-5" };
+const MODEL_MIGRATIONS = {
+  "claude-opus-4-8": "claude-opus-5-5",
+  "claude-opus-5":   "claude-opus-5-5",
+  "claude-fable-5":  "claude-fable-5-1",
+};
 
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
 let _dispatchProviders = [];
@@ -4309,7 +4312,7 @@ const addErrorEl      = document.getElementById("add-error");
 const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5",                   sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "", namePlaceholder: "OpenRouter" },
   minimax:    { baseUrl: "https://api.minimaxi.com/anthropic", opusModel: "MiniMax-M3",                      sonnetModel: "MiniMax-M3",                       haikuModel: "MiniMax-M3",                    keyPlaceholder: "",    namePlaceholder: "MiniMax" },

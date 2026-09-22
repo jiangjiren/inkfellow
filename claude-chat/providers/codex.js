@@ -47,8 +47,9 @@ export function sandboxMode(permissionMode) {
      upgrade              非 null = 官方已标记弃用并给了替代（gpt-5.4-mini →
                           gpt-5.6-luna），这种不该再出现在菜单上
 
-   菜单只取前 MENU_LIMIT 个：清单里连 gpt-5.5、gpt-5.4-mini 这些上一代也在，
-   全铺出来菜单会很长，而 priority 已经把当代主力排在最前面。目录本身保留全
+   菜单只列最新一代：取排第一的那个模型的大版本号（gpt-6-astra → 6），只留同
+   代的，最多 MENU_LIMIT 个。清单里连 gpt-5.6、gpt-5.5 这些上一代也在，混着列
+   反而不知道该选哪个；GPT-7 出来时菜单自己就换成 7 系。目录本身保留全
    部（含 hide 和弃用的）——用户对话里还选着旧模型时，要认得出它属于这个账号。
 
    有一点要记住：这个文件是「最后一个跑过的 codex 客户端」写的，而 OpenAI 给
@@ -63,10 +64,12 @@ export const MODELS_CACHE_FILE = join(homedir(), ".codex", "models_cache.json");
 const MENU_LIMIT = 4;
 
 /* 兜底表：只有「没装 Codex CLI 或那个缓存文件读不出来」时才用得上，是
-   2026-09-06 那天 models_cache.json 的原样摘录。模型升级不需要来改它。 */
+   2026-09-23 那天 models_cache.json 的原样摘录。模型升级不需要来改它。 */
 const FALLBACK_CATALOG = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   desc: "Our most capable model for complex, demanding work.", rank: 1,  listed: true },
-  { model: "gpt-5.6-sol",   label: "GPT-5.6-Sol",   desc: "Reliable agentic workhorse for everyday tasks.",      rank: 6,  listed: true },
+  { model: "gpt-6-sol",     label: "GPT-6-Sol",     desc: "GPT-6 Sol Codex model.",                              rank: 2,  listed: true },
+  { model: "gpt-6-luna",    label: "GPT-6-Luna",    desc: "GPT-6 Luna Codex model.",                             rank: 3,  listed: true },
+  { model: "gpt-5.6-sol",   label: "GPT-5.6-Sol",   desc: "Reliable agentic workhorse for everyday tasks.",      rank: 4,  listed: true },
   { model: "gpt-5.6-terra", label: "GPT-5.6-Terra", desc: "Balanced agentic coding model for everyday work.",    rank: 7,  listed: true },
   { model: "gpt-5.6-luna",  label: "GPT-5.6-Luna",  desc: "Fast and affordable agentic coding model.",           rank: 8,  listed: true },
   { model: "gpt-5.5",       label: "GPT-5.5",       desc: "Proven previous-generation model.",                   rank: 12, listed: true },
@@ -171,10 +174,17 @@ export function refreshCatalog(file = MODELS_CACHE_FILE) {
   return setCatalog(models);
 }
 
-/** 菜单上要显示的模型：按 OpenAI 的推荐顺序取前几个，带好展示用的名字和说明。 */
+// gpt-6-astra → "6"，gpt-5.6-sol → "5"；认不出版本号的返回 null
+function generationOf(model) {
+  return /^gpt-(\d+)/.exec(model)?.[1] ?? null;
+}
+
+/** 菜单上要显示的模型：最新一代，按 OpenAI 的推荐顺序，带好展示用的名字和说明。 */
 export function menuModels() {
-  return getCatalog()
-    .filter(entry => entry.listed)
+  const listed = getCatalog().filter(entry => entry.listed);
+  const latest = generationOf(listed[0]?.model ?? "");
+  const sameGen = latest ? listed.filter(entry => generationOf(entry.model) === latest) : listed;
+  return sameGen
     .slice(0, MENU_LIMIT)
     .map((entry) => {
       const desc = MENU_DESCS.find(([pattern]) => pattern.test(entry.model))?.[1] ?? entry.desc;

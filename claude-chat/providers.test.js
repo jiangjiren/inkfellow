@@ -195,6 +195,8 @@ const CODEX_MODELS_CACHE = {
   fetched_at: "2026-09-06T14:10:24.576429100Z",
   models: [
     { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "Our most capable model.", visibility: "list", priority: 1, upgrade: null },
+    { slug: "gpt-6-sol", display_name: "GPT-6-Sol", description: "GPT-6 Sol Codex model.", visibility: "list", priority: 2, upgrade: null },
+    { slug: "gpt-6-luna", display_name: "GPT-6-Luna", description: "GPT-6 Luna Codex model.", visibility: "list", priority: 3, upgrade: null },
     { slug: "gpt-reserve", display_name: "GPT-Reserve", description: "Internal.", visibility: "hide", priority: 3, upgrade: null },
     { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", description: "Reliable agentic workhorse.", visibility: "list", priority: 6, upgrade: null },
     { slug: "gpt-5.6-terra", display_name: "GPT-5.6-Terra", description: "Balanced agentic coding model.", visibility: "list", priority: 7, upgrade: null },
@@ -207,15 +209,15 @@ const CODEX_MODELS_CACHE = {
 test("codex 目录: 解析缓存文件，hide 和已弃用的不上菜单", () => {
   const catalog = codex.parseModelsCache(CODEX_MODELS_CACHE);
   // 全目录一个不落——对话里还选着 gpt-5.4-mini 时要认得出它
-  assert.equal(catalog.length, 7);
+  assert.equal(catalog.length, 9);
   assert.equal(codex.setCatalog(catalog), true);
   assert.equal(codex.hasLiveCatalog(), true);
 
   const menu = codex.menuModels();
-  // 按 OpenAI 给的 priority 排，只取前四个：5.5 和被标了 upgrade 的 5.4-mini 落榜，
-  // 内部模型 gpt-reserve 也不该冒出来
+  // 只列最新一代（GPT-6），按 priority 排：5.6 系、5.5 和被标了 upgrade 的 5.4-mini
+  // 都不上，内部模型 gpt-reserve 也不该冒出来
   assert.deepEqual(menu.map(item => item.model), [
-    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
   ]);
   assert.equal(menu[0].name, "GPT-6-Astra");
   assert.equal(menu[0].desc, "旗舰最强");
@@ -224,8 +226,8 @@ test("codex 目录: 解析缓存文件，hide 和已弃用的不上菜单", () =
   // 三档槽位跟着目录走：opus = 最强的那个，haiku = 菜单末尾最经济的那个
   assert.deepEqual(codex.defaultModels(), {
     opusModel: "gpt-6-astra",
-    sonnetModel: "gpt-5.6-sol",
-    haikuModel: "gpt-5.6-luna",
+    sonnetModel: "gpt-6-sol",
+    haikuModel: "gpt-6-luna",
   });
 
   codex._resetCatalog();

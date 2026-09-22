@@ -250,6 +250,63 @@ export function isStartupNotice(item) {
   return STARTUP_NOTICE_PREFIXES.some(prefix => message.startsWith(prefix));
 }
 
+/* ── thread error：不是这一轮失败 ──────────────────────────
+   `codex exec --json` 的 ThreadEvent 里 type="error" 只是一条通知。上游
+   exec/src/event_processor_with_jsonl_output.rs 里，ServerNotification::Error
+   推完 ThreadEvent::Error 之后返回的是 CodexStatus::Running，同时把它记进
+   last_critical_error；真失败时 turn.failed 会 `.or_else(last_critical_error)`
+   把这条消息原样带上。所以这一轮的失败信号只有 turn.failed 一个，error 事件
+   一律不该中断它。
+
+   最常见的一条是断流重连（core/src/responses_retry.rs）：
+
+     Reconnecting... 2/5 (stream disconnected before completion: websocket
+     closed by server before response.completed)
+
+   通知发完是 sleep 一下接着重试；5 次用尽后还有一层兜底，会从 WebSocket 降级
+   回 HTTPS 再来一轮。把它当致命错误中断，等于在 codex 刚说「我在重连」的那一刻
+   掐掉整轮——后面 3 次重试和那次降级一次都走不到。release 构建里第 1 次重试是
+   静默的，所以人看到的第一条永远是 2/5。
+
+   （0.153 起 ChatGPT 通道走 wss://chatgpt.com/backend-api/codex/responses，
+   经代理时这类断流比以前常见，而这个传输方式在本地关不掉：内置 openai provider
+   不允许被 model_providers 覆盖，features.responses_websockets 也不起作用。） */
+const RETRY_STATUS_TEXTS = [
+  [/^Reconnecting\.\.\.\s*(\d+)\s*\/\s*(\d+)/,   m => `连接中断，正在重连（${m[1]}/${m[2]}）…`],
+  [/^Reconnecting\.\.\.\s*waiting for network/,  () => "等待网络恢复…"],
+  [/^Falling back from WebSockets/,              () => "连接不稳，改用 HTTPS 重试…"],
+];
+
+/**
+ * 这条 thread error 是不是传输层的重连/降级通知。
+ *
+ * 是的话返回该显示在状态行上的中文；不是则返回 null，按真错误显示成卡片。
+ * 两种都不该中断这一轮。
+ */
+export function retryStatusText(message) {
+  const text = String(message ?? "").trim();
+  for (const [pattern, format] of RETRY_STATUS_TEXTS) {
+    const matched = text.match(pattern);
+    if (matched) return format(matched);
+  }
+  return null;
+}
+
+/**
+ * turn.failed 报给用户的那句话。
+ *
+ * 重试用尽时 codex 把 last_critical_error 原样搬进 turn.failed，于是错误里写着
+ * 「Reconnecting... 5/5」——一句正在重连的话，出现在已经不再重连的时刻。这里换
+ * 成说人话的，原文留在后面，排查时还找得回来。
+ */
+export function turnFailureMessage(message) {
+  const text = String(message ?? "").trim();
+  if (!text) return "Codex 请求失败";
+  return retryStatusText(text)
+    ? `与 ChatGPT 的连接反复中断，这一轮没能完成。原文：${text}`
+    : text;
+}
+
 /** 一个已完成的 item 对应的历史内容块；null 表示这个 item 不进历史。 */
 export function contentBlock(item) {
   if (!item) return null;

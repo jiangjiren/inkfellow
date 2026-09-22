@@ -1,29 +1,42 @@
 /**
  * ══════════════════════════════════════════════════════════════════════
- * PersistentCodexRuntime —— 已退出生产路径的 app-server 协议实现
+ * PersistentCodexRuntime —— ChatGPT 通道的生产路径（app-server 协议）
  * ══════════════════════════════════════════════════════════════════════
  *
- * 仅保留给 codex-runtime.test.js 的协议回归测试和 runtime-stop.test.js 的
- * 进程退出测试。生产环境的文字、图片统一走 Codex SDK，避免混用两条生命周期
- * 导致同一 thread 的 active writer 冲突。ConversationSession 不再提供此入口。
- * 以下性能数据和设计说明来自旧实现，不代表当前生产路由。
+ * 这条路曾经退出过一次，原因是「和 codex-sdk 并联」——两条生命周期同时写
+ * 同一条 thread，撞 active writer 冲突。2026-09-22 完整切回来，SDK 那条只
+ * 留作降级兜底（CODEX_PERSISTENT=0），两条不再并联，那个冲突不复存在。
  *
+ * ── 为什么值得常驻 ──────────────────────────────────────────
  * codex-sdk 的 Thread 每次 runStreamed 都 spawn 一个 `codex exec`，于是每轮
- * 对话都要从头付一遍启动开销。实测（同一台机器，同一个账号）：
+ * 对话都要从头付一遍进程起停的钱。2026-09-22 在本机同一账号实测：
  *
- *   codex-sdk 每轮        spawn → thread.started  约 3.3 秒
- *   app-server 常驻       turn/start → turn/started  约 70 毫秒
+ *   每轮 spawn（codex-sdk）   整轮 15~20 秒，其中约 10 秒是启动 + 收尾
+ *   app-server 常驻           第二轮起 2.7~3.7 秒
  *
- * 那 3 秒里最贵的一段是 MCP server：用户 ~/.codex/config.toml 里配了几个，
- * 每次 spawn 都要把它们全部重启一遍（实测 chrome-devtools 一个就 3.3 秒）。
- * 常驻之后这些只在开进程时付一次。
+ * 注意那 10 秒**不是** MCP server 拖的——实测 `-c mcp_servers={}` 跑出来一样
+ * 慢，MCP 是并行加载的，不挡主流程。它就是进程起停本身的固定成本。
+ *
+ * 还有一层更要紧的，跟速度无关：codex 0.153 起 ChatGPT 通道走 WebSocket
+ * （wss://chatgpt.com/backend-api/codex/responses），而它是**先把连接建好再去
+ * 干活**（日志里 websocket.warmup=true）。从连上到第一帧响应之间那几秒，连接
+ * 是空的——实测 4.1 秒（7k token 上下文）到 7.3 秒（100k），上下文越大越久。
+ * 走代理时这个空窗正是最容易被中间设备回收的地方。
+ *
+ * 每轮 spawn 等于每轮都重新赌一次这个空窗；常驻之后连接跨轮复用（实测空闲
+ * 4 分钟仍是同一条，建连次数不增），这个空窗每个进程只出现一次。所以常驻
+ * 不是拿稳定性换速度，两样一起拿。详见 [[inkfellow-codex-websocket-transport]]。
  *
  * ── 为什么是 app-server 而不是别的 ──────────────────────────
  * `codex exec` 的 stdin 只能当一次性 prompt 用，喂不进第二轮；Unix 上那个
  * `codex app-server daemon` 在 Windows 直接报 "only supported on Unix"。
  * 剩下能常驻的就是自己起 `codex app-server`，跟它说行分隔的 JSON-RPC。
  *
- * 旧实现曾与 SDK 并联并提供失败回退；server.js 现已移除这条路由。
+ * ── 协议边界（2026-09-22 对真实 app-server 验过）────────────
+ * 图片走 `{type:"localImage", path}`（camelCase，跟 SDK 的 local_image 不同）；
+ * turn/interrupt 只打断这一轮、进程和上下文都留着，之后还能接着跑；换个进程
+ * thread/resume 回去，上下文仍在。用户自己那条消息会以 userMessage item 回放，
+ * fromAppServerItem 认不出它而返回 null，正好不会在界面上重复渲染一遍。
  *
  * ── 事件形状 ──────────────────────────────────────────────
  * app-server 的通知和 SDK 的 thread event 是同源的，只是命名风格不同
@@ -32,8 +45,33 @@
  * 原来那套 itemEvents，前端和历史都不用改。
  */
 
+import crypto from "node:crypto";
+
 /** JSON-RPC 请求超时。握手/建线程卡住时得有个头，不能让用户干等。 */
 const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * 常驻进程是按哪套参数起的；变了就得重起。
+ *
+ * 刻意不含 model 和 effort：它们每轮通过 turn/start 传，换模型不需要重启进程。
+ * 为它们重起一次要再付一遍启动开销（实测 spawn 那条路整轮 15~20 秒，其中约
+ * 10 秒是进程起停的固定成本），而 app-server 本来就允许一条 thread 里换模型。
+ */
+export function codexRuntimeSignature({ bin, cwd, permissionMode }) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify({ bin, cwd, permissionMode }))
+    .digest("hex");
+}
+
+/**
+ * 手上这个常驻进程还能接着用吗。
+ *
+ * 只看进程本身。thread 该复用还是新开交给 ensureThread——它拿 threadId 判断，
+ * 用户重置之后传的正是 null，那时候就该在同一个进程里开一条新的。
+ */
+export function codexRuntimeReusable(runtime, signature) {
+  return Boolean(runtime.started && runtime.signature === signature);
+}
 
 /* codex 会反过来问客户端问题（要不要批准这条命令、这个补丁）。approvalPolicy
    给的是 "never"，正常不该收到；但万一收到而我们不回，那一轮就永远挂着——

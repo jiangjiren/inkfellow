@@ -19,6 +19,8 @@ test("server uses SDK only for text → image → text and resumes the same thre
   await writeFile(mock, `
     import { readFileSync } from 'node:fs';
     let owner = false, rounds = 0;
+    export function codexRuntimeSignature() { return 'sig'; }
+    export function codexRuntimeReusable() { return false; }
     export class PersistentCodexRuntime {
       constructor() { throw Error('persistent runtime must never be created'); }
     }
@@ -64,7 +66,7 @@ test("server uses SDK only for text → image → text and resumes the same thre
   await writeFile(auth, JSON.stringify({ activeProfileId: "codex", profiles: [{id: "codex", name: "Codex", provider: "codex"}] }));
   const child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
     cwd: new URL(".", import.meta.url), windowsHide: true,
-    env: {...process.env, PORT: String(port), HOST: "127.0.0.1", DESKTOP_AGENT_TOKEN: "test", CLAUDE_CHAT_DATA_DIR: scratch, CLAUDE_CHAT_AUTH_PROFILE_FILE: auth, CODEX_APP_SERVER_BIN: "mock", CODEX_PERSISTENT: "1"},
+    env: {...process.env, PORT: String(port), HOST: "127.0.0.1", DESKTOP_AGENT_TOKEN: "test", CLAUDE_CHAT_DATA_DIR: scratch, CLAUDE_CHAT_AUTH_PROFILE_FILE: auth, CODEX_APP_SERVER_BIN: "mock", CODEX_PERSISTENT: "0"},
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "", ws;

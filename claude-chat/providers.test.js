@@ -149,6 +149,36 @@ test("codex: 启动期的提醒不当错误显示，真错误照旧", () => {
   assert.equal(codex.isStartupNotice({ type: "agent_message", message: "Under-development features enabled: x" }), false);
 });
 
+test("codex: 断流重连是状态行，不是错误", () => {
+  // release 构建里第 1 次重试是静默的，人看到的第一条永远从 2/5 开始
+  assert.equal(
+    codex.retryStatusText("Reconnecting... 2/5 (stream disconnected before completion: websocket closed by server before response.completed)"),
+    "连接中断，正在重连（2/5）…",
+  );
+  assert.equal(codex.retryStatusText("Reconnecting... waiting for network"), "等待网络恢复…");
+  assert.equal(codex.retryStatusText("Falling back from WebSockets to HTTPS transport. foo"), "连接不稳，改用 HTTPS 重试…");
+
+  // 别的 thread error 一律返回 null，交给卡片显示
+  assert.equal(codex.retryStatusText("Previous response was not found."), null);
+  assert.equal(codex.retryStatusText(""), null);
+  assert.equal(codex.retryStatusText(undefined), null);
+  // 只认开头：正文里提到重连的真错误不该被当成状态行
+  assert.equal(codex.retryStatusText("tool failed: Reconnecting... 2/5"), null);
+});
+
+test("codex: turn.failed 里那句「正在重连」换成人话", () => {
+  const exhausted = codex.turnFailureMessage("Reconnecting... 5/5 (websocket closed by server before response.completed)");
+  // 重试用尽时 codex 把 last_critical_error 原样搬进 turn.failed，于是「正在重连」
+  // 出现在已经不再重连的时刻。换掉它，但原文留着好排查。
+  assert.match(exhausted, /连接反复中断/);
+  assert.match(exhausted, /Reconnecting\.\.\. 5\/5/);
+
+  // 真错误原样送出，别加戏
+  assert.equal(codex.turnFailureMessage("rate limit exceeded"), "rate limit exceeded");
+  assert.equal(codex.turnFailureMessage(""), "Codex 请求失败");
+  assert.equal(codex.turnFailureMessage(null), "Codex 请求失败");
+});
+
 test("codex: sandbox 模式跟着权限档位走", () => {
   assert.equal(codex.sandboxMode("plan"), "read-only");
   assert.equal(codex.sandboxMode("bypassPermissions"), "danger-full-access");

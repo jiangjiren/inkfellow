@@ -6807,6 +6807,13 @@ function handleEvent(ev) {
     return;
   }
 
+  /* Codex 那条通道的断流重连。文案在服务端就拼好了（providers/codex.js），
+     这里只负责挂到状态行上——它不是错误，别做成红卡片，人还在等这轮回答。 */
+  if (ev.type === "system" && ev.subtype === "stream_retry") {
+    updateTypingStatus(ev.text || "");
+    return;
+  }
+
   if (ev.type === "system" && ev.subtype === "status") {
     const STATUS_LABEL = { compacting: "压缩上下文中…", requesting: "请求中…" };
     updateTypingStatus(STATUS_LABEL[ev.status] ?? "");

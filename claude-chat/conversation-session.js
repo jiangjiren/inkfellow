@@ -24,17 +24,21 @@ export class ConversationSession {
    *   懒创建：大多数会话只是躺在历史里，没必要为它们各起一个 SDK 子进程。
    * @param {function} [options.createAgyRuntime] 同上，Antigravity（Gemini）那条路的。
    */
-  constructor({ conversationId = null, createRuntime = null, createAgyRuntime = null } = {}) {
+  constructor({ conversationId = null, createRuntime = null, createAgyRuntime = null, createCodexRuntime = null } = {}) {
     this.conversationId = conversationId;
     this._createRuntime = createRuntime;
     this._claudeRuntime = null;
     this._createAgyRuntime = createAgyRuntime;
     this._agyRuntime = null;
-    // Codex 的文字和图片统一使用 SDK；这里只保留续接所需的 thread ID。
+    this._createCodexRuntime = createCodexRuntime;
+    this._codexRuntime = null;
+    /* 空闲多久就把 codex 常驻进程收掉的那个定时器。见 server.js 的
+       scheduleCodexIdleShutdown——纯为省内存，跟连接稳不稳定无关。 */
+    this.codexIdleTimer = null;
     /* ── provider 侧的会话标识 ────────────────────────────────
        同一个对话在三家 provider 那儿各有一条自己的线，续接时各认各的 id。 */
     this.sessionId = null;              // Claude Agent SDK 的 session
-    this.codexThreadId = null;          // Codex SDK 的 thread
+    this.codexThreadId = null;          // Codex 的 thread（常驻 app-server 和 SDK 降级路径共用同一个 id）
     this.agyConversationId = null;      // Antigravity CLI 的 conversation
 
     /* ── 历史写入游标 ─────────────────────────────────────────
@@ -125,11 +129,39 @@ export class ConversationSession {
     return this._agyRuntime !== null;
   }
 
+  /**
+   * 这个会话专属的 codex 常驻进程（app-server），第一次用到才建。
+   *
+   * 和另外两家同一个理由，只是账算得更明白些：每轮 spawn 一个 `codex exec`
+   * 要付约 10 秒的进程起停，而且每轮都要重新建一条 WebSocket、重新赌一次
+   * 「建连到首帧之间那几秒空窗会不会被代理掐掉」。常驻之后这两样都只付一次。
+   */
+  get codexRuntime() {
+    if (!this._codexRuntime) {
+      if (!this._createCodexRuntime) throw new Error("ConversationSession 没有 createCodexRuntime，无法建立 codex runtime");
+      this._codexRuntime = this._createCodexRuntime(this);
+    }
+    return this._codexRuntime;
+  }
+
+  /** codex runtime 建过了吗。判断忙碌状态时不该顺手把它建出来。 */
+  get hasCodexRuntime() {
+    return this._codexRuntime !== null;
+  }
+
   /** 丢弃这个会话前把子进程收掉，别留下孤儿。 */
   disposeRuntime() {
     if (this._agyRuntime) {
       try { this._agyRuntime.kill(); } catch { /* 已经没了就算了 */ }
       this._agyRuntime = null;
+    }
+    if (this.codexIdleTimer) {
+      clearTimeout(this.codexIdleTimer);
+      this.codexIdleTimer = null;
+    }
+    if (this._codexRuntime) {
+      try { this._codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
+      this._codexRuntime = null;
     }
     if (!this._claudeRuntime) return;
     try { this._claudeRuntime.close(); } catch { /* 已经关了就算了 */ }

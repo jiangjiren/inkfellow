@@ -119,12 +119,36 @@ Claude uses an Agent SDK persistent query, and Antigravity uses a persistent
 stream-json process. Antigravity waits for its previous process to close before
 restarting with changed parameters.
 
-ChatGPT membership conversations always use Codex SDK for both text and images.
-Each turn starts a fresh codex exec process. Subsequent turns resume the saved
-thread ID, preserving conversation history. There is no app-server routing or
-fallback, and legacy CODEX_PERSISTENT / CODEX_APP_SERVER_BIN settings have no effect.
-The tradeoff is repeated process and MCP initialization on each turn (previously
-measured at about 3.3 seconds on one Windows machine; actual latency varies).
+ChatGPT membership conversations use a persistent `codex app-server` process over
+line-delimited JSON-RPC, reusing both the process and its upstream WebSocket
+across turns. Set `CODEX_PERSISTENT=0` to fall back to the Codex SDK, which spawns
+a fresh `codex exec` per turn; the two are mutually exclusive, never concurrent —
+running them side by side is what caused the active-writer conflict that retired
+this path once before. `CODEX_APP_SERVER_BIN` overrides binary discovery.
+
+Measured on one Windows machine over a system proxy: per-turn spawn costs about
+10 seconds of process startup and teardown, so a full turn takes 15-20 seconds;
+persistent turns settle at 1.5-2.0 seconds after a 7.6-8.4 second first turn.
+That 10 seconds is *not* MCP initialization — `-c mcp_servers={}` measures the
+same, because MCP servers load in parallel and do not block the request.
+
+Persistence also matters for connection stability, not just latency. Codex 0.153
+talks to ChatGPT over a WebSocket and warms the connection up before it has
+anything to send, leaving it idle for 4-7 seconds (longer as context grows) before
+the first frame. Spawning per turn re-runs that exposed window every turn; reusing
+the process runs it once per process. An idle connection survived a 4-minute gap
+in testing with no reconnect.
+
+Request parameters are layered and the layering is load-bearing: `cwd`,
+`approvalPolicy`, and `model` belong on `thread/start`, while `effort` and
+`sandboxPolicy` belong on `turn/start`. app-server silently ignores fields it does
+not recognize, so a misplaced key fails without any error — a misplaced
+`sandboxPolicy` means the plan permission mode is no longer read-only while the UI
+looks unchanged. `codex-persistent.test.js` pins this down.
+
+Idle codex runtimes are shut down after 30 minutes. That is purely to release
+memory (about 170 MB including the MCP child processes), not to keep the
+connection healthy.
 
 ## Per-Conversation Model Selection
 
@@ -163,6 +187,9 @@ are never included, and the stored user messages are not rewritten.
 | `CLAUDE_CHAT_AUTH_PROFILE_FILE` | `claude-chat/auth-profile.json` | Provider profiles and API keys. |
 | `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history.json` | Optional override for the merged conversation history file. |
 | `AGY_PRINT_TIMEOUT` | `8760h` | Per-turn timeout handed to the Antigravity CLI. The persistent process has no other deadline; stopping is the user's job. |
+| `CODEX_PERSISTENT` | `1` | Set to `0` to fall back from the persistent `codex app-server` to per-turn Codex SDK spawning. Mutually exclusive, never concurrent. |
+| `CODEX_APP_SERVER_BIN` | resolved from `@openai/codex` | Override the codex binary used by the persistent path. |
+| `DESKTOP_MODE` | empty | Set to `true` by the desktop host. Also mirrors console output to `<data dir>/sidecar.log`, since the desktop sidecar runs with a hidden console and would otherwise discard it. |
 | `DESKTOP_AGENT_TOKEN` | empty | Tauri-only access token for embedded HTTP/WebSocket requests. Set by the desktop host, not by normal deployments. |
 | `WECHAT_CDN_BASE_URL` | Tencent CDN URL | Override for WeChat media downloads. |
 | `WECHAT_MAX_INLINE_IMAGE_BYTES` | `5242880` | Maximum image size embedded directly into an agent request. |
@@ -184,6 +211,7 @@ claude-chat/data/codex-thread-<port>.json
 claude-chat/data/schedules-<port>.json
 claude-chat/data/schedules-state-<port>.json
 claude-chat/data/runs/               scheduler run logs
+claude-chat/data/sidecar.log         console output, desktop mode only (rotated once at 4 MB)
 claude-chat/data/wechat-*            WeChat credentials, sync state, history, and media
 ```
 

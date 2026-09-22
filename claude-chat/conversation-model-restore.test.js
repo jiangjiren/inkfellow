@@ -58,6 +58,11 @@ async function bootServer(scratch, port) {
     env: {
       ...process.env, PORT: String(port), HOST: "127.0.0.1", DESKTOP_AGENT_TOKEN: "test",
       CLAUDE_CHAT_DATA_DIR: scratch, CLAUDE_CHAT_AUTH_PROFILE_FILE: auth,
+      /* 这里假的只有 codex-sdk，没假 codex-runtime.js。不钉住降级路径的话，
+         常驻那条会去起一个真的 app-server——又慢又烧额度。这个用例验的是
+         providerPrompt 怎么拼，跟走哪条路无关，钉住就行。常驻路径自己的
+         行为在 codex-persistent.test.js 里守。 */
+      CODEX_PERSISTENT: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

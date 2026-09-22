@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
-import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync, lstatSync, unlinkSync, createWriteStream } from "node:fs";
 import { extname } from "node:path";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
+import { inspect } from "node:util";
 import crypto from "node:crypto";
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
@@ -22,6 +24,11 @@ import {
   agyPersistentArgs,
   agyRuntimeReusable,
 } from "./agy-runtime.js";
+import {
+  PersistentCodexRuntime,
+  codexRuntimeSignature,
+  codexRuntimeReusable,
+} from "./codex-runtime.js";
 import * as codexProvider from "./providers/codex.js";
 import * as agyProvider from "./providers/antigravity.js";
 import { spawnWithHiddenConsole } from "./hidden-console.js";
@@ -72,7 +79,8 @@ const sessions = new SessionRegistry({
         console.error(`[Web Agent] ${context.source} callback failed without stopping the Claude runtime:`, error);
       },
     }),
-    createAgyRuntime: () => new PersistentAgyRuntime({ killProcess: killAgyProcess }),
+    createAgyRuntime: () => new PersistentAgyRuntime({ killProcess: killProcessTree }),
+    createCodexRuntime: () => new PersistentCodexRuntime({ killProcess: killProcessTree }),
   }),
   isBusy: (candidate) => sessionIsBusy(candidate),
 });
@@ -175,6 +183,43 @@ const WECHAT_OUTPUT_PROMPT = `【微信通道输出规则】
 const DATA_DIR = process.env.CLAUDE_CHAT_DATA_DIR || join(__dirname, "data");
 mkdirSync(DATA_DIR, { recursive: true });
 
+/* ── sidecar 日志 ───────────────────────────────────────────
+   桌面端这个进程是被隐藏控制台起的（src-tauri 的 hide_command_window），stdio
+   没有重定向，于是 console.log 全部原地蒸发。代码里那些诊断行——
+   「[codex] 复用常驻进程 / 起新进程」「[agy] …」、断流重连——因此谁也看不见，
+   出了问题只能靠猜。
+
+   所以在桌面模式下往数据目录落一份。这不是审计日志，只为回答「常驻还在生效吗」
+   「今天断过几次流」这类问题，所以只留两代、超过 4MB 就滚一次。
+   位置：%APPDATA%\com.inkfellow.app\claude-chat\sidecar.log */
+if (process.env.DESKTOP_MODE === "true") {
+  const logPath = join(DATA_DIR, "sidecar.log");
+  try {
+    if (existsSync(logPath) && statSync(logPath).size > 4 * 1024 * 1024) {
+      renameSync(logPath, `${logPath}.1`);
+    }
+  } catch { /* 滚不动就接着往后写，不值得为此启动失败 */ }
+  try {
+    /* 新文件先写一个 UTF-8 BOM。日志里有中文（`[codex] 起新进程`），而 Windows
+       上 PowerShell 的 Get-Content、老版记事本都按系统 ANSI 码页读无 BOM 的文件，
+       中文会变成一串乱码——日志看不懂就等于没写。 */
+    const needsBom = !existsSync(logPath) || statSync(logPath).size === 0;
+    const stream = createWriteStream(logPath, { flags: "a" });
+    stream.on("error", () => { /* 盘满、被占用……都不能把功能带崩 */ });
+    if (needsBom) { try { stream.write("﻿"); } catch { /* 同上 */ } }
+    for (const level of ["log", "warn", "error"]) {
+      const original = console[level].bind(console);
+      console[level] = (...args) => {
+        original(...args);
+        try {
+          const text = args.map(a => (typeof a === "string" ? a : inspect(a, { depth: 3 }))).join(" ");
+          stream.write(`${new Date().toISOString()} ${text}\n`);
+        } catch { /* 同上 */ }
+      };
+    }
+  } catch { /* 开不了流就维持原样 */ }
+}
+
 // 启动时自动迁移旧位置的 per-PORT 文件
 for (const name of [`session-${PORT}.json`, `history-${PORT}.json`, "history.json",
                      `wechat-bot-${PORT}.json`, `wechat-bot-${PORT}.sync.json`,
@@ -272,6 +317,13 @@ function codexDefaultModels() {
 
    压不掉的那几条（比如技能描述被截断的提醒）在 providers/codex.js 里按内容过滤。 */
 const CODEX_CLIENT_OPTIONS = { config: { suppress_unstable_features_warning: true } };
+
+/* ChatGPT 通道默认走常驻 app-server（见 runCodexPersistent）。出问题时把
+   CODEX_PERSISTENT 设成 0，退回每轮 spawn 的 SDK 路径。
+
+   两条永远只跑一条：上次常驻退出生产，原因正是它和 SDK 并联，两条生命周期
+   同时写一条 thread 撞了 active writer 冲突。这个开关是「二选一」，不是并联。 */
+const CODEX_USE_PERSISTENT = process.env.CODEX_PERSISTENT !== "0";
 
 // 界面上的五档推理强度 → codex 认识的四档。max 压到 xhigh，它没有更高的。
 const CODEX_EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
@@ -391,6 +443,8 @@ const codexItemText = codexProvider.itemText;
 const codexToolName = codexProvider.toolName;
 const codexToolInput = codexProvider.toolInput;
 const codexContentBlock = codexProvider.contentBlock;
+const codexRetryStatusText = codexProvider.retryStatusText;
+const codexTurnFailureMessage = codexProvider.turnFailureMessage;
 
 function sendCodexItemEvent(send, eventType, item) {
   for (const ev of codexProvider.itemEvents(eventType, item)) send(ev);
@@ -545,11 +599,14 @@ function composeAgyPrompt({ prompt, images = [] }) {
 // 不再有超时兜底，进程只能靠停止按钮或本进程退出来收。sidecar 被杀时
 // 子进程会变孤儿挂在后台继续烧额度，所以登记下来统一清。
 const ACTIVE_AGY_PROCESSES = new Set();
+/* codex 的常驻 app-server 同理，而且它底下还挂着 config.toml 里那几个 MCP
+   server，留成孤儿比 agy 更贵。 */
+const ACTIVE_CODEX_PROCESSES = new Set();
 
 // 走的是 process.on("exit")，回调必须同步做完——异步 spawn 的 taskkill
 // 在父进程退出时不一定还来得及跑，所以这里用 spawnSync
-function killAllAgyProcesses() {
-  for (const proc of [...ACTIVE_AGY_PROCESSES]) {
+function killAllCliProcesses() {
+  for (const proc of [...ACTIVE_AGY_PROCESSES, ...ACTIVE_CODEX_PROCESSES]) {
     try {
       if (proc.exitCode !== null || proc.signalCode !== null) continue;
       if (process.platform === "win32") {
@@ -560,11 +617,14 @@ function killAllAgyProcesses() {
     } catch { /* 退出路径上尽力而为 */ }
   }
   ACTIVE_AGY_PROCESSES.clear();
+  ACTIVE_CODEX_PROCESSES.clear();
 }
 
-function killAgyProcess(proc) {
+/* Windows 上 proc.kill() 只杀进程自己，它起的那些子进程会留下来：agy 是
+   run_command 的 shell，codex 是 config.toml 里那几个 MCP server。都得走
+   taskkill /T 把整棵树收掉。 */
+function killProcessTree(proc) {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
-  // Windows 上 proc.kill() 只杀 agy 自己，它 run_command 起的 shell 会留下来
   if (process.platform === "win32") {
     try {
       spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
@@ -698,6 +758,216 @@ async function runAgyPersistent({
   }
 }
 
+/* ── 常驻 codex 进程 ────────────────────────────────────────
+   codex-sdk 每轮 runStreamed 都 spawn 一个 `codex exec`，光进程起停就约 10 秒
+   （实测数据和 WebSocket 那层的理由写在 codex-runtime.js 顶部）。下面这套让
+   ChatGPT 通道走常驻 app-server：参数没变就往同一个进程再发一次 turn/start。
+
+   ── 参数放在哪一层（2026-09-22 拿真实 app-server 逐个验过）──
+     thread/start   cwd、approvalPolicy、model
+     turn/start     effort、sandboxPolicy
+   放错层会**静默失效**：app-server 对认不出的字段一律忽略，不报错。代价最大的
+   是 sandboxPolicy——放去 thread/start 就等于 plan 档位不再只读，界面上还一切
+   正常。所以这几个键各自待在哪儿是验出来的，别随手挪。 */
+
+/** permissionMode 推出来的 sandbox 档位 → app-server 认的那个 enum。 */
+const CODEX_SANDBOX_POLICY = {
+  "read-only": "readOnly",
+  "workspace-write": "workspaceWrite",
+  "danger-full-access": "dangerFullAccess",
+};
+
+const requireFromServer = createRequire(import.meta.url);
+const CODEX_TARGET_TRIPLES = {
+  "win32-x64": "x86_64-pc-windows-msvc",
+  "win32-arm64": "aarch64-pc-windows-msvc",
+  "darwin-x64": "x86_64-apple-darwin",
+  "darwin-arm64": "aarch64-apple-darwin",
+  "linux-x64": "x86_64-unknown-linux-musl",
+  "linux-arm64": "aarch64-unknown-linux-musl",
+};
+const CODEX_PLATFORM_PACKAGES = {
+  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
+  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
+  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
+  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
+  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
+};
+
+let _codexBinary;
+/**
+ * SDK 自带的那个 codex 二进制在哪。
+ *
+ * 常驻这条路自己 spawn，不经过 codex-sdk，所以得把它的定位逻辑复刻一遍——
+ * 它没把 findCodexPath 导出来。codex-path 那个目录要进 PATH，里面是 codex
+ * 自己要用的 rg.exe 之类。
+ */
+function findCodexBinary() {
+  if (_codexBinary !== undefined) return _codexBinary;
+  const override = process.env.CODEX_APP_SERVER_BIN;
+  if (override) return (_codexBinary = { bin: override, pathDirs: [] });
+  const triple = CODEX_TARGET_TRIPLES[`${process.platform}-${process.arch}`];
+  const platformPackage = triple ? CODEX_PLATFORM_PACKAGES[triple] : null;
+  if (!platformPackage) return (_codexBinary = null);
+  try {
+    const codexRequire = createRequire(requireFromServer.resolve("@openai/codex/package.json"));
+    const root = join(dirname(codexRequire.resolve(`${platformPackage}/package.json`)), "vendor", triple);
+    const bin = join(root, "bin", process.platform === "win32" ? "codex.exe" : "codex");
+    if (!existsSync(bin)) return (_codexBinary = null);
+    const pathDir = join(root, "codex-path");
+    return (_codexBinary = { bin, pathDirs: existsSync(pathDir) ? [pathDir] : [] });
+  } catch {
+    return (_codexBinary = null);
+  }
+}
+
+/** 收掉这个对话的常驻 codex 进程。没建过就什么都不做，别把它顺手建出来。 */
+function killCodexRuntime() {
+  if (!session.hasCodexRuntime) return;
+  try { session.codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
+}
+
+/* 空闲回收。常驻进程连它底下那几个 MCP server 一共约 170MB（实测），人聊完
+   走开之后一直占着不合适。
+
+   纯粹为了省内存，跟连接稳不稳定无关——实测 WebSocket 空闲 30 分钟仍是同一条，
+   不需要靠重启来保活。所以阈值往长了取：真要回收错了，代价只是下次重付一次
+   7~8 秒的启动。 */
+const CODEX_IDLE_SHUTDOWN_MS = 30 * 60_000;
+
+function scheduleCodexIdleShutdown() {
+  const owner = sessions.current();
+  if (owner.codexIdleTimer) clearTimeout(owner.codexIdleTimer);
+  owner.codexIdleTimer = setTimeout(() => {
+    owner.codexIdleTimer = null;
+    // 拿 has 判断，别把一个已经收掉的 runtime 顺手又建出来
+    if (!owner.hasCodexRuntime) return;
+    if (owner.codexRuntime.busy) return;   // 还在跑就让它跑完，下一轮结束会重新排期
+    console.log("[codex] 空闲超时，收掉常驻进程");
+    try { owner.codexRuntime.kill(); } catch { /* 已经没了就算了 */ }
+  }, CODEX_IDLE_SHUTDOWN_MS);
+  owner.codexIdleTimer.unref?.();
+}
+
+/** app-server 的通知 → 前端认识的 wire 事件。认不出的一概丢掉，别渲染成怪卡片。 */
+function emitCodexAppServerEvent(method, params, send) {
+  if (method === "turn/started") {
+    send({ type: "system", subtype: "status", status: "requesting" });
+    return;
+  }
+  const sdkMethod = codexProvider.fromAppServerMethod(method);
+  if (!sdkMethod) return;
+  /* 用户自己那条消息会以 userMessage item 回放一遍（SDK 那条路不回放）。
+     fromAppServerItem 认不出它而给 null，正好——界面上早就有了。 */
+  const item = codexProvider.fromAppServerItem(params?.item);
+  if (!item) return;
+  sendCodexItemEvent(send, sdkMethod, item);
+}
+
+/**
+ * 用常驻进程跑一轮 codex。调用方不用关心进程是新起的还是接着用的。
+ *
+ * 和 agy 那条一样，只在「这一轮一个字都还没吐出来」时才自动重起重试一次——
+ * 常驻进程可能是上一轮之后被外力收掉的，那种情况下重起是对的；已经吐过东西
+ * 就绝不能重放，否则上半轮执行过的命令会再跑一遍。
+ */
+async function runCodexPersistent({
+  prompt,
+  images = [],
+  cwd,
+  model = null,
+  effort = "medium",
+  permissionMode = DEFAULT_PERMISSION_MODE,
+  threadId = null,
+  signal = null,
+  onEvent = null,
+  onThread = null,
+}) {
+  const found = findCodexBinary();
+  if (!found) throw new Error("没有找到 Codex CLI 的可执行文件，请确认 @openai/codex 的可选依赖装全了。");
+
+  // codex 只认本地文件形式的图片，base64 得先落盘
+  const tempImages = [];
+  const input = [];
+  for (const img of images) {
+    const ext = ({
+      "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+      "image/gif": "gif", "image/webp": "webp",
+    })[String(img.mediaType || "").toLowerCase()] || "png";
+    const tmpPath = join(DATA_DIR, `codex-img-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.${ext}`);
+    writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+    tempImages.push(tmpPath);
+    input.push({ type: "localImage", path: tmpPath });
+  }
+  input.push({ type: "text", text: prompt });
+
+  const sandboxPolicy = { type: CODEX_SANDBOX_POLICY[codexSandboxMode(permissionMode)] ?? "workspaceWrite" };
+  let produced = false;
+
+  const attempt = async () => {
+    const runtime = session.codexRuntime;
+    const signature = codexRuntimeSignature({ bin: found.bin, cwd, permissionMode });
+    const reusable = codexRuntimeReusable(runtime, signature);
+    if (runtime.proc && !reusable) await stopRuntime(runtime);
+    /* 每轮记一句「接着用」还是「重起」。常驻这条路一旦悄悄失效，用户只会觉得
+       「怎么又变慢了」，没有别的信号能看出来。 */
+    console.log(`[codex] ${reusable ? "复用常驻进程" : "起新进程"}（thread ${threadId ?? "新建"}）`);
+    if (!runtime.started) {
+      runtime.start({
+        signature,
+        spawn: () => {
+          const env = { ...process.env, NO_COLOR: "1" };
+          if (found.pathDirs.length) env.PATH = `${found.pathDirs.join(";")};${env.PATH ?? ""}`;
+          const proc = spawn(found.bin, ["app-server"], {
+            cwd: cwd || undefined,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          // sidecar 被杀时子进程会变孤儿挂在后台，登记下来统一清
+          ACTIVE_CODEX_PROCESSES.add(proc);
+          proc.on("close", () => ACTIVE_CODEX_PROCESSES.delete(proc));
+          return proc;
+        },
+      });
+      await runtime.initialize({ name: "inkfellow", version: "1.0.0" });
+    }
+    const ensured = await runtime.ensureThread({
+      threadId,
+      params: { cwd, approvalPolicy: "never", ...(model ? { model } : {}) },
+    });
+    if (onThread && ensured.threadId && ensured.threadId !== threadId) onThread(ensured.threadId);
+    const run = await runtime.runTurn({
+      input,
+      params: { effort, sandboxPolicy },
+      signal,
+      onEvent: (method, params) => {
+        produced = true;
+        if (onEvent) emitCodexAppServerEvent(method, params, onEvent);
+      },
+    });
+    return { ...run, threadId: ensured.threadId };
+  };
+
+  try {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (err?.name === "AbortError" || produced || !err?.codexProcessDied) throw err;
+      console.log(`codex 常驻进程这轮没能起来，重起一个再试：${String(err?.message || err).slice(0, 200)}`);
+      killCodexRuntime();
+      return await attempt();
+    }
+  } finally {
+    // 这一轮收场了就重新排期：下一轮来之前空太久，进程自己会退掉
+    scheduleCodexIdleShutdown();
+    for (const path of tempImages) {
+      try { unlinkSync(path); } catch { /* 已经不在就算了 */ }
+    }
+  }
+}
+
 /**
  * 起一个 agy 子进程跑完一轮，把 stream-json 逐行喂给 onEvent。
  * 主对话和跨厂商派发共用这一个入口，区别只在各自怎么翻译事件。
@@ -789,7 +1059,7 @@ function runAgyOnce({
     };
     const onAbort = () => {
       aborted = true;
-      killAgyProcess(proc);
+      killProcessTree(proc);
     };
     if (signal) {
       if (signal.aborted) onAbort();
@@ -1392,7 +1662,7 @@ function runAgyModelsQuery() {
       clearTimeout(timer);
       resolve(value);
     };
-    timer = setTimeout(() => { killAgyProcess(proc); finish(null); }, AGY_MODELS_QUERY_TIMEOUT_MS);
+    timer = setTimeout(() => { killProcessTree(proc); finish(null); }, AGY_MODELS_QUERY_TIMEOUT_MS);
 
     proc.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
     proc.stderr?.on("data", () => { });   // "Fetching available models..." 之类，不用管
@@ -1468,7 +1738,7 @@ function runAgyUsageQuery() {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      killAgyProcess(proc);
+      killProcessTree(proc);
       finish({ status: "timeout", authenticated: true, available: false, message: "Antigravity 用量查询超时" });
     }, AGY_USAGE_QUERY_TIMEOUT_MS);
 
@@ -1715,15 +1985,15 @@ function writeHistory(arr, options = {}) {
 }
 
 process.on("beforeExit", flushHistoryOnExit);
-process.on("exit", killAllAgyProcesses);
+process.on("exit", killAllCliProcesses);
 process.on("SIGINT", () => {
   flushHistoryOnExit();
-  killAllAgyProcesses();
+  killAllCliProcesses();
   process.exit(130);
 });
 process.on("SIGTERM", () => {
   flushHistoryOnExit();
-  killAllAgyProcesses();
+  killAllCliProcesses();
   process.exit(143);
 });
 
@@ -5942,8 +6212,35 @@ wss.on("connection", (ws) => {
       );
       const codexImages = msg.images ?? (msg.image ? [msg.image] : []);
       (async () => {
-        // 文字和图片共用 SDK 生命周期，并续接同一个已保存的 thread ID。
         try {
+          /* 常驻 app-server：进程和 WebSocket 都跨轮复用，第二轮起省掉约 10 秒
+             的进程起停，也不必每轮重新赌一次建连空窗。 */
+          if (CODEX_USE_PERSISTENT) {
+            const run = await runCodexPersistent({
+              prompt: providerPrompt,
+              images: codexImages,
+              cwd: resolvedCwd,
+              model: msg.model || null,
+              effort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
+              permissionMode,
+              threadId: session.codexThreadId,
+              signal: ac.signal,
+              onThread: (id) => {
+                if (!isCurrentCodexTurn()) return;
+                saveCodexThread(id);
+                send({ type: "session", sessionId: id, provider: "codex" });
+              },
+              onEvent: (ev) => { if (isCurrentCodexTurn()) send(ev); },
+            });
+            if (!isCurrentCodexTurn()) return;
+            send({ type: "result", subtype: "success", usage: run?.usage ?? null, provider: "codex" });
+            send({ type: "done" });
+            completeClientRequest("complete", requestId);
+            return;
+          }
+
+          // 降级路径（CODEX_PERSISTENT=0）：每轮 spawn 一个 `codex exec`，
+          // 文字和图片共用 SDK 生命周期，并续接同一个已保存的 thread ID。
           const codex = new Codex(CODEX_CLIENT_OPTIONS);
           const threadOptions = {
             workingDirectory: resolvedCwd,
@@ -5985,6 +6282,13 @@ wss.on("connection", (ws) => {
           const { events } = await thread.runStreamed(input, { signal: ac.signal });
           if (!isCurrentCodexTurn()) return;
           let codexResultSent = false;
+          /* 见过的最后一条 thread error。codex 自己也是这么用的：真失败时把
+             last_critical_error 搬进 turn.failed。这里留着是为了另一种收场——
+             事件流断了却既没 turn.completed 也没 turn.failed（子进程半路没了），
+             那时候报这条，比报一个不存在的成功强。 */
+          let codexLastError = null;
+          // 状态行上正挂着「正在重连…」，下一条真事件到了要把它换掉。
+          let codexRetryShown = false;
           for await (const ev of events) {
             if (!isCurrentCodexTurn()) return;
             if (ev.type === "thread.started") {
@@ -5993,17 +6297,33 @@ wss.on("connection", (ws) => {
             } else if (ev.type === "turn.started") {
               send({ type: "system", subtype: "status", status: "requesting" });
             } else if (ev.type === "item.started" || ev.type === "item.updated" || ev.type === "item.completed") {
+              if (codexRetryShown) {
+                send({ type: "system", subtype: "status", status: "requesting" });
+                codexRetryShown = false;
+              }
               sendCodexItemEvent(send, ev.type, ev.item);
             } else if (ev.type === "turn.completed") {
               send({ type: "result", subtype: "success", usage: ev.usage ?? null, provider: "codex" });
               codexResultSent = true;
             } else if (ev.type === "turn.failed") {
-              throw new Error(ev.error?.message || "Codex 请求失败");
+              throw new Error(codexTurnFailureMessage(ev.error?.message));
             } else if (ev.type === "error") {
-              throw new Error(ev.message || "Codex 请求失败");
+              /* 不中断：codex 发完这条还在 Running，失败信号只有 turn.failed。
+                 理由和那几条文案的来历写在 providers/codex.js 的 retryStatusText 上面。 */
+              const message = ev.message || "Codex 请求失败";
+              codexLastError = message;
+              const retryStatus = codexRetryStatusText(message);
+              if (retryStatus) {
+                send({ type: "system", subtype: "stream_retry", text: retryStatus });
+                codexRetryShown = true;
+              } else {
+                // 重连以外的提醒照旧显示成卡片，也照旧进历史。
+                sendCodexItemEvent(send, "item.completed", { type: "error", message });
+              }
             }
           }
           if (!isCurrentCodexTurn()) return;
+          if (!codexResultSent && codexLastError) throw new Error(codexTurnFailureMessage(codexLastError));
           if (!codexResultSent) send({ type: "result", subtype: "success", provider: "codex" });
           send({ type: "done" });
           completeClientRequest("complete", requestId);

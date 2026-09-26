@@ -1887,7 +1887,9 @@ input, textarea { font-family: inherit; }
   border-radius: 0;
   box-shadow: none;
   animation: none;
-  padding: 32px 56px 40px;
+  /* 正文第一行和左右边界跟预览的纸张对齐（预览：28px 外边距 + 1px 边框 + 48/56px 内边距；
+     CodeMirror 自带上下 4px、左右 4px），进出编辑时文字不会整体跳一下，折行也和预览一致 */
+  padding: 73px 53px 40px;
   width: min(100%, 820px);
   background: transparent;
 }
@@ -1933,7 +1935,9 @@ input, textarea { font-family: inherit; }
   padding: 0 !important;
 }
 
-.cmContainer .CodeMirror-sizer { margin: 0 !important; }
+/* CodeMirror 默认给 sizer 留 50px 右边框遮原生滚动条，这里编辑器不自己滚动，
+   留着会让正文列比预览窄 50px、折行位置对不上 */
+.cmContainer .CodeMirror-sizer { margin: 0 !important; border-right-width: 0 !important; }
 
 .cmContainer .CodeMirror-cursor {
   border-left: 1.5px solid var(--notes-text-primary);
@@ -2790,9 +2794,21 @@ input, textarea { font-family: inherit; }
 }
 
 .gitQuickPrimary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--notes-accent);
   background: var(--notes-accent);
   color: #fff;
+}
+
+.gitQuickPrimary.gitQuickPrimaryBusy:disabled {
+  border-color: var(--notes-accent);
+  background: var(--notes-accent);
+  color: #fff;
+  opacity: 0.82;
+  cursor: progress;
 }
 
 .gitQuickPrimary:disabled {
@@ -2823,25 +2839,6 @@ input, textarea { font-family: inherit; }
 @keyframes workspaceFadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-
-.noteMetaSyncBack {
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--notes-text-secondary);
-  cursor: pointer;
-  margin-right: 2px;
-}
-
-.noteMetaSyncBack:hover {
-  background: var(--notes-accent-bg);
-  color: var(--notes-accent);
 }
 
 .readerSyncWorkspaceOpen #btn-outline,
@@ -3290,6 +3287,64 @@ input, textarea { font-family: inherit; }
   background: transparent;
 }
 
+/* 返回：内容列左上角的带字按钮，列表页和详情页同一个样式 */
+.gitPaneNav {
+  flex-shrink: 0;
+  padding: 18px 22px 0;
+}
+
+.gitBackLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--notes-border);
+  border-radius: 9px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.gitBackLink:hover {
+  border-color: var(--notes-border-strong);
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.gitBackLink kbd {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--notes-border);
+  border-radius: 4px;
+  color: var(--notes-text-muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.gitBackLink:focus-visible,
+.gitRefresh:focus-visible,
+.gitHistoryBtn:focus-visible,
+.gitCircleBtn:focus-visible,
+.gitButton:focus-visible,
+.gitDiffFooterBtn:focus-visible,
+.gitFileNameBtn:focus-visible,
+.gitMsgEditBtn:focus-visible,
+.gitMsgDoneBtn:focus-visible,
+.gitQuickPrimary:focus-visible,
+.gitQuickDetails:focus-visible,
+.gitQuickIconButton:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: 2px;
+}
+
 /* 页头：无分割线，用留白建立层级 */
 .gitStatusBar {
   display: flex;
@@ -3297,7 +3352,7 @@ input, textarea { font-family: inherit; }
   justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
-  padding: 26px 22px 16px;
+  padding: 16px 22px 16px;
   border-bottom: 0;
   background: transparent;
 }
@@ -3459,8 +3514,13 @@ input, textarea { font-family: inherit; }
 }
 
 .gitFileItem:hover .gitFileRowContent,
+.gitFileItem:focus-within .gitFileRowContent,
 .gitFileItemConfirming .gitFileRowContent {
   background: var(--notes-bg-subtle);
+}
+
+.gitFileRowContent:has(.gitFileNameBtn:not(:disabled)) {
+  cursor: pointer;
 }
 
 .gitStateDot {
@@ -3562,6 +3622,7 @@ input, textarea { font-family: inherit; }
 }
 
 .gitFileItem:hover .gitFileState,
+.gitFileItem:focus-within .gitFileState,
 .gitFileItemConfirming .gitFileState {
   opacity: 0;
 }
@@ -3580,14 +3641,16 @@ input, textarea { font-family: inherit; }
 }
 
 .gitFileItem:hover .gitHoverActions,
+.gitFileItem:focus-within .gitHoverActions,
 .gitFileItemConfirming .gitHoverActions {
   opacity: 1;
   pointer-events: auto;
 }
 
 .gitCircleBtn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -3827,7 +3890,16 @@ input, textarea { font-family: inherit; }
   box-shadow: none;
 }
 
+.gitButtonPrimary.gitButtonBusy,
+.gitButtonPrimary.gitButtonBusy:disabled {
+  background: var(--notes-accent);
+  color: #fff;
+  opacity: 0.82;
+  cursor: progress;
+}
+
 .gitSpinner {
+  flex: 0 0 auto;
   width: 13px;
   height: 13px;
   border: 2px solid rgba(255, 255, 255, 0.45);
@@ -3845,28 +3917,8 @@ input, textarea { font-family: inherit; }
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  padding: 22px 22px 14px 14px;
+  padding: 16px 22px 14px;
   border-bottom: 0;
-}
-
-.gitDiffBack {
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--notes-text-secondary);
-  font: inherit;
-  font-size: 16px;
-  transition: background 120ms ease, color 120ms ease;
-}
-
-.gitDiffBack:hover {
-  background: var(--notes-bg-subtle);
-  color: var(--notes-text-primary);
 }
 
 .gitDiffHeaderText {

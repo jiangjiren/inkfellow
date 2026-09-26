@@ -34,6 +34,10 @@ const state = {
   tabScroll: new Map(),
   dirty: false,
   editMode: false,
+  // 进出编辑时的阅读锚点：上次切换的记录（判断来回切换之间有没有动过）、图片加载期间的钉住、预览里已解码的图片
+  readingAnchorMemo: null,
+  readingAnchorPin: null,
+  previewImages: null,
   // 新建后尚未命名的笔记：文件名跟随正文首行，用户手动改名或切走即退出
   autoTitlePath: null,
   navHistory: [],
@@ -57,6 +61,7 @@ const state = {
   gitMessage: "",
   gitEditingMessage: false,
   gitBusy: false,
+  gitBusyLabel: "",
   gitSelectedFile: null,
   gitDiff: null,
   gitDiffLoading: false,
@@ -459,12 +464,14 @@ function normalizeEditTarget(target) {
   const line = Number(target.line);
   if (!Number.isFinite(line)) return null;
   const normalized = { line };
+  const ch = target.ch == null ? NaN : Number(target.ch);
+  if (Number.isFinite(ch)) normalized.ch = ch;
   const clientX = Number(target.clientX);
   if (Number.isFinite(clientX)) normalized.clientX = clientX;
   return normalized;
 }
 
-function placeCaretAtEditTarget(target) {
+function placeCaretAtEditTarget(target, { scroll = true } = {}) {
   const cm = state.editor;
   const normalized = normalizeEditTarget(target);
   if (!cm || !normalized) return;
@@ -474,7 +481,9 @@ function placeCaretAtEditTarget(target) {
   const line = clamp(Math.round(normalized.line), firstLine, lastLine);
   let pos = { line, ch: 0 };
 
-  if (Number.isFinite(normalized.clientX) && typeof cm.charCoords === "function" && typeof cm.coordsChar === "function") {
+  if (Number.isFinite(normalized.ch)) {
+    pos = { line, ch: clamp(Math.round(normalized.ch), 0, (cm.getLine(line) || "").length) };
+  } else if (Number.isFinite(normalized.clientX) && typeof cm.charCoords === "function" && typeof cm.coordsChar === "function") {
     try {
       const lineStart = cm.charCoords({ line, ch: 0 }, "window");
       const lineHeight = Math.max(1, (lineStart.bottom ?? lineStart.top + 20) - lineStart.top);
@@ -486,8 +495,8 @@ function placeCaretAtEditTarget(target) {
     }
   }
 
-  cm.setCursor(pos);
-  cm.scrollIntoView(pos, 80);
+  cm.setCursor(pos, null, { scroll });
+  if (scroll) cm.scrollIntoView(pos, 80);
   cm.focus();
 }
 
@@ -495,20 +504,621 @@ async function setEditMode(on, target = null) {
   if (!(await flushPendingSave())) return;
   const docArea = qs("doc-area");
   const scrollTop = currentReadingScrollTop();
+  const markdown = state.activeNote?.extension === "md";
+  const point = Number.isFinite(target?.clientX) && Number.isFinite(target?.clientY) ? target : null;
+  const captured = markdown ? captureReadingAnchor(point) : null;
+  // 来回切换之间没滚动、没改字，就回到上次离开时的锚点，反复切换不会一点点漂走
+  const memo = state.readingAnchorMemo;
+  const untouched = Boolean(
+    !point && memo
+    && memo.path === state.activePath
+    && memo.editMode === state.editMode
+    && memo.content === state.activeNote?.content
+    && Math.abs(docArea.scrollTop - memo.scrollTop) < 2,
+  );
+  const anchor = untouched ? memo.anchor : captured;
+  // 预览里解码好的图片留到退出编辑时原样放回，否则图片逐张重新加载，正文会被一截截往下推
+  const imageNodes = !on && state.previewImages?.path === state.activePath ? state.previewImages.nodes : undefined;
+  state.previewImages = on && markdown ? { path: state.activePath, nodes: captureMarkdownImages() } : null;
   state.editMode = on;
   updateEditButton();
   localStorage.setItem(EDIT_MODE_KEY, on ? "1" : "0");
-  renderDocArea({ silent: !on, scrollTop });
-  if (on || !isHtmlNote()) docArea.scrollTop = scrollTop;
+  renderDocArea({ silent: !on, scrollTop, imageNodes });
+  if (anchor && applyReadingAnchor(anchor)) pinReadingAnchor(anchor);
+  else if (on || !isHtmlNote()) docArea.scrollTop = scrollTop;
+  state.readingAnchorMemo = captured
+    ? { path: state.activePath, editMode: on, content: state.activeNote.content, scrollTop: docArea.scrollTop, anchor: captured }
+    : null;
   if (on) {
     requestAnimationFrame(() => {
-      if (target != null && state.editor) {
+      if (!state.editor) return;
+      if (point && anchor) {
+        // 双击的字已经被锚点放回鼠标底下，光标直接落在那里，不再滚动
+        placeCaretAtEditTarget(anchor.ch != null
+          ? { line: anchor.line, ch: anchor.ch }
+          : { line: Math.floor(anchor.line), clientX: point.clientX }, { scroll: false });
+      } else if (normalizeEditTarget(target)) {
         placeCaretAtEditTarget(target);
       } else {
         placeCaretAtVisibleArea();
       }
     });
   }
+}
+
+/* ── Reading anchor：进出编辑时保持阅读位置 ───────── */
+/* 预览和源码的排版高度对不上：标题字号、段距不同，一张图在预览里几百像素、在源码里只占一行，
+   照搬像素 scrollTop 越往下偏得越多。这里改记「正在读的那个字在源码里的位置 + 它离视口顶多远」，
+   切到另一种模式后把同一个字放回同一高度。
+   锚点 { line, ch, offset }：ch 是数字时指向一个预览里看得见的字，offset 量它那一行的垂直中心；
+   ch 为 null 时按行对齐（图片、分割线这类没有字的块），line 可带小数，offset 量行顶。
+   { top: true } 表示停在文档最顶上。 */
+const PREVIEW_BLOCK_KIND = { PRE: "code", TABLE: "table", HR: "none", DETAILS: "none" };
+const TOKEN_BLOCK_KIND = {
+  heading: "text", paragraph: "text", text: "text", list: "text", blockquote: "text",
+  code: "code", table: "table", hr: "none", html: "none",
+};
+const MARKDOWN_ESCAPABLE_RE = /[!-/:-@[-`{-~]/;
+const READING_PIN_MS = 3000;
+const READING_PIN_RELEASE_EVENTS = ["wheel", "keydown", "pointerdown", "touchstart"];
+
+function splitSourceLines(content) {
+  return String(content ?? "").split(/\r\n?|\n/);
+}
+
+/* 空白不算字（预览会折叠空白、软换行变成 <br>），代理对的后半截也不单独算 */
+function isRenderedChar(text, i) {
+  const code = text.charCodeAt(i);
+  return !(code >= 0xdc00 && code <= 0xdfff) && !/\s/.test(text[i]);
+}
+
+function pushRenderedRange(text, from, to, line, cols) {
+  for (let i = from; i < to; i++) if (isRenderedChar(text, i)) cols.push({ line, ch: i });
+}
+
+function closingBracketIndex(text, open, to) {
+  let depth = 0;
+  for (let i = open; i < to; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "[") depth++;
+    else if (text[i] === "]" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/* 链接、图片的 [...] 后面紧跟的 (url "title") 或 [ref]，返回它结束后的位置 */
+function linkTailEnd(text, i, to) {
+  if (text[i] === "[") {
+    const close = closingBracketIndex(text, i, to);
+    return close === -1 ? -1 : close + 1;
+  }
+  if (text[i] !== "(") return -1;
+  let depth = 0;
+  for (let j = i; j < to; j++) {
+    if (text[j] === "\\") j++;
+    else if (text[j] === "(") depth++;
+    else if (text[j] === ")" && --depth === 0) return j + 1;
+  }
+  return -1;
+}
+
+/* * _ ~ 两侧都是空白、下划线夹在单词中间时，不可能是定界符 */
+function canDelimitEmphasis(text, i, run, from, to) {
+  const before = i > from ? text[i - 1] : " ";
+  const after = i + run < to ? text[i + run] : " ";
+  if (/\s/.test(before) && /\s/.test(after)) return false;
+  return !(text[i] === "_" && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after));
+}
+
+/* 做强调、删除线定界符时不出字；同一行里找不到能跟它配对的另一段，marked 就按字面显示 */
+function isEmphasisRun(text, i, run, from, to) {
+  if (!canDelimitEmphasis(text, i, run, from, to)) return false;
+  for (let j = from; j < to; j++) {
+    if (text[j] !== text[i]) continue;
+    let other = 1;
+    while (j + other < to && text[j + other] === text[i]) other++;
+    if (j !== i && canDelimitEmphasis(text, j, other, from, to)) return true;
+    j += other - 1;
+  }
+  return false;
+}
+
+let wikiSyntaxRenderedCache = null;
+
+/* [[...]] 在预览里渲染成链接还是原样显示，取决于 marked 扩展有没有生效；源码模型跟着实际渲染走 */
+function wikiSyntaxRendered() {
+  if (wikiSyntaxRenderedCache == null) {
+    wikiSyntaxRenderedCache = typeof marked !== "undefined" && renderMarkdownContent("[[x]]").includes("inkwell-wiki:");
+  }
+  return wikiSyntaxRenderedCache;
+}
+
+/* [[目标#标题|别名]]：有别名只显示别名，否则显示「目标 › 标题」（# 和 › 恰好都占一个字） */
+function pushWikiColumns(text, from, to, line, cols) {
+  const pipe = text.indexOf("|", from);
+  const hasPipe = pipe !== -1 && pipe < to;
+  if (hasPipe && text.slice(pipe + 1, to).trim()) pushRenderedRange(text, pipe + 1, to, line, cols);
+  else pushRenderedRange(text, from, hasPipe ? pipe : to, line, cols);
+}
+
+/* 一行行内 Markdown 渲染后，看得见的每个字对应的源码列 */
+function pushInlineColumns(text, from, to, line, cols, table = false) {
+  let i = from;
+  while (i < to) {
+    const c = text[i];
+    if (c === "\\" && i + 1 < to && MARKDOWN_ESCAPABLE_RE.test(text[i + 1])) {
+      pushRenderedRange(text, i + 1, i + 2, line, cols);
+      i += 2;
+      continue;
+    }
+    if (table && c === "|") {
+      i++;
+      continue;
+    }
+    if (c === "`") {
+      let run = 1;
+      while (text[i + run] === "`") run++;
+      const close = text.indexOf("`".repeat(run), i + run);
+      if (close !== -1 && close + run <= to) {
+        pushRenderedRange(text, i + run, close, line, cols);
+        i = close + run;
+      } else {
+        pushRenderedRange(text, i, i + run, line, cols);
+        i += run;
+      }
+      continue;
+    }
+    const wikiOpen = (c === "!" && text[i + 1] === "[" && text[i + 2] === "[") || (c === "[" && text[i + 1] === "[");
+    if (wikiOpen && wikiSyntaxRendered()) {
+      const inner = c === "!" ? i + 3 : i + 2;
+      const close = text.indexOf("]]", inner);
+      if (close !== -1 && close < to) {
+        const embedsMedia = c === "!" && isWikiMediaTarget(splitWikiTarget(text.slice(inner, close)).target);
+        if (!embedsMedia) pushWikiColumns(text, inner, close, line, cols);
+        i = close + 2;
+        continue;
+      }
+    } else if (c === "!" && text[i + 1] === "[") {
+      const close = closingBracketIndex(text, i + 1, to);
+      const end = close === -1 ? -1 : linkTailEnd(text, close + 1, to);
+      if (end !== -1) {
+        i = end; // 图片本身不出字
+        continue;
+      }
+    } else if (c === "[") {
+      const close = closingBracketIndex(text, i, to);
+      const end = close === -1 ? -1 : linkTailEnd(text, close + 1, to);
+      if (end !== -1) {
+        pushInlineColumns(text, i + 1, close, line, cols, table);
+        i = end;
+        continue;
+      }
+    }
+    if (c === "<") {
+      const rest = text.slice(i, to);
+      const autolink = /^<([a-z][a-z\d+.-]{1,31}:[^\s<>]*|[^\s<>@]+@[^\s<>]+)>/i.exec(rest);
+      if (autolink) {
+        pushRenderedRange(text, i + 1, i + 1 + autolink[1].length, line, cols);
+        i += autolink[0].length;
+        continue;
+      }
+      const tag = /^(?:<\/?[a-z][a-z\d-]*(?:\s[^<>]*)?\/?>|<!--[\s\S]*?-->)/i.exec(rest);
+      if (tag) {
+        i += tag[0].length;
+        continue;
+      }
+    }
+    if (c === "&") {
+      const entity = /^&(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][a-z\d]{1,31});/i.exec(text.slice(i, Math.min(to, i + 40)));
+      if (entity) {
+        if (!/^&(?:nbsp|#160|#xa0);$/i.test(entity[0])) cols.push({ line, ch: i });
+        i += entity[0].length;
+        continue;
+      }
+    }
+    if (c === "*" || c === "_" || c === "~") {
+      let run = 1;
+      while (text[i + run] === c) run++;
+      if (!isEmphasisRun(text, i, run, from, to)) pushRenderedRange(text, i, i + run, line, cols);
+      i += run;
+      continue;
+    }
+    if (isRenderedChar(text, i)) cols.push({ line, ch: i });
+    i++;
+  }
+}
+
+/* 行首的引用符、缩进、列表符号、任务框、标题井号（以及标题末尾的闭合井号）都不出字 */
+function blockTextRange(text, inFence) {
+  let i = 0;
+  for (;;) {
+    while (text[i] === " " || text[i] === "\t") i++;
+    if (text[i] !== ">") break;
+    i++;
+  }
+  if (inFence) return [i, text.length];
+  const marker = /^(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)/.exec(text.slice(i));
+  if (marker) {
+    i += marker[0].length;
+    const task = /^\[[ xX]\](?:[ \t]+|$)/.exec(text.slice(i));
+    if (task) i += task[0].length;
+  }
+  const heading = /^#{1,6}(?:[ \t]+|$)/.exec(text.slice(i));
+  if (!heading) return [i, text.length];
+  const from = i + heading[0].length;
+  const closing = /[ \t]+#+[ \t]*$/.exec(text);
+  return [from, closing && closing.index >= from ? closing.index : text.length];
+}
+
+/* 一个块的源码里，渲染后看得见的字各在哪一列。预览和编辑器都靠它在「块内第几个字」和源码位置之间换算 */
+function renderedSourceColumns(lines, start, end, kind) {
+  const cols = [];
+  if (kind === "none") return cols;
+  let fence = "";
+  for (let line = start; line <= end && line < lines.length; line++) {
+    const text = lines[line];
+    if (kind === "code") {
+      if ((line === start || line === end) && /^ {0,3}(`{3,}|~{3,})/.test(text)) continue;
+      pushRenderedRange(text, 0, text.length, line, cols);
+      continue;
+    }
+    if (kind === "table") {
+      if (line !== start + 1 || !/^[\s|:-]+$/.test(text)) pushInlineColumns(text, 0, text.length, line, cols, true);
+      continue;
+    }
+    // 列表、引用里可能嵌着代码块：围栏行不出字，围栏里的内容原样显示
+    const [from, to] = blockTextRange(text, Boolean(fence));
+    const fenceMark = /^(`{3,}|~{3,})/.exec(text.slice(from))?.[1];
+    if (fence) {
+      if (fenceMark && fenceMark[0] === fence[0] && fenceMark.length >= fence.length) fence = "";
+      else pushRenderedRange(text, from, to, line, cols);
+      continue;
+    }
+    if (fenceMark) {
+      fence = fenceMark;
+      continue;
+    }
+    if (/^(?:\s*[-*_]){3,}\s*$|^=+\s*$/.test(text.slice(from, to))) continue; // 分割线、setext 标题下划线
+    pushInlineColumns(text, from, to, line, cols);
+  }
+  return cols;
+}
+
+function renderedTextChars(el) {
+  const chars = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.data;
+    for (let i = 0; i < text.length; i++) {
+      if (isRenderedChar(text, i)) chars.push({ node, offset: i });
+    }
+  }
+  return chars;
+}
+
+function textCharRect({ node, offset }) {
+  const code = node.data.charCodeAt(offset);
+  const range = document.createRange();
+  range.setStart(node, offset);
+  range.setEnd(node, Math.min(node.data.length, offset + (code >= 0xd800 && code <= 0xdbff ? 2 : 1)));
+  return range.getBoundingClientRect();
+}
+
+function rowCenter(rect) {
+  return (rect.top + rect.bottom) / 2;
+}
+
+/* 第一个所在行中线不高于 y 的字；都在 y 上面则返回 chars.length */
+function firstCharBelow(chars, y) {
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rowCenter(textCharRect(chars[mid])) >= y) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+function firstCharAtOrAfter(chars, node, offset) {
+  const range = document.createRange();
+  range.setStart(node, offset);
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (range.comparePoint(chars[mid].node, chars[mid].offset) >= 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+function caretPointAt(x, y) {
+  if (typeof document.caretPositionFromPoint === "function") {
+    const pos = document.caretPositionFromPoint(x, y);
+    return pos?.offsetNode ? { node: pos.offsetNode, offset: pos.offset } : null;
+  }
+  const range = document.caretRangeFromPoint?.(x, y);
+  return range ? { node: range.startContainer, offset: range.startOffset } : null;
+}
+
+/* 预览里带源码行号的块，按文档顺序、行号单调递增；折叠起来没有布局的块不能当锚点 */
+function previewSourceBlocks() {
+  const root = qs("doc-area")?.querySelector(".document");
+  if (!root) return [];
+  const blocks = [];
+  let lastEnd = -1;
+  for (const el of root.querySelectorAll("[data-source-line]")) {
+    const start = Number(el.dataset.sourceLine);
+    const end = Math.max(start, Number(el.dataset.sourceEndLine ?? start));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start <= lastEnd || !el.getClientRects().length) continue;
+    blocks.push({ el, start, end, kind: PREVIEW_BLOCK_KIND[el.tagName] || "text" });
+    lastEnd = end;
+  }
+  return blocks;
+}
+
+function firstBlockBelow(blocks, y) {
+  let lo = 0;
+  let hi = blocks.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (blocks[mid].el.getBoundingClientRect().bottom > y) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/* 源码行（可带小数）→ 预览里的纵坐标：块内按比例，块与块之间的空行按间距比例 */
+function previewLineY(blocks, line) {
+  let prev = null;
+  for (const block of blocks) {
+    if (line < block.start) {
+      const top = block.el.getBoundingClientRect().top;
+      if (!prev) return top;
+      const prevBottom = prev.el.getBoundingClientRect().bottom;
+      const t = (line - prev.end - 1) / (block.start - prev.end - 1);
+      return prevBottom + clamp(t, 0, 1) * (top - prevBottom);
+    }
+    if (line < block.end + 1) {
+      const rect = block.el.getBoundingClientRect();
+      return rect.top + ((line - block.start) / (block.end + 1 - block.start)) * rect.height;
+    }
+    prev = block;
+  }
+  return prev ? prev.el.getBoundingClientRect().bottom : null;
+}
+
+function previewLineAtY(blocks, y) {
+  let prev = null;
+  for (const block of blocks) {
+    const rect = block.el.getBoundingClientRect();
+    if (y < rect.top) {
+      if (!prev) return block.start;
+      const prevBottom = prev.el.getBoundingClientRect().bottom;
+      const t = rect.top > prevBottom ? (y - prevBottom) / (rect.top - prevBottom) : 0;
+      return prev.end + 1 + clamp(t, 0, 1) * (block.start - prev.end - 1);
+    }
+    if (y < rect.bottom) return block.start + ((y - rect.top) / rect.height) * (block.end + 1 - block.start);
+    prev = block;
+  }
+  return prev ? prev.end + 1 : null;
+}
+
+/* 块内第 k 个看得见的字 → 源码位置。两边数出来的字数对不上时按比例折算，误差摊在整块里 */
+function previewCharSource(block, chars, k) {
+  const cols = renderedSourceColumns(splitSourceLines(state.activeNote?.content), block.start, block.end, block.kind);
+  if (!cols.length || !chars.length) return null;
+  if (k >= chars.length) {
+    const last = cols[cols.length - 1];
+    return { line: last.line, ch: last.ch + 1 };
+  }
+  return cols[Math.min(cols.length - 1, Math.round((k * cols.length) / chars.length))];
+}
+
+/* 预览：从 y 往下找第一个能对齐的东西 —— 一行字，或顶边露在视口里的图片、分割线 */
+function previewAnchorAt(y) {
+  const docArea = qs("doc-area");
+  const top = docArea.getBoundingClientRect().top;
+  const bottom = top + docArea.clientHeight;
+  const blocks = previewSourceBlocks();
+  for (let i = firstBlockBelow(blocks, y); i < blocks.length; i++) {
+    const block = blocks[i];
+    const rect = block.el.getBoundingClientRect();
+    if (rect.top >= bottom) break;
+    if (block.kind !== "none") {
+      const chars = renderedTextChars(block.el);
+      const k = firstCharBelow(chars, y);
+      const pos = k < chars.length ? previewCharSource(block, chars, k) : null;
+      if (pos) return { line: pos.line, ch: pos.ch, offset: rowCenter(textCharRect(chars[k])) - top };
+    }
+    // 被视口顶截掉一截的图片不拿来对齐：它在源码里只有一行，按它对齐会把下面正在读的字甩远
+    if (rect.top >= y - 1) return { line: block.start, ch: null, offset: rect.top - top };
+  }
+  const line = previewLineAtY(blocks, y);
+  return line == null ? null : { line, ch: null, offset: y - top };
+}
+
+/* 预览：鼠标点在哪个字上，锚点就是哪个字（双击进编辑用） */
+function previewAnchorAtPoint(x, y) {
+  const top = qs("doc-area").getBoundingClientRect().top;
+  const blocks = previewSourceBlocks();
+  const caret = caretPointAt(x, y);
+  const block = caret && blocks.find((b) => b.el.contains(caret.node));
+  if (block && block.kind !== "none") {
+    const chars = renderedTextChars(block.el);
+    const k = firstCharAtOrAfter(chars, caret.node, caret.offset);
+    const pos = previewCharSource(block, chars, k);
+    if (pos) {
+      return { line: pos.line, ch: pos.ch, offset: rowCenter(textCharRect(chars[Math.min(k, chars.length - 1)])) - top };
+    }
+  }
+  const line = previewLineAtY(blocks, y);
+  return line == null ? null : { line, ch: null, offset: y - top };
+}
+
+function previewAnchorY(anchor) {
+  const blocks = previewSourceBlocks();
+  if (!blocks.length) return null;
+  if (anchor.ch == null) return previewLineY(blocks, anchor.line);
+  const block = blocks.find((b) => b.start <= anchor.line && anchor.line <= b.end);
+  if (block && block.kind !== "none") {
+    const cols = renderedSourceColumns(splitSourceLines(state.activeNote?.content), block.start, block.end, block.kind);
+    const chars = renderedTextChars(block.el);
+    if (cols.length && chars.length) {
+      let j = cols.findIndex((c) => c.line > anchor.line || (c.line === anchor.line && c.ch >= anchor.ch));
+      if (j === -1) j = cols.length - 1;
+      return rowCenter(textCharRect(chars[Math.min(chars.length - 1, Math.round((j * chars.length) / cols.length))]));
+    }
+  }
+  return previewLineY(blocks, anchor.line + 0.5);
+}
+
+/* 编辑器这边没有渲染好的块，按预览同样的规则把源码切块（属性区、代码块、表格……） */
+function editorSourceBlocks(content) {
+  if (typeof marked === "undefined") return [{ start: 0, end: Infinity, kind: "text" }];
+  const { body, bodyStartLine } = parseFrontMatter(content);
+  const tokens = annotateTokenLines(marked.lexer(body, { breaks: true, gfm: true }), body, bodyStartLine);
+  const blocks = bodyStartLine > 0 ? [{ start: 0, end: bodyStartLine - 1, kind: "none" }] : [];
+  for (const token of tokens) {
+    const kind = TOKEN_BLOCK_KIND[token.type];
+    if (kind) blocks.push({ start: token._sl, end: token._el, kind });
+  }
+  return blocks;
+}
+
+function editorLineColumns(lines, blocks, line) {
+  const block = blocks.find((b) => b.start <= line && line <= b.end);
+  if (!block) return [];
+  return renderedSourceColumns(lines, block.start, block.end, block.kind).filter((c) => c.line === line);
+}
+
+/* 编辑器：从 y 那一行往下找第一个在预览里看得见的字；整行都不出字（图片、围栏、分割线）就按行对齐 */
+function editorAnchorAt(y) {
+  const cm = state.editor;
+  const docArea = qs("doc-area");
+  const top = docArea.getBoundingClientRect().top;
+  const bottom = top + docArea.clientHeight;
+  const left = cm.charCoords({ line: cm.firstLine(), ch: 0 }, "window").left + 1;
+  let pos = cm.coordsChar({ left, top: y }, "window");
+  const row = cm.charCoords(pos, "window");
+  if (rowCenter(row) < y) pos = cm.coordsChar({ left, top: row.bottom + 1 }, "window");
+  const content = cm.getValue();
+  const lines = splitSourceLines(content);
+  const blocks = editorSourceBlocks(content);
+  for (let line = pos.line, from = pos.ch; line <= cm.lastLine(); line++, from = 0) {
+    const lineTop = cm.heightAtLine(line, "window");
+    if (lineTop >= bottom) break;
+    if (!lines[line]?.trim()) continue;
+    const cols = editorLineColumns(lines, blocks, line);
+    if (!cols.length) {
+      if (from === 0) return { line, ch: null, offset: lineTop - top };
+      continue;
+    }
+    const col = cols.find((c) => c.ch >= from);
+    if (col) return { line, ch: col.ch, offset: rowCenter(cm.charCoords(col, "window")) - top };
+  }
+  const line = cm.lineAtHeight(y, "window");
+  const lineTop = cm.heightAtLine(line, "window");
+  const height = Math.max(1, cm.getLineHandle(line).height);
+  return { line: line + clamp((y - lineTop) / height, 0, 1), ch: null, offset: y - top };
+}
+
+/* 编辑器：光标在视口里就以光标处的字为锚——刚打完字按 Esc，眼睛就停在那里 */
+function editorAnchorAtCursor() {
+  const cm = state.editor;
+  const docArea = qs("doc-area");
+  const top = docArea.getBoundingClientRect().top;
+  const head = cm.getCursor("head");
+  const center = rowCenter(cm.charCoords(head, "window"));
+  if (center < top || center > top + docArea.clientHeight) return null;
+  const content = cm.getValue();
+  const cols = editorLineColumns(splitSourceLines(content), editorSourceBlocks(content), head.line);
+  const col = cols.find((c) => c.ch >= head.ch) || cols[cols.length - 1];
+  if (!col) return { line: head.line, ch: null, offset: cm.heightAtLine(head.line, "window") - top };
+  return { line: head.line, ch: col.ch, offset: rowCenter(cm.charCoords(col, "window")) - top };
+}
+
+function editorAnchorY(anchor) {
+  const cm = state.editor;
+  const first = cm.firstLine();
+  const last = cm.lastLine();
+  if (anchor.ch != null) {
+    return rowCenter(cm.charCoords({ line: clamp(anchor.line, first, last), ch: anchor.ch }, "window"));
+  }
+  const line = clamp(Math.floor(anchor.line), first, last);
+  const lineTop = cm.heightAtLine(line, "window");
+  return lineTop + clamp(anchor.line - line, 0, 1) * cm.getLineHandle(line).height;
+}
+
+function captureReadingAnchor(point = null) {
+  const docArea = qs("doc-area");
+  if (!docArea) return null;
+  try {
+    if (point && !state.editMode) return previewAnchorAtPoint(point.clientX, point.clientY);
+    if (state.editMode) {
+      if (!state.editor) return null;
+      const atCursor = editorAnchorAtCursor();
+      if (atCursor) return atCursor;
+    }
+    if (docArea.scrollTop < 1) return { top: true };
+    const y = docArea.getBoundingClientRect().top + 1;
+    return state.editMode ? editorAnchorAt(y) : previewAnchorAt(y);
+  } catch (err) {
+    console.warn("Failed to capture reading position", err);
+    return null;
+  }
+}
+
+function applyReadingAnchor(anchor) {
+  const docArea = qs("doc-area");
+  if (!docArea) return false;
+  if (anchor.top) {
+    docArea.scrollTop = 0;
+    return true;
+  }
+  try {
+    const y = state.editMode ? (state.editor ? editorAnchorY(anchor) : null) : previewAnchorY(anchor);
+    if (!Number.isFinite(y)) return false;
+    docArea.scrollTop += y - (docArea.getBoundingClientRect().top + anchor.offset);
+    return true;
+  } catch (err) {
+    console.warn("Failed to restore reading position", err);
+    return false;
+  }
+}
+
+/* 切换后几秒内内容高度还会变（新插入的图片解码、字体晚到），期间每变一次就把锚点重新摆回去；
+   一旦用户自己滚动、按键或点击就放手。 */
+function pinReadingAnchor(anchor) {
+  releaseReadingAnchorPin();
+  const docArea = qs("doc-area");
+  const content = docArea?.firstElementChild;
+  if (!content || typeof ResizeObserver === "undefined") return;
+  const observer = new ResizeObserver(() => {
+    if (!content.isConnected) {
+      release();
+      return;
+    }
+    applyReadingAnchor(anchor);
+    if (state.readingAnchorMemo) state.readingAnchorMemo.scrollTop = docArea.scrollTop;
+  });
+  const timer = setTimeout(() => release(), READING_PIN_MS);
+  function release() {
+    observer.disconnect();
+    clearTimeout(timer);
+    for (const type of READING_PIN_RELEASE_EVENTS) window.removeEventListener(type, release, true);
+    if (state.readingAnchorPin === release) state.readingAnchorPin = null;
+  }
+  for (const type of READING_PIN_RELEASE_EVENTS) {
+    window.addEventListener(type, release, { capture: true, passive: true });
+  }
+  observer.observe(content);
+  state.readingAnchorPin = release;
+}
+
+function releaseReadingAnchorPin() {
+  state.readingAnchorPin?.();
 }
 
 /* ── Wiki Links ──────────────────────────────────── */
@@ -730,24 +1340,70 @@ function desktopWikiHint(cm) {
 }
 
 /* ── Markdown rendering ──────────────────────────── */
-// Inject data-source-line on top-level block elements so double-click can map back to editor line.
+// Inject data-source-line on top-level block elements so double-click and mode switches can map back to editor lines.
 function sourceTokenSelector(token) {
   if (token.type === "heading") return `h${token.depth}`;
-  if (token.type === "paragraph") return "p";
+  if (token.type === "paragraph" || token.type === "text") return "p";
   if (token.type === "list") return token.ordered ? "ol" : "ul";
   if (token.type === "blockquote") return "blockquote";
   if (token.type === "code") return "pre";
+  if (token.type === "table") return "table";
+  if (token.type === "hr") return "hr";
   return "";
+}
+
+/* 给顶层 token 标上源码行区间（首尾行都含）。marked 会把链接定义（[id]: url）整行吞掉、
+   不产出 token，只按 raw 累加行数会从那里开始整体错位，所以每个 token 都回源码里对一下位置。 */
+function annotateTokenLines(tokens, source, lineOffset = 0) {
+  const src = source
+    .replace(/\r\n|\r/g, "\n")
+    .replace(/^( *)(\t+)/gm, (_, leading, tabs) => leading + "    ".repeat(tabs.length));
+  const newlines = (text) => (text.match(/\n/g) || []).length;
+  let offset = 0;
+  let line = lineOffset;
+  for (const tok of tokens) {
+    const raw = tok.raw || "";
+    const at = !raw || src.startsWith(raw, offset) ? offset : src.indexOf(raw, offset);
+    if (at > offset) {
+      line += newlines(src.slice(offset, at));
+      offset = at;
+    }
+    tok._sl = line;
+    tok._el = line + newlines(raw.replace(/\n+$/, ""));
+    line += newlines(raw);
+    offset += raw.length;
+  }
+  return tokens;
+}
+
+/* HTML 块自己产出的元素要跳过，否则会被下一个段落 token 认领，之后的行号全部错一位。
+   只开不合的标签（<div> 自成一块、中间夹着 Markdown）会把后面的内容包进去，
+   这种只跳过外层，让里面的块照常认领。 */
+function skipHtmlTokenElements(token, elements, index) {
+  const probe = document.createElement("template");
+  probe.innerHTML = sanitizeMarkdownHtml(token.raw || "");
+  for (const expected of probe.content.children) {
+    const el = elements[index];
+    if (!el || el.tagName !== expected.tagName) break;
+    const wrapsFollowingBlocks = el.getElementsByTagName("*").length > expected.getElementsByTagName("*").length;
+    index++;
+    if (!wrapsFollowingBlocks) while (index < elements.length && el.contains(elements[index])) index++;
+  }
+  return index;
 }
 
 function injectSourceLineAttrs(html, tokens) {
   if (typeof document === "undefined") return html;
   const template = document.createElement("template");
   template.innerHTML = html;
-  const elements = Array.from(template.content.children);
+  const elements = Array.from(template.content.querySelectorAll("*"));
   let elementIndex = 0;
 
   for (const token of tokens) {
+    if (token.type === "html") {
+      elementIndex = skipHtmlTokenElements(token, elements, elementIndex);
+      continue;
+    }
     const selector = sourceTokenSelector(token);
     if (!selector || !Number.isFinite(token._sl)) continue;
     for (; elementIndex < elements.length; elementIndex++) {
@@ -756,6 +1412,7 @@ function injectSourceLineAttrs(html, tokens) {
       el.dataset.sourceLine = String(token._sl);
       el.dataset.sourceEndLine = String(Number.isFinite(token._el) ? token._el : token._sl);
       elementIndex++;
+      while (elementIndex < elements.length && el.contains(elements[elementIndex])) elementIndex++;
       break;
     }
   }
@@ -783,15 +1440,7 @@ function renderMarkdownContent(md, options = {}) {
   const lineOffset = Number.isFinite(options.lineOffset) ? options.lineOffset : 0;
   // Notes are authored line-by-line in the editor, so preserve single newlines in
   // the preview instead of collapsing GFM soft breaks into spaces.
-  const tokens = marked.lexer(md, { breaks: true, gfm: true });
-  let lineNum = 0;
-  for (const tok of tokens) {
-    const raw = tok.raw || "";
-    const visibleRaw = raw.replace(/\n+$/g, "");
-    tok._sl = lineOffset + lineNum;
-    tok._el = lineOffset + lineNum + (visibleRaw.match(/\n/g) || []).length;
-    lineNum += (raw.match(/\n/g) || []).length;
-  }
+  const tokens = annotateTokenLines(marked.lexer(md, { breaks: true, gfm: true }), md, lineOffset);
   const html = marked.parser(tokens, { breaks: true, gfm: true });
   return injectSourceLineAttrs(sanitizeMarkdownHtml(html), tokens);
 }
@@ -995,7 +1644,7 @@ function parseFrontMatter(content) {
   return { data, body, bodyStartLine };
 }
 
-function renderFrontMatterPanel(data) {
+function renderFrontMatterPanel(data, bodyStartLine = 0) {
   const entries = Object.entries(data);
   if (entries.length === 0) return "";
 
@@ -1032,8 +1681,11 @@ function renderFrontMatterPanel(data) {
     `;
   }).join("");
 
+  const sourceAttrs = bodyStartLine > 0
+    ? ` data-source-line="0" data-source-end-line="${bodyStartLine - 1}"`
+    : "";
   return `
-    <details class="frontMatter">
+    <details class="frontMatter"${sourceAttrs}>
       <summary class="frontMatterLabel">笔记属性</summary>
       <dl class="frontMatterGrid">${rows}</dl>
     </details>
@@ -1387,6 +2039,10 @@ function wireHtmlFrameLinks(frame, notePath) {
 
 /* ── Document area render ────────────────────────── */
 function renderDocArea(options = {}) {
+  releaseReadingAnchorPin();
+  // 换了笔记，上一篇留下的图片缓存和切换记录就没用了，别一直占着内存
+  if (state.previewImages && state.previewImages.path !== state.activeNote?.path) state.previewImages = null;
+  if (state.readingAnchorMemo && state.readingAnchorMemo.path !== state.activeNote?.path) state.readingAnchorMemo = null;
   const docArea = qs("doc-area");
   const silent = options.silent === true;
   const renderGeneration = ++state.docRenderGeneration;
@@ -1459,7 +2115,7 @@ function renderDocArea(options = {}) {
     docArea.className = docAreaClass();
     if (ext === "md") {
       const { data: frontMatterData, body: markdownBody, bodyStartLine } = parseFrontMatter(state.activeNote.content);
-      const frontMatterHtml = renderFrontMatterPanel(frontMatterData);
+      const frontMatterHtml = renderFrontMatterPanel(frontMatterData, bodyStartLine);
       const html = renderMarkdownContent(markdownBody, { lineOffset: bodyStartLine });
       docArea.innerHTML = `<div class="document">${frontMatterHtml}<article class="prose" id="prose-content">${html}</article></div>`;
       addHeadingSlugs();
@@ -1863,19 +2519,15 @@ async function resolveMarkdownImages(notePath, renderGeneration) {
 function renderNoteMeta() {
   const titleEl = qs("note-title");
   const metaEl = qs("note-meta");
-  const backBtn = qs("btn-close-git-workspace");
   updateReaderDocumentActions();
 
   if (state.gitWorkspaceOpen) {
     titleEl.textContent = "同步";
     metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
-    if (backBtn) backBtn.hidden = false;
     qs("btn-more-menu").disabled = true;
     toggleMoreMenu(false);
     return;
   }
-
-  if (backBtn) backBtn.hidden = true;
 
   if (!state.activeNote) {
     titleEl.textContent = "inkfellow Desktop";
@@ -3278,7 +3930,7 @@ function renderGitStatusUI() {
   } else if (synced) {
     label.textContent = "已同步到云端";
   } else if (files.length === 0 && st.behind > 0) {
-    label.textContent = `远端有 ${st.behind} 个新版本`;
+    label.textContent = `云端有 ${st.behind} 个新版本`;
   } else if (files.length > 0) {
     label.textContent = `${files.length} 篇待同步`;
   } else {
@@ -3483,8 +4135,10 @@ function showGitFeedback(msg, isError = false) {
 async function gitCommitPush() {
   const message = state.gitMessage.trim();
   state.gitBusy = true;
+  // 进行中的说明放进按钮里：不占一条绿色「成功」横幅，也不把按钮往下挤
+  state.gitBusyLabel = message ? "正在同步到云端…" : "正在同步并生成 AI 摘要…";
+  state.gitFeedback = null;
   renderGitPanel();
-  showGitFeedback(message ? "正在同步到云端…" : "正在同步并生成 AI 摘要…");
   try {
     // 只入队，执行结果由 sync-state 事件回推
     await invoke("sync_commit_and_push", { message });
@@ -3510,6 +4164,29 @@ async function gitInit() {
   }
 }
 
+const GIT_ICON_BACK = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>`;
+const GIT_ICON_REFRESH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`;
+const GIT_ICON_UNDO = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>`;
+const GIT_ICON_FILE = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+
+/* 返回放在内容列左上角、带文字，三个页面同一个样式：眼睛在内容上，返回就该在手边 */
+function renderGitBackLink(action, label, id = "") {
+  return `
+    <nav class="gitPaneNav">
+      <button ${id ? `id="${id}" ` : ""}class="gitBackLink" type="button" data-action="${action}" title="${label}（Esc）">
+        ${GIT_ICON_BACK}<span>${label}</span><kbd>Esc</kbd>
+      </button>
+    </nav>`;
+}
+
+/* 「还原」在不同状态下其实是不同的事，按钮上直接说清楚 */
+function discardActionLabel(fileState, kind) {
+  if (kind === "folder" || fileState === "added") return "删除";
+  if (fileState === "deleted") return "恢复";
+  if (fileState === "modified") return "放弃修改";
+  return "还原";
+}
+
 function renderGitPanel() {
   renderGitQuickPopover();
   const panel = qs("git-panel");
@@ -3529,6 +4206,7 @@ function renderGitPanel() {
   const files = st?.files || [];
   const initialized = st ? st.initialized !== false : null;
   const synced = initialized === true && files.length === 0 && st.ahead === 0 && st.behind === 0;
+  const focusKey = gitPanelFocusKey(panel);
 
   panel.innerHTML = `
     <div id="git-app" class="gitPanel">
@@ -3541,6 +4219,26 @@ function renderGitPanel() {
       </div>
     </div>`;
   wireGitPanel();
+  restoreGitPanelFocus(panel, focusKey);
+}
+
+/* 面板每次整块重绘，焦点会掉回 body：记下焦点在哪个按钮上，重绘后放回去；
+   那个按钮没了（比如确认框收起）就落到当前页的返回键上，键盘和 Esc 都接得上 */
+function gitPanelFocusKey(panel) {
+  const el = document.activeElement;
+  if (!el || el === document.body || !panel.contains(el)) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const action = el.getAttribute("data-action");
+  if (!action) return "";
+  const path = el.getAttribute("data-path");
+  return `[data-action="${action}"]${path != null ? `[data-path="${CSS.escape(path)}"]` : ""}`;
+}
+
+function restoreGitPanelFocus(panel, key) {
+  if (key == null) return;
+  const visiblePane = panel.querySelector(".gitStackPane:not([inert])");
+  const target = (key && visiblePane?.querySelector(key)) || visiblePane?.querySelector(".gitBackLink");
+  target?.focus({ preventScroll: true });
 }
 
 function renderGitQuickPopover() {
@@ -3575,7 +4273,7 @@ function renderGitQuickPopover() {
           : files.length
             ? `${files.length} 篇待同步`
             : st.behind > 0
-              ? `远端有 ${st.behind} 个新版本`
+              ? `云端有 ${st.behind} 个新版本`
               : `${st.ahead || 0} 篇待同步`;
   const detailLabel = st?.lastSync
     ? `上次同步 ${formatLastSync(st.lastSync)}`
@@ -3589,7 +4287,7 @@ function renderGitQuickPopover() {
         <strong>${escapeHtml(statusLabel)}</strong>
         ${detailLabel ? `<span>${escapeHtml(detailLabel)}</span>` : ""}
       </div>
-      <button id="btn-git-quick-refresh" class="gitQuickIconButton" type="button" title="重新检查" aria-label="重新检查" ${state.gitBusy ? "disabled" : ""}>↻</button>
+      <button id="btn-git-quick-refresh" class="gitQuickIconButton" type="button" title="重新检查" aria-label="重新检查" ${state.gitBusy ? "disabled" : ""}>${GIT_ICON_REFRESH}</button>
     </div>
     ${previewFiles.length ? `
       <div class="gitQuickChanges">
@@ -3612,8 +4310,8 @@ function renderGitQuickPopover() {
     <div class="gitQuickActions">
       ${initialized === null ? `
         <button class="gitQuickPrimary" type="button" disabled>正在检查...</button>` : initialized ? `
-        <button id="btn-git-quick-sync" class="gitQuickPrimary" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
-          ${state.gitBusy ? "同步中..." : synced ? "已是最新版本" : "立即同步"}
+        <button id="btn-git-quick-sync" class="gitQuickPrimary ${state.gitBusy ? "gitQuickPrimaryBusy" : ""}" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
+          ${state.gitBusy ? `<span class="gitSpinner"></span>同步中…` : synced ? "已是最新版本" : "立即同步"}
         </button>` : `
         <button id="btn-git-quick-init" class="gitQuickPrimary" type="button" ${state.gitBusy ? "disabled" : ""}>初始化同步</button>`}
       <button id="btn-git-quick-details" class="gitQuickDetails" type="button">${files.length ? "查看全部更改" : "查看同步详情"}</button>
@@ -3639,16 +4337,21 @@ function renderGitMainPane(st, files, initialized, synced) {
       ? "尚未初始化云端同步"
       : synced
         ? "已是最新版本"
-        : `${files.length} 篇笔记待同步`;
+        : files.length
+          ? `${files.length} 篇笔记待同步`
+          : st.behind > 0
+            ? `云端有 ${st.behind} 个新版本`
+            : `${st.ahead} 个版本待推送到云端`;
   // 分支、云端状态、上次同步合成一行副标题，底部只留操作
   const errorHint = initialized && state.gitLastErrorKind && gitErrorHint(state.gitLastErrorKind);
   const subParts = [];
   if (errorHint) subParts.push(errorHint);
-  if (st?.behind > 0) subParts.push("云端有新更新");
+  if (st?.behind > 0 && files.length) subParts.push("云端有新更新");
   if (st?.branch) subParts.push(st.branch);
   if (st?.lastSync) subParts.push(`上次同步 ${formatLastSync(st.lastSync)}`);
 
   return `
+    ${renderGitBackLink("close", "返回笔记", "btn-close-git-workspace")}
     <div class="gitStatusBar">
       <div class="gitStatusLeft">
         <span class="gitStatusDot ${errorHint ? "gitStatusDotError" : synced ? "gitStatusDotSynced" : ""} ${state.gitBusy ? "gitStatusDotPulsing" : ""}"></span>
@@ -3659,17 +4362,17 @@ function renderGitMainPane(st, files, initialized, synced) {
       </div>
       <div class="gitHeaderActions">
         ${initialized ? `<button id="btn-git-history-new" class="gitHistoryBtn" type="button">版本记录</button>` : ""}
-        <button id="btn-git-refresh-new" class="gitRefresh" type="button" title="重新检查" aria-label="重新检查" ${state.gitBusy ? "disabled" : ""}>↻</button>
+        <button id="btn-git-refresh-new" class="gitRefresh" type="button" title="重新检查" aria-label="重新检查" ${state.gitBusy ? "disabled" : ""}>${GIT_ICON_REFRESH}</button>
       </div>
     </div>
     <div class="gitFileListContainer">${renderGitFileList(st, files, initialized, synced)}</div>
-    ${state.gitFeedback ? `<div class="gitFeedback ${state.gitFeedbackError ? "gitFeedbackError" : ""}">${escapeHtml(state.gitFeedback)}</div>` : ""}
+    ${state.gitFeedback ? `<div class="gitFeedback ${state.gitFeedbackError ? "gitFeedbackError" : ""}" role="status">${escapeHtml(state.gitFeedback)}</div>` : ""}
     <div class="gitBottomBar">
       ${initialized && files.length ? renderGitMessageBar() : ""}
       <div class="gitActions">
         ${initialized === null ? `<button class="gitButton gitButtonPrimary gitButtonFull gitButtonDisabled" type="button" disabled>正在检查...</button>` : initialized ? `
-          <button id="btn-git-sync-new" class="gitButton gitButtonPrimary gitButtonFull ${synced ? "gitButtonDisabled" : ""}" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
-            ${state.gitBusy ? `<span class="gitSpinner"></span><span>智能同步中...</span>` : synced ? "<span>已同步到最新</span>" : "<span>立即同步到云端</span>"}
+          <button id="btn-git-sync-new" class="gitButton gitButtonPrimary gitButtonFull ${synced && !state.gitBusy ? "gitButtonDisabled" : ""} ${state.gitBusy ? "gitButtonBusy" : ""}" type="button" ${state.gitBusy || synced ? "disabled" : ""}>
+            ${state.gitBusy ? `<span class="gitSpinner"></span><span>${escapeHtml(state.gitBusyLabel || "正在同步…")}</span>` : synced ? "<span>已同步到最新</span>" : "<span>立即同步到云端</span>"}
           </button>
         ` : `<button id="btn-git-init-new" class="gitButton gitButtonPrimary gitButtonFull" type="button" ${state.gitBusy ? "disabled" : ""}>初始化同步仓库</button>`}
       </div>
@@ -3680,6 +4383,8 @@ function renderGitFileList(st, files, initialized, synced) {
   if (!st) return `<div class="gitEmptyState"><div class="gitEmptyTitle">正在检查...</div></div>`;
   if (!initialized) return `<div class="gitEmptyState"><div class="gitEmptyTitle">还没有同步仓库</div><div class="gitEmptyDesc">初始化后即可把笔记同步到云端。</div></div>`;
   if (synced) return `<div class="gitEmptyState"><div class="gitEmptyTitle">一片纯净</div><div class="gitEmptyDesc">所有想法已同步到云端。</div></div>`;
+  if (!files.length && st.behind > 0) return `<div class="gitEmptyState"><div class="gitEmptyTitle">云端有新内容</div><div class="gitEmptyDesc">本地没有待上传的改动，同步一下就能把云端的更新拉到这台设备。</div></div>`;
+  if (!files.length) return `<div class="gitEmptyState"><div class="gitEmptyTitle">还有版本没推上云端</div><div class="gitEmptyDesc">改动已经存成版本，同步一下就会推送到云端。</div></div>`;
   return `<div class="gitFileList"><ul>${files.map((file) => renderGitFileItem(file)).join("")}</ul></div>`;
 }
 
@@ -3700,8 +4405,8 @@ function renderGitFileItem(file) {
         </div>
         <span class="gitFileState">${escapeHtml(gitStateLabel(file.state, file.kind))}</span>
         <div class="gitHoverActions">
-          ${file.state !== "deleted" && file.kind !== "folder" ? `<button class="gitCircleBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}" title="打开文件"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg></button>` : ""}
-          <button class="gitCircleBtn gitCircleBtnDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}" title="还原">↩</button>
+          ${file.state !== "deleted" && file.kind !== "folder" ? `<button class="gitCircleBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}" title="打开笔记" aria-label="打开笔记">${GIT_ICON_FILE}</button>` : ""}
+          <button class="gitCircleBtn gitCircleBtnDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}" title="${discardActionLabel(file.state, file.kind)}这项更改" aria-label="${discardActionLabel(file.state, file.kind)}这项更改">${GIT_ICON_UNDO}</button>
         </div>
       </div>
       ${confirming ? `
@@ -3710,7 +4415,7 @@ function renderGitFileItem(file) {
           <div class="gitPopoverText">${escapeHtml(discardWarning(file.state, file.kind))}</div>
           <div class="gitPopoverBtns">
             <button class="gitPopoverCancel" type="button" data-action="cancel-discard">取消</button>
-            <button class="gitPopoverConfirm" type="button" data-action="discard" data-path="${escapeHtml(file.path)}" ${state.gitDiscarding ? "disabled" : ""}>${state.gitDiscarding ? "处理中..." : "确定还原"}</button>
+            <button class="gitPopoverConfirm" type="button" data-action="discard" data-path="${escapeHtml(file.path)}" ${state.gitDiscarding ? "disabled" : ""}>${state.gitDiscarding ? "处理中..." : `确定${discardActionLabel(file.state, file.kind)}`}</button>
           </div>
         </div>` : ""}
     </li>`;
@@ -3741,8 +4446,8 @@ function renderGitDiffPane() {
   const parent = gitParentPath(file.path);
   const confirming = state.gitDiscardPath === file.path;
   return `
+    ${renderGitBackLink("back", "返回同步")}
     <header class="gitDiffHeader">
-      <button class="gitDiffBack" type="button" data-action="back">←</button>
       <div class="gitDiffHeaderText">
         <strong>${escapeHtml(stripExt(file.name))}</strong>
         ${parent ? `<span>${escapeHtml(parent)}</span>` : ""}
@@ -3759,13 +4464,13 @@ function renderGitDiffPane() {
           <span class="gitDiffDiscardConfirmText">${escapeHtml(discardWarning(file.state, file.kind))}</span>
           <div class="gitDiscardBtns">
             <button class="gitDiscardCancel" type="button" data-action="cancel-discard" ${state.gitDiscarding ? "disabled" : ""}>取消</button>
-            <button class="gitDiscardOk" type="button" data-action="discard" data-path="${escapeHtml(file.path)}" ${state.gitDiscarding ? "disabled" : ""}>${state.gitDiscarding ? "…" : "确定还原"}</button>
+            <button class="gitDiscardOk" type="button" data-action="discard" data-path="${escapeHtml(file.path)}" ${state.gitDiscarding ? "disabled" : ""}>${state.gitDiscarding ? "…" : `确定${discardActionLabel(file.state, file.kind)}`}</button>
           </div>
         </div>
       ` : `
         <div class="gitDiffNormalFooter">
           ${file.state !== "deleted" ? `<button class="gitDiffFooterBtn" type="button" data-action="open" data-path="${escapeHtml(file.path)}">打开此笔记</button>` : ""}
-          <button class="gitDiffFooterBtn gitDiffFooterDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}">还原此文件</button>
+          <button class="gitDiffFooterBtn gitDiffFooterDanger" type="button" data-action="confirm-discard" data-path="${escapeHtml(file.path)}">${discardActionLabel(file.state, file.kind)}</button>
         </div>
       `}
     </footer>`;
@@ -3788,8 +4493,8 @@ function renderGitDiffContent() {
 
 function renderGitHistoryPane() {
   return `
+    ${renderGitBackLink("back", "返回同步")}
     <header class="gitDiffHeader">
-      <button class="gitDiffBack" type="button" data-action="back">←</button>
       <div class="gitDiffHeaderText"><strong>版本记录</strong><span>云端与本地的提交历史</span></div>
     </header>
     <div class="gitDiffContent gitHistoryContent">
@@ -3832,21 +4537,56 @@ function wireGitPanel() {
   qs("git-message-input-new")?.addEventListener("input", (event) => {
     state.gitMessage = event.target.value;
   });
+  qs("git-message-input-new")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    qs("btn-git-message-done")?.click();
+  });
   document.querySelectorAll("#git-panel [data-action]").forEach((el) => {
     el.addEventListener("click", () => handleGitAction(el));
   });
+  // 整行都能点进差异，不用瞄准文件名
+  document.querySelectorAll("#git-panel .gitFileRowContent").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      const nameBtn = row.querySelector("[data-action=diff]");
+      if (nameBtn && !nameBtn.disabled) openGitDiff(nameBtn.getAttribute("data-path"));
+    });
+  });
+}
+
+/* Esc 一层层往回退：先收起确认和编辑，再从详情回到列表，最后才离开同步页 */
+function stepBackInGitWorkspace() {
+  if (state.gitDiscardPath && !state.gitDiscarding) {
+    state.gitDiscardPath = null;
+    renderGitPanel();
+  } else if (state.gitEditingMessage) {
+    state.gitEditingMessage = false;
+    renderGitPanel();
+  } else if (state.gitPane !== "main") {
+    backToGitMain();
+  } else {
+    closeGitWorkspace();
+  }
+}
+
+function backToGitMain() {
+  state.gitPane = "main";
+  state.gitSelectedFile = null;
+  state.gitDiff = null;
+  state.gitDiffError = null;
+  state.gitDiscardPath = null;
+  renderGitPanel();
+  requestAnimationFrame(() => qs("btn-close-git-workspace")?.focus({ preventScroll: true }));
 }
 
 function handleGitAction(el) {
   const action = el.getAttribute("data-action");
   const path = el.getAttribute("data-path");
-  if (action === "back") {
-    state.gitPane = "main";
-    state.gitSelectedFile = null;
-    state.gitDiff = null;
-    state.gitDiffError = null;
-    state.gitDiscardPath = null;
-    renderGitPanel();
+  if (action === "close") {
+    closeGitWorkspace();
+  } else if (action === "back") {
+    backToGitMain();
   } else if (action === "diff" && path) {
     openGitDiff(path);
   } else if (action === "open" && path) {
@@ -3862,6 +4602,10 @@ function handleGitAction(el) {
   }
 }
 
+function focusGitDetailBack() {
+  requestAnimationFrame(() => document.querySelector("#git-panel .gitDetailPane .gitBackLink")?.focus({ preventScroll: true }));
+}
+
 async function openGitDiff(path) {
   const file = (state.gitStatus?.files || []).find((item) => item.path === path);
   if (!file) return;
@@ -3871,6 +4615,7 @@ async function openGitDiff(path) {
   state.gitDiffError = null;
   state.gitDiffLoading = true;
   renderGitPanel();
+  focusGitDetailBack();
   try {
     state.gitDiff = await invoke("git_diff", { path });
   } catch (err) {
@@ -3882,9 +4627,11 @@ async function openGitDiff(path) {
 }
 
 async function openGitHistory() {
+  const entering = state.gitPane !== "history";
   state.gitPane = "history";
   state.gitHistoryLoading = true;
   renderGitPanel();
+  if (entering) focusGitDetailBack();
   try {
     state.gitHistory = await invoke("git_history");
   } catch (err) {
@@ -4440,7 +5187,7 @@ function initKeyboard() {
       }
       if (state.gitWorkspaceOpen) {
         e.preventDefault();
-        closeGitWorkspace();
+        stepBackInGitWorkspace();
         return;
       }
       if (state.editMode) {
@@ -4481,7 +5228,8 @@ function wireEvents() {
     if (!ext || !/^md$/.test(ext)) return;
     if (e.target.closest("a")) return;
     const block = e.target.closest("[data-source-line]");
-    void setEditMode(true, block ? previewClickEditTarget(e, block) : null);
+    const fallback = block ? previewClickEditTarget(e, block) : null;
+    void setEditMode(true, { ...fallback, clientX: e.clientX, clientY: e.clientY });
   });
 
   qs("btn-more-menu").addEventListener("click", () => {
@@ -4499,7 +5247,6 @@ function wireEvents() {
     else openGitQuickPopover();
   });
   qs("btn-close-git-quick")?.addEventListener("click", () => closeGitQuickPopover());
-  qs("btn-close-git-workspace")?.addEventListener("click", () => closeGitWorkspace());
   window.addEventListener("resize", positionGitQuickPopover);
 
   window.addEventListener("message", (event) => {

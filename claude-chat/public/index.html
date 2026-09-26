@@ -3114,10 +3114,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <span class="picker-option-name">Opus 5.5</span>
                 <span class="picker-option-desc">最强推理</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-opus-4-6" data-label="Opus 4.6" role="option" aria-selected="false">
-                <span class="picker-option-name">Opus 4.6</span>
-                <span class="picker-option-desc">经典旧版</span>
-              </button>
               <button class="picker-option model-option" data-model="claude-fable-5-1" data-label="Fable 5.1" role="option" aria-selected="false">
                 <span class="picker-option-name">Fable 5.1</span>
                 <span class="picker-option-desc">旗舰最强</span>
@@ -3416,7 +3412,6 @@ async function fetchHistory() {
 const CLAUDE_MODELS = [
   { model: "claude-sonnet-5",            label: "Sonnet 5",   name: "Sonnet 5",   desc: "快速均衡" },
   { model: "claude-opus-5-5",            label: "Opus 5.5",   name: "Opus 5.5",   desc: "最强推理" },
-  { model: "claude-opus-4-6",            label: "Opus 4.6",   name: "Opus 4.6",   desc: "经典旧版" },
   { model: "claude-fable-5-1",           label: "Fable 5.1",  name: "Fable 5.1",  desc: "旗舰最强" },
 ];
 
@@ -3530,6 +3525,7 @@ function effectiveEffort(levels) {
 
 // 旧模型 ID → 新模型 ID，保留用户此前选中的档位
 const MODEL_MIGRATIONS = {
+  "claude-opus-4-6": "claude-opus-5-5",
   "claude-opus-4-8": "claude-opus-5-5",
   "claude-opus-5":   "claude-opus-5-5",
   "claude-fable-5":  "claude-fable-5-1",

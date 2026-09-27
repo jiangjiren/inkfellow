@@ -23,6 +23,15 @@ import QuickSwitcher from "./QuickSwitcher";
 import { isImagePath, isPdfPath, stripNoteExtension, type TreeActionTarget } from "./noteFileUtils";
 import styles from "./notes.module.css";
 import type { NotesEditorHandle } from "./NotesEditor";
+import {
+  applyReadingAnchor,
+  captureReadingAnchor,
+  pinReadingAnchor,
+  placeCaretAtAnchor,
+  readerScrollTop,
+  type ReadingAnchor,
+  type ReadingSurface,
+} from "./readingAnchor";
 
 // CodeMirror 不支持 SSR，动态加载
 const NotesEditor = dynamic(() => import("./NotesEditor"), { ssr: false });
@@ -811,6 +820,23 @@ export default function NotesExplorer() {
   const [hasGitChanges, setHasGitChanges] = useState(false); // 当前文件有未提交改动
   const [globalGitPending, setGlobalGitPending] = useState<number | null>(null); // 全局待同步数
   const editorFocusRef = useRef<NotesEditorHandle>(null);
+  // 进出编辑时的阅读锚点：待落地的这次切换、上次切换的记录（判断来回切换之间有没有动过）、内容高度还在变时的钉住
+  const readingSwitchRef = useRef<{
+    path: string;
+    toEditing: boolean;
+    content: string;
+    anchor: ReadingAnchor | null;
+    captured: ReadingAnchor | null;
+    point: { clientX: number; clientY: number } | null;
+  } | null>(null);
+  const readingAnchorMemoRef = useRef<{
+    path: string;
+    editing: boolean;
+    content: string;
+    scrollTop: number;
+    anchor: ReadingAnchor;
+  } | null>(null);
+  const readingPinReleaseRef = useRef<(() => void) | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHashRef = useRef<string | null>(null);
   const activePathRef = useRef<string | null>(null);
@@ -1997,14 +2023,93 @@ export default function NotesExplorer() {
   // 计算是否有未保存修改
   const isDirty = isEditing && note !== null && editContent !== note.content;
 
-  /** 进入编辑模式 */
-  const handleEditStart = useCallback(() => {
+  /** 当前模式下用来换算阅读位置的那一面：阅读态是渲染好的 markdown，编辑态是 CodeMirror */
+  const getReadingSurface = useCallback((editing: boolean, content: string): ReadingSurface | null => {
+    if (editing) {
+      const cm = editorFocusRef.current?.getCodeMirror();
+      return cm ? { mode: "editor", cm } : null;
+    }
+    const root = readerRef.current?.querySelector<HTMLElement>("[data-markdown-content]");
+    return root ? { mode: "preview", root, content } : null;
+  }, []);
+
+  /** 切换前记下正在读的字；来回切换之间没滚动、没改字，就沿用上次离开时的锚点，反复切换不会一点点漂走 */
+  const prepareReadingSwitch = useCallback((
+    toEditing: boolean,
+    content: string,
+    point: { clientX: number; clientY: number } | null = null,
+  ) => {
+    readingPinReleaseRef.current?.();
+    const reader = readerRef.current;
+    const path = activePathRef.current;
+    const surface = getReadingSurface(!toEditing, content);
+    if (!reader || !path || !surface) {
+      readingSwitchRef.current = null;
+      return;
+    }
+    const captured = captureReadingAnchor(reader, surface, point);
+    const memo = readingAnchorMemoRef.current;
+    const untouched = Boolean(
+      !point && memo
+      && memo.path === path
+      && memo.editing === !toEditing
+      && memo.content === content
+      && Math.abs(readerScrollTop(reader) - memo.scrollTop) < 2,
+    );
+    readingSwitchRef.current = {
+      path,
+      toEditing,
+      content,
+      anchor: untouched && memo ? memo.anchor : captured,
+      captured,
+      point,
+    };
+  }, [getReadingSurface]);
+
+  /** 新模式渲染好后把锚点那个字放回原来的高度，并在图片解码、占位撤掉这几秒里钉住它 */
+  const finishReadingSwitch = useCallback((editing: boolean) => {
+    const pending = readingSwitchRef.current;
+    const reader = readerRef.current;
+    if (!pending || pending.toEditing !== editing) return null;
+    readingSwitchRef.current = null;
+    const surface = getReadingSurface(editing, pending.content);
+    const contentEl = reader?.querySelector<HTMLElement>("[data-reading-content]");
+    if (!reader || !surface || !contentEl || pending.path !== activePathRef.current) return null;
+    if (pending.anchor && applyReadingAnchor(reader, surface, pending.anchor)) {
+      const anchor = pending.anchor;
+      readingPinReleaseRef.current = pinReadingAnchor(contentEl, () => {
+        applyReadingAnchor(reader, surface, anchor);
+        if (readingAnchorMemoRef.current) readingAnchorMemoRef.current.scrollTop = readerScrollTop(reader);
+      });
+    }
+    readingAnchorMemoRef.current = pending.captured
+      ? {
+          path: pending.path,
+          editing,
+          content: pending.content,
+          scrollTop: readerScrollTop(reader),
+          anchor: pending.captured,
+        }
+      : null;
+    return pending;
+  }, [getReadingSurface]);
+
+  useEffect(() => () => readingPinReleaseRef.current?.(), []);
+
+  /** 退出编辑后，阅读态在同一次提交里渲染出来，赶在绘制前摆好位置 */
+  useLayoutEffect(() => {
+    if (!isEditing) finishReadingSwitch(false);
+  }, [isEditing, finishReadingSwitch]);
+
+  /** 进入编辑模式；point 是双击的位置，光标会落在双击的那个字上 */
+  const handleEditStart = useCallback((point: { clientX: number; clientY: number } | null = null) => {
     if (!note || /\.html?$/i.test(note.path)) return;
+    prepareReadingSwitch(true, note.content, point);
     // 用当前 reader.scrollHeight 做占位，防止切换后内容高度骤降导致 scrollTop 被钳制
     setEditorMinHeight(readerRef.current?.scrollHeight ?? 0);
     setEditContent(note.content);
     setIsEditing(true);
-  }, [note]);
+  }, [note, prepareReadingSwitch]);
 
   /**
    * 保存成功后把占位名换成正文首行。
@@ -2221,15 +2326,16 @@ export default function NotesExplorer() {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
+    prepareReadingSwitch(false, editContent);
     if (isDirty) await handleSave();
     setIsEditing(false);
-  }, [isEditing, isDirty, handleSave, handleEditStart]);
+  }, [isEditing, isDirty, editContent, handleSave, handleEditStart, prepareReadingSwitch]);
 
   /** 双击正文进入编辑模式（点链接/交互元素时不触发；.html 笔记不可编辑） */
   const handleReaderDoubleClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
     if (isEditing || !note || /\.html?$/i.test(note.path)) return;
     if ((e.target as HTMLElement).closest("a, button, input, textarea, select, [contenteditable]")) return;
-    handleEditStart();
+    handleEditStart({ clientX: e.clientX, clientY: e.clientY });
   }, [isEditing, note, handleEditStart]);
 
   /** 切换笔记前自动保存未提交的修改 */
@@ -4265,6 +4371,7 @@ export default function NotesExplorer() {
         {/* 编辑模式 — CodeMirror inline markdown 编辑 */}
         {!isDesktopGitView && isEditing ? (
           <div
+            data-reading-content
             className={`${styles.editorPane} ${isDraft ? styles.editorPaneDraft : ""}`}
             style={editorMinHeight ? { minHeight: editorMinHeight } : undefined}
             onMouseDown={(e) => {
@@ -4309,6 +4416,11 @@ export default function NotesExplorer() {
                 : "开始写点什么…"}
               onReady={() => {
                 setEditorMinHeight(0);
+                const readingSwitch = finishReadingSwitch(true);
+                const cm = editorFocusRef.current?.getCodeMirror();
+                if (readingSwitch && cm && readerRef.current) {
+                  placeCaretAtAnchor(readerRef.current, cm, readingSwitch.anchor, readingSwitch.point);
+                }
                 // fix: 草稿模式下确保 CM 就绪后光标落在编辑器内
                 if (isDraftRef.current) {
                   setTimeout(() => editorFocusRef.current?.focus(), 0);
@@ -4318,6 +4430,7 @@ export default function NotesExplorer() {
           </div>
         ) : !isDesktopGitView ? (
           <article
+            data-reading-content
             key={note?.path || "empty"}
             className={`${styles.document} ${!note || /\.html?$/i.test(note.path) ? styles.documentHtml : ""}`}
             style={!note || /\.html?$/i.test(note.path) ? { width: '100%', maxWidth: '100%', margin: 0, padding: 0, borderRadius: 0, background: 'transparent', border: 'none', boxShadow: 'none' } : undefined}
@@ -4424,6 +4537,7 @@ export default function NotesExplorer() {
                   <NotesMarkdown
                     markdown={note.content}
                     currentPath={note.path}
+                    trackSourceLines
                     noteIndex={noteIndex}
                     onNavigate={handleMarkdownNavigate}
                     onCreateNote={handleCreateWikiNote}

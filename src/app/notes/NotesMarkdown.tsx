@@ -7,6 +7,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { slugifyHeading } from "@/lib/noteToc";
+import { partLineOffset, rehypeSourceLines, sourceLineProps } from "./readingAnchor";
 import styles from "./notes.module.css";
 
 type FrontMatterValue = string | string[] | number | boolean | null;
@@ -79,12 +80,14 @@ const parseFrontMatter = (content: string): { data: FrontMatterData; body: strin
 
 const TAG_KEYS = new Set(["tags", "tag", "aliases", "alias"]);
 
-function FrontMatterPanel({ data }: { data: FrontMatterData }) {
+type SourceAttrs = ReturnType<typeof sourceLineProps>;
+
+function FrontMatterPanel({ data, sourceAttrs }: { data: FrontMatterData; sourceAttrs?: SourceAttrs }) {
   const entries = Object.entries(data).filter(([, v]) => v !== null && v !== "");
   if (entries.length === 0) return null;
 
   return (
-    <details className={styles.frontMatter}>
+    <details className={styles.frontMatter} {...sourceAttrs}>
       <summary className={styles.frontMatterLabel}>笔记属性</summary>
       <dl className={styles.frontMatterGrid}>
         {entries.map(([key, value]) => {
@@ -136,11 +139,13 @@ type NotesMarkdownProps = {
   showBacklinks?: boolean;
   showFrontMatter?: boolean;
   embedAncestors?: string[];
+  /** 给顶层块标上源码行号（data-source-line），进出编辑时靠它保持阅读位置；嵌入笔记、分享页不需要 */
+  trackSourceLines?: boolean;
 };
 
 type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
   inline?: boolean;
-  node?: unknown;
+  node?: { properties?: Record<string, unknown> };
 };
 
 const decodeLoose = (value: string) => {
@@ -352,7 +357,7 @@ type NoteEmbed = {
 };
 
 type RenderPart =
-  | { type: "markdown"; value: string }
+  | { type: "markdown"; value: string; lineOffset: number }
   | { type: "embed"; embed: NoteEmbed };
 
 const transformOutsideInlineCode = (
@@ -454,18 +459,23 @@ const transformObsidianSyntax = (
   let lastIndex = 0;
   EMBED_MARKER_RE.lastIndex = 0;
   let marker: RegExpExecArray | null;
+  let embedsBefore = 0;
+  const pushMarkdown = (from: number, to: number) => {
+    parts.push({
+      type: "markdown",
+      value: transformed.slice(from, to),
+      lineOffset: partLineOffset(transformed.slice(0, from), embedsBefore),
+    });
+  };
   while ((marker = EMBED_MARKER_RE.exec(transformed)) !== null) {
-    if (marker.index > lastIndex) {
-      parts.push({ type: "markdown", value: transformed.slice(lastIndex, marker.index) });
-    }
+    if (marker.index > lastIndex) pushMarkdown(lastIndex, marker.index);
     const embed = embeds[Number(marker[1])];
     if (embed) parts.push({ type: "embed", embed });
+    embedsBefore++;
     lastIndex = marker.index + marker[0].length;
   }
-  if (lastIndex < transformed.length) {
-    parts.push({ type: "markdown", value: transformed.slice(lastIndex) });
-  }
-  return parts.length > 0 ? parts : [{ type: "markdown", value: transformed }];
+  if (lastIndex < transformed.length) pushMarkdown(lastIndex, transformed.length);
+  return parts.length > 0 ? parts : [{ type: "markdown", value: transformed, lineOffset: 0 }];
 };
 
 const extractEmbeddedMarkdown = (markdown: string, fragment: string) => {
@@ -519,7 +529,7 @@ const extractEmbeddedMarkdown = (markdown: string, fragment: string) => {
   return lines.slice(start, end).join("\n");
 };
 
-function CodeBlock({ className, children }: { className?: string; children: ReactNode }) {
+function CodeBlock({ className, children, sourceAttrs }: { className?: string; children: ReactNode; sourceAttrs?: SourceAttrs }) {
   const [copied, setCopied] = useState(false);
   const codeString = String(children).replace(/\n$/, "");
   const match = /language-(\w+)/.exec(className || "");
@@ -536,7 +546,7 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   };
 
   return (
-    <div className={styles.codeBlockContainer}>
+    <div className={styles.codeBlockContainer} {...sourceAttrs}>
       {lang && <span className={styles.codeLanguage}>{lang.toLowerCase()}</span>}
       <button
         type="button"
@@ -636,11 +646,11 @@ function getMermaid(): Promise<MermaidApi> {
   return mermaidPromise;
 }
 
-function MermaidError({ chart, detail }: { chart: string; detail: string }) {
+function MermaidError({ chart, detail, sourceAttrs }: { chart: string; detail: string; sourceAttrs?: SourceAttrs }) {
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
   return (
-    <div className={styles.mermaidError}>
+    <div className={styles.mermaidError} {...sourceAttrs}>
       <pre className={styles.mermaidErrorCode}><code>{chart}</code></pre>
       <div className={styles.mermaidErrorBar}>
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
@@ -664,7 +674,7 @@ function MermaidError({ chart, detail }: { chart: string; detail: string }) {
 
 // Rendered with key={chart} by the parent, so each chart gets a fresh instance and
 // the effect runs exactly once — no synchronous state reset needed.
-function Mermaid({ chart }: { chart: string }) {
+function Mermaid({ chart, sourceAttrs }: { chart: string; sourceAttrs?: SourceAttrs }) {
   const [state, setState] = useState<{ svg: string; error: string | null }>({ svg: "", error: null });
 
   useEffect(() => {
@@ -684,14 +694,14 @@ function Mermaid({ chart }: { chart: string }) {
   }, [chart]);
 
   if (state.error !== null) {
-    return <MermaidError chart={chart} detail={state.error} />;
+    return <MermaidError chart={chart} detail={state.error} sourceAttrs={sourceAttrs} />;
   }
 
   if (!state.svg) {
-    return <div className={styles.mermaidLoading}>渲染图表中…</div>;
+    return <div className={styles.mermaidLoading} {...sourceAttrs}>渲染图表中…</div>;
   }
 
-  return <div dangerouslySetInnerHTML={{ __html: state.svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
+  return <div {...sourceAttrs} dangerouslySetInnerHTML={{ __html: state.svg }} style={{ display: "flex", justifyContent: "center", margin: "1rem 0" }} />;
 }
 
 function EmbeddedNote({
@@ -829,6 +839,7 @@ export default function NotesMarkdown({
   showBacklinks = true,
   showFrontMatter = true,
   embedAncestors,
+  trackSourceLines = false,
 }: NotesMarkdownProps) {
   const resolvedNoteIndex = useMemo(() => noteIndex ?? new Map<string, string>(), [noteIndex]);
   const resolvedEmbedAncestors = useMemo(
@@ -839,6 +850,10 @@ export default function NotesMarkdown({
     () => parseFrontMatter(markdown),
     [markdown],
   );
+  // body 是原文的一个后缀，前面多出来的行就是属性区
+  const bodyStartLine = markdown.length > markdownBody.length
+    ? (markdown.slice(0, markdown.length - markdownBody.length).match(/\n/g) ?? []).length
+    : 0;
 
   const renderedParts = useMemo(
     () => transformObsidianSyntax(
@@ -965,15 +980,14 @@ export default function NotesMarkdown({
       pre({ children }) {
         return <>{children}</>;
       },
-      table({ children }) {
+      table({ children, node }) {
         return (
-          <div className={styles.tableWrap}>
+          <div className={styles.tableWrap} {...sourceLineProps(node)}>
             <table>{children}</table>
           </div>
         );
       },
       code({ node, className, children, inline, ...props }: MarkdownCodeProps) {
-        void node;
         if (inline) {
           return (
             <code className={className} {...props}>
@@ -987,32 +1001,32 @@ export default function NotesMarkdown({
 
         if (lang === "mermaid") {
           const chart = String(children).replace(/\n$/, "");
-          return <Mermaid key={chart} chart={chart} />;
+          return <Mermaid key={chart} chart={chart} sourceAttrs={sourceLineProps(node)} />;
         }
 
         return (
-          <CodeBlock className={className}>
+          <CodeBlock className={className} sourceAttrs={sourceLineProps(node)}>
             {children}
           </CodeBlock>
         );
       },
-      h1({ children }) {
-        return <h1 id={slugifyHeading(textFromChildren(children))}>{children}</h1>;
+      h1({ children, node }) {
+        return <h1 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h1>;
       },
-      h2({ children }) {
-        return <h2 id={slugifyHeading(textFromChildren(children))}>{children}</h2>;
+      h2({ children, node }) {
+        return <h2 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h2>;
       },
-      h3({ children }) {
-        return <h3 id={slugifyHeading(textFromChildren(children))}>{children}</h3>;
+      h3({ children, node }) {
+        return <h3 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h3>;
       },
-      h4({ children }) {
-        return <h4 id={slugifyHeading(textFromChildren(children))}>{children}</h4>;
+      h4({ children, node }) {
+        return <h4 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h4>;
       },
-      h5({ children }) {
-        return <h5 id={slugifyHeading(textFromChildren(children))}>{children}</h5>;
+      h5({ children, node }) {
+        return <h5 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h5>;
       },
-      h6({ children }) {
-        return <h6 id={slugifyHeading(textFromChildren(children))}>{children}</h6>;
+      h6({ children, node }) {
+        return <h6 {...sourceLineProps(node)} id={slugifyHeading(textFromChildren(children))}>{children}</h6>;
       },
     }),
     [allowInternalNoteLinks, assetHrefFactory, currentPath, onCreateNote, onNavigate, resolvedNoteIndex],
@@ -1020,9 +1034,21 @@ export default function NotesMarkdown({
 
   return (
     <div className={styles.markdown}>
-      {showFrontMatter && <FrontMatterPanel data={frontMatterData} />}
+      {showFrontMatter && (
+        <FrontMatterPanel
+          data={frontMatterData}
+          sourceAttrs={trackSourceLines && bodyStartLine > 0
+            ? { "data-source-line": "0", "data-source-end-line": String(bodyStartLine - 1), "data-source-kind": "none" }
+            : undefined}
+        />
+      )}
       {renderedParts.map((part, index) => part.type === "markdown" ? (
-        <ReactMarkdown key={`markdown-${index}`} remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
+        <ReactMarkdown
+          key={`markdown-${index}`}
+          remarkPlugins={[remarkGfm, remarkBreaks]}
+          rehypePlugins={trackSourceLines ? [[rehypeSourceLines, { lineOffset: bodyStartLine + part.lineOffset }]] : undefined}
+          components={components}
+        >
           {part.value}
         </ReactMarkdown>
       ) : (

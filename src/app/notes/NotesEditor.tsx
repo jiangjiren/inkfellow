@@ -31,6 +31,8 @@ interface NotesEditorProps {
 export interface NotesEditorHandle {
   /** 聚焦编辑器并把光标移到末尾 */
   focus: () => void;
+  /** CodeMirror 实例（进出编辑时换算阅读位置用），未挂载时为 null */
+  getCodeMirror: () => any;
 }
 
 type WikiContext = {
@@ -162,6 +164,7 @@ const NotesEditor = forwardRef<NotesEditorHandle, NotesEditorProps>(
         const lastLine = cm.lastLine();
         cm.setCursor({ line: lastLine, ch: cm.getLine(lastLine).length });
       },
+      getCodeMirror: () => cmRef.current,
     }), []);
 
     useEffect(() => {

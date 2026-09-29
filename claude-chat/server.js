@@ -29,7 +29,12 @@ const PORT = Number.parseInt(process.env.PORT || "8082", 10);
 const HOST = process.env.HOST || "127.0.0.1";
 const DEFAULT_CWD = resolve(process.env.VAULT_PATH || process.cwd());
 const PERMISSION_MODES = new Set(["plan", "acceptEdits", "auto", "bypassPermissions"]);
-const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+const CODEX_ULTRA_MODELS = new Set(["gpt-6-astra", "gpt-6-sol"]);
+function normalizeEffort(value, provider, model) {
+  const effort = EFFORT_LEVELS.has(value) ? value : "medium";
+  return effort === "ultra" && (provider !== "codex" || !CODEX_ULTRA_MODELS.has(model)) ? "max" : effort;
+}
 const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSION_MODE)
   ? process.env.CLAUDE_PERMISSION_MODE
   : "auto";
@@ -3587,7 +3592,7 @@ wss.on("connection", (ws) => {
         && activeRun.profileId === (getActiveProfile(incomingProfileData)?.id ?? null)
         && activeRun.model === (typeof msg.model === "string" && msg.model ? msg.model : null)
         && activeRun.permissionMode === (PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE)
-        && activeRun.effort === (EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium")
+        && activeRun.effort === normalizeEffort(msg.effort, incomingProvider, msg.model)
         && claudeRuntime.started
         && !!claudeTurn
         && !activeRun.pendingAskUserQuestion;
@@ -3651,13 +3656,13 @@ wss.on("connection", (ws) => {
     const permissionMode = PERMISSION_MODES.has(msg.permissionMode)
       ? msg.permissionMode
       : DEFAULT_PERMISSION_MODE;
-    const effort = EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium";
     const profileData = readProfiles();
     // activeProfileId 由客户端 localStorage 管理，随每条消息传入；服务端直接使用，无需持久化
     if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
       profileData.activeProfileId = msg.profileId;
     }
     const activeProfile = getActiveProfile(profileData);
+    const effort = normalizeEffort(msg.effort, activeProfile?.provider ?? "claude", msg.model);
     run.provider = activeProfile?.provider ?? "claude";
     run.model = typeof msg.model === "string" && msg.model ? msg.model : null;
     run.effort = effort;
@@ -3803,13 +3808,12 @@ wss.on("connection", (ws) => {
         resetHardTimer();
         try {
           const codex = new Codex();
-          const EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
           const threadOptions = {
             workingDirectory: resolvedCwd,
             skipGitRepoCheck: true,
             approvalPolicy: "never",
             sandboxMode: codexSandboxMode(permissionMode),
-            modelReasoningEffort: EFFORT_TO_REASONING[effort] || "medium",
+            modelReasoningEffort: effort,
             ...(msg.model ? { model: msg.model } : {}),
           };
           const requestedModel = typeof msg.model === "string" && msg.model.trim()

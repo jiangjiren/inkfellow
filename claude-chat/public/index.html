@@ -2553,7 +2553,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <div id="model-picker">
           <button id="model-btn" class="toolbar-picker-btn" aria-label="选择模型" aria-haspopup="listbox">
             <span id="model-label">Sonnet 5.5</span>
-            <span id="effort-label-inline" class="effort-inline">标准</span>
+            <span id="effort-label-inline" class="effort-inline">中</span>
             <svg width="7" height="7" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 5.3L4 2.8l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <div id="model-dropdown" class="picker-dropdown" role="listbox" aria-label="模型列表">
@@ -2581,25 +2581,29 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <svg width="7" height="11" viewBox="0 0 7 11" fill="none" aria-hidden="true"><path d="M6 1L1.5 5.5L6 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 思考深度
               </button>
-              <button class="picker-option effort-option" data-effort="low" data-label="轻" role="option" aria-selected="false">
-                <span class="picker-option-name">轻 <span class="picker-option-code">low</span></span>
-                <span class="picker-option-desc">少想一点，更快回复</span>
+              <button class="picker-option effort-option" data-effort="low" data-label="低" role="option" aria-selected="false">
+                <span class="picker-option-name">低 <span class="picker-option-code">low</span></span>
+                <span class="picker-option-desc">快速回复，适合简单问题</span>
               </button>
-              <button class="picker-option effort-option active" data-effort="medium" data-label="标准" role="option" aria-selected="true">
-                <span class="picker-option-name">标准 <span class="picker-option-code">medium</span></span>
-                <span class="picker-option-desc">日常思考强度</span>
+              <button class="picker-option effort-option active" data-effort="medium" data-label="中" role="option" aria-selected="true">
+                <span class="picker-option-name">中 <span class="picker-option-code">medium</span></span>
+                <span class="picker-option-desc">速度与思考深度均衡</span>
               </button>
-              <button class="picker-option effort-option" data-effort="high" data-label="深" role="option" aria-selected="false">
-                <span class="picker-option-name">深 <span class="picker-option-code">high</span></span>
-                <span class="picker-option-desc">多想一些，适合复杂问题</span>
+              <button class="picker-option effort-option" data-effort="high" data-label="高" role="option" aria-selected="false">
+                <span class="picker-option-name">高 <span class="picker-option-code">high</span></span>
+                <span class="picker-option-desc">深入思考复杂问题</span>
               </button>
-              <button class="picker-option effort-option" data-effort="xhigh" data-label="更深" role="option" aria-selected="false">
-                <span class="picker-option-name">更深 <span class="picker-option-code">xhigh</span></span>
-                <span class="picker-option-desc">更充分地推理</span>
+              <button class="picker-option effort-option" data-effort="xhigh" data-label="超高" role="option" aria-selected="false">
+                <span class="picker-option-name">超高 <span class="picker-option-code">xhigh</span></span>
+                <span class="picker-option-desc">充分推理高难任务</span>
               </button>
-              <button class="picker-option effort-option" data-effort="max" data-label="最深" role="option" aria-selected="false">
-                <span class="picker-option-name">最深 <span class="picker-option-code">max</span></span>
-                <span class="picker-option-desc">尽可能深入思考</span>
+              <button class="picker-option effort-option" data-effort="max" data-label="最高" role="option" aria-selected="false">
+                <span class="picker-option-name">最高 <span class="picker-option-code">max</span></span>
+                <span class="picker-option-desc">最深思考，耗时更长</span>
+              </button>
+              <button class="picker-option effort-option" data-effort="ultra" data-label="Ultra" role="option" aria-selected="false" hidden>
+                <span class="picker-option-name">Ultra <span class="picker-option-code">ultra</span></span>
+                <span class="picker-option-desc">自动分工处理复杂任务</span>
               </button>
             </div>
           </div>
@@ -2874,7 +2878,7 @@ function applyConvModelPrefs(conv = null) {
   if (conv) currentConversationMeta = conv;
   const pref = currentConvId ? convModelPrefs.get(currentConvId) : null;
   const effort = pref?.effort ?? currentConversationMeta?.effort ?? localStorage.getItem("effort");
-  selectedEffort = ["low", "medium", "high", "xhigh", "max"].includes(effort) ? effort : "medium";
+  selectedEffort = ["low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) ? effort : "medium";
   renderProfileList(_profileData);
   updateEffortDisplay();
   rememberConvModelPrefs();
@@ -7022,7 +7026,7 @@ function send() {
     displayText,
     model: selectedModel,
     permissionMode: selectedPermissionMode,
-    effort: selectedEffort,
+    effort: effectiveEffort(),
     profileId: _profileData.activeProfileId,
   };
   if (pendingImages.length > 0) {
@@ -7210,19 +7214,31 @@ const permissionBtn      = document.getElementById("permission-btn");
 const permissionDropdown = document.getElementById("permission-dropdown");
 const permissionLabel    = document.getElementById("permission-label");
 
-function updateEffortDisplay() {
-  const agy = getActiveProfile()?.provider === "antigravity";
-  const supported = agy ? (_agyStatus.efforts?.[selectedModel] || AGY_MODELS.find(m => m.model === selectedModel)?.efforts || []) : null;
-  const requested = agy && ["xhigh", "max"].includes(selectedEffort) ? "high" : selectedEffort;
+function effectiveEffort() {
+  const provider = getActiveProfile()?.provider;
+  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6-sol"].includes(selectedModel);
+  const chosen = selectedEffort === "ultra" && !codexUltra ? "max" : selectedEffort;
+  if (provider !== "antigravity") return chosen;
+  const supported = _agyStatus.efforts?.[selectedModel] || AGY_MODELS.find(m => m.model === selectedModel)?.efforts || [];
+  if (!supported.length) return chosen;
+  const requested = ["xhigh", "max"].includes(chosen) ? "high" : chosen;
   const order = requested === "high" ? ["high", "medium", "low"] : requested === "low" ? ["low", "medium", "high"] : ["low", "high", "medium"];
-  const effective = supported ? (supported.includes(requested) ? requested : order.find(level => supported.includes(level))) : selectedEffort;
+  return supported.includes(requested) ? requested : order.find(level => supported.includes(level)) || chosen;
+}
+
+function updateEffortDisplay() {
+  const provider = getActiveProfile()?.provider;
+  const agy = provider === "antigravity";
+  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6-sol"].includes(selectedModel);
+  const supported = agy ? (_agyStatus.efforts?.[selectedModel] || AGY_MODELS.find(m => m.model === selectedModel)?.efforts || []) : null;
+  const effective = effectiveEffort();
   const nav = document.getElementById("effort-nav-btn");
   if (nav) nav.hidden = agy && !supported.length;
   const opt = effortView.querySelector(`.effort-option[data-effort="${effective}"]`);
-  const label = opt ? opt.dataset.label : selectedEffort;
+  const label = opt ? opt.dataset.label : effective;
   if (effortLabelInline) effortLabelInline.textContent = agy && !supported.length ? "自动" : label;
   effortView.querySelectorAll(".effort-option").forEach(el => {
-    el.hidden = !!supported && !supported.includes(el.dataset.effort);
+    el.hidden = (el.dataset.effort === "ultra" && !codexUltra) || (!!supported && !supported.includes(el.dataset.effort));
     el.classList.toggle("active", el.dataset.effort === effective);
     el.setAttribute("aria-selected", el.dataset.effort === effective ? "true" : "false");
   });

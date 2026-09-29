@@ -38,6 +38,40 @@ test("full chat page starts and sanitizes model HTML while retaining Markdown", 
   } finally { await h.close(); }
 });
 
+test("thinking depth menu uses desktop levels and sends the selected effort", async () => {
+  const h = browser();
+  try {
+    const ultra = h.w.document.querySelector('.effort-option[data-effort="ultra"]');
+    assert.equal(ultra.hidden, true);
+    for (const [effort, label] of [["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "超高"], ["max", "最高"]]) {
+      const option = h.w.document.querySelector(`.effort-option[data-effort="${effort}"]`);
+      option.dispatchEvent(new h.w.MouseEvent("mousedown", { bubbles: true }));
+      assert.equal(h.run("selectedEffort"), effort);
+      assert.equal(h.w.document.getElementById("effort-label-inline").textContent, label);
+      assert.equal(option.getAttribute("aria-selected"), "true");
+    }
+    h.run('ws = new WebSocket(); promptEl.value = "测试思考深度"; send()');
+    assert.equal(h.sent.at(-1).effort, "max");
+  } finally { await h.close(); }
+});
+
+test("Ultra is offered only on supported Codex models and falls back when switching to Luna", async () => {
+  const h = browser();
+  try {
+    h.run('_profileData={activeProfileId:"p_codex",profiles:[{id:"p_codex",provider:"codex",sonnetModel:"gpt-6-sol"}]};renderModelOptions(getActiveProfile())');
+    const ultra = h.w.document.querySelector('.effort-option[data-effort="ultra"]');
+    assert.equal(ultra.hidden, false);
+    ultra.dispatchEvent(new h.w.MouseEvent("mousedown", { bubbles: true }));
+    assert.equal(h.w.document.getElementById("effort-label-inline").textContent, "Ultra");
+    h.run('ws = new WebSocket(); promptEl.value = "测试 Ultra"; send()');
+    assert.equal(h.sent.at(-1).effort, "ultra");
+    h.run('selectedModel="gpt-6-luna";updateEffortDisplay()');
+    assert.equal(ultra.hidden, true);
+    assert.equal(h.w.document.getElementById("effort-label-inline").textContent, "最高");
+    assert.equal(h.run("effectiveEffort()"), "max");
+  } finally { await h.close(); }
+});
+
 test("stopping a stream preserves visible text in messageLog", async () => {
   const h = browser();
   try {

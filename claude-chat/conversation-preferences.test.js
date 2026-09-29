@@ -31,7 +31,7 @@ function harness(saved = {}) {
     genId: (() => { let id = 0; return () => `draft-${++id}`; })(),
   });
   vm.runInContext(`
-    let currentConvId = null, selectedModel = "claude-sonnet-5", selectedEffort = "medium";
+    let currentConvId = null, selectedModel = "claude-sonnet-5-5", selectedEffort = "medium";
     let _profileData = { activeProfileId: "claude", profiles: [] };
     let _claudeAuthStatus = null, _codexAuthStatus = null;
     let _providerUsageLimits = {};
@@ -52,7 +52,7 @@ test("cold start can render models before profiles are loaded", () => {
   const h = harness();
   assert.doesNotThrow(() => h.run("renderProfileList(_profileData)"));
   h.loadProfiles();
-  assert.equal(h.state().model, "claude-sonnet-5");
+  assert.equal(h.state().model, "claude-sonnet-5-5");
 });
 
 test("Antigravity conversation preferences survive polling and retain supported older models", () => {
@@ -71,7 +71,7 @@ test("Antigravity conversation preferences survive polling and retain supported 
 });
 
 test("conversation choices survive switching, polling and a fresh page without rewriting defaults", () => {
-  const h = harness({ effort: "medium", activeProfileId: "claude", "model:claude": "claude-sonnet-5" });
+  const h = harness({ effort: "medium", activeProfileId: "claude", "model:claude": "claude-sonnet-5-5" });
   h.loadProfiles();
   h.run('currentConvId="a";selectedModel="claude-opus-5";selectedEffort="high";rememberConvModelPrefs()');
   h.run('currentConvId="b";selectConversationProfile("codex");selectedModel="gpt-6-astra";selectedEffort="xhigh";rememberConvModelPrefs()');
@@ -83,7 +83,7 @@ test("conversation choices survive switching, polling and a fresh page without r
   assert.deepEqual(h.state(), { profile: "codex", model: "gpt-6-astra", effort: "xhigh" });
   assert.equal(h.storage.get("effort"), "medium");
   assert.equal(h.storage.get("activeProfileId"), "claude");
-  assert.equal(h.storage.get("model:claude"), "claude-sonnet-5");
+  assert.equal(h.storage.get("model:claude"), "claude-sonnet-5-5");
   const reload = harness(Object.fromEntries(h.storage));
   reload.loadProfiles();
   reload.run('currentConvId="b";applyConvModelPrefs()');
@@ -96,7 +96,7 @@ test("first-message draft settings are remembered and removed accounts safely fa
   h.run('selectedEffort="max";rememberConvModelPrefs({create:true});selectConversationProfile("custom")');
   assert.deepEqual(h.state(), { profile: "custom", model: "custom-model", effort: "max" });
   h.run('forgetProfileFromConvPrefs("custom");_profileData.profiles=_profileData.profiles.filter(p=>p.id!=="custom");applyConvModelPrefs()');
-  assert.deepEqual(h.state(), { profile: "claude", model: "claude-sonnet-5", effort: "max" });
+  assert.deepEqual(h.state(), { profile: "claude", model: "claude-sonnet-5-5", effort: "max" });
 });
 
 test("legacy histories retain their provider/model and malformed preference storage is ignored", () => {

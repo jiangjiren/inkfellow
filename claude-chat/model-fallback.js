@@ -1,4 +1,4 @@
-export const CHANNEL_DEFAULT_MODEL = "claude-sonnet-5";
+export const CHANNEL_DEFAULT_MODEL = "claude-sonnet-5-5";
 
 /* ── 降级的两个维度 ──────────────────────────────────────────
    「通道」= 一套凭证（Claude 会员、ChatGPT 会员、Antigravity、某个 API key），

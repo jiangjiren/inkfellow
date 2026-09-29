@@ -136,7 +136,7 @@ test("buildAgentEnv 按 activeProfileId 覆写切换候选 profile", { timeout: 
   const profiles = JSON.stringify(PROBE_PROFILES);
   const env = await evalInServer(`m => {
     const data = ${profiles};
-    const claude = m.buildAgentEnv(data, "medium", "claude-sonnet-5");
+    const claude = m.buildAgentEnv(data, "medium", "claude-sonnet-5-5");
     const deepseek = m.buildAgentEnv(
       { ...data, activeProfileId: "p_deepseek" }, "medium", "deepseek-probe-sonnet");
     return {

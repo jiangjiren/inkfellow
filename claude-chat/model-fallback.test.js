@@ -121,7 +121,7 @@ test("a model-level failure walks down the same channel first", async () => {
   const attempted = [];
   const result = await run(buildModelCandidates(profiles), async candidate => {
     attempted.push(candidate.model);
-    if (candidate.provider === "claude") throw new Error("model claude-sonnet-5 does not exist");
+    if (candidate.provider === "claude") throw new Error("model claude-sonnet-5-5 does not exist");
     if (candidate.model === "gpt-main") throw new Error("invalid model");
     return candidate.model;
   });

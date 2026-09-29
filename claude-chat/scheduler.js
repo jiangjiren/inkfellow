@@ -383,7 +383,7 @@ async function _runAgent(job) {
 
   if (job.outputs?.includes("new_note")) {
     const date = new Date().toISOString().slice(0, 10);
-    const noteDir = join(ctx.VAULT_PATH, "定时任务结果");
+    const noteDir = join(ctx.VAULT_PATH, "其他", "定时任务结果");
     const notePath = join(noteDir, `${date}-${job.id.slice(0, 8)}.md`);
     fullPrompt += `\n\n请将任务结果保存为 Markdown 笔记，路径：${notePath}（目录不存在时自动创建）。`;
   }

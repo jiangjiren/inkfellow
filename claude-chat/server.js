@@ -204,16 +204,15 @@ const WECHAT_MIME_BY_EXT = {
 };
 
 // Codex 会员是托管账号，模型字段不给用户在设置里改，这里就是唯一来源。
-// 旗舰档跟着 Codex 换代走：GPT-6 上线后 opus 档指向 gpt-6-astra，
-// 上一代 gpt-5.6-sol 仍在前端模型列表里可选，只是不再占档位。
+// 三档对应当前 Codex 会员模型。
 const CODEX_DEFAULT_MODELS = {
   opusModel: "gpt-6-astra",
-  sonnetModel: "gpt-5.6-terra",
-  haikuModel: "gpt-5.6-luna",
+  sonnetModel: "gpt-6-sol",
+  haikuModel: "gpt-6-luna",
 };
 
 const PROVIDER_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5",                   sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-4-5-20251001" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-4-5-20251001" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
   codex:      { baseUrl: "",                                    ...CODEX_DEFAULT_MODELS },

@@ -15,7 +15,7 @@ function functionSource(name) {
 }
 const profiles = [
   { id: "claude", provider: "claude", name: "Claude" },
-  { id: "codex", provider: "codex", name: "Codex", sonnetModel: "gpt-5.6-terra" },
+  { id: "codex", provider: "codex", name: "Codex", sonnetModel: "gpt-6-sol" },
   { id: "custom", provider: "custom", name: "Custom", sonnetModel: "custom-model" },
   { id: "agy", provider: "antigravity", name: "Antigravity" },
 ];
@@ -23,9 +23,10 @@ const profiles = [
 function harness(saved = {}) {
   const storage = new Map(Object.entries(saved));
   const sink = { innerHTML: "", textContent: "", querySelector() { return this; } };
+  const modelSink = { innerHTML: "", querySelector() { return this; } };
   const ctx = vm.createContext({
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    modelDropdown: sink, modelLabel: sink, authProfileList: sink,
+    modelDropdown: modelSink, modelLabel: sink, authProfileList: sink,
     escapeHtml: String, escapeAttr: String, providerBadge: () => "", renderProviderLimitSummary: () => "",
     requestSkillRefresh() {}, updateEffortDisplay() {}, resetCursor() {}, renderQueuedFollowUps() {},
     genId: (() => { let id = 0; return () => `draft-${++id}`; })(),
@@ -44,6 +45,7 @@ function harness(saved = {}) {
     storage,
     run: code => vm.runInContext(code, ctx),
     state: () => JSON.parse(vm.runInContext('JSON.stringify({ profile: getActiveProfile()?.id, model: selectedModel, effort: selectedEffort })', ctx)),
+    menuModels: () => [...modelSink.innerHTML.matchAll(/data-model="([^"]+)"/g)].map(match => match[1]),
     loadProfiles: () => vm.runInContext(`renderProfileList({activeProfileId:"claude",profiles:${JSON.stringify(profiles)}})`, ctx),
   };
 }
@@ -53,6 +55,9 @@ test("cold start can render models before profiles are loaded", () => {
   assert.doesNotThrow(() => h.run("renderProfileList(_profileData)"));
   h.loadProfiles();
   assert.equal(h.state().model, "claude-sonnet-5-5");
+  assert.deepEqual(h.menuModels(), ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]);
+  h.run('selectConversationProfile("codex")');
+  assert.deepEqual(h.menuModels(), ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
 });
 
 test("Antigravity conversation preferences survive polling and retain supported older models", () => {
@@ -73,12 +78,12 @@ test("Antigravity conversation preferences survive polling and retain supported 
 test("conversation choices survive switching, polling and a fresh page without rewriting defaults", () => {
   const h = harness({ effort: "medium", activeProfileId: "claude", "model:claude": "claude-sonnet-5-5" });
   h.loadProfiles();
-  h.run('currentConvId="a";selectedModel="claude-opus-5";selectedEffort="high";rememberConvModelPrefs()');
+  h.run('currentConvId="a";selectedModel="claude-opus-5-5";selectedEffort="high";rememberConvModelPrefs()');
   h.run('currentConvId="b";selectConversationProfile("codex");selectedModel="gpt-6-astra";selectedEffort="xhigh";rememberConvModelPrefs()');
   h.run('currentConvId="a";applyConvModelPrefs({id:"a",profileId:"claude"})');
-  assert.deepEqual(h.state(), { profile: "claude", model: "claude-opus-5", effort: "high" });
+  assert.deepEqual(h.state(), { profile: "claude", model: "claude-opus-5-5", effort: "high" });
   h.loadProfiles();
-  assert.deepEqual(h.state(), { profile: "claude", model: "claude-opus-5", effort: "high" });
+  assert.deepEqual(h.state(), { profile: "claude", model: "claude-opus-5-5", effort: "high" });
   h.run('currentConvId="b";applyConvModelPrefs({id:"b",profileId:"codex"})');
   assert.deepEqual(h.state(), { profile: "codex", model: "gpt-6-astra", effort: "xhigh" });
   assert.equal(h.storage.get("effort"), "medium");
@@ -99,11 +104,18 @@ test("first-message draft settings are remembered and removed accounts safely fa
   assert.deepEqual(h.state(), { profile: "claude", model: "claude-sonnet-5-5", effort: "max" });
 });
 
-test("legacy histories retain their provider/model and malformed preference storage is ignored", () => {
+test("旧会员型号映射到新菜单，非法偏好数据仍被忽略", () => {
   for (const saved of ["{broken", '{"unexpected":true}', '[null,["a",null],["b",4]]']) {
-    const h = harness({ "convModelPrefs-v1": saved });
+    for (const [oldModel, newModel] of [["gpt-5.6-sol", "gpt-6-sol"], ["gpt-5.6-terra", "gpt-6-sol"], ["gpt-5.6-luna", "gpt-6-luna"]]) {
+      const h = harness({ "convModelPrefs-v1": saved });
+      h.loadProfiles();
+      h.run(`currentConvId="old";applyConvModelPrefs({sessionProvider:"codex",model:"${oldModel}",effort:"high"})`);
+      assert.deepEqual(h.state(), { profile: "codex", model: newModel, effort: "high" });
+    }
+  }
+  for (const [oldModel, newModel] of [["claude-opus-5", "claude-opus-5-5"], ["claude-fable-5", "claude-fable-5-1"]]) {
+    const h = harness({ "model:claude": oldModel });
     h.loadProfiles();
-    h.run('currentConvId="old";applyConvModelPrefs({sessionProvider:"codex",model:"gpt-5.6-luna",effort:"high"})');
-    assert.deepEqual(h.state(), { profile: "codex", model: "gpt-5.6-luna", effort: "high" });
+    assert.equal(h.state().model, newModel);
   }
 });

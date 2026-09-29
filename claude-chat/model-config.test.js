@@ -5,13 +5,12 @@ import test from "node:test";
 const HERE = new URL(".", import.meta.url);
 const EXPECTED_CODEX_MODELS = {
   opusModel: "gpt-6-astra",
-  sonnetModel: "gpt-5.6-terra",
-  haikuModel: "gpt-5.6-luna",
+  sonnetModel: "gpt-6-sol",
+  haikuModel: "gpt-6-luna",
 };
-// 前端下拉里能选到的 Codex 模型：旗舰换代后 gpt-5.6-sol 不再占档位，但仍要可选。
-const EXPECTED_CODEX_PICKER_MODELS = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const EXPECTED_CODEX_PICKER_MODELS = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
 
-test("Codex 服务端档位跟随 GPT-6 旗舰，均衡/快速仍是 GPT-5.6", async () => {
+test("Codex 服务端三档使用 GPT-6 模型", async () => {
   const serverSource = await readFile(new URL("server.js", HERE), "utf8");
 
   for (const [tier, model] of Object.entries(EXPECTED_CODEX_MODELS)) {

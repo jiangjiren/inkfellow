@@ -2562,13 +2562,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <span class="picker-option-name">Sonnet 5.5</span>
                 <span class="picker-option-desc">快速均衡</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-opus-5" data-label="Opus 5" role="option" aria-selected="false">
-                <span class="picker-option-name">Opus 5</span>
-                <span class="picker-option-desc">最强推理</span>
+              <button class="picker-option model-option" data-model="claude-opus-5-5" data-label="Opus 5.5" role="option" aria-selected="false">
+                <span class="picker-option-name">Opus 5.5</span>
+                <span class="picker-option-desc">复杂任务</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-fable-5" data-label="Fable 5" role="option" aria-selected="false">
-                <span class="picker-option-name">Fable 5</span>
-                <span class="picker-option-desc">旗舰最强</span>
+              <button class="picker-option model-option" data-model="claude-fable-5-1" data-label="Fable 5.1" role="option" aria-selected="false">
+                <span class="picker-option-name">Fable 5.1</span>
+                <span class="picker-option-desc">高难任务</span>
               </button>
               <div class="picker-divider"></div>
               <button id="effort-nav-btn" class="picker-option picker-option-nav">
@@ -2977,22 +2977,26 @@ async function fetchHistory() {
 
 // ── Auth: 账号配置列表 ────────────────────────────────────────
 const CLAUDE_MODELS = [
-  { model: "claude-sonnet-5-5",          label: "Sonnet 5.5", name: "Sonnet 5.5", desc: "快速均衡" },
-  { model: "claude-opus-5",              label: "Opus 5",     name: "Opus 5",     desc: "最强推理" },
-  { model: "claude-fable-5",             label: "Fable 5",    name: "Fable 5",    desc: "旗舰最强" },
+  { model: "claude-sonnet-5-5", label: "Sonnet 5.5", name: "Sonnet 5.5", desc: "快速均衡" },
+  { model: "claude-opus-5-5",   label: "Opus 5.5",  name: "Opus 5.5",  desc: "复杂任务" },
+  { model: "claude-fable-5-1", label: "Fable 5.1", name: "Fable 5.1", desc: "高难任务" },
 ];
 
-// 旧模型 ID → 新模型 ID。localStorage 里存的是上次选中的 model id，型号换代后
-// 匹配不上任何选项，会静默掉回列表第一项（Sonnet 5.5），用户以为还在用 Opus。
-const MODEL_MIGRATIONS = { "claude-opus-4-8": "claude-opus-5" };
+// 旧会话和 localStorage 可能仍记着上一代模型；切换到对应的新型号。
+const MODEL_MIGRATIONS = {
+  "claude-opus-4-8": "claude-opus-5-5",
+  "claude-opus-5": "claude-opus-5-5",
+  "claude-fable-5": "claude-fable-5-1",
+  "gpt-5.6-sol": "gpt-6-sol",
+  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-5.6-luna": "gpt-6-luna",
+};
 
-// Codex 会员账号不可编辑，三个档位字段装不下「新旗舰 + 上一代旗舰 + 均衡 + 快速」，
-// 所以这里像 CLAUDE_MODELS 一样直接列出可选模型，不再从档位字段反推。
+// Codex 会员账号不可编辑，模型列表由这里统一维护。
 const CODEX_MODELS = [
   { model: "gpt-6-astra",   label: "gpt-6-astra",   name: "gpt-6-astra",   desc: "旗舰最强" },
-  { model: "gpt-5.6-sol",   label: "gpt-5.6-sol",   name: "gpt-5.6-sol",   desc: "上一代旗舰" },
-  { model: "gpt-5.6-terra", label: "gpt-5.6-terra", name: "gpt-5.6-terra", desc: "均衡通用" },
-  { model: "gpt-5.6-luna",  label: "gpt-5.6-luna",  name: "gpt-5.6-luna",  desc: "快速经济" },
+  { model: "gpt-6-sol",     label: "gpt-6-sol",     name: "gpt-6-sol",     desc: "均衡通用" },
+  { model: "gpt-6-luna",    label: "gpt-6-luna",    name: "gpt-6-luna",    desc: "快速经济" },
 ];
 
 let AGY_MODELS = [{ model: "gemini-3.1-pro", label: "Gemini 3.1 Pro", name: "Gemini 3.1 Pro", desc: "等待模型目录", efforts: ["low", "high"] }];
@@ -3103,8 +3107,8 @@ function renderModelOptions(activeProfile) {
   if (provider === "antigravity" && rawSaved && _agyStatus.efforts?.[rawSaved] && !options.some(o => o.model === rawSaved)) {
     options = [...options, { model: rawSaved, label: rawSaved, name: rawSaved, desc: "当前会话", efforts: _agyStatus.efforts[rawSaved] }];
   }
-  // 只迁移 Claude 会员档位；第三方 profile 的模型名由用户自己填，不能替换
-  const saved = provider === "claude" ? (MODEL_MIGRATIONS[rawSaved] ?? rawSaved) : rawSaved;
+  // 只迁移托管会员账号；第三方 profile 的模型名由用户自己填，不能替换。
+  const saved = ["claude", "codex"].includes(provider) ? (MODEL_MIGRATIONS[rawSaved] ?? rawSaved) : rawSaved;
   const defaultModel = provider === "claude" || provider === "antigravity"
     ? options[0].model
     : (activeProfile?.sonnetModel || options[0].model);
@@ -3606,7 +3610,7 @@ const addErrorEl      = document.getElementById("add-error");
 const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5",                   sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
   deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "", namePlaceholder: "OpenRouter" },
   minimax:    { baseUrl: "https://api.minimaxi.com/anthropic", opusModel: "MiniMax-M3",                      sonnetModel: "MiniMax-M3",                       haikuModel: "MiniMax-M3",                    keyPlaceholder: "",    namePlaceholder: "MiniMax" },

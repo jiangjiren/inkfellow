@@ -30,7 +30,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const DEFAULT_CWD = resolve(process.env.VAULT_PATH || process.cwd());
 const PERMISSION_MODES = new Set(["plan", "acceptEdits", "auto", "bypassPermissions"]);
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
-const CODEX_ULTRA_MODELS = new Set(["gpt-6-astra", "gpt-6-sol"]);
+const CODEX_ULTRA_MODELS = new Set(["gpt-6-astra", "gpt-6.1-sol"]);
 function normalizeEffort(value, provider, model) {
   const effort = EFFORT_LEVELS.has(value) ? value : "medium";
   return effort === "ultra" && (provider !== "codex" || !CODEX_ULTRA_MODELS.has(model)) ? "max" : effort;
@@ -212,7 +212,7 @@ const WECHAT_MIME_BY_EXT = {
 // 三档对应当前 Codex 会员模型。
 const CODEX_DEFAULT_MODELS = {
   opusModel: "gpt-6-astra",
-  sonnetModel: "gpt-6-sol",
+  sonnetModel: "gpt-6.1-sol",
   haikuModel: "gpt-6-luna",
 };
 

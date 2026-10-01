@@ -2991,15 +2991,16 @@ const MODEL_MIGRATIONS = {
   "claude-opus-4-8": "claude-opus-5-5",
   "claude-opus-5": "claude-opus-5-5",
   "claude-fable-5": "claude-fable-5-1",
-  "gpt-5.6-sol": "gpt-6-sol",
-  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-terra": "gpt-6.1-sol",
   "gpt-5.6-luna": "gpt-6-luna",
+  "gpt-6-sol": "gpt-6.1-sol",
 };
 
 // Codex 会员账号不可编辑，模型列表由这里统一维护。
 const CODEX_MODELS = [
   { model: "gpt-6-astra",   label: "gpt-6-astra",   name: "gpt-6-astra",   desc: "旗舰最强" },
-  { model: "gpt-6-sol",     label: "gpt-6-sol",     name: "gpt-6-sol",     desc: "均衡通用" },
+  { model: "gpt-6.1-sol",   label: "gpt-6.1-sol",   name: "gpt-6.1-sol",   desc: "均衡通用" },
   { model: "gpt-6-luna",    label: "gpt-6-luna",    name: "gpt-6-luna",    desc: "快速经济" },
 ];
 
@@ -7216,7 +7217,7 @@ const permissionLabel    = document.getElementById("permission-label");
 
 function effectiveEffort() {
   const provider = getActiveProfile()?.provider;
-  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6-sol"].includes(selectedModel);
+  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6.1-sol"].includes(selectedModel);
   const chosen = selectedEffort === "ultra" && !codexUltra ? "max" : selectedEffort;
   if (provider !== "antigravity") return chosen;
   const supported = _agyStatus.efforts?.[selectedModel] || AGY_MODELS.find(m => m.model === selectedModel)?.efforts || [];
@@ -7229,7 +7230,7 @@ function effectiveEffort() {
 function updateEffortDisplay() {
   const provider = getActiveProfile()?.provider;
   const agy = provider === "antigravity";
-  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6-sol"].includes(selectedModel);
+  const codexUltra = provider === "codex" && ["gpt-6-astra", "gpt-6.1-sol"].includes(selectedModel);
   const supported = agy ? (_agyStatus.efforts?.[selectedModel] || AGY_MODELS.find(m => m.model === selectedModel)?.efforts || []) : null;
   const effective = effectiveEffort();
   const nav = document.getElementById("effort-nav-btn");

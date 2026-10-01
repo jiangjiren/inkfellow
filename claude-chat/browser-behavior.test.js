@@ -58,7 +58,7 @@ test("thinking depth menu uses desktop levels and sends the selected effort", as
 test("Ultra is offered only on supported Codex models and falls back when switching to Luna", async () => {
   const h = browser();
   try {
-    h.run('_profileData={activeProfileId:"p_codex",profiles:[{id:"p_codex",provider:"codex",sonnetModel:"gpt-6-sol"}]};renderModelOptions(getActiveProfile())');
+    h.run('_profileData={activeProfileId:"p_codex",profiles:[{id:"p_codex",provider:"codex",sonnetModel:"gpt-6.1-sol"}]};renderModelOptions(getActiveProfile())');
     const ultra = h.w.document.querySelector('.effort-option[data-effort="ultra"]');
     assert.equal(ultra.hidden, false);
     ultra.dispatchEvent(new h.w.MouseEvent("mousedown", { bubbles: true }));

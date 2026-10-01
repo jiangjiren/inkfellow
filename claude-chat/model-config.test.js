@@ -5,10 +5,10 @@ import test from "node:test";
 const HERE = new URL(".", import.meta.url);
 const EXPECTED_CODEX_MODELS = {
   opusModel: "gpt-6-astra",
-  sonnetModel: "gpt-6-sol",
+  sonnetModel: "gpt-6.1-sol",
   haikuModel: "gpt-6-luna",
 };
-const EXPECTED_CODEX_PICKER_MODELS = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
+const EXPECTED_CODEX_PICKER_MODELS = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"];
 
 test("Codex 服务端三档使用 GPT-6 模型", async () => {
   const serverSource = await readFile(new URL("server.js", HERE), "utf8");

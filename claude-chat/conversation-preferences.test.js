@@ -15,7 +15,7 @@ function functionSource(name) {
 }
 const profiles = [
   { id: "claude", provider: "claude", name: "Claude" },
-  { id: "codex", provider: "codex", name: "Codex", sonnetModel: "gpt-6-sol" },
+  { id: "codex", provider: "codex", name: "Codex", sonnetModel: "gpt-6.1-sol" },
   { id: "custom", provider: "custom", name: "Custom", sonnetModel: "custom-model" },
   { id: "agy", provider: "antigravity", name: "Antigravity" },
 ];
@@ -57,7 +57,7 @@ test("cold start can render models before profiles are loaded", () => {
   assert.equal(h.state().model, "claude-sonnet-5-5");
   assert.deepEqual(h.menuModels(), ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]);
   h.run('selectConversationProfile("codex")');
-  assert.deepEqual(h.menuModels(), ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
+  assert.deepEqual(h.menuModels(), ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"]);
 });
 
 test("Antigravity conversation preferences survive polling and retain supported older models", () => {
@@ -106,7 +106,7 @@ test("first-message draft settings are remembered and removed accounts safely fa
 
 test("旧会员型号映射到新菜单，非法偏好数据仍被忽略", () => {
   for (const saved of ["{broken", '{"unexpected":true}', '[null,["a",null],["b",4]]']) {
-    for (const [oldModel, newModel] of [["gpt-5.6-sol", "gpt-6-sol"], ["gpt-5.6-terra", "gpt-6-sol"], ["gpt-5.6-luna", "gpt-6-luna"]]) {
+    for (const [oldModel, newModel] of [["gpt-5.6-sol", "gpt-6.1-sol"], ["gpt-5.6-terra", "gpt-6.1-sol"], ["gpt-5.6-luna", "gpt-6-luna"], ["gpt-6-sol", "gpt-6.1-sol"]]) {
       const h = harness({ "convModelPrefs-v1": saved });
       h.loadProfiles();
       h.run(`currentConvId="old";applyConvModelPrefs({sessionProvider:"codex",model:"${oldModel}",effort:"high"})`);

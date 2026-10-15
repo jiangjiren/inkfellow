@@ -106,6 +106,7 @@ const injectPreviewBridge = (html: string): string => {
     var lastViewportWidth = window.innerWidth;
     var lastViewportHeight = window.innerHeight;
     var suppressedHeight = null;
+    var forceReport = false;
     var lastHeadingSignature = "";
 
     function saveStyle(element, property) {
@@ -209,7 +210,7 @@ const injectPreviewBridge = (html: string): string => {
     function measureIntrinsicHeight() {
       var root = document.documentElement;
       var body = document.body;
-      if (!body) return Math.max(1, Math.ceil(root.scrollHeight));
+      if (!body) return { height: Math.max(1, Math.ceil(root.scrollHeight)), appShell: false };
 
       // A page using min-height:100vh otherwise reports the iframe viewport as
       // content height. Temporarily neutralise only the root/body height rules
@@ -238,13 +239,38 @@ const injectPreviewBridge = (html: string): string => {
         root.scrollHeight > viewportHeight + 0.5 ? root.scrollHeight : 0
       );
 
-      // body/root boxes do not include every out-of-flow visual box.
-      var elements = body.querySelectorAll("*");
-      for (var i = 0; i < elements.length; i++) {
-        var rect = elements[i].getBoundingClientRect();
-        if (Number.isFinite(rect.bottom)) {
-          height = Math.max(height, rect.bottom + scrollTop);
+      // body/root boxes do not include every out-of-flow visual box. Content
+      // clipped by an overflow container (e.g. a prototype's inner scrolling
+      // screen) is not visible, so it must not stretch the iframe; otherwise a
+      // vh-sized shell grows with it and ends up stranded in blank space.
+      // A large user-scrollable container marks an app-shell layout that
+      // should fill the visible reader instead of its intrinsic height.
+      var appShell = false;
+      var stack = [];
+      for (var c = body.children.length - 1; c >= 0; c--) stack.push([body.children[c], false]);
+      while (stack.length) {
+        var entry = stack.pop();
+        var element = entry[0];
+        var clipped = entry[1];
+        if (!clipped) {
+          var rect = element.getBoundingClientRect();
+          if (Number.isFinite(rect.bottom)) {
+            height = Math.max(height, rect.bottom + scrollTop);
+          }
         }
+        if (element.scrollHeight > element.clientHeight + 1) {
+          var overflowY = window.getComputedStyle(element).overflowY;
+          if (overflowY !== "visible") {
+            clipped = true;
+            if (
+              (overflowY === "auto" || overflowY === "scroll") &&
+              element.clientHeight >= viewportHeight * 0.5
+            ) {
+              appShell = true;
+            }
+          }
+        }
+        for (var j = element.children.length - 1; j >= 0; j--) stack.push([element.children[j], clipped]);
       }
 
       restoreStyle(root, "height", rootHeight);
@@ -252,7 +278,7 @@ const injectPreviewBridge = (html: string): string => {
       restoreStyle(body, "height", bodyHeight);
       restoreStyle(body, "min-height", bodyMinHeight);
 
-      return Math.max(1, Math.ceil(height));
+      return { height: Math.max(1, Math.ceil(height)), appShell: appShell };
     }
 
     function reportHeight() {
@@ -264,13 +290,19 @@ const injectPreviewBridge = (html: string): string => {
       lastViewportWidth = viewportWidth;
       lastViewportHeight = viewportHeight;
 
-      var measuredHeight = measureIntrinsicHeight();
+      var measured = measureIntrinsicHeight();
+      var measuredHeight = measured.height;
       reportHeadings();
-      if (heightChanged && !widthChanged) {
+      // An explicit request from the parent (load, width change) must always
+      // be answered, or a first report swallowed as an echo is never resent.
+      var forced = forceReport;
+      forceReport = false;
+      if (!forced && heightChanged && !widthChanged) {
         suppressedHeight = measuredHeight;
         return;
       }
       if (
+        !forced &&
         !widthChanged &&
         suppressedHeight !== null &&
         Math.abs(measuredHeight - suppressedHeight) < 0.5
@@ -280,7 +312,7 @@ const injectPreviewBridge = (html: string): string => {
       suppressedHeight = null;
 
       try {
-        window.parent.postMessage({type:"iframeHeight",h:measuredHeight},"*");
+        window.parent.postMessage({type:"iframeHeight",h:measuredHeight,appShell:measured.appShell},"*");
       } catch (error) {}
     }
 
@@ -315,6 +347,7 @@ const injectPreviewBridge = (html: string): string => {
     window.addEventListener("message", function(event) {
       if (event.source !== window.parent || !event.data) return;
       if (event.data.type === "iframeMeasure") {
+        forceReport = true;
         scheduleHeightReport();
       } else if (
         event.data.type === "iframeScrollToFragment" &&
@@ -446,7 +479,12 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
   },
   ref,
 ) {
-  const [height, setHeight] = useState(600);
+  const [reported, setReported] = useState({ height: 600, appShell: false });
+  const [fillHeight, setFillHeight] = useState(0);
+  // App-shell pages (a phone prototype with its own scrolling screen) are sized
+  // to the viewport, so give them the visible reader height rather than letting
+  // the iframe collapse to whatever 100vh resolved to inside it.
+  const height = reported.appShell ? Math.max(reported.height, fillHeight) : reported.height;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const headingsRef = useRef<HtmlHeading[]>([]);
   const headingSignatureRef = useRef("");
@@ -598,8 +636,11 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
         Number.isFinite(event.data.h)
       ) {
         const nextHeight = Math.max(1, Math.ceil(event.data.h));
-        setHeight((currentHeight) =>
-          currentHeight === nextHeight ? currentHeight : nextHeight,
+        const appShell = event.data.appShell === true;
+        setReported((current) =>
+          current.height === nextHeight && current.appShell === appShell
+            ? current
+            : { height: nextHeight, appShell },
         );
       } else if (event.data?.type === "iframe-headings" && Array.isArray(event.data.headings)) {
         const headings = (event.data.headings as unknown[]).filter(isHtmlHeading);
@@ -647,6 +688,29 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
   useEffect(() => () => {
     onHeadingsChangeRef.current?.(notePathRef.current, []);
   }, []);
+
+  useEffect(() => {
+    if (!reported.appShell) return;
+    const measureFill = () => {
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+      const reader = iframe.closest<HTMLElement>("[data-notes-reader]");
+      const readerScrollable = Boolean(
+        reader && window.getComputedStyle(reader).overflowY !== "visible",
+      );
+      const viewportTop = readerScrollable && reader ? reader.getBoundingClientRect().top : 0;
+      const viewportHeight = readerScrollable && reader ? reader.clientHeight : window.innerHeight;
+      const scrollTop = readerScrollable && reader ? reader.scrollTop : window.scrollY;
+      const offset = iframe.getBoundingClientRect().top - viewportTop + scrollTop;
+      // Fit below the page header when that still leaves most of the screen;
+      // otherwise take a full viewport and let the outer page scroll to it.
+      const below = viewportHeight - offset;
+      setFillHeight(Math.round(below >= viewportHeight * 0.6 ? below : viewportHeight));
+    };
+    measureFill();
+    window.addEventListener("resize", measureFill);
+    return () => window.removeEventListener("resize", measureFill);
+  }, [reported.appShell]);
 
   // A width change can reflow the iframe content. Ignore height-only changes to
   // avoid feeding the child height report back into itself.

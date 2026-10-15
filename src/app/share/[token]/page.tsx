@@ -18,13 +18,6 @@ type SharePageProps = {
 
 const stripNoteExtension = (value: string) => value.replace(/\.(md|html?)$/i, "");
 
-const formatUpdatedAt = (updatedAt: string) =>
-  new Date(updatedAt).toLocaleDateString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-
 const isExpectedMissingShare = (error: unknown) =>
   (error instanceof SharedNoteAccessError || error instanceof VaultAccessError) && error.status < 500;
 
@@ -65,22 +58,13 @@ export default async function SharePage({ params }: SharePageProps) {
   const { token } = await params;
 
   try {
-    const { note, share } = await readSharedNote(token);
-    const title = share.title?.trim() || stripNoteExtension(note.name);
+    const { note } = await readSharedNote(token);
     const isHtml = /\.html?$/i.test(note.path);
     const headings = isHtml ? [] : extractHeadings(note.content);
 
     return (
       <main className={styles.page}>
         <div className={styles.shell}>
-          <header className={styles.header}>
-            <div className={styles.brand}>
-              <p className={styles.eyebrow}>{process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}</p>
-              <h1 className={styles.title}>{title}</h1>
-            </div>
-            <p className={styles.meta}>更新于 {formatUpdatedAt(note.updatedAt)}</p>
-          </header>
-
           <div className={styles.contentRow}>
             {headings.length > 0 && <PcTocSidebar headings={headings} />}
 

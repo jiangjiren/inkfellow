@@ -104,6 +104,37 @@ async function invoke(command, args = {}) {
   return api.invoke(command, args);
 }
 
+const completionAlerts = new InkfellowCompletionAlerts({
+  storage: { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
+  notify: completion => invoke("notify_ai_completion", completion),
+});
+
+function syncCompletionNotificationPreference() {
+  postAgentMessage({ type: "completion-notifications-state", enabled: completionAlerts.enabled });
+}
+
+function handleAgentCompletionMessage(data) {
+  if (data?.type === "completion-notifications-preference") {
+    if (typeof data.enabled !== "boolean") return true;
+    completionAlerts.setEnabled(data.enabled);
+    syncCompletionNotificationPreference();
+    return true;
+  }
+  if (data?.type === "ai-turn-completed") {
+    void completionAlerts.complete(data);
+    return true;
+  }
+  return false;
+}
+
+/* 点系统通知回到完成的那条对话；窗口置前由 Rust 负责 */
+function openConversationFromAlert(conversationId) {
+  if (typeof conversationId !== "string" || !conversationId) return false;
+  postAgentMessage({ type: "open-conversation", conversationId });
+  openFellowPanel();
+  return true;
+}
+
 /* ── Utilities ───────────────────────────────────── */
 function clamp(v, min, max) { return Math.min(Math.max(v, min), max); }
 
@@ -254,7 +285,7 @@ function showDialog(message, defaultValue = "") {
   });
 }
 
-function showConfirm(message) {
+function showConfirm(message, { confirmLabel = "删除", danger = true } = {}) {
   return new Promise((resolve) => {
     const overlay = qs("dialog-overlay");
     const msgEl = qs("dialog-message");
@@ -264,8 +295,8 @@ function showConfirm(message) {
 
     msgEl.textContent = message;
     inputEl.hidden = true;
-    confirmBtn.textContent = "删除";
-    confirmBtn.style.background = "#cc2d24";
+    confirmBtn.textContent = confirmLabel;
+    confirmBtn.style.background = danger ? "#cc2d24" : "";
     overlay.hidden = false;
     confirmBtn.focus();
 
@@ -2050,6 +2081,16 @@ function renderDocArea(options = {}) {
     .filter(Boolean)
     .join(" ");
 
+  if (state.activeNote?.extension === InkfellowVideoWorkbench.EXTENSION) {
+    docArea.className = docAreaClass("docAreaVideo");
+    syncWorkbenchSidebar();
+    InkfellowVideoWorkbench.mount(docArea, state.activeNote.path);
+    updateReaderDocumentActions();
+    return;
+  }
+  InkfellowVideoWorkbench.leave();
+  syncWorkbenchSidebar();
+
   if (!state.activeNote) {
     docArea.className = docAreaClass();
     docArea.innerHTML = renderDashboard();
@@ -2321,6 +2362,21 @@ function recentDashboardFiles() {
 
 function renderDashboard() {
   const files = recentDashboardFiles();
+  const videos = InkfellowVideoWorkbench.listProjects().slice(0, 6);
+  const videoCards = videos.map((project) => {
+    const cover = project.cover && window.__TAURI__?.core?.convertFileSrc
+      ? window.__TAURI__.core.convertFileSrc(project.cover) : null;
+    const seconds = Number(project.durationSec);
+    const duration = project.durationSec != null && Number.isFinite(seconds) && seconds >= 0
+      ? InkfellowVideoModel.humanDuration(seconds) : "时长未知";
+    return `<button type="button" class="dashboardVideoCard" data-project="${escapeHtml(project.path)}">
+      <span class="dashboardVideoCover">${cover
+        ? `<img src="${escapeHtml(cover)}" alt="" loading="lazy" />`
+        : `<span class="dashboardVideoPlaceholder" aria-hidden="true">▶</span>`}</span>
+      <span class="dashboardVideoTitle">${escapeHtml(project.title || project.name)}</span>
+      <span class="dashboardVideoDuration">${escapeHtml(duration)}</span>
+    </button>`;
+  }).join("");
   const cards = files.map((file) => `
     <button type="button" class="dashboardRecentCard" data-path="${escapeHtml(file.path)}">
       <span class="dashboardRecentCardIcon" aria-hidden="true">
@@ -2352,6 +2408,10 @@ function renderDashboard() {
           </button>
         </form>
       </div>
+      ${videos.length ? `<div class="dashboardSection dashboardVideoSection">
+        <div class="dashboardSectionHeader"><h2 class="dashboardSectionTitle">最近的视频</h2></div>
+        <div class="dashboardVideoGrid">${videoCards}</div>
+      </div>` : ""}
       <div class="dashboardSection">
         <div class="dashboardSectionHeader">
           <h2 class="dashboardSectionTitle">${files.length ? "继续你的工作" : "开始记录"}</h2>
@@ -2374,6 +2434,12 @@ function renderDashboard() {
 }
 
 function wireDashboard() {
+  document.querySelectorAll(".dashboardVideoCard").forEach((card) => {
+    card.addEventListener("click", () => {
+      const path = card.getAttribute("data-project");
+      if (path) loadNote(InkfellowVideoWorkbench.tabForProject(path));
+    });
+  });
   qs("dashboard-capture")?.addEventListener("click", createNote);
   qs("dashboard-empty-create")?.addEventListener("click", createNote);
   const askInput = qs("dashboard-ask-input");
@@ -2541,7 +2607,10 @@ function renderNoteMeta() {
   titleEl.textContent = "";
   metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
 
-  qs("btn-more-menu").disabled = false;
+  // 工作台标签背后是 edl.json，「删除文件」不能作用在它上面
+  const isVideoTab = state.activeNote.extension === InkfellowVideoWorkbench.EXTENSION;
+  qs("btn-more-menu").disabled = isVideoTab;
+  if (isVideoTab) toggleMoreMenu(false);
 }
 
 /* ── ⋯ 更多菜单 ──────────────────────────────────── */
@@ -2631,16 +2700,28 @@ function buildTreeNodes(node, container, level, isRoot) {
 
     const icon = document.createElement("span");
     icon.className = "treeNodeIcon";
-    icon.innerHTML = FOLDER_ICON;
+    const isVideoProject = !isRoot && InkfellowVideoWorkbench.isProject(node.path);
+    icon.innerHTML = isVideoProject ? FILE_KIND_ICONS.video : FOLDER_ICON;
+    if (isVideoProject) {
+      btn.classList.add("treeFolderVideo");
+      if (state.activePath === InkfellowVideoWorkbench.tabForProject(node.path)) btn.classList.add("treeFileActive");
+    }
 
     const label = document.createElement("span");
     label.className = "treeLabel";
     fillTreeLabel(label, isRoot ? (node.name || "Vault") : node.name);
-    label.title = node.path || state.vaultPath;
+    label.title = isVideoProject ? `${node.path}\n打开视频工作台` : (node.path || state.vaultPath);
     if (!isRoot) label.dataset.path = node.path;
 
     btn.append(chevron, icon, label);
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (event) => {
+      // 视频工程：点名字打开工作台并展开，点箭头只折叠展开
+      if (isVideoProject && !event.target.closest(".chevron")) {
+        state.expanded.add(node.path);
+        void loadNote(InkfellowVideoWorkbench.tabForProject(node.path));
+        renderTree();
+        return;
+      }
       if (state.expanded.has(node.path)) state.expanded.delete(node.path);
       else state.expanded.add(node.path);
       renderTree();
@@ -3039,7 +3120,9 @@ function renderTabs() {
   strip.hidden = state.tabs.length === 0;
   strip.innerHTML = "";
   for (const path of state.tabs) {
-    const name = stripExt(path.split("/").pop() || path);
+    const name = InkfellowVideoWorkbench.isProjectTab(path)
+      ? InkfellowVideoWorkbench.tabLabel(path)
+      : stripExt(path.split("/").pop() || path);
     const active = path === state.activePath;
 
     const tab = document.createElement("div");
@@ -3292,12 +3375,16 @@ async function loadNote(path, opts = {}) {
   updateNavButtons();
 
   const docArea = qs("doc-area");
+  InkfellowVideoWorkbench.leave();
   docArea.className = "docArea";
   docArea.innerHTML = `<div class="loadingDoc"><div class="loadingSpinner"></div><span>加载中…</span></div>`;
 
   try {
     const command = isImageExt(extOf(path)) ? "read_asset" : "read_note";
-    const note = opts.note ?? await invoke(command, { path });
+    const note = opts.note
+      ?? (InkfellowVideoWorkbench.isProjectTab(path)
+        ? InkfellowVideoWorkbench.makeNote(path)
+        : await invoke(command, { path }));
     state.activePath = note.path;
     state.activeNote = note;
     if (opts.replaceCurrentTab) replaceTabPath(previousActivePath, note.path);
@@ -3599,6 +3686,7 @@ function renderVaultMenu() {
 async function applyVaultChange(desktop) {
   applyDesktopState(desktop);
   clearActiveNote();
+  void InkfellowVideoWorkbench.loadProjects();
   await loadTree(true);
   waitForAgent();
   refreshGitStatus();
@@ -3974,6 +4062,7 @@ async function flushTreeRefresh() {
     await loadTree(false);
     const activePathLower = activePath?.toLowerCase();
     if (!activePathLower || state.activePath?.toLowerCase() !== activePathLower) return;
+    if (InkfellowVideoWorkbench.isProjectTab(activePath)) return;
 
     // 精准判断：检查防抖期间所有变化路径，Windows 大小写不敏感
     const activeChanged = accumulated.length === 0 || accumulated.some((p) => {
@@ -4029,12 +4118,40 @@ function requestAutoPull() {
   invoke("sync_request_pull", { force: false }).catch(() => {});
 }
 
+function initVideoWorkbench() {
+  InkfellowVideoWorkbench.init({
+    invoke,
+    listen: window.__TAURI__?.event?.listen,
+    convertFileSrc: window.__TAURI__?.core?.convertFileSrc,
+    showToast,
+    confirm: showConfirm,
+    openNote: (path) => loadNote(path),
+    isAgentGenerating: () => state.agentGenerating === true,
+    // 修改单自带工程路径，不再附带「当前文件」，免得 AI 去直接改 edl.json
+    sendToAgent: (text) => {
+      openFellowPanel();
+      return postAgentMessage({ type: "note-ask", text, filePath: null });
+    },
+    onProjectsChanged: () => {
+      renderTree();
+      renderTabs();
+      if (!state.activeNote) renderDocArea({ silent: true });
+    },
+  });
+}
+
 async function initSyncEvents() {
+  initVideoWorkbench();
   const listen = window.__TAURI__?.event?.listen;
   if (!listen) return;
 
   await listen("vault-tree-changed", ({ payload }) => {
     scheduleTreeRefresh(payload?.changedPaths ?? []);
+  });
+
+  await listen("completion-alert-activated", async ({ payload }) => {
+    const pending = await invoke("take_pending_completion_conversation");
+    openConversationFromAlert(pending || payload?.conversationId);
   });
 
   await listen("open-markdown-files-pending", () => {
@@ -4706,8 +4823,43 @@ function openFellowPanel() {
   postAgentMessage({ type: "focus-input" });
 }
 
+let workbenchSidebarActive = false;
+let workbenchSidebarAutoHidden = false;
+let workbenchSidebarManual = false;
+
+function syncWorkbenchSidebar() {
+  const shell = qs("shell");
+  const active = state.activeNote?.extension === InkfellowVideoWorkbench.EXTENSION;
+  if (!active) {
+    if (workbenchSidebarActive && workbenchSidebarAutoHidden && !workbenchSidebarManual) {
+      shell.classList.remove("shellSidebarHidden");
+    }
+    workbenchSidebarActive = false;
+    workbenchSidebarAutoHidden = false;
+    workbenchSidebarManual = false;
+    return;
+  }
+  if (!workbenchSidebarActive) {
+    workbenchSidebarActive = true;
+    workbenchSidebarAutoHidden = false;
+    workbenchSidebarManual = false;
+  }
+  const centerWidth = qs("doc-area").clientWidth;
+  if (!workbenchSidebarManual && !shell.classList.contains("shellSidebarHidden")
+      && centerWidth > 0 && centerWidth < 760) {
+    shell.classList.remove("shellSidebarPeek");
+    shell.classList.add("shellSidebarHidden");
+    closeGitQuickPopover(false);
+    workbenchSidebarAutoHidden = true;
+  }
+}
+
 function toggleSidebar() {
   const shell = qs("shell");
+  if (workbenchSidebarActive) {
+    workbenchSidebarManual = true;
+    workbenchSidebarAutoHidden = false;
+  }
   shell.classList.remove("shellSidebarPeek");
   const isHidden = shell.classList.toggle("shellSidebarHidden");
   if (isHidden) closeGitQuickPopover(false);
@@ -5087,7 +5239,7 @@ async function loadTree(selectFirst = false) {
   state.tree = response.root;
   // 清理指向已不存在文件的标签（保留 activePath：新建文件可能先于树刷新出现）
   const existingPaths = new Set(flattenFiles(state.tree).map((f) => f.path));
-  pruneTabs((p) => existingPaths.has(p) || p === state.activePath);
+  pruneTabs((p) => existingPaths.has(p) || p === state.activePath || InkfellowVideoWorkbench.isProjectTab(p));
   renderTree();
   sendVaultNotes();
   if (!state.activeNote) renderDocArea();
@@ -5095,7 +5247,7 @@ async function loadTree(selectFirst = false) {
   if (selectFirst && !state.activePath) {
     const lastPath = localStorage.getItem(LAST_FILE_KEY);
     const files = flattenFiles(state.tree);
-    const target = lastPath && files.find((f) => f.path === lastPath)
+    const target = lastPath && (InkfellowVideoWorkbench.isProjectTab(lastPath) || files.find((f) => f.path === lastPath))
       ? lastPath
       : files.find((f) => /^(md|html?)$/i.test(f.extension))?.path;
     if (target) await loadNote(target);
@@ -5204,6 +5356,7 @@ function initKeyboard() {
 
 /* ── Wire events ─────────────────────────────────── */
 function wireEvents() {
+  new ResizeObserver(() => syncWorkbenchSidebar()).observe(qs("doc-area"));
   qs("btn-vault-switcher").addEventListener("click", () => toggleVaultMenu());
   qs("btn-new-note").addEventListener("click", () => { void createNote(); });
   qs("empty-create-note")?.addEventListener("click", () => { void createNote(); });
@@ -5253,9 +5406,22 @@ function wireEvents() {
     const frame = qs("agent-frame");
     if (event.source !== frame.contentWindow || event.origin !== agentOrigin()) return;
     if (!state.agentToken || event.data?.__token !== state.agentToken) return;
+    if (handleAgentCompletionMessage(event.data)) return;
+    if (event.data?.type === "agent-open-video") {
+      const project = InkfellowVideoOpenPath.projectFromVideoPath(event.data.path, state.vaultPath);
+      const known = project && InkfellowVideoWorkbench.listProjects()
+        .find((item) => item.path.toLowerCase() === project.toLowerCase());
+      if (known && InkfellowVideoWorkbench.isProject(known.path)) {
+        loadNote(InkfellowVideoWorkbench.tabForProject(known.path));
+      } else {
+        showToast("这个视频不在当前笔记本里");
+      }
+      return;
+    }
     if (event.data?.type === "ai-generating-state") {
       state.agentGenerating = event.data.isGenerating === true;
       state.agentGenerationKnown = true;
+      InkfellowVideoWorkbench.onAgentState(state.agentGenerating);
       if (state.agentReady && !state.agentGenerating) flushAgentMessages();
       return;
     }
@@ -5275,6 +5441,7 @@ function wireEvents() {
     }
     if (event.data?.type !== "agent-ready") return;
     state.agentReady = true;
+    syncCompletionNotificationPreference();
     setAgentLoading(false);
     flushAgentMessages({
       includeAgentRequests: state.agentGenerationKnown && !state.agentGenerating,
@@ -5435,6 +5602,8 @@ async function boot() {
     const desktop = await invoke("get_desktop_state");
     applyDesktopState(desktop);
     state.desktopReady = true;
+    // 冷启动时协议参数由 Rust 暂存，页面就绪后再打开目标对话。
+    openConversationFromAlert(await invoke("take_pending_completion_conversation"));
     const openedPendingMarkdown = await queuePendingMarkdownOpen();
     if (!openedPendingMarkdown) {
       await Promise.all([loadTree(false), waitForAgent(), refreshGitStatus()]);

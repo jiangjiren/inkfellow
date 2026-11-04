@@ -4394,3 +4394,46 @@ input, textarea { font-family: inherit; }
 /* ── Diff flash (AI silent reload) ── */
 @keyframes diffFlash { 0% { background-color: rgba(250,204,21,0.35); } 100% { background-color: transparent; } }
 .diff-flash { animation: diffFlash 2.5s ease-out forwards; border-radius: 4px; }
+
+/* Dashboard video projects */
+.dashboardVideoSection {
+  margin-bottom: 40px;
+}
+.dashboardVideoGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 16px;
+}
+.dashboardVideoCard {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboardVideoCover {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  border: 1px solid var(--notes-border);
+  border-radius: var(--notes-radius-card);
+  background: var(--notes-bg-subtle);
+  box-shadow: var(--notes-shadow-card);
+}
+.dashboardVideoCover img { width: 100%; height: 100%; object-fit: cover; }
+.dashboardVideoPlaceholder { color: var(--notes-accent-warm); font-size: 28px; }
+.dashboardVideoTitle, .dashboardVideoDuration {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboardVideoTitle { margin-top: 7px; font-size: 13px; font-weight: 600; }
+.dashboardVideoDuration { margin-top: 2px; color: var(--notes-text-secondary); font-size: 11px; }
+.dashboardVideoCard:hover .dashboardVideoCover { border-color: var(--notes-accent-warm); }
+.dashboardVideoCard:focus-visible { outline: 2px solid var(--notes-accent); outline-offset: 4px; border-radius: var(--notes-radius-card); }

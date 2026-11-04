@@ -16,7 +16,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_notification::NotificationExt;
+mod completion_alert_policy;
 mod sync_summary;
+mod video_workbench;
+mod video_workbench_logic;
 
 #[cfg(target_os = "windows")]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -45,6 +50,7 @@ struct AppState {
     vault_watcher: Mutex<Option<RecommendedWatcher>>,
     transient_vault_path: Mutex<Option<PathBuf>>,
     pending_markdown_files: Mutex<Vec<PathBuf>>,
+    pending_completion_conversation: Mutex<Option<String>>,
     initial_vault_services_deferred: AtomicBool,
     vault_services_generation: AtomicU64,
     vault_services_ready_generation: AtomicU64,
@@ -258,6 +264,10 @@ fn canonical_markdown_file(value: &Path) -> Result<PathBuf, String> {
 fn markdown_files_from_args(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for argument in args {
+        // 协议 URL 只用于切换对话，不能作为 Markdown 路径处理。
+        if argument.to_string_lossy().contains("://") {
+            continue;
+        }
         let path = PathBuf::from(argument);
         let candidate = if path.is_absolute() {
             path
@@ -342,6 +352,7 @@ fn start_vault_watcher(app: &AppHandle) -> Result<(), String> {
             if !is_tree_change_event(&event) {
                 return;
             }
+            video_workbench::watcher_event(&handle, &root_for_filter, &event.paths);
             let changed_paths: Vec<String> = event
                 .paths
                 .iter()
@@ -1420,6 +1431,7 @@ fn restart_vault_services_in_background(app: &AppHandle, root: PathBuf) {
     let generation = begin_vault_services_restart(app);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        video_workbench::allow_cache(&handle);
         if vault_root(&handle).ok().as_ref() != Some(&root) {
             return;
         }
@@ -1671,6 +1683,129 @@ fn parse_git_diff(path: &str, raw: &str) -> GitFileDiff {
     }
 }
 
+fn focus_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 点通知时系统按协议启动 exe，再由单实例插件转给正在运行的进程。
+/// 开发版不注册：它和安装版的 identifier 相同，注册了会抢走安装版的协议。
+#[cfg(target_os = "windows")]
+fn register_completion_protocol(app: &AppHandle) -> Result<(), String> {
+    let exe = tauri::utils::platform::current_exe().map_err(|error| error.to_string())?;
+    if !exe.parent().is_some_and(completion_alert_policy::has_registered_app_id) {
+        return Ok(());
+    }
+    let scheme = &app.config().identifier;
+    let root = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = root
+        .create_subkey(format!("Software\\Classes\\{scheme}"))
+        .map_err(|error| error.to_string())?;
+    let (command_key, _) = key
+        .create_subkey("shell\\open\\command")
+        .map_err(|error| error.to_string())?;
+    // current_exe() 带 `\\?\` 前缀，写进注册表前要剥掉，这里要的是普通路径。
+    let command = format!("\"{}\" \"%1\"", strip_verbatim_prefix(exe.clone()).display());
+    for (key, name, value) in [
+        (&key, "", format!("URL:{scheme}")),
+        (&key, "URL Protocol", String::new()),
+        (&command_key, "", command),
+    ] {
+        if key.get_value::<String, _>(name).ok().as_deref() != Some(value.as_str()) {
+            key.set_value(name, &value).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Windows 用协议激活通知，横幅和通知中心留存的消息走同一路径。
+#[cfg(target_os = "windows")]
+fn show_completion_alert(
+    app: &AppHandle,
+    body: &str,
+    conversation_id: String,
+) -> Result<(), String> {
+    use windows::{
+        core::HSTRING,
+        Data::Xml::Dom::XmlDocument,
+        UI::Notifications::{ToastNotification, ToastNotificationManager},
+    };
+    let exe = tauri::utils::platform::current_exe().map_err(|error| error.to_string())?;
+    let identifier = app.config().identifier.clone();
+    let registered = exe.parent().is_some_and(completion_alert_policy::has_registered_app_id);
+    let app_id = if registered {
+        identifier.as_str()
+    } else {
+        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
+    };
+    // 对话 ID 不合规时通知照发，只是点了不跳转：完成提醒比跳转更重要。
+    let launch = registered
+        .then(|| completion_alert_policy::conversation_url(&identifier, &conversation_id))
+        .flatten();
+    let xml = completion_alert_policy::toast_xml(body, launch.as_deref());
+    let document = XmlDocument::new().map_err(|error| error.to_string())?;
+    document.LoadXml(&HSTRING::from(xml)).map_err(|error| error.to_string())?;
+    let toast = ToastNotification::CreateToastNotification(&document)
+        .map_err(|error| error.to_string())?;
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app_id))
+        .map_err(|error| error.to_string())?;
+    notifier.Show(&toast).map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_completion_alert(
+    app: &AppHandle,
+    body: &str,
+    _conversation_id: String,
+) -> Result<(), String> {
+    let sound = if cfg!(target_os = "macos") {
+        "Ping"
+    } else {
+        "message-new-instant"
+    };
+    app.notification()
+        .builder()
+        .title("Fellow 已完成")
+        .body(body)
+        .sound(sound)
+        .show()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn notify_ai_completion(
+    app: AppHandle,
+    conversation_id: String,
+    user_message_id: String,
+    title: String,
+) -> Result<bool, String> {
+    if conversation_id.trim().is_empty() || user_message_id.trim().is_empty() {
+        return Err("Missing completion identity".into());
+    }
+    let title: String = title.chars().filter(|c| !c.is_control()).take(60).collect();
+    let body = if title.trim().is_empty() {
+        "本轮回复已完成，返回 inkfellow 查看。".to_string()
+    } else {
+        format!("「{}」的本轮回复已完成。", title.trim())
+    };
+    // Query the native window at dispatch time: iframe focus and the selected chat
+    // do not tell us whether the desktop application is in the foreground.
+    let activity = app.get_webview_window("main").and_then(|window| {
+        Some(completion_alert_policy::WindowActivity {
+            visible: window.is_visible().ok()?,
+            minimized: window.is_minimized().ok()?,
+            focused: window.is_focused().ok()?,
+        })
+    });
+    if !completion_alert_policy::should_notify(activity) {
+        return Ok(false);
+    }
+    show_completion_alert(&app, &body, conversation_id).map(|()| true)
+}
+
 #[tauri::command]
 async fn get_desktop_state(app: AppHandle) -> Result<DesktopState, String> {
     let vault = ensure_vault_path(&app)?;
@@ -1700,6 +1835,16 @@ fn take_pending_markdown_files(app: AppHandle) -> Vec<String> {
 }
 
 #[tauri::command]
+fn take_pending_completion_conversation(app: AppHandle) -> Option<String> {
+    let state = app.state::<AppState>();
+    let pending = state.pending_completion_conversation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    pending
+}
+
+#[tauri::command]
 async fn agent_status(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<AppState>();
     Ok(vault_services_ready(&app) && agent_ready(state.claude_port))
@@ -1718,6 +1863,7 @@ async fn select_and_set_vault(app: AppHandle) -> Result<DesktopState, String> {
     save_vault_path(&app, &path)?;
     set_transient_vault_path(&app, None);
     allow_vault_assets(&app, &path)?;
+    video_workbench::allow_cache(&app);
     ensure_git_repo(&path);
     let generation = begin_vault_services_restart(&app);
     if let Err(err) = start_vault_watcher(&app) {
@@ -1740,6 +1886,7 @@ async fn set_vault_path(app: AppHandle, path: String) -> Result<DesktopState, St
     save_vault_path(&app, &path_buf)?;
     set_transient_vault_path(&app, None);
     allow_vault_assets(&app, &path_buf)?;
+    video_workbench::allow_cache(&app);
     ensure_git_repo(&path_buf);
     let generation = begin_vault_services_restart(&app);
     if let Err(err) = start_vault_watcher(&app) {
@@ -1772,6 +1919,7 @@ async fn open_markdown_file(app: AppHandle, path: String) -> Result<OpenMarkdown
         .map_err(|_| "Markdown file is outside the selected folder.".to_string())?;
 
     allow_vault_assets(&app, &root)?;
+    video_workbench::allow_cache(&app);
     set_transient_vault_path(&app, transient.then_some(root.clone()));
 
     let root_changed = previous_root.as_ref() != Some(&root);
@@ -3171,21 +3319,41 @@ pub fn run() {
     let claude_port = get_free_port().unwrap_or(8089);
     let agent_token = uuid::Uuid::new_v4().to_string();
     let startup_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let context = tauri::generate_context!();
+    let startup_completion_conversation = completion_alert_policy::conversation_id_from_args(
+        &context.config().identifier,
+        std::env::args().skip(1),
+    );
     let startup_markdown_files = markdown_files_from_args(std::env::args_os(), &startup_cwd);
     let defer_initial_vault_services = !startup_markdown_files.is_empty();
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let has_protocol_arg = args.iter().any(|arg| arg.contains("://"));
+            let completion = completion_alert_policy::conversation_id_from_args(
+                &app.config().identifier,
+                args.iter().cloned(),
+            );
             let markdown_files =
                 markdown_files_from_args(args.into_iter().map(OsString::from), Path::new(&cwd));
+            let has_markdown_files = !markdown_files.is_empty();
             if !markdown_files.is_empty() {
                 enqueue_pending_markdown_files(app, markdown_files);
                 let _ = app.emit("open-markdown-files-pending", ());
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+            if has_protocol_arg && completion.is_none() && !has_markdown_files {
+                return;
+            }
+            focus_main_window(app);
+            if let Some(conversation_id) = completion {
+                // 页面尚未监听事件时也保留最后一次点击，启动完成后再取走。
+                if let Some(state) = app.try_state::<AppState>() {
+                    *state.pending_completion_conversation
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(conversation_id.clone());
+                }
+                let _ = app.emit("completion-alert-activated", serde_json::json!({ "conversationId": conversation_id }));
             }
         }))
         .plugin(
@@ -3202,13 +3370,16 @@ pub fn run() {
             vault_watcher: Mutex::new(None),
             transient_vault_path: Mutex::new(None),
             pending_markdown_files: Mutex::new(startup_markdown_files),
+            pending_completion_conversation: Mutex::new(startup_completion_conversation),
             initial_vault_services_deferred: AtomicBool::new(defer_initial_vault_services),
             vault_services_generation: AtomicU64::new(0),
             vault_services_ready_generation: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
+            notify_ai_completion,
             get_desktop_state,
             take_pending_markdown_files,
+            take_pending_completion_conversation,
             agent_status,
             select_and_set_vault,
             set_vault_path,
@@ -3235,10 +3406,33 @@ pub fn run() {
             git_diff,
             git_discard,
             sync_request_pull,
-            sync_commit_and_push
+            sync_commit_and_push,
+            video_workbench::video_env,
+            video_workbench::video_list_projects,
+            video_workbench::video_read_project,
+            video_workbench::video_read_plan,
+            video_workbench::video_write_edits,
+            video_workbench::video_list_sources,
+            video_workbench::video_pick_source,
+            video_workbench::video_start_job,
+            video_workbench::video_cancel_job,
+            video_workbench::video_cache_dir
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            if handle
+                .state::<AppState>()
+                .pending_completion_conversation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some()
+            {
+                focus_main_window(&handle);
+            }
+            #[cfg(target_os = "windows")]
+            if let Err(error) = register_completion_protocol(&handle) {
+                eprintln!("[inkfellow] completion protocol registration failed: {error}");
+            }
             let defer_vault_services = handle
                 .state::<AppState>()
                 .initial_vault_services_deferred
@@ -3248,6 +3442,7 @@ pub fn run() {
                     if let Err(err) = allow_vault_assets(&handle, &vault) {
                         eprintln!("[inkfellow] HTML asset scope setup failed: {err}");
                     }
+                    video_workbench::allow_cache(&handle);
                     ensure_git_repo(&vault);
                 }
                 if let Err(err) = start_vault_watcher(&handle) {
@@ -3259,11 +3454,12 @@ pub fn run() {
             start_system_proxy_watcher(handle);
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::Exit) {
+            video_workbench::cancel_all_jobs();
             kill_processes(app_handle);
         }
     });
@@ -3442,6 +3638,7 @@ mod markdown_open_tests {
                 markdown.clone().into_os_string(),
                 text.into_os_string(),
                 OsString::from("--flag"),
+                OsString::from("com.inkfellow.vwtest://conversation/toast-m123_A"),
             ],
             &directory,
         );

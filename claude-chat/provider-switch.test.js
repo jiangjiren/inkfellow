@@ -8,6 +8,9 @@ const source = name => html.match(new RegExp(`(?:async )?function ${name}\\([^]*
 function fixture() {
   const c = vm.createContext({
     currentConvId: "a", currentSessionId: "old", currentSessionProvider: "claude",
+    conversationDeliveryStates: new Map(), convViewCache: new Map(), _historyCache: null,
+    deletedConversationIds: new Set(),
+    subtaskView: null,
     resetLandingConvId: null, resetRequested: false, pendingRequestDraft: null,
     activeRequestId: null, requestRetryTimer: null, errorCompletionTimer: null,
     assistantTxt: "", assistantBlocks: [], assistantRawMessages: [], assistantEvents: [],
@@ -19,11 +22,11 @@ function fixture() {
     setGenerating() {}, removeTyping() {}, renderSteeringTray() {},
     cacheCurrentConversationView() { c.calls.push("cache"); },
     saveCurrentConversation() { c.calls.push("save"); },
-    handleSteeringEvent() { return false; }, noteBackgroundEvent() {}, ingestOwnedTaskEvent() {},
+    handleSteeringEvent() { return false; }, handleBackgroundDeliveryEvent() {}, flushLocalSteering() {}, noteBackgroundEvent() {}, ingestOwnedTaskEvent() {},
     wsSend(msg) { c.calls.push(msg); }, genId() { return "fragment"; },
     cloneJson: value => JSON.parse(JSON.stringify(value)),
   });
-  vm.runInContext(["markResetLanding", "resetProviderSession", "handleEvent"].map(source).join("\n"), c);
+  vm.runInContext(["conversationDeliveryState", "markResetLanding", "resetProviderSession", "staleConversationTerminal", "handleEvent"].map(source).join("\n"), c);
   return c;
 }
 

@@ -35,6 +35,7 @@ test("发送消费草稿时清除旧快照，避免再次打开时重复恢复",
 function switchFixture() {
   const context = vm.createContext({
     currentConvId: "original", conversationSwitchVersion: 0,
+    deletedConversationIds: new Set(),
     currentSessionId: null, currentSessionProvider: null,
     convViewCache: new Map(), conversationDrafts: new Map(), convStaleIds: new Set(),
     sessionsRunning: new Set(), messageLog: [], followLatestMessage: true,
@@ -44,7 +45,9 @@ function switchFixture() {
     saveCurrentConversation() { context.saves.push(context.currentConvId); },
     cacheCurrentConversationView() {}, hideAskUserQuestion() {}, forgetConversationLocally() {},
     restoreComposerDraft(id) { context.draftsRestored.push(id); },
-    restoreConversationRuntime() {}, scrollBottom() {}, renderAssistantBlocks() {},
+    restoreConversationDeliveryState() {},
+    restoreConversationRuntime() {}, scrollBottom() {}, renderAssistantBlocks() {}, renderVideoOpenCard() {}, textFromAssistantBlocks() { return ""; },
+    restoreSubtaskThreads() {}, restoreSubtaskPending() {}, restoreSubtaskCards() { return new Set(); }, renderSubtaskHistoryMessage() {},
     addMessage(role, text) { context.messagesEl.innerHTML += text; return {}; },
     finishConversationSwitch(conv) { context.finishes.push(conv.id); },
     showInlineError(text) { context.errors.push(text); },

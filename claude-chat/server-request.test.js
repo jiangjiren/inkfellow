@@ -334,6 +334,12 @@ test("Claude steering applies at tool/idle safe points, survives reconnect, and 
                   : [{ type: "text", text: "partial before idle" }],
               },
             });
+            if (withTool) setTimeout(() => this.events.push({
+              type: "user", parent_tool_use_id: "child-agent",
+              message: { role: "user", content: [
+                { type: "tool_result", tool_use_id: "child-tool", content: "child finished" },
+              ] },
+            }), 300);
             setTimeout(() => {
               if (withTool) {
                 this.events.push({
@@ -507,6 +513,10 @@ test("Claude steering applies at tool/idle safe points, survives reconnect, and 
     );
     const attached = connection.events.find(event => event.type === "run_attached");
     assert.equal(attached?.userMessageId, first.userMessageId, "reconnect remains attached to the original foreground owner");
+
+    await waitForMessage(connection.events, event => event.type === "user" && event.parent_tool_use_id === "child-agent");
+    assert.equal(connection.events.some(event => event.type === "steering_applied" && event.userMessageId === steer.userMessageId), false,
+      "child-agent tool completion is not a safe point for steering the foreground conversation");
 
     const appliedTool = await waitForMessage(
       connection.events,

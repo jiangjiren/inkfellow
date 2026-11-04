@@ -15,7 +15,9 @@ import { WebSocket } from "ws";
       所以放错层是静默失效。其中 sandboxPolicy 放错等于 plan 档位不再只读，
       界面上还一切正常。这几个位置是 2026-09-22 拿真实 app-server 逐个验出来的：
         thread/start   cwd、approvalPolicy、model
-        turn/start     effort、sandboxPolicy */
+        turn/start     effort、sandboxPolicy
+      model 在 turn/start 也带一份（2026-10-10 按 codex 0.162 的协议定义补上）：
+      接着用同一条 thread 时不会再发 thread/start，对话中途换的模型只能从这里落下去。 */
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -146,14 +148,18 @@ test("codex 常驻：进程跨轮复用，参数各待在该待的那一层", { 
     assert.ok(texts.includes("常驻答复"), "助手回复没送到前端");
     assert.ok(!texts.includes("回放的用户消息"), "用户消息被回放了第二遍");
 
-    const second = await ask(2, { model: "gpt-5.6-luna", effort: "high", permissionMode: "plan" });
+    // 第二轮换了模型：进程和 thread 都接着用，新模型得靠 turn/start 带过去
+    const second = await ask(2, { model: "gpt-6-sol", effort: "high", permissionMode: "plan" });
     assert.deepEqual(second.filter(e => e.type === "error"), []);
+    const terra = await ask(3, { model: "gpt-6.1-terra", effort: "high", permissionMode: "plan" });
+    assert.deepEqual(terra.filter(e => e.type === "error"), []);
+    assert.ok(terra.some(e => e.type === "result" && e.subtype === "success"));
 
     const log = await readCalls(calls);
     const starts = log.filter(e => e.call === "start");
     assert.equal(starts.length, 1, `进程被起了 ${starts.length} 次——常驻没生效，每轮都在重开`);
     assert.equal(log.filter(e => e.call === "initialize").length, 1, "initialize 该只做一次");
-    assert.equal(log.filter(e => e.call === "runTurn").length, 2, "两轮都该落到同一个 runtime 上");
+    assert.equal(log.filter(e => e.call === "runTurn").length, 3, "三轮都该落到同一个 runtime 上");
 
     // —— 参数分层：放错层在 app-server 上是静默失效，这里必须钉死 ——
     const ensure = log.find(e => e.call === "ensureThread");
@@ -165,11 +171,15 @@ test("codex 常驻：进程跨轮复用，参数各待在该待的那一层", { 
     const turn = log.find(e => e.call === "runTurn");
     assert.equal(turn.params.effort, "high", "effort 该在 turn/start 这层");
     assert.deepEqual(turn.params.sandboxPolicy, { type: "readOnly" }, "plan 档位该是只读");
-    assert.ok(!("model" in turn.params), "model 不在 turn 层");
+    /* thread/start 的 model 只管新开的 thread；接着用同一条时 ensureThread 不发请求，
+       对话中途换的模型只能靠 turn/start 的 model（codex 0.162 的 TurnStartParams 有这个字段）。 */
+    const turns = log.filter(e => e.call === "runTurn");
+    assert.deepEqual(turns.map(t => t.params.model), ["gpt-5.6-luna", "gpt-6-sol", "gpt-6.1-terra"], "换模型要落到下一轮的 turn/start 上");
 
     // 第二轮续的是同一条 thread
     const ensures = log.filter(e => e.call === "ensureThread");
     assert.equal(ensures[1].threadId, "thread-persistent", "第二轮没接上第一轮的 thread");
+    assert.equal(ensures[2].threadId, "thread-persistent", "Terra should continue the same thread");
   } finally {
     ws?.terminate();
     if (child.exitCode === null) {

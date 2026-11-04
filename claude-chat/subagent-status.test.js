@@ -4,24 +4,34 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
 const html = await readFile(new URL("./public/index.html", import.meta.url), "utf8");
+const completionTrackerSource = await readFile(new URL("./public/turn-completion.js", import.meta.url), "utf8");
 const source = name => html.match(new RegExp(`function ${name}\\([^]*?^}`, "m"))[0];
 
 function harness() {
   let now = 0;
   let timerId = 0;
   const timers = new Map();
+  const intervals = new Map();
   const c = vm.createContext({
     currentConvId: "a", activeRequestId: "r1", assistantBlocks: [], assistantEvents: [],
+    sessionsRunning: new Set(), sessionsAwaiting: new Set(), sessionUnread: new Set(),
+    renderSessionBadges() {},
+    deletedConversationIds: new Set(),
     resetRequested: false,
     setTimeout(fn, delay = 0) { const id = ++timerId; timers.set(id, { fn, at: now + delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
+    setInterval(fn) { const id = ++timerId; intervals.set(id, fn); return id; },
+    clearInterval(id) { intervals.delete(id); },
     document: { getElementById: () => null },
     updateGenChip() {}, updateTypingStatus() {}, blockTypeLabel: value => value,
     handleSteeringEvent: () => false,
-    noteBackgroundEvent() {}, cloneJson: structuredClone,
+    isToolUseType: () => false, isToolResultType: () => false,
+    handleBackgroundDeliveryEvent() {},
+    noteBackgroundEvent() {}, cloneJson: structuredClone, renderVideoOpenCard() {},
   });
+  c.intervals = intervals;
   vm.runInContext(html.slice(html.indexOf("const TASK_EVENT_TYPES"), html.indexOf("// ── Event handling")), c);
-  vm.runInContext(source("handleEvent"), c);
+  vm.runInContext(source("staleConversationTerminal") + "\n" + source("handleEvent"), c);
   // Exercise the production reducer and state; omit only DOM painting/animation.
   vm.runInContext(`
     SquadCard.prototype.refresh = function() {};
@@ -62,6 +72,16 @@ test("completion from an earlier turn settles its card without entering the new 
   assert.equal(c.owning("u1").counts.live, 0);
   assert.equal(c.assistantBlocks.length, 0);
   assert.equal(c.assistantEvents.length, 0);
+});
+
+test("background task notification keeps full summary as subtask output", () => {
+  const c = harness();
+  c.event("task_started", { tool_use_id: "u1" });
+  const summary = "完整产出：" + "甲".repeat(240);
+  c.event("task_notification", { tool_use_id: "u1", status: "completed", summary });
+  const item = c.owning("u1").state.get("u1");
+  assert.equal(item.output, summary);
+  assert.ok(item.result.length <= 120);
 });
 
 function mountFixture(c, card) {
@@ -338,4 +358,233 @@ test("a real background task survives foreground turn cleanup", () => {
   assert.equal(c.liveBackgroundTasks(), 1);
   c.event("task_progress");
   assert.equal(c.liveBackgroundTasks(), 1);
+});
+
+class ActivityElement {
+  constructor() {
+    this.hidden = true;
+    this.children = [];
+    this.parts = new Map();
+    this.dataset = {};
+    this.attributes = new Map();
+    const classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+      toggle(name, force = !classes.has(name)) {
+        if (force) classes.add(name); else classes.delete(name);
+        return force;
+      },
+    };
+  }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name); }
+  appendChild(child) { this.children.push(child); }
+  set innerHTML(value) {
+    this.children = [];
+    this.parts.clear();
+    for (const [, name] of value.matchAll(/class="([\w-]+)"/g)) this.parts.set(`.${name}`, new ActivityElement());
+  }
+  querySelector(selector) {
+    return this.parts.get(selector) ?? this.querySelectorAll(selector)[0] ?? null;
+  }
+  querySelectorAll(selector) {
+    if (selector.startsWith('.bga-item[data-s="running"]')) {
+      return this.children.filter(child => child.dataset.s === "running" && child.dataset.start)
+        .concat([...this.parts.values()].flatMap(part => part.querySelectorAll(selector)));
+    }
+    return [];
+  }
+}
+
+function activityFixture() {
+  const c = harness();
+  const el = new ActivityElement();
+  for (const name of ["bga-head", "bga-text", "bga-list"]) el.parts.set(`.${name}`, new ActivityElement());
+  c.document = {
+    getElementById: id => id === "bg-activity" ? el : null,
+    createElement: () => new ActivityElement(),
+  };
+  c.bar = el;
+  c.openActivity = () => el.querySelector(".bga-head").onclick();
+  c.rows = () => el.querySelector(".bga-list").children;
+  return c;
+}
+
+test("the composer activity bar disappears as soon as its last task completes", () => {
+  const c = activityFixture();
+  c.event("task_started");
+  assert.equal(c.bar.hidden, false);
+  c.event("task_notification", { status: "completed" });
+  assert.equal(c.bar.hidden, true);
+  assert.equal(c.owning("t1").counts.done, 1, "the completed result stays in conversation history");
+  assert.equal(c.assistantBlocks.length, 1);
+});
+
+test("the active list uses task state before the delayed message card mounts", () => {
+  const c = activityFixture();
+  c.event("task_started", { description: "research" });
+  assert.equal(c.owning("t1").el, null);
+  c.openActivity();
+  assert.equal(c.rows().length, 1);
+  assert.equal(c.rows()[0].querySelector(".bga-ilabel").textContent, "research");
+  assert.equal(c.bar.querySelector(".bga-head").getAttribute("aria-expanded"), "true");
+  assert.equal(c.intervals.size, 1);
+});
+
+test("finished rows leave the composer list while remaining tasks keep running", () => {
+  const c = activityFixture();
+  c.event("task_started", { description: "first" });
+  c.event("task_started", { task_id: "t2", description: "second" });
+  c.openActivity();
+  c.event("task_notification", { status: "completed" });
+  assert.equal(c.bar.hidden, false);
+  assert.equal(c.rows().length, 1);
+  assert.equal(c.rows()[0].querySelector(".bga-ilabel").textContent, "second");
+  c.event("task_notification", { task_id: "t2", status: "failed" });
+  assert.equal(c.bar.hidden, true);
+  assert.equal(c.rows().length, 0);
+  assert.equal(c.intervals.size, 0);
+  assert.equal(c.bar.querySelector(".bga-head").getAttribute("aria-expanded"), "false");
+});
+
+test("switching conversations removes the old floating activity and expanded list", () => {
+  const c = activityFixture();
+  c.event("task_started", { description: "conversation A" });
+  c.openActivity();
+  c.currentConvId = "b";
+  c.updateBackgroundActivity();
+  assert.equal(c.bar.hidden, true);
+  assert.equal(c.rows().length, 0);
+  assert.equal(c.intervals.size, 0);
+  c.event("task_started", { task_id: "t2", description: "conversation B" });
+  assert.equal(c.bar.hidden, false);
+  assert.equal(c.bar.classList.contains("open"), false);
+  c.openActivity();
+  assert.equal(c.rows().length, 1);
+  assert.equal(c.rows()[0].querySelector(".bga-ilabel").textContent, "conversation B");
+  c.event("task_notification", { conversationId: "a", task_id: "t1", status: "completed" });
+  assert.equal(c.bar.hidden, false, "completion in A cannot hide B's task");
+  c.currentConvId = "a";
+  c.updateBackgroundActivity();
+  assert.equal(c.bar.hidden, true);
+});
+
+test("switching between running conversations starts with a fresh collapsed list", () => {
+  const c = activityFixture();
+  c.event("task_started", { description: "conversation A" });
+  c.openActivity();
+  c.currentConvId = "b";
+  c.event("task_started", { task_id: "t2", description: "conversation B" });
+  assert.equal(c.bar.classList.contains("open"), false);
+  assert.equal(c.rows().length, 0);
+  assert.equal(c.intervals.size, 0);
+  c.currentConvId = "a";
+  c.updateBackgroundActivity();
+  assert.equal(c.bar.hidden, false);
+  c.openActivity();
+  assert.equal(c.rows()[0].querySelector(".bga-ilabel").textContent, "conversation A");
+});
+
+test("normal turn completion settles orphaned foreground rows and preserves background work", () => {
+  const c = activityFixture();
+  c.finishGenerationAndContinue = () => {};
+  c.subagentIngest({ type: "assistant", message: { content: [
+    { type: "tool_use", id: "foreground", name: "Agent", input: { description: "foreground task" } },
+  ] } });
+  c.event("task_started", { tool_use_id: "background" });
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "r1" });
+  assert.equal(c.owning("foreground").state.get("foreground").status, "failed");
+  assert.equal(c.owning("background").state.get("background").status, "running");
+  assert.equal(c.liveBackgroundTasks(), 1);
+  c.event("task_notification", { status: "completed", tool_use_id: "background" });
+  assert.equal(c.bar.hidden, true);
+});
+
+test("normal turn cleanup leaves previous-turn tasks and another conversation alone", () => {
+  const c = harness();
+  c.finishGenerationAndContinue = () => {};
+  c.subagentIngest({ type: "assistant", message: { content: [
+    { type: "tool_use", id: "previous", name: "Agent", input: {} },
+  ] } });
+  c.resetSquads();
+  c.activeRequestId = "r2";
+  c.subagentIngest({ type: "assistant", message: { content: [
+    { type: "tool_use", id: "current", name: "Agent", input: {} },
+  ] } });
+  c.currentConvId = "b";
+  c.subagentIngest({ type: "assistant", message: { content: [
+    { type: "tool_use", id: "other", name: "Agent", input: {} },
+  ] } });
+  c.currentConvId = "a";
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "r2" });
+  assert.equal(c.owning("current").counts.live, 0);
+  assert.equal(c.owning("previous").counts.live, 1);
+  assert.equal(c.owning("other").counts.live, 1);
+});
+
+test("the final response saves settled foreground rows so history cannot revive them", () => {
+  const c = activityFixture();
+  Object.assign(c, {
+    assistantTxt: "answer", assistantEl: null, assistantRawMessages: [], stopRequested: false, messageLog: [],
+    genId: () => "saved-response", saveCurrentConversation() {},
+    resetAssistantState() { c.resetSquads(); c.assistantBlocks = []; c.assistantEvents = []; },
+  });
+  c.subagentIngest({ type: "assistant", message: { content: [
+    { type: "tool_use", id: "foreground", name: "Agent", input: { description: "foreground task" } },
+  ] } });
+  c.event("task_started", { tool_use_id: "background" });
+  c.handleEvent({ type: "result", conversationId: "a", userMessageId: "r1" });
+  const snapshot = c.messageLog[0].blocks.find(block => block.type === "squad").snapshot;
+  const state = new Map(snapshot.state);
+  assert.equal(state.get("foreground").status, "failed");
+  assert.equal(state.get("background").status, "running");
+  c.event("task_notification", { tool_use_id: "background", status: "completed" });
+  const savedBlock = c.messageLog[0].blocks.find(block => block.type === "squad");
+  const cached = structuredClone(savedBlock);
+  c.currentConvId = "b";
+  c.resetSquads();
+  c.currentConvId = "a";
+  const restored = c.restoreCard(cached.squadId, cached.snapshot);
+  assert.equal(restored.counts.live, 0, "a late background result updates the saved snapshot too");
+});
+
+test("the real event router notifies for owned completions but ignores stale and deleted requests", () => {
+  const c = harness();
+  const completions = [];
+  vm.runInContext(completionTrackerSource, c);
+  c.InkfellowCompletion = new c.InkfellowTurnCompletionTracker(info => completions.push({ ...info }));
+  c.finishGenerationAndContinue = c.clearAskUserQuestion = () => {};
+  c.conversationDeliveryStates = new Map([["b", { activeRequestId: "b-run" }]]);
+  for (const [conversationId, userMessageId] of [["a", "r1"], ["a", "old-run"], ["b", "b-run"], ["deleted", "deleted-run"]]) {
+    c.InkfellowCompletion.ingest({ type: "request_started", conversationId, userMessageId });
+  }
+  c.deletedConversationIds.add("deleted");
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "old-run" });
+  c.handleEvent({ type: "done", conversationId: "deleted", userMessageId: "deleted-run" });
+  assert.equal(completions.length, 0);
+  c.handleEvent({ type: "done", conversationId: "b", userMessageId: "b-run" });
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "r1" });
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "r1" });
+  assert.deepEqual(completions, [
+    { conversationId: "b", userMessageId: "b-run" },
+    { conversationId: "a", userMessageId: "r1" },
+  ]);
+});
+
+test("an offline stop request suppresses completion sound even if a done frame arrives first", () => {
+  const c = harness();
+  const completions = [];
+  vm.runInContext(completionTrackerSource, c);
+  c.InkfellowCompletion = new c.InkfellowTurnCompletionTracker(info => completions.push(info));
+  c.InkfellowCompletion.ingest({ type: "request_started", conversationId: "a", userMessageId: "r1" });
+  Object.assign(c, {
+    isGenerating: true, steeringQueue: [], renderSteeringTray() {}, syncComposerAction() {}, ws: null,
+    finishGenerationAndContinue() {},
+  });
+  vm.runInContext(source("sendStopRequest"), c);
+  assert.equal(c.sendStopRequest(), false);
+  c.handleEvent({ type: "done", conversationId: "a", userMessageId: "r1" });
+  assert.equal(completions.length, 0);
 });

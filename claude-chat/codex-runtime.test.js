@@ -44,6 +44,45 @@ async function readyRuntime(proc, { threadId = "t-1" } = {}) {
   return runtime;
 }
 
+test("child thread notifications cannot redirect the main turn, usage or output", async () => {
+  const proc = fakeServer();
+  const runtime = await readyRuntime(proc);
+  const seen = [];
+  const turn = runtime.runTurn({ input: [{ type: "text", text: "parent" }], onEvent: (method, params) => seen.push(params) });
+  proc.reply(proc.last().id, { turn: { id: "parent-turn" } });
+  await Promise.resolve();
+  proc.notify("thread/started", { thread: { id: "child-thread" } });
+  proc.notify("turn/started", { threadId: "child-thread", turn: { id: "child-turn" } });
+  proc.notify("item/completed", { threadId: "child-thread", turnId: "child-turn", item: { type: "agentMessage", text: "child" } });
+  proc.notify("thread/tokenUsage/updated", { threadId: "child-thread", tokenUsage: { total: { totalTokens: 999 } } });
+  proc.notify("turn/completed", { threadId: "child-thread", turn: { id: "child-turn", status: "completed" } });
+  assert.equal(runtime.threadId, "t-1");
+  assert.equal(runtime.turnId, "parent-turn");
+  assert.equal(runtime.busy, true);
+  assert.equal(seen.length, 0);
+  proc.notify("turn/completed", { threadId: "t-1", turn: { id: "parent-turn", status: "completed" } });
+  assert.equal((await turn).usage, null);
+});
+
+test("late notifications from a completed turn cannot redirect its successor", async () => {
+  const proc = fakeServer();
+  const runtime = await readyRuntime(proc);
+  const first = runtime.runTurn({ input: [] });
+  proc.reply(proc.last().id, { turn: { id: "old-turn" } });
+  await Promise.resolve();
+  proc.notify("turn/completed", { threadId: "t-1", turn: { id: "old-turn", status: "completed" } });
+  await first;
+  const next = runtime.runTurn({ input: [] });
+  proc.notify("turn/started", { threadId: "t-1", turn: { id: "old-turn" } });
+  proc.notify("turn/completed", { threadId: "t-1", turn: { id: "old-turn", status: "completed" } });
+  assert.equal(runtime.turnId, null);
+  assert.equal(runtime.busy, true);
+  proc.reply(proc.last().id, { turn: { id: "next-turn" } });
+  await Promise.resolve();
+  proc.notify("turn/completed", { threadId: "t-1", turn: { id: "next-turn", status: "completed" } });
+  assert.equal((await next).turn.id, "next-turn");
+});
+
 test("握手 → 建 thread → 跑一轮，事件原样交给调用方", async () => {
   const proc = fakeServer();
   const runtime = await readyRuntime(proc);
@@ -239,4 +278,175 @@ test("被切成两半的一行要拼回来再解析", async () => {
   proc.stdout.emit("data", line.slice(0, 15));
   proc.stdout.emit("data", `${line.slice(15)}\n`);
   await init;   // 拼不回来这里会超时
+});
+
+async function runningTurn(proc, options = {}) {
+  const runtime = await readyRuntime(proc);
+  const turn = runtime.runTurn({ input: [{ type: "text", text: "initial" }], ...options });
+  proc.reply(proc.last().id, { turn: { id: "turn-1" } });
+  await new Promise(resolve => setImmediate(resolve));
+  return { runtime, turn };
+}
+
+test("native steering pins the turn, carries images and only resolves after actual consumption", async () => {
+  const proc = fakeServer();
+  const order = [];
+  const { runtime, turn } = await runningTurn(proc, { onEvent: method => order.push(method) });
+  let received = false;
+  const steer = runtime.steerTurn({
+    input: [{ type: "localImage", path: "D:/image.png" }, { type: "text", text: "follow-up" }],
+    expectedTurnId: "turn-1", clientUserMessageId: "client-1", onApplied: () => order.push("applied"),
+  }).then(result => { received = true; return result; });
+  const request = proc.find("turn/steer");
+  assert.equal(request.params.threadId, "t-1");
+  assert.equal(request.params.expectedTurnId, "turn-1");
+  assert.equal(request.params.clientUserMessageId, "client-1");
+  assert.equal(request.params.input[0].type, "localImage");
+  proc.reply(request.id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(received, false, "acceptance is not a consumption receipt");
+  proc.notify("item/started", { threadId: "wrong-thread", turnId: "turn-1",
+    item: { type: "userMessage", clientId: "client-1" } });
+  proc.notify("item/started", { threadId: "t-1", turnId: "wrong-turn",
+    item: { type: "userMessage", clientId: "client-1" } });
+  assert.equal(order.includes("applied"), false);
+  proc.notify("item/started", { threadId: "t-1", turnId: "turn-1",
+    item: { type: "userMessage", clientId: "client-1" } });
+  proc.notify("item/completed", { item: { type: "agentMessage", text: "continued" } });
+  assert.equal((await steer).applied, true);
+  assert.ok(order.indexOf("applied") < order.lastIndexOf("item/completed"));
+  assert.equal(proc.sent.filter(item => item.method === "turn/start").length, 1);
+  assert.equal(proc.find("turn/interrupt"), undefined);
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+});
+
+test("consumption before the RPC response is confirmed once and does not duplicate input", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  let applied = 0;
+  const args = { input: [{ type: "text", text: "x" }], expectedTurnId: "turn-1", clientUserMessageId: "client-1", onApplied: () => applied++ };
+  const steer = runtime.steerTurn(args);
+  assert.equal(runtime.steerTurn(args), steer);
+  const request = proc.find("turn/steer");
+  proc.notify("item/completed", { item: { type: "userMessage", clientId: "client-1" } });
+  await steer;
+  proc.reply(request.id, { turnId: "turn-1" });
+  proc.notify("item/completed", { item: { type: "userMessage", clientId: "client-1" } });
+  assert.equal(applied, 1);
+  assert.equal(proc.sent.filter(item => item.method === "turn/steer").length, 1);
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+});
+
+test("missing consumption at turn completion is verified before allowing a safe fallback", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  const steer = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1" });
+  const outcome = steer.catch(error => error);
+  proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  assert.equal(runtime.busy, true, "pending delivery confirmation keeps the writer occupied");
+  proc.reply(proc.find("thread/read").id, { thread: { turns: [{ id: "turn-1", items: [] }] } });
+  assert.equal((await outcome).codexSteerRejected, true);
+  assert.equal(runtime.busy, false);
+});
+
+test("a lost consumption event is recovered from native history without resending", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  let applied = 0;
+  const steer = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1", onApplied: () => applied++ });
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.reply(proc.find("thread/read").id, { thread: { turns: [
+    { id: "turn-1", items: [{ type: "userMessage", clientId: "client-1" }] },
+  ] } });
+  await steer;
+  assert.equal(applied, 1);
+  assert.equal(proc.sent.filter(item => item.method === "turn/steer").length, 1);
+});
+
+test("unknown delivery after a process exit is marked uncertain and must not auto-replay", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  const stopped = turn.catch(error => error);
+  const steer = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1" }).catch(error => error);
+  proc.die(1);
+  assert.equal((await steer).codexSteerUncertain, true);
+  await stopped;
+  assert.equal(runtime.busy, false);
+});
+
+test("turn mismatches and already-aborted turns cannot receive native steering", async () => {
+  const proc = fakeServer();
+  const ac = new AbortController();
+  const { runtime, turn } = await runningTurn(proc, { signal: ac.signal });
+  const stopped = turn.catch(error => error);
+  const wrong = await runtime.steerTurn({ input: [], expectedTurnId: "other", clientUserMessageId: "client-1" }).catch(error => error);
+  assert.equal(wrong.codexSteerRejected, true);
+  ac.abort();
+  const aborted = await runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-2" }).catch(error => error);
+  assert.equal(aborted.name, "AbortError");
+  assert.equal(proc.find("turn/steer"), undefined);
+  proc.reply(proc.find("turn/interrupt").id, {});
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await stopped;
+});
+
+test("a late start acknowledgement cannot revive a finished turn ID", async () => {
+  const proc = fakeServer();
+  const runtime = await readyRuntime(proc);
+  const turn = runtime.runTurn({ input: [] });
+  const request = proc.find("turn/start");
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  proc.reply(request.id, { turn: { id: "turn-1" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.turnId, null);
+});
+
+test("cancelling before the start acknowledgement waits for a valid turn ID", async () => {
+  const proc = fakeServer(), runtime = await readyRuntime(proc), ac = new AbortController();
+  const turn = runtime.runTurn({ input: [], signal: ac.signal }).catch(error => error);
+  const start = proc.find("turn/start");
+  ac.abort();
+  assert.equal(proc.find("turn/interrupt"), undefined);
+  proc.reply(start.id, { turn: { id: "started-late" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(proc.find("turn/interrupt").params.turnId, "started-late");
+  proc.reply(proc.find("turn/interrupt").id, {});
+  proc.notify("turn/completed", { turn: { id: "started-late" } });
+  assert.equal((await turn).name, "AbortError");
+});
+
+test("a late start error from a finished turn cannot reject a subsequent turn", async () => {
+  const proc = fakeServer(), runtime = await readyRuntime(proc);
+  const first = runtime.runTurn({ input: [] });
+  const start = proc.last();
+  proc.notify("turn/completed", { turn: { id: "old-turn" } }); await first;
+  const second = runtime.runTurn({ input: [] }).catch(error => error);
+  const next = proc.last();
+  proc.replyError(start.id, "late old error");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.busy, true);
+  proc.reply(next.id, { turn: { id: "new-turn" } });
+  proc.notify("turn/completed", { turn: { id: "new-turn" } });
+  assert.equal((await second).turn.id, "new-turn");
+});
+
+test("late process exit and output from a replaced process cannot affect the new runtime", () => {
+  const old = fakeServer(), runtime = startRuntime(old), next = fakeServer();
+  old.exitCode = 0;
+  runtime.start({ spawn: () => next, signature: "new" });
+  old.notify("thread/started", { thread: { id: "old-thread" } });
+  old.emit("close", 0);
+  assert.equal(runtime.proc, next);
+  assert.equal(runtime.threadId, null);
+  assert.equal(runtime.started, true);
+  next.die(0);
 });

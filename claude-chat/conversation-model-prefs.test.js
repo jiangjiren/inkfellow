@@ -14,6 +14,7 @@ function harness({ profiles = [{ id: "p_codex", provider: "codex" }], history = 
   const store = new Map();
   const c = vm.createContext({
     currentConvId: "conv-0001",
+    deletedConversationIds: new Set(),
     selectedModel: "gpt-5.4", selectedEffort: "high",
     currentSessionId: "thread-abc", currentSessionProvider: "codex",
     messageLog: [{ role: "user", text: "项目叫青松" }],
@@ -104,4 +105,70 @@ test("服务端还没有这条对话时不补写，免得凭空建一条空对�
   const fresh = harness();
   fresh.rememberConvModelPrefs();
   assert.deepEqual(fresh.puts, []);
+});
+
+function modelPickerHarness(profiles) {
+  const c = harness({ profiles });
+  Object.assign(c, {
+    modelDropdown: { querySelector: () => ({ innerHTML: "" }) },
+    modelLabel: { textContent: "" },
+    escapeHtml: String, escapeAttr: String,
+    updateEffortDisplay() {},
+  });
+  vm.runInContext(html.match(/const CLAUDE_MODELS = \[[^]*?\n\];/)[0], c);
+  vm.runInContext(html.match(/const MODEL_MIGRATIONS = \{[^]*?\n\};/)[0], c);
+  vm.runInContext(html.match(/let CODEX_MODELS = \[[^]*?\n\];/)[0], c);
+  c.loadCodexModelCatalog = () => {};
+  vm.runInContext(source("modelOptionsForProfile") + "\n" + source("renderModelOptions"), c);
+  return c;
+}
+
+test("Terra selection survives model menu rendering and conversation persistence", async () => {
+  const c = modelPickerHarness([{ id: "p_codex", provider: "codex", sonnetModel: "gpt-6-sol" }]);
+  c.localStorage.setItem("model:p_codex", "gpt-6.1-terra");
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "gpt-6.1-terra");
+  assert.equal(c.modelLabel.textContent, "GPT-6.1 Terra");
+  c.adoptServerConvPrefs({ id: "conv-0001", model: "gpt-6.1-terra", effort: "high", profileId: "p_codex" });
+  c.localStorage.setItem("model:p_codex", "gpt-6-sol");
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "gpt-6.1-terra");
+  assert.equal(c.selectedEffort, "high");
+  await c.saveCurrentConversation();
+  assert.equal(c.puts.at(-1).body.model, "gpt-6.1-terra");
+  assert.equal(c.puts.at(-1).body.profileId, "p_codex");
+  assert.match(c.localStorage.getItem("convModelPrefs-v1"), /gpt-6\.1-terra/);
+});
+
+test("旧 Claude 对话升级 Sonnet 5.5，保留账号和推理强度并持久化", () => {
+  const c = modelPickerHarness([{ id: "p_claude", provider: "claude" }]);
+  c.selectedEffort = "xhigh";
+  c.convModelPrefs.set("conv-0001", { model: "claude-sonnet-5", effort: "xhigh", profileId: "p_claude" });
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "claude-sonnet-5-5");
+  assert.equal(c.modelLabel.textContent, "Sonnet 5.5");
+  assert.equal(c.selectedEffort, "xhigh");
+  const stored = JSON.parse(c.localStorage.getItem("convModelPrefs-v1"))[0][1];
+  assert.deepEqual(stored, { model: "claude-sonnet-5-5", effort: "xhigh", profileId: "p_claude" });
+  assert.equal(c.localStorage.getItem("model:claude"), "claude-sonnet-5-5");
+});
+
+test("旧 Claude 全局模型选择也升级，已有 Opus 选择保持不变", () => {
+  const c = modelPickerHarness([{ id: "p_claude", provider: "claude" }]);
+  c.localStorage.setItem("model:claude", "claude-sonnet-5");
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "claude-sonnet-5-5");
+  assert.equal(c.localStorage.getItem("model:claude"), "claude-sonnet-5-5");
+  c.localStorage.setItem("model:claude", "claude-opus-5-5");
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "claude-opus-5-5");
+});
+
+test("Claude 会员迁移不修改 API 账号的同名模型配置", () => {
+  const c = modelPickerHarness([{ id: "p_api", provider: "custom", sonnetModel: "claude-sonnet-5" }]);
+  c.convModelPrefs.set("conv-0001", { model: "claude-sonnet-5", effort: "high", profileId: "p_api" });
+  c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "claude-sonnet-5");
+  assert.equal(c.convModelPrefs.get("conv-0001").model, "claude-sonnet-5");
+  assert.equal(c.localStorage.getItem("model:claude"), null);
 });

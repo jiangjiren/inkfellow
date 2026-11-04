@@ -206,6 +206,33 @@ const CODEX_MODELS_CACHE = {
   ],
 };
 
+test("codex catalog retains Terra and Luna when five current-generation models are listed", () => {
+  codex._resetCatalog();
+  try {
+    const models = [
+      ["gpt-6.1-sol", "GPT-6.1-Sol"],
+      ["gpt-6-astra", "GPT-6-Astra"],
+      ["gpt-6.1-terra", "GPT-6.1 Terra"],
+      ["gpt-6-sol", "GPT-6-Sol"],
+      ["gpt-6-luna", "GPT-6-Luna"],
+    ];
+    codex.setCatalog(codex.parseModelsCache({ models: [
+      ...models.map(([slug, display_name], priority) => ({ slug, display_name, priority, visibility: "list" })),
+      { slug: "gpt-5.6-terra", priority: 8, visibility: "list" },
+      { slug: "gpt-reserve", priority: 4, visibility: "hide" },
+    ] }));
+    const menu = codex.menuModels();
+    assert.deepEqual(menu.map(item => item.model), models.map(([slug]) => slug));
+    assert.equal(menu[2].label, "GPT-6.1 Terra");
+    assert.equal(menu[2].desc, "视觉理解与写作");
+    assert.deepEqual(codex.defaultModels(), {
+      opusModel: "gpt-6.1-sol", sonnetModel: "gpt-6-astra", haikuModel: "gpt-6-luna",
+    });
+  } finally {
+    codex._resetCatalog();
+  }
+});
+
 test("codex 目录: 解析缓存文件，hide 和已弃用的不上菜单", () => {
   const catalog = codex.parseModelsCache(CODEX_MODELS_CACHE);
   // 全目录一个不落——对话里还选着 gpt-5.4-mini 时要认得出它
@@ -263,7 +290,10 @@ test("codex 目录: 文件读不到时用兜底表，菜单不会空", () => {
   assert.equal(codex.refreshCatalog(join(tmpdir(), "inkfellow-no-such-models-cache.json")), false);
   assert.equal(codex.hasLiveCatalog(), false);
   const menu = codex.menuModels();
-  assert.ok(menu.length >= 3);
+  assert.ok(menu.length >= 4);
+  assert.ok(menu.some(item => item.model === "gpt-6.1-terra"));
+  assert.ok(codex.knownModels().includes("gpt-6.1-terra"));
+  assert.equal(codex.defaultModels().haikuModel, "gpt-6-luna");
   assert.ok(menu.every(item => item.model && item.name && item.desc));
   assert.equal(menu[0].model, "gpt-6-astra");
 });

@@ -40,6 +40,13 @@ export class ConversationSession {
     this.sessionId = null;              // Claude Agent SDK 的 session
     this.codexThreadId = null;          // Codex 的 thread（常驻 app-server 和 SDK 降级路径共用同一个 id）
     this.agyConversationId = null;      // Antigravity CLI 的 conversation
+    /* 上面三条各是哪个账号建的。同属 Claude SDK 的几个账号（会员、DeepSeek、
+       OpenRouter…）共用 sessionId 这一个槽，换了账号就不能拿别人的会话去续接。
+       进程重启后槽位由前端 setSession 按对话记录恢复，归属从历史消息的 via 标记
+       里认；老对话没有标记就是 null（不知道），照旧续接。 */
+    this.sessionProfileId = null;
+    this.codexThreadProfileId = null;
+    this.agyConversationProfileId = null;
 
     /* ── 历史写入游标 ─────────────────────────────────────────
        这一轮产生的内容该往哪条会话、哪条 assistant 消息上追加。
@@ -49,6 +56,9 @@ export class ConversationSession {
     this.activeAssistantHistoryMessage = null;
     this.activeHistoryTurnOpen = false;
     this.activeHistoryTurnConversationId = null;
+    /* 这一轮经由哪条路（厂商 + 账号 + 是否派发），写进历史的消息照它打 via 标记。
+       换模型接着干活时靠这个标记算出目标模型错过了哪几轮，见 conversation-context.js。 */
+    this.activeHistoryRoute = null;
 
     /* ── 前台请求 ─────────────────────────────────────────────
        正在响应的是哪条用户消息。一轮里 steering 会换 requestId。 */
@@ -67,6 +77,9 @@ export class ConversationSession {
        runtime 一关就作废，见 server.js 的 forgetClaudeRuntimeBinding()。 */
     this.claudeRuntimeAppliedPermissionMode = null;
     this.claudeRuntimeAppliedModel = null;
+    /* runtime 当前替哪条路在跑。后台任务把它唤醒、自己接着说的那几段没有新的用户
+       消息带路，记历史时归到这里；另一个账号要用这个对话时，也靠它认出这是别人的进程。 */
+    this.claudeRuntimeRoute = null;
     this.claudeTurnCompletionPending = false;
     this.claudeStopRequested = false;
     this.claudeRecoveryContext = null;
@@ -83,6 +96,7 @@ export class ConversationSession {
     this.abortCtrl = null;
     this.pendingAskUserQuestion = null;
     this.queuedClientPrompts = [];
+    this.codexSteeringPromise = null;
 
     /* ── 本轮的定时器与调度器 ─────────────────────────────────
        这些定时器必须跟着会话走：它们是 per-turn 的，多个对话同时跑时共用一份
@@ -151,6 +165,18 @@ export class ConversationSession {
 
   /** 丢弃这个会话前把子进程收掉，别留下孤儿。 */
   disposeRuntime() {
+    this.disposed = true;
+    this.claudeTurnEpoch += 1;
+    this.activeHistoryTurnOpen = false;
+    this.activeHistoryConversationId = null;
+    this.activeHistoryTurnConversationId = null;
+    this.activeForegroundRequestId = null;
+    this.activeForegroundDeliveryContext = null;
+    this.queuedClientPrompts.length = 0;
+    for (const key of ["queuedClientPromptDrainTimer", "turnIdleWatchdog", "claudeAutoWakeOwnerTimer"]) {
+      clearTimeout(this[key]);
+      this[key] = null;
+    }
     if (this._agyRuntime) {
       try { this._agyRuntime.kill(); } catch { /* 已经没了就算了 */ }
       this._agyRuntime = null;

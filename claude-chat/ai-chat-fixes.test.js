@@ -210,7 +210,12 @@ test("对话页自己发 CSP 头——Tauri 那份管不到跨源 iframe", { tim
     assert.match(csp, /script-src 'self' 'unsafe-inline'/);
     // 主窗口用 iframe 套着这一页，写死祖先就是赌它的源，赌错整页白屏
     assert.ok(!/frame-ancestors/.test(csp), "不该写 frame-ancestors");
-    await res.text();
+    const page = await res.text();
+    assert.match(page, /src="turn-completion\.js\?v=1"/);
+    const completionScript = await fetch(`http://127.0.0.1:${port}/turn-completion.js?token=${encodeURIComponent(token)}`);
+    assert.equal(completionScript.status, 200);
+    assert.match(completionScript.headers.get("content-type"), /javascript/);
+    assert.match(await completionScript.text(), /InkfellowTurnCompletionTracker/);
   } finally {
     child.kill();
     await delay(100);

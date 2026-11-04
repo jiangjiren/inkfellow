@@ -41,7 +41,23 @@ import { fetchMaybeViaProxy } from "./proxy-fetch.js";
 import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
 import { z } from "zod";
 import { handleSyncSummary } from "./sync-summary.js";
-import { withConversationContext } from "./conversation-context.js";
+import {
+  PRIMARY_CLAUDE_PROFILE_ID,
+  claudeAccountConfigDir,
+  hasLocalClaudeCredentials,
+  isExtraClaudeAccount,
+  launchClaudeLogin,
+  mainClaudeConfigDir,
+  parseClaudeAuthStatus,
+  prepareClaudeAccountDir,
+  removeClaudeAccountDir,
+} from "./claude-accounts.js";
+import {
+  compactToolInput,
+  historyRoute,
+  nativeSessionFamily,
+  withConversationContext,
+} from "./conversation-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -182,6 +198,8 @@ const WECHAT_OUTPUT_PROMPT = `【微信通道输出规则】
 // 服务端只接受客户端请求里的 profileId 参数，不再持久化「当前选哪个厂商」。
 const DATA_DIR = process.env.CLAUDE_CHAT_DATA_DIR || join(__dirname, "data");
 mkdirSync(DATA_DIR, { recursive: true });
+// 额外 Claude 会员账号的配置目录（各自的登录凭证在里面），见 claude-accounts.js
+const CLAUDE_ACCOUNTS_DIR = process.env.CLAUDE_CHAT_CLAUDE_ACCOUNTS_DIR || join(DATA_DIR, "claude-accounts");
 
 /* ── sidecar 日志 ───────────────────────────────────────────
    桌面端这个进程是被隐藏控制台起的（src-tauri 的 hide_command_window），stdio
@@ -359,8 +377,8 @@ function agyDefaultModels() {
 }
 
 const PROVIDER_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001" },
-  deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-5-5" },
+  deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-flash" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest" },
   // getter：同 antigravity，目录刷新后取到的就是新的
   get codex() { return { baseUrl: "", ...codexDefaultModels() }; },
@@ -405,13 +423,19 @@ try {
   }
 } catch { }
 
-function saveSession(id) {
+/* 三个槽的 save* 都带一个可选的 profileId：这条会话是哪个账号建的。
+   不传（setSession 按对话记录恢复时）就看 id 变没变——没变说明还是原来那条，
+   归属照旧；变了就不知道是谁的，记成 null，见 releaseForeignNativeSession。 */
+function saveSession(id, profileId) {
+  if (profileId !== undefined) session.sessionProfileId = profileId;
+  else if (id !== session.sessionId) session.sessionProfileId = null;
   session.sessionId = id;
   try { writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: session.sessionId }), "utf8"); } catch { }
 }
 
 function clearSession() {
   session.sessionId = null;
+  session.sessionProfileId = null;
   try { writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: null }), "utf8"); } catch { }
 }
 
@@ -424,13 +448,16 @@ try {
   }
 } catch { }
 
-function saveCodexThread(id) {
+function saveCodexThread(id, profileId) {
+  if (profileId !== undefined) session.codexThreadProfileId = profileId;
+  else if (id !== session.codexThreadId) session.codexThreadProfileId = null;
   session.codexThreadId = id;
   try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: id }), "utf8"); } catch { }
 }
 
 function clearCodexThread() {
   session.codexThreadId = null;
+  session.codexThreadProfileId = null;
   try { writeFileSync(CODEX_THREAD_FILE, JSON.stringify({ threadId: null }), "utf8"); } catch { }
 }
 
@@ -483,13 +510,16 @@ try {
   }
 } catch { }
 
-function saveAgyConversation(id) {
+function saveAgyConversation(id, profileId) {
+  if (profileId !== undefined) session.agyConversationProfileId = profileId;
+  else if (id !== session.agyConversationId) session.agyConversationProfileId = null;
   session.agyConversationId = id;
   try { writeFileSync(AGY_CONV_FILE, JSON.stringify({ conversationId: id }), "utf8"); } catch { }
 }
 
 function clearAgyConversation() {
   session.agyConversationId = null;
+  session.agyConversationProfileId = null;
   try { writeFileSync(AGY_CONV_FILE, JSON.stringify({ conversationId: null }), "utf8"); } catch { }
 }
 
@@ -874,6 +904,8 @@ function emitCodexAppServerEvent(method, params, send) {
  */
 async function runCodexPersistent({
   prompt,
+  // 要接的 thread 没接上、app-server 另起了一条时用它算出要发的那份：新 thread 什么都不记得
+  freshPrompt = () => prompt,
   images = [],
   cwd,
   model = null,
@@ -883,13 +915,14 @@ async function runCodexPersistent({
   signal = null,
   onEvent = null,
   onThread = null,
+  onBoundary = null,
 }) {
   const found = findCodexBinary();
   if (!found) throw new Error("没有找到 Codex CLI 的可执行文件，请确认 @openai/codex 的可选依赖装全了。");
 
   // codex 只认本地文件形式的图片，base64 得先落盘
   const tempImages = [];
-  const input = [];
+  const imageInputs = [];
   for (const img of images) {
     const ext = ({
       "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
@@ -898,9 +931,8 @@ async function runCodexPersistent({
     const tmpPath = join(DATA_DIR, `codex-img-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.${ext}`);
     writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
     tempImages.push(tmpPath);
-    input.push({ type: "localImage", path: tmpPath });
+    imageInputs.push({ type: "localImage", path: tmpPath });
   }
-  input.push({ type: "text", text: prompt });
 
   const sandboxPolicy = { type: CODEX_SANDBOX_POLICY[codexSandboxMode(permissionMode)] ?? "workspaceWrite" };
   let produced = false;
@@ -938,13 +970,29 @@ async function runCodexPersistent({
       params: { cwd, approvalPolicy: "never", ...(model ? { model } : {}) },
     });
     if (onThread && ensured.threadId && ensured.threadId !== threadId) onThread(ensured.threadId);
+    /* ensureThread 接不上旧 thread 时会吞掉错误另起一条（见 codex-runtime.js）。
+       prompt 是按「能续接」算的，只带了它错过的那段甚至什么都没带——发进一条
+       空白的新 thread，就等于让它从零开始还以为自己记得。 */
+    const text = threadId && !ensured.resumed ? freshPrompt() : prompt;
+    if (text !== prompt) console.log(`[codex] thread ${threadId} 没能续接，另起的新 thread 补上整段对话记录`);
+    const input = [...imageInputs, { type: "text", text }];
     const run = await runtime.runTurn({
       input,
-      params: { effort, sandboxPolicy },
+      /* model 在 thread/start 那层只管新开的 thread。接着用手上这条时 ensureThread
+         一个请求都不发，对话中途换的模型就落不下去——turn/start 也认 model
+         （TurnStartParams：Override the model for this turn and subsequent turns），
+         每轮带上，换模型才真的生效。 */
+      params: { effort, sandboxPolicy, ...(model ? { model } : {}) },
       signal,
       onEvent: (method, params) => {
         produced = true;
         if (onEvent) emitCodexAppServerEvent(method, params, onEvent);
+        if (onBoundary && (method === "turn/started" || (method === "item/completed"
+          && ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "functionCallOutput", "dynamicToolCall"].includes(params?.item?.type)))
+          && (!params.threadId || params.threadId === runtime.threadId)
+          && (!params.turnId || params.turnId === runtime.turnId)) {
+          onBoundary(method);
+        }
       },
     });
     return { ...run, threadId: ensured.threadId };
@@ -1149,15 +1197,22 @@ function runAgyOnce({
 // Locate the Claude Code session JSONL for a given session id. The file lives under
 // ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl; we glob across project dirs
 // rather than re-deriving the cwd encoding, so we stay robust to path-encoding quirks.
+// 额外 Claude 账号的 projects 通常链回主号那份；链接没建成、它自己记了一份的时候也得找得到。
 function findSessionFile(id) {
   if (!id) return null;
-  const base = join(homedir(), ".claude", "projects");
-  try {
-    for (const dir of readdirSync(base)) {
-      const p = join(base, dir, `${id}.jsonl`);
-      if (existsSync(p)) return p;
-    }
-  } catch { }
+  const bases = [join(mainClaudeConfigDir(), "projects")];
+  for (const profile of readProfiles().profiles) {
+    const dir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+    if (dir) bases.push(join(dir, "projects"));
+  }
+  for (const base of bases) {
+    try {
+      for (const dir of readdirSync(base)) {
+        const p = join(base, dir, `${id}.jsonl`);
+        if (existsSync(p)) return p;
+      }
+    } catch { }
+  }
   return null;
 }
 
@@ -1294,8 +1349,9 @@ function normalizeProfiles(raw) {
   const profiles = data.profiles.map(normalizeProfile).filter(p =>
     isSubscriptionProvider(p.provider) || p.apiKey
   );
-  if (!profiles.some(p => p.provider === "claude")) {
-    profiles.unshift({ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.claude });
+  // 主号（默认配置目录那个）始终在；额外加的 Claude 会员账号不能顶替它
+  if (!profiles.some(p => p.id === PRIMARY_CLAUDE_PROFILE_ID)) {
+    profiles.unshift({ id: PRIMARY_CLAUDE_PROFILE_ID, name: "Claude 会员", provider: "claude", apiKey: "", opusModel: "", sonnetModel: "", haikuModel: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.claude });
   }
   // 注入或同步 Codex 会员 profile（强制覆盖模型字段，防止旧数据残留）
   const existingCodex = profiles.find(p => p.provider === "codex");
@@ -1363,6 +1419,21 @@ function getActiveProfile(data = readProfiles()) {
   return data.profiles.find(p => p.id === data.activeProfileId) ?? data.profiles[0] ?? null;
 }
 
+/**
+ * Claude 会员账号靠配置目录区分：主号不动（默认目录，或用户自己设的 CLAUDE_CONFIG_DIR），
+ * 额外账号指到它自己的目录，起进程前先把技能、插件、设置这些跟主号对齐。
+ */
+function withClaudeAccountEnv(env, profile) {
+  const dir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+  if (!dir) return env;
+  const report = prepareClaudeAccountDir(dir);
+  if (report.errors.length) console.warn(`[claude-account] ${profile.id} 共用配置没有全部就位：${report.errors.join("; ")}`);
+  env.CLAUDE_CONFIG_DIR = dir;
+  // 长期 token 的优先级比 /login 的凭证高，挂着它的话这个号登了也白登
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  return env;
+}
+
 // overrideProfile：跨厂商派发时传入目标 profile，为它单独构造一套 env，
 // 不受 activeProfileId 影响（见 _buildDispatchMcpServer）。不传则沿用当前激活的。
 export function buildAgentEnv(profileData, effort, requestedModel, overrideProfile = null) {
@@ -1376,7 +1447,7 @@ export function buildAgentEnv(profileData, effort, requestedModel, overrideProfi
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
 
   const active = overrideProfile || getActiveProfile(profileData);
-  if (!active || active.provider === "claude") return env;
+  if (!active || active.provider === "claude") return withClaudeAccountEnv(env, active);
   if (!active.apiKey) return env;
   // anthropic provider uses the default Anthropic base URL — no baseUrl required
   if (!active.baseUrl && active.provider !== "anthropic") return env;
@@ -1467,7 +1538,53 @@ function normalizeCodexUsageWindows(rateLimit) {
   return { fiveHour, week };
 }
 
-async function getClaudeSubscriptionLimits() {
+// `claude auth status` 是查登录状态唯一靠谱的办法：凭证可能在系统钥匙串里而不是文件里。
+// 额外账号带着它自己的配置目录去问，问到的才是那个号。
+function queryClaudeAuthStatus(profile) {
+  const accountDir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+  if (accountDir && hasLocalClaudeCredentials(accountDir) === false) {
+    return Promise.resolve(parseClaudeAuthStatus(JSON.stringify({ loggedIn: false, authMethod: "none" })));
+  }
+  return new Promise((resolveStatus) => {
+    let stdout = "";
+    let stderr = "";
+    // Guard against double-resolve: both "error" and "close" fire when spawn fails.
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolveStatus(value);
+    };
+    let proc;
+    try {
+      proc = spawn("claude", ["auth", "status"], {
+        timeout: 6000,
+        windowsHide: true,
+        env: { ...buildAgentEnv({ activeProfileId: profile.id, profiles: [profile] }), NO_COLOR: "1" },
+      });
+    } catch {
+      settle({ authenticated: false, email: null, subscriptionType: null, detail: "claude CLI not found" });
+      return;
+    }
+    proc.stdout?.on("data", d => { stdout += d; });
+    proc.stderr?.on("data", d => { stderr += d; });
+    proc.on("error", () => settle({ authenticated: false, email: null, subscriptionType: null, detail: "claude CLI not found" }));
+    proc.on("close", () => settle(parseClaudeAuthStatus(stdout, stderr)));
+  });
+}
+
+async function getClaudeSubscriptionLimits(profile = { id: PRIMARY_CLAUDE_PROFILE_ID, provider: "claude" }) {
+  // 明摆着没登录的额外账号不必起一个 CLI 进程去问
+  const accountDir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+  if (accountDir && hasLocalClaudeCredentials(accountDir) === false) {
+    return {
+      provider: "claude",
+      status: "unauthenticated",
+      authenticated: false,
+      available: false,
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), USAGE_LIMIT_QUERY_TIMEOUT_MS);
   let usageQuery = null;
@@ -1478,7 +1595,7 @@ async function getClaudeSubscriptionLimits() {
       options: {
         cwd: DEFAULT_CWD,
         abortController: controller,
-        env: buildAgentEnv({ activeProfileId: "p_claude", profiles: [{ id: "p_claude", provider: "claude" }] }),
+        env: buildAgentEnv({ activeProfileId: profile.id, profiles: [profile] }),
       },
     });
     const usage = await usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
@@ -1930,6 +2047,9 @@ if (shardStore.isEmpty()) {
    差别在于超出的那些分片留在磁盘上不动——以前它们会被写回 history.json 时
    顺手抹掉，现在只是不进内存。要真正删除，得用户点删除。 */
 let historyStore = shardStore.load().slice(0, MAX_SERVER_HISTORY);
+const SUBTASK_SERVER_BOOT_ID = crypto.randomUUID();
+// Reject late saves from a window that still held a deleted conversation.
+const deletedHistoryConversationIds = new Set();
 let historyFlushTimer = null;
 let historyDirty = false;
 /* 这一轮被碰过的会话 id。所有改历史的路径都要先经过 ensureHistoryConversation
@@ -2201,19 +2321,27 @@ function beginServerConversationFromClient(msg) {
     ? msg.displayText.trim()
     : String(msg.prompt || "").trim();
   const userMessageId = normalizeHistoryId(msg.userMessageId || makeHistoryMessageId("user"));
+  // 主路径和插话都在调用前把这一轮的 deliveryContext 摆好了，路就从那儿取
+  const route = session.activeForegroundDeliveryContext?.route ?? null;
   session.activeHistoryConversationId = conversationId;
   session.activeAssistantHistoryMessage = null;
   session.activeHistoryTurnOpen = true;
   session.activeHistoryTurnConversationId = conversationId;
+  session.activeHistoryRoute = route;
 
   const conv = ensureHistoryConversation(conversationId, { userText: displayText });
-  if (!conv.messages.some(m => m.id === userMessageId)) {
+  const existing = conv.messages.find(m => m.id === userMessageId);
+  if (existing) {
+    // 同一条消息换了个模型重试：它现在是发给新的那家的
+    if (route) existing.via = route;
+  } else {
     conv.messages.push({
       id: userMessageId,
       role: "user",
       text: displayText,
       cost: null,
       createdAt: new Date().toISOString(),
+      ...(route ? { via: route } : {}),
     });
   }
   conv.date = new Date().toISOString();
@@ -2226,6 +2354,7 @@ function clearActiveHistoryConversation() {
   session.activeAssistantHistoryMessage = null;
   session.activeHistoryTurnOpen = false;
   session.activeHistoryTurnConversationId = null;
+  session.activeHistoryRoute = null;
   for (const timer of taskHistoryTargetTimers.values()) clearTimeout(timer);
   taskHistoryTargetTimers.clear();
   taskHistoryTargets.clear();
@@ -2251,6 +2380,7 @@ function ensureActiveAssistantHistoryMessage() {
     status: "running",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    ...(session.activeHistoryRoute ? { via: session.activeHistoryRoute } : {}),
   };
   conv.messages.push(msg);
   conv.date = new Date().toISOString();
@@ -2284,6 +2414,17 @@ function appendAssistantHistoryBlocks(blocks, rawEvent = null, { rawMessage = nu
   msg.updatedAt = new Date().toISOString();
   const conv = ensureHistoryConversation(session.activeHistoryConversationId);
   conv.date = msg.updatedAt;
+  persistHistoryDeferred();
+}
+
+/* 「>厂商」派出去的那一轮，对方每一步只以 dispatch_step 发给前端画步骤流，从不进
+   历史——主模型下一轮接手时就不知道对方改过哪些文件。精简后挂在这条助手消息上
+   （前端只渲染 blocks，看不到这个字段），交接上下文时拿来做「本轮操作」摘要。 */
+function noteDispatchStepsInHistory(steps) {
+  if (!steps?.length) return;
+  const message = ensureActiveAssistantHistoryMessage();
+  if (!message) return;
+  message.dispatchSteps = steps;
   persistHistoryDeferred();
 }
 
@@ -2520,7 +2661,7 @@ function saveWechatHistory() {
 // claude 会员返回 null —— OAuth token 不能直接调 API，需走 query()
 function buildAnthropicClientForWechat(profileData) {
   const active = getActiveProfile(profileData);
-  const DEFAULT_MODEL = "claude-sonnet-5";
+  const DEFAULT_MODEL = "claude-sonnet-5-5";
 
   // claude 会员：OAuth token 仅供网页端使用，直接调 API 会触发 429
   // 返回 null，调用方改走 query() 路径
@@ -3118,7 +3259,7 @@ function dispatchModelForProfile(profile) {
     return profile.opusModel || profile.sonnetModel || profile.haikuModel || agyDefaultModels().opusModel;
   }
   if (profile.provider === "claude") {
-    return profile.sonnetModel || profile.opusModel || "claude-sonnet-5";
+    return profile.sonnetModel || profile.opusModel || "claude-sonnet-5-5";
   }
   return profile.sonnetModel || profile.opusModel || profile.haikuModel || "";
 }
@@ -3275,10 +3416,20 @@ export function forgetDispatchSessionsForProfile(profileId) {
     if (key.endsWith(suffix)) {
       DISPATCH_SESSIONS.delete(key);
       removed++;
-      // 该对话的代际一并推进，挡住这次派发迟到的 onSession 回填
-      bumpDispatchGeneration(key.slice(0, key.length - suffix.length));
+      // 该对话的代际一并推进，挡住这次派发迟到的 onSession 回填。
+      // 取第一段而不是去掉后缀：子任务会话的 key 中间还夹着一段 subtask:<id>
+      bumpDispatchGeneration(key.split("|")[0]);
     }
   }
+  for (const conv of readHistory()) {
+    for (const [id, saved] of Object.entries(conv.subtaskSessions || {})) {
+      if (saved?.profileId !== profileId) continue;
+      delete conv.subtaskSessions[id];
+      dirtyConversationIds.add(conv.id);
+      bumpDispatchGeneration(conv.id);
+    }
+  }
+  if (dirtyConversationIds.size) persistHistoryImmediate();
   return removed;
 }
 
@@ -3288,8 +3439,94 @@ export function forgetDispatchSessions(conversationId) {
   for (const key of [...DISPATCH_SESSIONS.keys()]) {
     if (key.startsWith(prefix)) DISPATCH_SESSIONS.delete(key);
   }
+  const conv = readHistory().find(item => item.id === conversationId);
+  if (conv?.subtaskSessions) {
+    delete conv.subtaskSessions;
+    dirtyConversationIds.add(conversationId);
+    persistHistoryImmediate();
+  }
   // 还在跑的那些派发之后会回调 onSession，代际一变它们就写不回来了
   bumpDispatchGeneration(String(conversationId).trim());
+}
+
+// ── 子任务追问 ─────────────────────────────────────────────────────────────
+// 用户在子任务页里接着跟某个子 agent 说话。续接的是这个子任务自己的会话，不是
+// 「对话 + 厂商」那一条：同一个对话里派给 Codex 的两件事各说各的，互不串台。
+// 会话 key 夹在 DISPATCH_SESSIONS 里（对话|subtask:<id>|账号），对话重置、删除、
+// 账号凭据变更时跟着已有的清理逻辑一起失效。
+function subtaskSessionScope(conversationId, subtaskId) {
+  return `${String(conversationId || "").trim()}|subtask:${String(subtaskId || "").trim()}`;
+}
+
+export function rememberSubtaskSession(conversationId, subtaskId, profileId, sessionId) {
+  if (!conversationId || !subtaskId) return;
+  rememberDispatchSession(subtaskSessionScope(conversationId, subtaskId), profileId, sessionId);
+  const conv = readHistory().find(item => item.id === conversationId);
+  const profile = readProfiles().profiles.find(item => item.id === profileId);
+  if (!conv || !profile || deletedHistoryConversationIds.has(conversationId)) return;
+  conv.subtaskSessions ||= {};
+  conv.subtaskSessions[subtaskId] = { profileId, sessionId, fingerprint: subtaskProfileFingerprint(profile) };
+  dirtyConversationIds.add(conversationId);
+  persistHistoryImmediate();
+}
+
+export function recallSubtaskSession(conversationId, subtaskId, profileId) {
+  if (!conversationId || !subtaskId) return null;
+  const inMemory = recallDispatchSession(subtaskSessionScope(conversationId, subtaskId), profileId);
+  if (inMemory) return inMemory;
+  const saved = readHistory().find(item => item.id === conversationId)?.subtaskSessions?.[subtaskId];
+  const profile = readProfiles().profiles.find(item => item.id === profileId);
+  if (!saved || !profile || saved.profileId !== profileId || saved.fingerprint !== subtaskProfileFingerprint(profile)) return null;
+  return typeof saved.sessionId === "string" ? saved.sessionId : null;
+}
+
+function subtaskProfileFingerprint(profile) {
+  return crypto.createHash("sha256").update(JSON.stringify([
+    profile.id, profile.provider, profile.apiKey || "", profile.baseUrl || "",
+    profile.opusModel || "", profile.sonnetModel || "", profile.haikuModel || "",
+  ])).digest("hex");
+}
+
+function forgetPersistedSubtaskSession(conversationId, subtaskId, expectedSessionId = null) {
+  const conv = readHistory().find(item => item.id === conversationId);
+  const saved = conv?.subtaskSessions?.[subtaskId];
+  if (!saved || (expectedSessionId && saved.sessionId !== expectedSessionId)) return;
+  delete conv.subtaskSessions[subtaskId];
+  dirtyConversationIds.add(conversationId);
+  persistHistoryImmediate();
+}
+
+const SUBTASK_BRIEF_MAX_CHARS = 4000;
+const SUBTASK_OUTPUT_MAX_CHARS = 8000;
+const SUBTASK_THREAD_MAX_ENTRIES = 12;
+const SUBTASK_THREAD_ENTRY_MAX_CHARS = 2000;
+
+function clipSubtaskText(value, max) {
+  const text = String(value ?? "").trim();
+  return text.length > max ? `${text.slice(0, max)}…（后面省略 ${text.length - max} 字）` : text;
+}
+
+/**
+ * 追问时对方没有能续接的会话（Claude 子 agent 跑完即结束、进程重启过、换了账号），
+ * 就把这个子任务的来龙去脉写进 prompt，相当于带着它的产出重新派一个。
+ * 能续接时原样发——对方记得，再塞一遍只会让它以为要重做。
+ */
+export function subtaskFollowupPrompt({ text, brief = "", output = "", thread = [], resumed = false } = {}) {
+  const message = String(text ?? "").trim();
+  if (resumed) return message;
+  const parts = [
+    "你在接着处理一个之前做过的子任务。下面是它的原始任务、当时的产出和之后的追问，仅供延续上下文；"
+      + "工作目录里的文件可能已经被改过，需要时请重新读取。不要重做原始任务，请回应末尾的最新消息。",
+  ];
+  if (String(brief).trim()) parts.push(`<original_task>\n${clipSubtaskText(brief, SUBTASK_BRIEF_MAX_CHARS)}\n</original_task>`);
+  if (String(output).trim()) parts.push(`<previous_output>\n${clipSubtaskText(output, SUBTASK_OUTPUT_MAX_CHARS)}\n</previous_output>`);
+  const entries = (Array.isArray(thread) ? thread : [])
+    .filter(entry => (entry?.role === "user" || entry?.role === "assistant") && String(entry.text ?? "").trim())
+    .slice(-SUBTASK_THREAD_MAX_ENTRIES)
+    .map(entry => `${entry.role === "user" ? "用户" : "你"}：${clipSubtaskText(entry.text, SUBTASK_THREAD_ENTRY_MAX_CHARS)}`);
+  if (entries.length) parts.push(`<follow_ups>\n${entries.join("\n\n")}\n</follow_ups>`);
+  parts.push(`最新消息：\n${message}`);
+  return parts.join("\n\n");
 }
 
 /**
@@ -3305,16 +3542,33 @@ function disposeConversationState(conversationId) {
   // 顺序要紧：先掐派出去的子进程和这一轮，再丢状态。反过来的话 drop 之后
   // 就找不到那个 session，abortCtrl 也就没人去 abort 了。
   ACTIVE_DISPATCH_ABORTS.abortConversation(id);
+  abortSubtaskFollowups(id);
   forgetDispatchSessions(id);
   const target = sessions.peek(id);
+  if (target) {
+    agentContext.run({ conversationId: id }, () => {
+      target.claudeTurnEpoch += 1;
+      target.activeHistoryTurnOpen = false;
+      target.activeHistoryConversationId = null;
+      target.activeHistoryTurnConversationId = null;
+      target.activeAssistantHistoryMessage = null;
+      clearAllSteering("conversation_deleted", id);
+      clearPendingAskUserQuestion("conversation deleted");
+    });
+  }
   if (target?.abortCtrl) {
     const activeAbort = target.abortCtrl;
     target.abortCtrl = null;
     try { activeAbort.abort(); } catch { /* 已经停了就算了 */ }
   }
   sessions.drop(id);
+  clearConversationEventState(id);
   deliverSessionsSnapshot();
 }
+
+// 同一原生会话可能同时被主对话派发和子任务页引用，按厂商账号 + 会话 ID
+// 做写入保护，不能只靠各自的 UI 队列。
+const DISPATCH_SESSION_WRITERS = new Set();
 
 async function executeProviderDispatch({
   provider,
@@ -3328,6 +3582,8 @@ async function executeProviderDispatch({
   // (sessionId) => void：会话 id 一拿到就回调，不等本轮成功。
   // 用户中断时对方已经建立了上下文，这个 id 仍然有效，丢掉就白费了。
   onSession = null,
+  // 子任务页里选的模型。只在同一家里换，所以不改账号，只改这一次用哪个模型
+  model: requestedModel = null,
 }) {
   const targetProfile = resolveDispatchProfile(profileData, provider);
   if (!targetProfile) throw new Error(unavailableProviderMessage(profileData, provider));
@@ -3341,7 +3597,9 @@ async function executeProviderDispatch({
     throw new Error(`${targetProfile.name} 的 API Key 还没有配置。`);
   }
 
-  const model = dispatchModelForProfile(targetProfile);
+  const model = (typeof requestedModel === "string" && requestedModel.trim())
+    ? requestedModel.trim()
+    : dispatchModelForProfile(targetProfile);
   const controller = abortController || new AbortController();
   let output = "";
   // 本轮结束后回传给调用方，让它记住以便下一轮续接
@@ -3350,9 +3608,23 @@ async function executeProviderDispatch({
   // （对方压根没认这条会话，该丢掉），还是接上之后跑到一半才出错（thread 是好的，
   // 丢掉就白白浪费了它已经建立的上下文）。
   let sessionEstablished = false;
+  const heldSessionKeys = new Set();
+  const claimSession = (id) => {
+    if (!id) return;
+    const key = JSON.stringify([targetProfile.id, id]);
+    if (heldSessionKeys.has(key)) return;
+    if (DISPATCH_SESSION_WRITERS.has(key)) {
+      const error = new Error("这个厂商会话正在处理另一条消息，请等它完成后重试。");
+      error.dispatchSessionEstablished = true;
+      throw error;
+    }
+    DISPATCH_SESSION_WRITERS.add(key);
+    heldSessionKeys.add(key);
+  };
   const noteSession = (id, { fromVendor = false } = {}) => {
     if (fromVendor) sessionEstablished = true;
     if (!id || id === sessionId) return;
+    claimSession(id);
     sessionId = id;
     if (onSession) {
       try { onSession(id); } catch { /* 记录失败不该影响派发本身 */ }
@@ -3360,12 +3632,13 @@ async function executeProviderDispatch({
   };
   const tagError = (error) => {
     if (error && typeof error === "object") {
-      try { error.dispatchSessionEstablished = sessionEstablished; } catch { /* 冻结对象就算了 */ }
+      try { error.dispatchSessionEstablished = error.dispatchSessionEstablished === true || sessionEstablished; } catch { /* 冻结对象就算了 */ }
     }
     return error;
   };
 
   try {
+  claimSession(resumeSessionId);
   if (targetProfile.provider === "codex") {
     const codex = new Codex(CODEX_CLIENT_OPTIONS);
     const threadOptions = {
@@ -3430,7 +3703,8 @@ async function executeProviderDispatch({
     output = run.text;
     noteSession(run.conversationId || resumeSessionId || null);
   } else {
-    const env = buildAgentEnv(profileData, "medium", null, targetProfile);
+    // 中转类账号的模型靠环境变量指定；没点名时 buildAgentEnv 自己按账号配置取
+    const env = buildAgentEnv(profileData, "medium", requestedModel ? model : null, targetProfile);
     env.PWD = cwd;
     const options = {
       cwd,
@@ -3477,6 +3751,8 @@ async function executeProviderDispatch({
   }
   } catch (error) {
     throw tagError(error);
+  } finally {
+    for (const key of heldSessionKeys) DISPATCH_SESSION_WRITERS.delete(key);
   }
 
   if (!output) throw new Error(`${targetProfile.name} 没有返回可用的文本结果。`);
@@ -3490,6 +3766,212 @@ async function executeProviderDispatch({
     sessionId,
     resumed: Boolean(resumeSessionId),
   };
+}
+
+/* 正在跑的子任务追问，按前端给的 requestId 记。刻意不进 ACTIVE_DISPATCH_ABORTS：
+   主对话按停止只该停主对话那一轮，子任务页有自己的停止键；对话被重置或删除时
+   才一并掐掉（abortSubtaskFollowups）。 */
+const SUBTASK_FOLLOWUPS = new Map();
+const SUBTASK_ID_MAX_CHARS = 200;
+
+function abortSubtaskFollowups(conversationId) {
+  if (!conversationId) return;
+  for (const entry of SUBTASK_FOLLOWUPS.values()) {
+    if (entry.conversationId !== conversationId) continue;
+    try { entry.controller.abort(); } catch { /* 已经停了就算了 */ }
+  }
+}
+
+function subtaskIdOrNull(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw && raw.length <= SUBTASK_ID_MAX_CHARS && !["__proto__", "constructor", "prototype"].includes(raw) && /^[\w:.-]+$/.test(raw) ? raw : null;
+}
+
+function sendSubtaskStatus(conversationId, subtaskId, requestId) {
+  const running = SUBTASK_FOLLOWUPS.get(requestId);
+  if (running?.conversationId === conversationId && running.subtaskId === subtaskId) {
+    deliver({ type: "subtask_started", conversationId, subtaskId, requestId });
+    return;
+  }
+  const conversation = readHistory().find(item => item.id === conversationId);
+  const result = conversation?.messages?.find(item => item.id === `${requestId}_reply` && item.subtask?.id === subtaskId);
+  const type = result?.status === "complete" ? "subtask_done" : result?.status === "stopped" ? "subtask_stopped" : "subtask_error";
+  deliver({ type, conversationId, subtaskId, requestId, output: result?.text || "", model: result?.via?.model || null,
+    text: result?.blocks?.find(block => block.type === "codex_error")?.message || "连接中断，无法确认追问是否送达，请检查后重试。" });
+}
+
+function isMissingSubtaskSession(error) {
+  const text = String(error?.message || error || "");
+  return /(?:session|thread|conversation).{0,80}(?:not found|does not exist|unknown|missing)|(?:no|unknown|missing).{0,40}(?:session|thread|conversation)|(?:会话|线程).{0,30}(?:不存在|未找到|找不到)/i.test(text);
+}
+
+/**
+ * 子任务页发来的一条追问。不占对话的前台回合：主对话可以同时继续，前端保证同一个
+ * 子任务一次只有一条在跑。追问和回复都写进这个对话的历史，带 subtask 标记——
+ * 主时间线上不显示，但主模型下一轮会通过上下文交接看到（via 里的 subtask 让它们
+ * 不会被误当成「对话 + 厂商」那条派发会话已经见过的内容）。
+ */
+async function runSubtaskFollowup(msg) {
+  const conversationId = historyIdOrNull(msg.conversationId);
+  const subtaskId = subtaskIdOrNull(msg.subtaskId);
+  const requestId = historyIdOrNull(msg.requestId);
+  const text = typeof msg.prompt === "string" ? msg.prompt.trim() : "";
+  const reply = (event) => deliver({ ...event, conversationId, subtaskId, requestId });
+  if (!conversationId || !subtaskId || !requestId || !text) {
+    reply({ type: "subtask_error", text: "这条追问缺少对话或子任务信息，没有发出。" });
+    return;
+  }
+  if (deletedHistoryConversationIds.has(conversationId)) return;
+  // 断线重连后前端可能把同一条再发一次
+  if (SUBTASK_FOLLOWUPS.has(requestId) || readHistory().find(item => item.id === conversationId)?.messages?.some(item => item.id === requestId)) {
+    sendSubtaskStatus(conversationId, subtaskId, requestId);
+    return;
+  }
+
+  const profileData = readProfiles();
+  const profile = resolveDispatchProfile(profileData, msg.profileId);
+  if (!profile) {
+    reply({ type: "subtask_error", text: unavailableProviderMessage(profileData, msg.profileId) });
+    return;
+  }
+  const requestedModel = typeof msg.model === "string" && msg.model.trim() ? msg.model.trim().slice(0, 200) : null;
+  const permissionMode = PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE;
+  const label = typeof msg.label === "string" ? msg.label.trim().slice(0, 120) : "";
+  const subtask = { id: subtaskId, ...(label ? { label } : {}) };
+  const scope = subtaskSessionScope(conversationId, subtaskId);
+  // 同一子任务必须串行，不能偷偷新建一个会话，否则追问历史会分叉。
+  if ([...SUBTASK_FOLLOWUPS.values()].some(entry => entry.conversationId === conversationId && entry.subtaskId === subtaskId)) {
+    reply({ type: "subtask_error", text: "这个子任务正在回复，请等它完成后再试。" });
+    return;
+  }
+  let resumeSessionId = recallSubtaskSession(conversationId, subtaskId, profile.id);
+  const releaseInflight = markDispatchInflight(scope, profile.id);
+  const generation = dispatchGenerationOf(conversationId);
+  const controller = new AbortController();
+  SUBTASK_FOLLOWUPS.set(requestId, { conversationId, subtaskId, controller });
+  const route = historyRoute({
+    provider: profile.provider,
+    profileId: profile.id,
+    dispatch: true,
+    model: requestedModel || dispatchModelForProfile(profile),
+    subtask: subtaskId,
+  });
+  const stillOwned = () => !deletedHistoryConversationIds.has(conversationId)
+    && dispatchGenerationOf(conversationId) === generation;
+
+  const conv = ensureHistoryConversation(conversationId, { userText: text });
+  if (!conv.messages.some(message => message.id === requestId)) {
+    conv.messages.push({
+      id: requestId,
+      role: "user",
+      text,
+      cost: null,
+      createdAt: new Date().toISOString(),
+      via: route,
+      subtask,
+    });
+    conv.date = new Date().toISOString();
+    persistHistoryImmediate();
+  }
+  reply({ type: "subtask_started", resumed: Boolean(resumeSessionId), model: route.model ?? null });
+
+  const steps = [];
+  const recordReply = (fields) => {
+    if (!stillOwned()) return;
+    const target = ensureHistoryConversation(conversationId);
+    target.messages.push({
+      id: `${requestId}_reply`,
+      role: "assistant",
+      cost: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      via: route,
+      subtask,
+      ...(steps.length ? { dispatchSteps: steps } : {}),
+      ...fields,
+    });
+    target.date = new Date().toISOString();
+    persistHistoryImmediate();
+  };
+
+  try {
+    const execute = () => executeProviderDispatch({
+      provider: profile.id,
+      task: subtaskFollowupPrompt({
+        text,
+        brief: msg.brief,
+        output: msg.output,
+        thread: msg.thread,
+        resumed: Boolean(resumeSessionId),
+      }),
+      cwd: resolveAllowedCwd(msg.cwd),
+      permissionMode,
+      profileData,
+      abortController: controller,
+      resumeSessionId,
+      model: requestedModel,
+      onSession: (id) => {
+        if (!stillOwned()) return;
+        rememberSubtaskSession(conversationId, subtaskId, profile.id, id);
+      },
+      onStep: (name, input) => {
+        const compact = compactToolInput(input);
+        if (steps.length < 200) steps.push({ name: String(name || "tool"), input: compact });
+        reply({ type: "subtask_step", name: String(name || "tool"), input: compact });
+      },
+    });
+    let result;
+    try {
+      result = await execute();
+    } catch (error) {
+      // 只有厂商明确表示会话不存在、且尚未建立续接时才安全地带前情重开。
+      // 超时、限流、连接中断等不能自动重试：对方可能已经执行过任务。
+      if (!resumeSessionId || error?.name === "AbortError" || controller.signal.aborted
+          || error?.dispatchSessionEstablished !== false || !isMissingSubtaskSession(error) || !stillOwned()) throw error;
+      dropDispatchSession(scope, profile.id, resumeSessionId);
+      forgetPersistedSubtaskSession(conversationId, subtaskId, resumeSessionId);
+      resumeSessionId = null;
+      reply({ type: "subtask_started", resumed: false, model: route.model ?? null });
+      result = await execute();
+    }
+    if (controller.signal.aborted) throw Object.assign(new Error("已停止"), { name: "AbortError" });
+    if (route.model !== result.model) route.model = result.model;
+    recordReply({ text: result.output, blocks: [{ type: "text", text: result.output }], status: "complete" });
+    SUBTASK_FOLLOWUPS.delete(requestId);
+    releaseInflight();
+    reply({
+      type: "subtask_done",
+      output: result.output,
+      provider: result.provider,
+      providerName: result.providerName,
+      profileId: result.profileId,
+      model: result.model,
+      resumed: result.resumed,
+    });
+  } catch (error) {
+    if (resumeSessionId
+      && error?.name !== "AbortError"
+      && error?.dispatchSessionEstablished === false
+      && isMissingSubtaskSession(error) && stillOwned()) {
+      dropDispatchSession(scope, profile.id, resumeSessionId);
+      forgetPersistedSubtaskSession(conversationId, subtaskId, resumeSessionId);
+    }
+    if (error?.name === "AbortError" || controller.signal.aborted) {
+      recordReply({ text: "", blocks: [], status: "stopped" });
+      SUBTASK_FOLLOWUPS.delete(requestId);
+      releaseInflight();
+      reply({ type: "subtask_stopped" });
+    } else {
+      const errorText = String(error?.message || error);
+      recordReply({ text: "", blocks: [{ type: "codex_error", message: errorText }], status: "error" });
+      SUBTASK_FOLLOWUPS.delete(requestId);
+      releaseInflight();
+      reply({ type: "subtask_error", text: errorText });
+    }
+  } finally {
+    SUBTASK_FOLLOWUPS.delete(requestId);
+    releaseInflight();
+  }
 }
 
 // conversationId 必须由调用方显式传入，不能在工具执行时去读全局的
@@ -4225,29 +4707,52 @@ const http = createServer((req, res) => {
   // ── Claude subscription auth status ──────────────────────────
   // Run `claude auth status` — the only reliable way to check login state,
   // since credentials may be stored in the system keychain rather than a file.
+  // 顶层的 authenticated / detail 仍是主号的（老前端只认这两个）；accounts 按账号 id 列出
+  // 每个 Claude 会员账号各自的登录状态，额外账号带着自己的 CLAUDE_CONFIG_DIR 去问。
   if (url === "/api/health/claude-auth" && method === "GET") {
-    let stdout = "";
-    let stderr = "";
-    const proc = spawn("claude", ["auth", "status"], {
-      timeout: 6000,
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    proc.stdout?.on("data", d => { stdout += d; });
-    proc.stderr?.on("data", d => { stderr += d; });
-    // Guard against double-response: both "error" and "close" fire when spawn fails,
-    // the second writeHead call crashes the server (ERR_HTTP_HEADERS_SENT).
-    let authResponded = false;
-    const sendAuthResponse = (body) => {
-      if (authResponded) return;
-      authResponded = true;
+    const claudeProfiles = readProfiles().profiles.filter(p => p.provider === "claude");
+    Promise.all(claudeProfiles.map(async profile => [profile.id, await queryClaudeAuthStatus(profile)]))
+      .then((entries) => {
+        const accounts = Object.fromEntries(entries.map(([id, status]) => [id, {
+          authenticated: status.authenticated,
+          email: status.email,
+          subscriptionType: status.subscriptionType,
+        }]));
+        const primary = entries.find(([id]) => id === PRIMARY_CLAUDE_PROFILE_ID)?.[1];
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          authenticated: primary?.authenticated === true,
+          detail: primary?.detail ?? {},
+          accounts,
+        }));
+      })
+      .catch((err) => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err?.message || err) }));
+      });
+    return;
+  }
+
+  // 给某个 Claude 会员账号登录：开一个终端窗口跑官方的 claude auth login。
+  // 登录本身在浏览器和那个窗口里完成，这里不等结果；前端轮询上面的状态接口看登没登上。
+  if (url === "/api/claude-accounts/login" && method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      let payload = {};
+      try { payload = JSON.parse(body || "{}"); } catch { }
+      const profile = readProfiles().profiles.find(p => p.id === String(payload.profileId ?? ""));
+      if (!profile || profile.provider !== "claude") {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "不是 Claude 会员账号" }));
+        return;
+      }
+      const dir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+      // 先把共用的目录链好再让 CLI 起来，否则它会在新目录里自己建一份
+      if (dir) prepareClaudeAccountDir(dir);
+      const result = launchClaudeLogin({ dir, email: payload.email, env: process.env, spawnImpl: spawn });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
-    };
-    proc.on("error", () => sendAuthResponse({ authenticated: false, detail: "claude CLI not found" }));
-    proc.on("close", () => {
-      let detail = {};
-      try { detail = JSON.parse(stdout); } catch { detail = { raw: stdout.trim() || stderr.trim() }; }
-      sendAuthResponse({ authenticated: detail.loggedIn === true, detail });
+      res.end(JSON.stringify({ ok: true, ...result }));
     });
     return;
   }
@@ -4312,14 +4817,18 @@ const http = createServer((req, res) => {
   if (url === "/api/usage-limits" && method === "GET") {
     (async () => {
       // antigravity 不进 Promise.all：它是本地进程、要十几秒，读缓存就走
-      const [claude, codex] = await Promise.all([
+      // claude 仍是主号那份；额外的 Claude 会员账号各查各的，放在 claudeAccounts 里按 id 取
+      const extraClaudeProfiles = readProfiles().profiles.filter(isExtraClaudeAccount);
+      const [claude, codex, ...extraClaude] = await Promise.all([
         getClaudeSubscriptionLimits(),
         queryCodexSubscriptionLimits(),
+        ...extraClaudeProfiles.map(profile => getClaudeSubscriptionLimits(profile)),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         providers: {
           claude,
+          claudeAccounts: Object.fromEntries(extraClaudeProfiles.map((profile, i) => [profile.id, extraClaude[i]])),
           codex,
           antigravity: getAntigravityUsageLimits(),
         },
@@ -4339,6 +4848,7 @@ const http = createServer((req, res) => {
         const payload = JSON.parse(body || "{}");
         const current = readProfiles();
         let next;
+        let addedProfileId = null;
 
         if (payload.action === "activate") {
           // 切换当前账号
@@ -4353,6 +4863,8 @@ const http = createServer((req, res) => {
         } else if (payload.action === "add") {
           // 新增账号
           const profile = normalizeProfile(payload.profile ?? {});
+          // id 决定额外 Claude 账号的配置目录，撞上已有的就等于两个账号共用一份登录
+          if (current.profiles.some(p => p.id === profile.id)) profile.id = genProfileId();
           if (!isSubscriptionProvider(profile.provider) && !profile.apiKey) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "API Key 不能为空" }));
@@ -4363,7 +4875,19 @@ const http = createServer((req, res) => {
             res.end(JSON.stringify({ error: "Base URL 不能为空" }));
             return;
           }
-          next = { ...current, profiles: [...current.profiles, profile], activeProfileId: profile.id };
+          if (profile.provider === "claude") {
+            // 刚加的 Claude 会员账号还没登录，切过去下一条消息就会报错；登上之后用户自己点它
+            if (profile.name === "claude") {
+              const count = current.profiles.filter(p => p.provider === "claude").length;
+              profile.name = `Claude 会员 ${count + 1}`;
+            }
+            const dir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+            if (dir) prepareClaudeAccountDir(dir);
+            next = { ...current, profiles: [...current.profiles, profile] };
+          } else {
+            next = { ...current, profiles: [...current.profiles, profile], activeProfileId: profile.id };
+          }
+          addedProfileId = profile.id;
 
         } else if (payload.action === "update") {
           // 编辑已有账号
@@ -4388,10 +4912,10 @@ const http = createServer((req, res) => {
           next = { ...current, profiles: current.profiles.map(p => p.id === id ? updated : p) };
 
         } else if (payload.action === "delete") {
-          // 删除账号（不能删 Claude 会员 / 不能删到空）
+          // 删除账号（不能删 Claude 主号 / 不能删到空；额外加的 Claude 会员账号可以删）
           const id = String(payload.profileId ?? "");
           const target = current.profiles.find(p => p.id === id);
-          if (!target || target.provider === "claude") {
+          if (!target || (target.provider === "claude" && !isExtraClaudeAccount(target))) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "该账号不能删除" }));
             return;
@@ -4428,10 +4952,22 @@ const http = createServer((req, res) => {
           if (!(next.profiles || []).some(p => p.id === id)) forgetDispatchSessionsForProfile(id);
         }
         writeProfiles(next);
-        if (changed) clearSession();
+        // 加了个不切过去的账号（Claude 会员账号加完要先登录），当前对话的会话不受影响，别清
+        const resetSession = changed && !(payload.action === "add" && next.activeProfileId === current.activeProfileId);
+        if (resetSession) clearSession();
+        for (const removed of current.profiles) {
+          if (isExtraClaudeAccount(removed) && !next.profiles.some(p => p.id === removed.id)) {
+            forgetRemovedClaudeAccount(removed);
+          }
+        }
 
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, resetSession: changed, data: toPublicProfiles(next) }));
+        res.end(JSON.stringify({
+          ok: true,
+          resetSession,
+          ...(addedProfileId ? { addedProfileId } : {}),
+          data: toPublicProfiles(next),
+        }));
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "bad request" }));
@@ -4447,7 +4983,8 @@ const http = createServer((req, res) => {
       const conv = readHistory().find(h => h.id === id);
       if (conv) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(conv));
+        const { subtaskSessions, ...publicConversation } = conv;
+        res.end(JSON.stringify({ ...publicConversation, subtaskServerBootId: SUBTASK_SERVER_BOOT_ID }));
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "not found" }));
@@ -4459,8 +4996,15 @@ const http = createServer((req, res) => {
       req.on("data", (chunk) => { body += chunk; });
       req.on("end", () => {
         try {
+          if (deletedHistoryConversationIds.has(id)) {
+            res.writeHead(410, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "conversation deleted" }));
+            return;
+          }
           const payload = JSON.parse(body || "{}");
-          const saved = upsertHistoryConversation({ ...payload, id });
+          // 这些字段只由服务端维护，旧页面的延迟保存不能覆盖较新的子任务记录或会话。
+          const { subtaskSessions, subtaskSnapshots, subtaskServerBootId, ...safePayload } = payload;
+          const saved = upsertHistoryConversation({ ...safePayload, id });
           if (!saved) throw new Error("invalid conversation");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -4472,6 +5016,7 @@ const http = createServer((req, res) => {
       return;
     }
     if (method === "DELETE") {
+      deletedHistoryConversationIds.add(id);
       const history = readHistory().filter(h => h.id !== id);
       // 磁盘上的删除只从这里发生——flush 不再按内存全集去删
       shardStore.remove(id);
@@ -4578,16 +5123,91 @@ function forgetClaudeRuntimeBinding() {
   session.claudeRuntimeConversationId = null;
   session.claudeRuntimeAppliedPermissionMode = null;
   session.claudeRuntimeAppliedModel = null;
+  session.claudeRuntimeRoute = null;
 }
 
 /* runtime 刚按 options 起来：记下它此刻在跑的 permissionMode / model，
    下一轮拿来比对。model 在 options 里可能是 undefined（第三方 provider 走
    env 的 ANTHROPIC_MODEL，不设 options.model），undefined 本身就是有效记录。 */
-function noteClaudeRuntimeStarted(signature, conversationId, options) {
+function noteClaudeRuntimeStarted(signature, conversationId, options, route = null) {
   session.claudeRuntimeSignature = signature;
   session.claudeRuntimeConversationId = conversationId;
   session.claudeRuntimeAppliedPermissionMode = options.permissionMode;
   session.claudeRuntimeAppliedModel = options.model;
+  session.claudeRuntimeRoute = route;
+}
+
+/**
+ * 进程重启后，槽位由前端 setSession 按对话记录恢复，内存里没有归属。最后一条经由
+ * 这家原生会话的消息是哪个账号发的，那条会话就是谁的。没有带标记的消息（老对话）
+ * 返回 undefined——不知道就是不知道，别猜。
+ */
+function nativeSessionOwnerFromHistory(conversationId, family) {
+  const messages = conversationId ? readHistory().find(conv => conv.id === conversationId)?.messages || [] : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const via = messages[i]?.via;
+    if (via && !via.dispatch && nativeSessionFamily(via.provider) === family) return via.profileId ?? null;
+  }
+  return undefined;
+}
+
+/**
+ * 槽位里那条原生会话要不是这个账号建的，就别拿去续接。
+ *
+ * 同属 Claude SDK 的几个账号（会员、DeepSeek、OpenRouter……）共用 sessionId 这一个槽。
+ * 拿 Claude 会员的会话去接 DeepSeek，对方要么认不出别家的思考签名直接报错，要么静默
+ * 地在别人的记录上往下写。前端换账号时通常会先发 reset 把槽清掉，但那要看服务端记着
+ * 的全局账号变没变——多开几个对话交叉切账号时它不一定变，这里兜底。
+ * 放手之后这一轮就是「没有原生会话」，会按对话历史整段补上下文。归属不明（没有标记的
+ * 老对话）时不动，维持原来的行为。
+ */
+function releaseForeignNativeSession(route) {
+  if (!route || route.dispatch) return;
+  const family = nativeSessionFamily(route.provider);
+  if (family === "codex") {
+    if (session.codexThreadId && session.codexThreadProfileId && session.codexThreadProfileId !== route.profileId) {
+      clearCodexThread();
+    }
+    return;
+  }
+  if (family === "antigravity") {
+    // 常驻进程绑着旧会话，下一轮的复用检查对不上会自己换进程
+    if (session.agyConversationId && session.agyConversationProfileId && session.agyConversationProfileId !== route.profileId) {
+      clearAgyConversation();
+    }
+    return;
+  }
+  const runtimeRoute = session.hasClaudeRuntime && session.claudeRuntime.started ? session.claudeRuntimeRoute : null;
+  const runtimeForeign = Boolean(runtimeRoute && runtimeRoute.profileId !== route.profileId);
+  const slotForeign = Boolean(session.sessionId && session.sessionProfileId && session.sessionProfileId !== route.profileId);
+  if (!runtimeForeign && !slotForeign) return;
+  // 后台任务还挂在旧 runtime 上：Claude 那条路会拦下这一轮并说明原因，这里不抢着关
+  if (runtimeForeign && session.claudeRuntime.taskIds.size > 0) return;
+  if (runtimeForeign) {
+    session.claudeRuntime.close();
+    forgetClaudeRuntimeBinding();
+  }
+  if (session.sessionId) clearSession();
+}
+
+/**
+ * 删掉的额外 Claude 账号：先停掉跑在它身上的常驻进程（进程开着，目录里的文件删不掉，
+ * 它也会接着用那份登录），再清它的配置目录。目录删不干净只记日志——凭证在第一步
+ * 就删了，剩下的是些缓存，不值得让删除账号这件事失败。
+ */
+function forgetRemovedClaudeAccount(profile) {
+  if (session.claudeRuntime.started && session.claudeRuntimeRoute?.profileId === profile.id) {
+    session.claudeRuntime.close();
+    forgetClaudeRuntimeBinding();
+  }
+  if (session.sessionProfileId === profile.id) clearSession();
+  const dir = claudeAccountConfigDir(profile, CLAUDE_ACCOUNTS_DIR);
+  if (!dir) return;
+  try {
+    removeClaudeAccountDir(dir, CLAUDE_ACCOUNTS_DIR);
+  } catch (error) {
+    console.warn(`[claude-account] 账号 ${profile.id} 的配置目录没删干净：${error.message}`);
+  }
 }
 
 function getActiveRestartLease() {
@@ -4731,6 +5351,7 @@ const deliver = (obj) => {
 };
 
 const send = (obj) => {
+  if (deletedHistoryConversationIds.has(agentContext.getStore()?.conversationId)) return;
   const tagged = tagAgentEvent(obj);
   persistOutboundAgentEvent(tagged);
   deliver(tagged);
@@ -4746,13 +5367,26 @@ function getClientRequestId(msg) {
 
 function rememberClientRequest(requestId, state) {
   if (!requestId) return;
-  clientRequestStates.set(requestId, { state, updatedAt: Date.now() });
+  clientRequestStates.set(requestId, { state, updatedAt: Date.now(), conversationId: agentContext.getStore()?.conversationId ?? null });
   if (clientRequestStates.size <= CLIENT_REQUEST_STATE_MAX) return;
   for (const [id, entry] of clientRequestStates) {
     if (id === session.activeForegroundRequestId || entry.state === "queued" || entry.state === "running") continue;
     clientRequestStates.delete(id);
     if (clientRequestStates.size <= CLIENT_REQUEST_STATE_MAX) break;
   }
+}
+
+function clearConversationEventState(conversationId) {
+  for (const [taskId, owner] of taskEventOwners) {
+    if (owner.conversationId !== conversationId) continue;
+    clearTimeout(taskEventOwnerTimers.get(taskId));
+    taskEventOwnerTimers.delete(taskId);
+    taskEventOwners.delete(taskId);
+  }
+  for (const [requestId, entry] of clientRequestStates) {
+    if (entry.conversationId === conversationId) clientRequestStates.delete(requestId);
+  }
+  detachedBuffer = detachedBuffer.filter(event => event.conversationId !== conversationId);
 }
 
 function acknowledgeClientRequest(requestId, state) {
@@ -4825,6 +5459,11 @@ const FORWARDED_CLAUDE_SYSTEM_EVENTS = new Set([
 
 const steeringQueue = new SteeringQueue();
 
+function steeringItemForConversation(id, conversationId) {
+  const item = steeringQueue.get(id);
+  return item && item.conversationId === historyIdOrNull(conversationId) ? item : null;
+}
+
 function steeringEventItem(item) {
   const ownerItems = steeringQueue.snapshot(item.ownerToken);
   return {
@@ -4835,6 +5474,7 @@ function steeringEventItem(item) {
     composerText: item.msg?.composerText ?? item.displayText,
     delivery: item.delivery,
     paused: item.paused === true,
+    claimed: item.state === "claimed",
     ...(item.reason ? { reason: item.reason } : {}),
   };
 }
@@ -4924,11 +5564,72 @@ function clientRuntimeKey(msg, provider, profile) {
 }
 
 function isClaudeToolResultEvent(event) {
-  if (event?.type !== "user") return false;
+  if (event?.type !== "user" || event.parent_tool_use_id) return false;
   const content = event.message?.content ?? event.content;
   return Array.isArray(content) && content.some(block => (
     block?.type === "tool_result" || block?.type === "mcp_tool_result"
   ));
+}
+
+function applyNextCodexSteering(safePoint) {
+  const owner = sessions.current();
+  const context = owner.activeForegroundDeliveryContext;
+  const ac = owner.abortCtrl;
+  if (!CODEX_USE_PERSISTENT || context?.provider !== "codex" || !ac || ac.signal.aborted
+    || !owner.hasCodexRuntime || !owner.codexRuntime.turnId || owner.codexSteeringPromise
+    || steeringQueue.snapshot(context.ownerToken).some(item => item.state === "claimed")) return;
+  const runtime = owner.codexRuntime;
+  const claim = steeringQueue.claimNext(context.ownerToken, item => (
+    item.delivery === "steer" && item.provider === "codex" && item.conversationId === context.conversationId
+  ));
+  if (!claim) return;
+  const { item, claimToken } = claim;
+  deliver({ type: "steering_updated", ...steeringEventItem(item) });
+  const promise = (async () => {
+    await Promise.resolve(); // assign the owner promise before any preparation can fail
+    try {
+      const input = [];
+      for (const image of item.msg.images ?? (item.msg.image ? [item.msg.image] : [])) {
+        const ext = ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" })[image.mediaType] || "png";
+        const path = join(DATA_DIR, `codex-steer-${crypto.randomBytes(10).toString("hex")}.${ext}`);
+        writeFileSync(path, Buffer.from(image.data, "base64"));
+        (context.steeringImagePaths ??= []).push(path);
+        input.push({ type: "localImage", path });
+      }
+      input.push({ type: "text", text: item.msg.prompt });
+      await runtime.steerTurn({
+        input, expectedTurnId: runtime.turnId, clientUserMessageId: item.userMessageId,
+        onApplied: () => {
+          const applied = steeringQueue.commitClaim(item.userMessageId, claimToken);
+          if (!applied) return; // reset removed this claim; do not resurrect its history
+          finalizeActiveAssistantHistory("complete");
+          beginServerConversationFromClient(item.msg);
+          rememberClientRequest(item.userMessageId, "steering_applied");
+          acknowledgeClientRequest(item.userMessageId, "steering_applied");
+          deliver({ type: "steering_applied", userMessageId: item.userMessageId,
+            conversationId: item.conversationId, displayText: item.displayText, safePoint });
+        },
+      });
+    } catch (error) {
+      const paused = ac.signal.aborted || !error.codexSteerRejected || error.codexSteerUncertain;
+      const released = steeringQueue.releaseClaim(item.userMessageId, claimToken, { paused: Boolean(paused) });
+      if (released) {
+        if (paused) {
+          deliver({ type: "steering_paused", conversationId: item.conversationId,
+            userMessageIds: [item.userMessageId], reason: ac.signal.aborted ? "stopped" : "delivery_confirmation_failed" });
+        } else {
+          steeringQueue.update(item.userMessageId, { delivery: "next_turn", reason: "native_turn_no_longer_available" }, item.ownerToken);
+          owner.queuedClientPrompts.push(item.msg);
+          deliver({ type: "steering_updated", ...steeringEventItem(released) });
+        }
+      }
+    } finally {
+      if (owner.codexSteeringPromise === promise) owner.codexSteeringPromise = null;
+      if (owner.activeForegroundDeliveryContext === context && !ac.signal.aborted) applyNextCodexSteering("input_consumed");
+      scheduleQueuedClientPromptDrain(0, owner);
+    }
+  })();
+  owner.codexSteeringPromise = promise;
 }
 
 function applyNextClaudeSteering(safePoint) {
@@ -5006,6 +5707,7 @@ function clearAllSteering(reason, conversationId = null) {
 }
 
 function scheduleQueuedClientPromptDrain(delayMs = 0, targetSession = sessions.current()) {
+  if (targetSession.disposed) return;
   // Never replace the task-wake grace timer with an earlier callback that can
   // only return. This used to strand queued prompts forever after auto-wake.
   const graceDelay = Math.max(0, targetSession.claudeTaskWakeGraceUntil - Date.now() + 10);
@@ -5013,7 +5715,7 @@ function scheduleQueuedClientPromptDrain(delayMs = 0, targetSession = sessions.c
   clearTimeout(targetSession.queuedClientPromptDrainTimer);
   targetSession.queuedClientPromptDrainTimer = setTimeout(() => {
     targetSession.queuedClientPromptDrainTimer = null;
-    activeQueuedPromptDrainer?.(targetSession);
+    if (!targetSession.disposed) activeQueuedPromptDrainer?.(targetSession);
   }, effectiveDelay);
 }
 
@@ -5080,7 +5782,7 @@ async function handlePersistentClaudeEvent(ev) {
   }
   if (ev.type === "system" && ev.subtype === "init") {
     if (session.claudeRuntimeConversationId) session.activeHistoryConversationId = session.claudeRuntimeConversationId;
-    saveSession(ev.session_id);
+    saveSession(ev.session_id, session.claudeRuntimeRoute?.profileId ?? null);
     send({ type: "session", sessionId: ev.session_id, provider: "claude" });
     const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
       ? ev.skills
@@ -5114,6 +5816,8 @@ async function handlePersistentClaudeEvent(ev) {
       session.activeHistoryTurnOpen = true;
       session.activeHistoryTurnConversationId = session.claudeRuntimeConversationId;
       session.activeAssistantHistoryMessage = null;
+      // 后台任务唤醒、没有用户消息带路的这一段，归到 runtime 正在替它跑的那条路
+      session.activeHistoryRoute = session.claudeRuntimeRoute ?? session.activeHistoryRoute;
     }
     if (FORWARDED_CLAUDE_SYSTEM_EVENTS.has(ev.subtype)) send(ev);
     if (ev.subtype === "session_state_changed" && ev.state === "idle") {
@@ -5144,7 +5848,13 @@ async function handlePersistentClaudeError(error) {
       clearSession();
       const options = { ...recovery.options };
       delete options.resume;
-      session.claudePendingRecovery = { message, options, signature: recovery.signature, conversationId: recovery.conversationId };
+      session.claudePendingRecovery = {
+        message,
+        options,
+        signature: recovery.signature,
+        conversationId: recovery.conversationId,
+        route: recovery.route ?? null,
+      };
       console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");
       return;
     }
@@ -5166,7 +5876,7 @@ async function handlePersistentClaudeClose() {
     try {
       const recoveryConversationId = recovery.conversationId ?? session.claudeRuntimeConversationId;
       session.claudeRuntime.start(recovery.options, { conversationId: recoveryConversationId });
-      noteClaudeRuntimeStarted(recovery.signature, recoveryConversationId, recovery.options);
+      noteClaudeRuntimeStarted(recovery.signature, recoveryConversationId, recovery.options, recovery.route);
       session.claudeRuntime.send(recovery.message);
       return;
     } catch (error) {
@@ -5183,6 +5893,8 @@ function foregroundActiveFor(candidate) {
   if (!candidate) return false;
   return Boolean(
     candidate.abortCtrl
+    || candidate.codexSteeringPromise
+    || (candidate.hasCodexRuntime && candidate.codexRuntime.busy)
     || candidate.claudeTurnCompletionPending
     || (candidate.hasClaudeRuntime && candidate.claudeRuntime.foregroundRunning)
     || candidate.pendingAskUserQuestion
@@ -5222,6 +5934,8 @@ function sessionIsBusy(candidate) {
   if (!candidate) return false;
   return Boolean(
     candidate.abortCtrl
+    || candidate.codexSteeringPromise
+    || (candidate.hasCodexRuntime && candidate.codexRuntime.busy)
     || candidate.activeForegroundRequestId
     || candidate.claudeTurnCompletionPending
     || (candidate.hasClaudeRuntime && candidate.claudeRuntime.running)
@@ -5236,7 +5950,8 @@ function sessionIsBusy(candidate) {
 
 /** 整个进程还有没有活儿——任何一个对话在跑都算。 */
 function isAgentWorkActive() {
-  return sessions.runningCount > 0 || sessionIsBusy(sessions.ambient);
+  // 子任务追问不占前台回合，但同样是在跑的活：重启前要等它，断线时要缓冲它的事件
+  return sessions.runningCount > 0 || sessionIsBusy(sessions.ambient) || SUBTASK_FOLLOWUPS.size > 0;
 }
 
 function isAgentRunActive() {
@@ -5434,9 +6149,63 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // 子任务页里的追问：自己跑，不进前台回合的排队，也不动主对话的状态
+    if (msg.type === "subtask_followup") {
+      void runSubtaskFollowup(msg).catch((error) => {
+        console.warn("[Web Agent] subtask follow-up failed:", String(error));
+        deliver({ type: "subtask_error", conversationId: historyIdOrNull(msg.conversationId), subtaskId: subtaskIdOrNull(msg.subtaskId), requestId: historyIdOrNull(msg.requestId), text: "追问未能完成，请重试。" });
+      });
+      return;
+    }
+
+    if (msg.type === "subtask_snapshot") {
+      const id = historyIdOrNull(msg.conversationId);
+      const squadId = subtaskIdOrNull(msg.squadId);
+      const snapshot = msg.snapshot;
+      const conv = id && !deletedHistoryConversationIds.has(id) && readHistory().find(item => item.id === id);
+      if (!conv || !squadId || !snapshot || !Array.isArray(snapshot.order) || !Array.isArray(snapshot.state)
+          || !Array.isArray(snapshot.labels) || snapshot.order.length > 100 || JSON.stringify(snapshot).length > 500000) return;
+      // 自动派发的 MCP 结果能带回 sessionId，但工具处理器拿不到 tool_use_id。
+      // 只接受服务端在同一对话、同一账号中刚记录过的 ID，避免把任意会话绑定到卡片。
+      const safeSnapshot = structuredClone(snapshot);
+      for (const entry of safeSnapshot.state) {
+        if (!Array.isArray(entry) || !entry[1] || typeof entry[1] !== "object") continue;
+        const itemId = subtaskIdOrNull(entry[0]);
+        const origin = entry[1].origin;
+        if (origin && typeof origin === "object") {
+          if (itemId && origin.profileId && origin.sessionId && recallDispatchSession(id, origin.profileId) === origin.sessionId) {
+            rememberSubtaskSession(id, itemId, origin.profileId, origin.sessionId);
+          }
+          delete origin.sessionId;
+        }
+      }
+      conv.subtaskSnapshots ||= {};
+      conv.subtaskSnapshots[squadId] = { snapshot: safeSnapshot, bootId: SUBTASK_SERVER_BOOT_ID };
+      dirtyConversationIds.add(id);
+      persistHistoryDeferred();
+      return;
+    }
+
+    if (msg.type === "subtask_status") {
+      const conversationId = historyIdOrNull(msg.conversationId);
+      const subtaskId = subtaskIdOrNull(msg.subtaskId);
+      const requestId = historyIdOrNull(msg.requestId);
+      if (!conversationId || !subtaskId || !requestId) return;
+      sendSubtaskStatus(conversationId, subtaskId, requestId);
+      return;
+    }
+
+    if (msg.type === "subtask_stop") {
+      const entry = SUBTASK_FOLLOWUPS.get(historyIdOrNull(msg.requestId));
+      if (entry && entry.conversationId === historyIdOrNull(msg.conversationId)) {
+        try { entry.controller.abort(); } catch { /* 已经停了就算了 */ }
+      }
+      return;
+    }
+
     if (msg.type === "steering_update") {
       const steeringId = getClientRequestId(msg) || String(msg.steeringId ?? "").trim();
-      const item = steeringQueue.get(steeringId);
+      const item = steeringItemForConversation(steeringId, msg.conversationId);
       const prompt = typeof msg.prompt === "string"
         ? msg.prompt.trim()
         : (typeof msg.text === "string" ? msg.text.trim() : null);
@@ -5471,7 +6240,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "steering_remove") {
       const steeringId = getClientRequestId(msg) || String(msg.steeringId ?? "").trim();
-      const item = steeringQueue.get(steeringId);
+      const item = steeringItemForConversation(steeringId, msg.conversationId);
       const removed = item ? steeringQueue.remove(steeringId, item.ownerToken) : null;
       if (!removed) {
         deliver({ type: "steering_command_error", command: msg.type, userMessageId: steeringId || null });
@@ -5492,8 +6261,9 @@ wss.on("connection", (ws) => {
       const orderedIds = Array.isArray(msg.order)
         ? msg.order.map(id => String(id ?? "").trim()).filter(Boolean)
         : [];
-      const firstItem = orderedIds.map(id => steeringQueue.get(id)).find(Boolean);
-      if (!firstItem || !steeringQueue.reorder(firstItem.ownerToken, orderedIds)) {
+      const firstItem = orderedIds.map(id => steeringItemForConversation(id, msg.conversationId)).find(Boolean);
+      if (!firstItem || orderedIds.some(id => !steeringItemForConversation(id, msg.conversationId))
+        || !steeringQueue.reorder(firstItem.ownerToken, orderedIds)) {
         deliver({ type: "steering_command_error", command: msg.type, userMessageId: null });
         return;
       }
@@ -5508,16 +6278,17 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "steering_resume") {
       const steeringId = getClientRequestId(msg) || String(msg.steeringId ?? "").trim();
-      const item = steeringQueue.get(steeringId);
+      const item = steeringItemForConversation(steeringId, msg.conversationId);
       if (!item) {
         deliver({ type: "steering_command_error", command: msg.type, userMessageId: steeringId || null });
         return;
       }
       const resumed = steeringQueue.resumeOwner(item.ownerToken);
       const canStillSteer = session.activeForegroundDeliveryContext?.ownerToken === item.ownerToken
-        && session.activeForegroundDeliveryContext.provider === "claude"
-        && session.claudeTurnCompletionPending
-        && !session.claudeStopRequested;
+        && ((session.activeForegroundDeliveryContext.provider === "claude"
+          && session.claudeTurnCompletionPending && !session.claudeStopRequested)
+          || (session.activeForegroundDeliveryContext.provider === "codex" && CODEX_USE_PERSISTENT
+            && session.abortCtrl && !session.abortCtrl.signal.aborted));
       for (const resumedItem of resumed) {
         let effectiveItem = resumedItem;
         if (!canStillSteer && resumedItem.delivery === "steer") {
@@ -5546,7 +6317,16 @@ wss.on("connection", (ws) => {
       // 而前端多数 reset 只发 {reset:true}，那样清掉的是个随机键，等于没清。
       const resetConversationId = historyIdOrNull(msg.conversationId) || session.activeHistoryConversationId;
       ACTIVE_DISPATCH_ABORTS.abortConversation(resetConversationId);
+      abortSubtaskFollowups(resetConversationId);
       forgetDispatchSessions(resetConversationId);
+      if (resetConversationId) {
+        const conv = readHistory().find(entry => entry.id === resetConversationId);
+        if (conv) {
+          conv.sessionId = null;
+          conv.sessionProvider = null;
+          persistHistoryDeferred();
+        }
+      }
       clearActiveHistoryConversation();
       clearSession();
       clearCodexThread();
@@ -5555,6 +6335,7 @@ wss.on("connection", (ws) => {
          不 kill 也不会串台（下一轮各自的复用检查都会对不上），但那样会白留
          一个进程挂在后台等指令。 */
       killAgyRuntime();
+      killCodexRuntime();
       if (session.abortCtrl) { session.abortCtrl.abort(); session.abortCtrl = null; }
       session.claudeRuntime.close();
       forgetClaudeRuntimeBinding();
@@ -5569,16 +6350,12 @@ wss.on("connection", (ws) => {
       session.claudeAutoWakeOwner = null;
       clearTimeout(session.claudeAutoWakeOwnerTimer);
       session.claudeAutoWakeOwnerTimer = null;
-      for (const timer of taskEventOwnerTimers.values()) clearTimeout(timer);
-      taskEventOwnerTimers.clear();
-      taskEventOwners.clear();
+      clearConversationEventState(resetConversationId);
       session.queuedClientPrompts.length = 0;
-      clientRequestStates.clear();
-      detachedBuffer = [];
       clearTimeout(session.queuedClientPromptDrainTimer);
       session.queuedClientPromptDrainTimer = null;
-      deliver({ type: "reset_complete", ...(msg.preserveMessages === true
-        ? { preserveMessages: true, conversationId: resetConversationId }
+      deliver({ type: "reset_complete", conversationId: resetConversationId, ...(msg.preserveMessages === true
+        ? { preserveMessages: true }
         : {}) });
       return;
     }
@@ -5592,16 +6369,20 @@ wss.on("connection", (ws) => {
          这个对话上次换厂商之前的旧 id，两条同时「有效」——下一轮走到哪个
          provider 分支，就接上哪条早就作废的会话。恢复一个就把另外两个清掉。
          带 if 是为了少写两次盘：这几个 clear 都会同步落 JSON 文件。 */
+      // 跟手上这条是同一个 id，内存里记着的归属照旧；换了一条才去历史里认是谁的
+      const restoredOwner = (family, currentId) => (currentId === restoredSessionId
+        ? undefined
+        : nativeSessionOwnerFromHistory(historyIdOrNull(msg.conversationId), family) ?? null);
       if (restoredProvider === "codex") {
-        saveCodexThread(restoredSessionId);
+        saveCodexThread(restoredSessionId, restoredOwner("codex", session.codexThreadId));
         if (session.sessionId) clearSession();
         if (session.agyConversationId) clearAgyConversation();
       } else if (restoredProvider === "antigravity") {
-        saveAgyConversation(restoredSessionId);
+        saveAgyConversation(restoredSessionId, restoredOwner("antigravity", session.agyConversationId));
         if (session.sessionId) clearSession();
         if (session.codexThreadId) clearCodexThread();
       } else {
-        saveSession(restoredSessionId);
+        saveSession(restoredSessionId, restoredOwner("claude", session.sessionId));
         if (session.codexThreadId) clearCodexThread();
         if (session.agyConversationId) clearAgyConversation();
       }
@@ -5623,7 +6404,7 @@ wss.on("connection", (ws) => {
     if (msg.stop) {
       const requestedStopId = getClientRequestId(msg);
       if (requestedStopId) {
-        const steeringItem = steeringQueue.get(requestedStopId);
+        const steeringItem = steeringItemForConversation(requestedStopId, msg.conversationId);
         const removedSteering = steeringItem
           ? steeringQueue.remove(requestedStopId, steeringItem.ownerToken)
           : null;
@@ -5659,7 +6440,9 @@ wss.on("connection", (ws) => {
       if (stoppedOwnerToken) {
         pauseSteeringOwner(stoppedOwnerToken);
       } else if (!requestedStopId) {
-        for (const ownerToken of new Set(steeringQueue.snapshot().map(item => item.ownerToken))) {
+        for (const ownerToken of new Set(steeringQueue.snapshot()
+          .filter(item => item.conversationId === session.conversationId)
+          .map(item => item.ownerToken))) {
           pauseSteeringOwner(ownerToken);
         }
       }
@@ -5705,6 +6488,10 @@ wss.on("connection", (ws) => {
     // The frontend normally queues follow-ups. Keep this server-side guard so a
     // stale or third-party client can never turn a new message into an implicit Stop.
     let requestId = getClientRequestId(msg);
+    if (deletedHistoryConversationIds.has(historyIdOrNull(msg.conversationId))) {
+      deliver({ type: "error", text: "对话已删除，请新建对话后发送。", userMessageId: requestId });
+      return;
+    }
     if (!requestId && msg.deliveryMode === "steer") {
       requestId = normalizeHistoryId(makeHistoryMessageId("user"));
       msg.userMessageId = requestId;
@@ -5772,12 +6559,17 @@ wss.on("connection", (ws) => {
         && session.claudeTurnCompletionPending
         && !session.claudeStopRequested
       );
+      const canSteerCurrentCodexTurn = Boolean(CODEX_USE_PERSISTENT && context
+        && context.provider === "codex" && incomingProvider === "codex" && !msg.dispatchProvider
+        && context.conversationId === steeringConversationId && context.profileId === incomingProfileId
+        && context.runtimeKey === incomingRuntimeKey && session.abortCtrl && !session.abortCtrl.signal.aborted);
+      const canSteer = canSteerCurrentClaudeTurn || canSteerCurrentCodexTurn;
       const ownerToken = context?.ownerToken
         ?? `fallback:${session.activeForegroundRequestId ?? "background"}:${session.claudeTurnEpoch}:${steeringConversationId}`;
       const displayText = typeof msg.displayText === "string" && msg.displayText.trim()
         ? msg.displayText.trim()
         : String(msg.prompt || "").trim();
-      const reason = canSteerCurrentClaudeTurn
+      const reason = canSteer
         ? null
         : (crossesActiveClaudeTasks ? "provider_switch_wait" : "steering_not_supported");
       const { item, inserted } = steeringQueue.enqueue({
@@ -5785,7 +6577,7 @@ wss.on("connection", (ws) => {
         ownerToken,
         conversationId: steeringConversationId,
         displayText,
-        delivery: canSteerCurrentClaudeTurn ? "steer" : "next_turn",
+        delivery: canSteer ? "steer" : "next_turn",
         reason,
         provider: incomingProvider,
         profileId: incomingProfileId,
@@ -5857,6 +6649,15 @@ wss.on("connection", (ws) => {
       }
     }
     startClientRequest(requestId, requestConversationId);
+    // 这一轮经由哪条路：历史里的消息照它打标记，换模型时靠它算出谁错过了哪几轮
+    const turnRoute = historyRoute({
+      provider: incomingProvider,
+      profileId: incomingProfileId,
+      dispatch: Boolean(msg.dispatchProvider),
+      model: msg.dispatchProvider
+        ? (incomingDispatchProfile ? dispatchModelForProfile(incomingDispatchProfile) : null)
+        : (msg.model || null),
+    });
     session.activeForegroundDeliveryContext = {
       requestId,
       ownerToken: `foreground:${requestId ?? crypto.randomUUID()}:${crypto.randomUUID()}`,
@@ -5864,16 +6665,29 @@ wss.on("connection", (ws) => {
       provider: incomingProvider,
       profileId: incomingProfileId,
       runtimeKey: incomingRuntimeKey,
+      route: turnRoute,
     };
     finalizeActiveAssistantHistory("complete");
+    /* 本轮之前的记录先拍下来：beginServerConversationFromClient 马上要把这条用户消息
+       追加进去，派发那条路又要到更后面才用得上。 */
+    const priorMessages = [...(readHistory().find(conv => conv.id === requestConversationId)?.messages || [])];
+    releaseForeignNativeSession(turnRoute);
     const nativeSession = incomingProvider === "codex" ? session.codexThreadId
       : incomingProvider === "antigravity" ? session.agyConversationId
       : session.sessionId || session.claudeRuntime.started;
+    const contextOptions = { route: turnRoute, userMessageId: msg.userMessageId };
     const providerPrompt = msg.dispatchProvider ? msg.prompt : withConversationContext(
       msg.prompt,
-      readHistory().find(conv => conv.id === requestConversationId)?.messages || [],
-      { resume: Boolean(nativeSession), userMessageId: msg.userMessageId },
+      priorMessages,
+      { ...contextOptions, resume: Boolean(nativeSession) },
     );
+    /* 以为能续接、实际对方另起了一条新会话时用这份（codex 的 thread 被删、版本不认）：
+       新会话什么都不记得，得整段补。用到才算——绝大多数轮次续接都是成的。 */
+    const freshProviderPrompt = () => (msg.dispatchProvider ? msg.prompt : withConversationContext(
+      msg.prompt,
+      priorMessages,
+      { ...contextOptions, resume: false },
+    ));
     beginServerConversationFromClient(msg);
 
     const schedulerRequest = hasSchedulerIntentForMessage(msg);
@@ -5969,6 +6783,15 @@ wss.on("connection", (ws) => {
         reason: dispatchReason,
         ...(resumeSessionId ? { resumed: true } : {}),
       };
+      /* 「>codex 接着完成」「这18张图换个技能重画」——派发的话几乎都在指代前文，
+         而对方只拿到这一句。第一次派给它时整段补上对话记录；接着上次的派发会话
+         说时，只补它上次之后这个对话里又发生的事。卡片上显示的仍是用户的原话。 */
+      const dispatchTask = withConversationContext(msg.prompt, priorMessages, {
+        ...contextOptions,
+        resume: Boolean(resumeSessionId),
+      });
+      const dispatchSteps = [];
+      const DISPATCH_STEPS_MAX = 200;
       session.abortCtrl = ac;
       const isCurrentDispatchTurn = () => (
         dispatchTurnEpoch === session.claudeTurnEpoch
@@ -5991,7 +6814,7 @@ wss.on("connection", (ws) => {
         try {
           const dispatchResult = await executeProviderDispatch({
             provider: msg.dispatchProvider,
-            task: msg.prompt,
+            task: dispatchTask,
             cwd: resolvedCwd,
             permissionMode,
             profileData,
@@ -6003,16 +6826,22 @@ wss.on("connection", (ws) => {
             onSession: (id) => {
               if (dispatchGenerationOf(dispatchConvId) !== dispatchGeneration) return;
               rememberDispatchSession(dispatchConvId, dispatchProfileId, id);
+              // 子任务页里接着追问时续接的就是这一条
+              rememberSubtaskSession(dispatchConvId, dispatchToolUseId, dispatchProfileId, id);
             },
             // 这条路径手里就有 tool_use_id，前端直接按 id 归位，不必再算 key
             onStep: (name, input) => {
               if (!isCurrentDispatchTurn()) return;
+              if (dispatchSteps.length < DISPATCH_STEPS_MAX) {
+                dispatchSteps.push({ name: String(name || "tool"), input: compactToolInput(input) });
+              }
               try {
                 send({ type: "dispatch_step", toolUseId: dispatchToolUseId, name, input });
               } catch { /* 连接已断则忽略 */ }
             },
           });
           if (!isCurrentDispatchTurn()) return;
+          noteDispatchStepsInHistory(dispatchSteps);
           const resultText = JSON.stringify({ ok: true, reason: dispatchReason, ...dispatchResult });
           send({
             type: "user",
@@ -6062,6 +6891,8 @@ wss.on("connection", (ws) => {
             dropDispatchSession(dispatchConvId, dispatchProfileId, resumeSessionId);
           }
           if (!isCurrentDispatchTurn()) return;
+          // 停下或出错之前做过的改动同样算数，下一轮接手的模型得知道
+          noteDispatchStepsInHistory(dispatchSteps);
           if (error?.name === "AbortError") {
             send({ type: "stopped" });
             completeClientRequest("stopped", requestId);
@@ -6087,6 +6918,7 @@ wss.on("connection", (ws) => {
           ACTIVE_DISPATCH_ABORTS.delete(ac);
           releaseDispatchInflight();
           if (session.abortCtrl === ac) session.abortCtrl = null;
+          deliverSessionsSnapshot();
           scheduleQueuedClientPromptDrain();
         }
       })();
@@ -6166,7 +6998,7 @@ wss.on("connection", (ws) => {
             signal: ac.signal,
             // id 在 init 事件里就有，先记下来——中断时这条会话仍然有效
             onSession: (id) => {
-              saveAgyConversation(id);
+              saveAgyConversation(id, activeProfile?.id ?? null);
               if (isCurrentAgyTurn()) send({ type: "session", sessionId: id, provider: "antigravity" });
             },
             onEvent: emit,
@@ -6204,6 +7036,7 @@ wss.on("connection", (ws) => {
       }
       const codexTurnEpoch = ++session.claudeTurnEpoch;
       session.abortCtrl = ac;
+      const codexDeliveryContext = session.activeForegroundDeliveryContext;
       const codexTempImagePaths = [];
       const isCurrentCodexTurn = () => (
         codexTurnEpoch === session.claudeTurnEpoch
@@ -6218,6 +7051,7 @@ wss.on("connection", (ws) => {
           if (CODEX_USE_PERSISTENT) {
             const run = await runCodexPersistent({
               prompt: providerPrompt,
+              freshPrompt: freshProviderPrompt,
               images: codexImages,
               cwd: resolvedCwd,
               model: msg.model || null,
@@ -6227,12 +7061,21 @@ wss.on("connection", (ws) => {
               signal: ac.signal,
               onThread: (id) => {
                 if (!isCurrentCodexTurn()) return;
-                saveCodexThread(id);
+                saveCodexThread(id, activeProfile?.id ?? null);
                 send({ type: "session", sessionId: id, provider: "codex" });
               },
               onEvent: (ev) => { if (isCurrentCodexTurn()) send(ev); },
+              onBoundary: (point) => { if (isCurrentCodexTurn()) applyNextCodexSteering(point); },
             });
+            while (session.codexSteeringPromise) await session.codexSteeringPromise;
             if (!isCurrentCodexTurn()) return;
+            if (run?.turn?.status === "failed") {
+              throw new Error(codexTurnFailureMessage(run.turn.error?.message || "Codex turn failed"));
+            }
+            if (["interrupted", "aborted", "cancelled"].includes(run?.turn?.status)) {
+              throw Object.assign(new Error("Codex 请求已取消"), { name: "AbortError" });
+            }
+            fallbackUnappliedSteering(codexDeliveryContext?.ownerToken, "runtime_finished_before_safe_point");
             send({ type: "result", subtype: "success", usage: run?.usage ?? null, provider: "codex" });
             send({ type: "done" });
             completeClientRequest("complete", requestId);
@@ -6292,7 +7135,7 @@ wss.on("connection", (ws) => {
           for await (const ev of events) {
             if (!isCurrentCodexTurn()) return;
             if (ev.type === "thread.started") {
-              saveCodexThread(ev.thread_id);
+              saveCodexThread(ev.thread_id, activeProfile?.id ?? null);
               send({ type: "session", sessionId: ev.thread_id, provider: "codex" });
             } else if (ev.type === "turn.started") {
               send({ type: "system", subtype: "status", status: "requesting" });
@@ -6329,6 +7172,7 @@ wss.on("connection", (ws) => {
           completeClientRequest("complete", requestId);
         } catch (err) {
           if (!isCurrentCodexTurn()) return;
+          pauseSteeringOwner(codexDeliveryContext?.ownerToken, "runtime_failed");
           if (err?.name === "AbortError") {
             send({ type: "stopped" });
             completeClientRequest("stopped", requestId);
@@ -6341,7 +7185,8 @@ wss.on("connection", (ws) => {
           /* 这一轮被顶掉时，for-await 是提前 return 出来的，codex 子进程可能还
              攥着那几张图。先掐了它再删：它的输出反正没人要，留着只是继续烧额度。 */
           if (!isCurrentCodexTurn()) { try { ac.abort(); } catch { /* 已经停了就算了 */ } }
-          for (const tmpPath of codexTempImagePaths) {
+          while (session.codexSteeringPromise) await session.codexSteeringPromise;
+          for (const tmpPath of [...codexTempImagePaths, ...(codexDeliveryContext?.steeringImagePaths || [])]) {
             try {
               unlinkSync(tmpPath);
             } catch {
@@ -6353,6 +7198,7 @@ wss.on("connection", (ws) => {
             }
           }
           if (session.abortCtrl === ac) session.abortCtrl = null;
+          deliverSessionsSnapshot();
           scheduleQueuedClientPromptDrain();
         }
       })();
@@ -6429,12 +7275,18 @@ wss.on("connection", (ws) => {
     };
 
     const buildRecoveryMsg = () => {
-      const history = extractSessionTextHistory(session.sessionId);
-      if (history.length === 0) return null;
-      const historyText = history
-        .map(turn => `${turn.role === "user" ? "用户" : "助手"}：${turn.text}`)
-        .join("\n");
-      const injected = `以下是本次对话此前的历史记录（供你延续上下文）：\n${historyText}\n\n用户：${msg.prompt}`;
+      /* 旧会话续不上（多半是换过账号或模型，对方不认里面的思考签名），只能开新会话。
+         新会话什么都不记得：按这个对话的历史整段补，别家经手的轮次和做过的操作都在
+         里面；SDK 自己那份记录只有 Claude 经手的几轮，对话历史是空的时候才退回去用它。 */
+      let injected = withConversationContext(msg.prompt, priorMessages, { ...contextOptions, resume: false });
+      if (injected === msg.prompt) {
+        const history = extractSessionTextHistory(session.sessionId);
+        if (history.length === 0) return null;
+        const historyText = history
+          .map(turn => `${turn.role === "user" ? "用户" : "助手"}：${turn.text}`)
+          .join("\n");
+        injected = `以下是本次对话此前的历史记录（供你延续上下文）：\n${historyText}\n\n用户：${msg.prompt}`;
+      }
       const recoveredContent = content
         .filter(block => block.type !== "text")
         .concat([{ type: "text", text: injected }]);
@@ -6473,6 +7325,7 @@ wss.on("connection", (ws) => {
       options,
       signature: runtimeSignature,
       conversationId: turnConversationId,
+      route: turnRoute,
     };
 
     (async () => {
@@ -6494,8 +7347,10 @@ wss.on("connection", (ws) => {
         if (!session.claudeRuntime.started) {
           if (!isCurrentTurn()) return;
           session.claudeRuntime.start(options, { conversationId: turnConversationId });
-          noteClaudeRuntimeStarted(runtimeSignature, turnConversationId, options);
+          noteClaudeRuntimeStarted(runtimeSignature, turnConversationId, options, turnRoute);
         } else {
+          // 同一个账号接着用这个进程；模型可能换了，标注跟着更新
+          session.claudeRuntimeRoute = turnRoute;
           /* 复用现成的进程。这两个 setter 各是一趟到子进程的同步往返，而绝大
              多数轮次这两个值跟上一轮一模一样——无条件发一遍就是白等，直接
              加在首字延迟上。所以只在真的变了才发。

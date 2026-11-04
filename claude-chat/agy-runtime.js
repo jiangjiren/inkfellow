@@ -134,11 +134,11 @@ export class PersistentAgyRuntime {
     this._stderr = "";
 
     proc.stdout.setEncoding("utf8");
-    proc.stdout.on("data", chunk => this._onStdout(chunk));
+    proc.stdout.on("data", chunk => { if (this.proc === proc) this._onStdout(chunk); });
     proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", chunk => { this._stderr += chunk; });
-    proc.on("error", err => this._onExit(err));
-    proc.on("close", code => this._onExit(null, code));
+    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr += chunk; });
+    proc.on("error", err => { if (this.proc === proc) this._onExit(err); });
+    proc.on("close", code => { if (this.proc === proc) this._onExit(null, code); });
     return proc;
   }
 

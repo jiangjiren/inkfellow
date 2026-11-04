@@ -48,7 +48,7 @@ export function sandboxMode(permissionMode) {
                           gpt-5.6-luna），这种不该再出现在菜单上
 
    菜单只列最新一代：取排第一的那个模型的大版本号（gpt-6-astra → 6），只留同
-   代的，最多 MENU_LIMIT 个。清单里连 gpt-5.6、gpt-5.5 这些上一代也在，混着列
+   代的，不限制数量，避免上新模型挤掉仍可用的选项。清单里连 gpt-5.6、gpt-5.5 这些上一代也在，混着列
    反而不知道该选哪个；GPT-7 出来时菜单自己就换成 7 系。目录本身保留全
    部（含 hide 和弃用的）——用户对话里还选着旧模型时，要认得出它属于这个账号。
 
@@ -61,14 +61,13 @@ export function sandboxMode(permissionMode) {
 
 export const MODELS_CACHE_FILE = join(homedir(), ".codex", "models_cache.json");
 
-const MENU_LIMIT = 4;
-
-/* 兜底表：只有「没装 Codex CLI 或那个缓存文件读不出来」时才用得上，是
-   2026-09-23 那天 models_cache.json 的原样摘录。模型升级不需要来改它。 */
+/* 兜底表：只有「没装 Codex CLI 或那个缓存文件读不出来」时才用得上。
+   2026-10-27 补充官方已发布的 GPT-6.1 Terra；正常情况下仍以本地缓存为准。 */
 const FALLBACK_CATALOG = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   desc: "Our most capable model for complex, demanding work.", rank: 1,  listed: true },
   { model: "gpt-6-sol",     label: "GPT-6-Sol",     desc: "GPT-6 Sol Codex model.",                              rank: 2,  listed: true },
-  { model: "gpt-6-luna",    label: "GPT-6-Luna",    desc: "GPT-6 Luna Codex model.",                             rank: 3,  listed: true },
+  { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", desc: "Fast, efficient visual reasoning, computer use, and clear writing.", rank: 3, listed: true },
+  { model: "gpt-6-luna",    label: "GPT-6-Luna",    desc: "GPT-6 Luna Codex model.",                             rank: 4,  listed: true },
   { model: "gpt-5.6-sol",   label: "GPT-5.6-Sol",   desc: "Reliable agentic workhorse for everyday tasks.",      rank: 4,  listed: true },
   { model: "gpt-5.6-terra", label: "GPT-5.6-Terra", desc: "Balanced agentic coding model for everyday work.",    rank: 7,  listed: true },
   { model: "gpt-5.6-luna",  label: "GPT-5.6-Luna",  desc: "Fast and affordable agentic coding model.",           rank: 8,  listed: true },
@@ -78,6 +77,7 @@ const FALLBACK_CATALOG = [
 // 菜单上的中文说明。认不出的新模型退回缓存里那句英文 description——宁可英文，
 // 也不要为了凑中文把新模型挡在菜单外面。
 const MENU_DESCS = [
+  [/^gpt-6\.1-terra$/, "视觉理解与写作"],
   [/astra$/, "旗舰最强"],
   [/sol$/,   "综合可靠"],
   [/terra$/, "均衡通用"],
@@ -184,12 +184,10 @@ export function menuModels() {
   const listed = getCatalog().filter(entry => entry.listed);
   const latest = generationOf(listed[0]?.model ?? "");
   const sameGen = latest ? listed.filter(entry => generationOf(entry.model) === latest) : listed;
-  return sameGen
-    .slice(0, MENU_LIMIT)
-    .map((entry) => {
-      const desc = MENU_DESCS.find(([pattern]) => pattern.test(entry.model))?.[1] ?? entry.desc;
-      return { model: entry.model, label: entry.label, name: entry.label, desc: desc || entry.label };
-    });
+  return sameGen.map((entry) => {
+    const desc = MENU_DESCS.find(([pattern]) => pattern.test(entry.model))?.[1] ?? entry.desc;
+    return { model: entry.model, label: entry.label, name: entry.label, desc: desc || entry.label };
+  });
 }
 
 /** 目录里全部模型名（含 hide 和已弃用的）——用来反推「这个模型属于哪个账号」。 */

@@ -113,12 +113,14 @@ export class PersistentCodexRuntime {
     this._buffer = "";
     this._stderr = "";
     this._turn = null;
+    this._steers = new Map();
+    this._completedTurnIds = new Set();
   }
 
   get started() { return isAlive(this.proc); }
 
   /** 正在跑一轮吗。 */
-  get busy() { return this._turn !== null; }
+  get busy() { return this._turn !== null || this._steers.size > 0; }
 
   /** 起进程。之后必须先 initialize 才能用。 */
   start({ spawn, signature }) {
@@ -129,15 +131,16 @@ export class PersistentCodexRuntime {
     this.signature = signature;
     this.threadId = null;
     this.turnId = null;
+    this._completedTurnIds.clear();
     this._buffer = "";
     this._stderr = "";
 
     proc.stdout.setEncoding("utf8");
-    proc.stdout.on("data", chunk => this._onStdout(chunk));
+    proc.stdout.on("data", chunk => { if (this.proc === proc) this._onStdout(chunk); });
     proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", chunk => { this._stderr += chunk; });
-    proc.on("error", err => this._onExit(err));
-    proc.on("close", code => this._onExit(null, code));
+    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr += chunk; });
+    proc.on("error", err => { if (this.proc === proc) this._onExit(err); });
+    proc.on("close", code => { if (this.proc === proc) this._onExit(null, code); });
     return proc;
   }
 
@@ -193,8 +196,7 @@ export class PersistentCodexRuntime {
         if (turn) turn.aborted = true;
         /* 先礼后兵：turn/interrupt 能只打断这一轮而把进程和上下文留住，
            这是 app-server 相比「杀进程」最实在的一个好处。发不出去再杀。 */
-        this._request("turn/interrupt", { threadId: this.threadId, turnId: this.turnId })
-          .catch(() => this.kill());
+        this._interruptAbortedTurn();
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -204,14 +206,87 @@ export class PersistentCodexRuntime {
         onEvent,
         aborted: false,
         usage: null,
-        detach: () => { try { signal?.removeEventListener("abort", onAbort); } catch { /* 老版本没有 */ } },
+        detach: () => {
+          clearTimeout(startedTurn.cancelTimer);
+          try { signal?.removeEventListener("abort", onAbort); } catch { /* 老版本没有 */ }
+        },
       };
       this._stderr = "";
 
+      const startedTurn = this._turn;
       this._request("turn/start", { ...params, threadId: this.threadId, input })
-        .then((res) => { this.turnId = res?.turn?.id ?? null; })
-        .catch(err => this._settleTurn(err));
+        .then((res) => {
+          if (this._turn !== startedTurn) return;
+          this.turnId = res?.turn?.id ?? this.turnId;
+          this._interruptAbortedTurn();
+        })
+        .catch(err => { if (this._turn === startedTurn) this._settleTurn(err); });
     });
+  }
+
+  /** Resolve only when Codex confirms consuming this client message. RPC
+   * acceptance alone is not a delivery receipt. Keep the original turn pinned. */
+  steerTurn({ input, expectedTurnId, clientUserMessageId, onApplied = null }) {
+    const turn = this._turn;
+    const existing = this._steers.get(clientUserMessageId);
+    if (existing) return existing.promise;
+    if (!turn || !this.started || !expectedTurnId || this.turnId !== expectedTurnId) {
+      return Promise.reject(Object.assign(new Error("Codex has no matching active turn"), { codexSteerRejected: true }));
+    }
+    if (turn.aborted) return Promise.reject(this._abortError());
+    if (!clientUserMessageId) return Promise.reject(new TypeError("clientUserMessageId is required"));
+    const threadId = this.threadId;
+    const op = { turn, turnId: expectedTurnId, accepted: false, applied: false, verifying: false };
+    op.promise = new Promise((resolve, reject) => {
+      op.fail = error => {
+        if (op.applied || !this._steers.has(clientUserMessageId)) return;
+        this._steers.delete(clientUserMessageId);
+        reject(error);
+      };
+      op.apply = () => {
+        if (op.applied) return;
+        op.applied = true;
+        this._steers.delete(clientUserMessageId);
+        try {
+          onApplied?.(); // synchronous: split history before forwarding continued output
+          resolve({ turnId: expectedTurnId, applied: true });
+        } catch (error) {
+          error.codexSteerUncertain = true;
+          reject(error);
+        }
+      };
+    });
+    op.verify = async () => {
+      if (op.applied || op.verifying || !op.accepted) return;
+      op.verifying = true;
+      try {
+        const snapshot = await this._request("thread/read", { threadId, includeTurns: true });
+        const turns = snapshot?.thread?.turns;
+        if (!Array.isArray(turns)) throw new Error("Codex did not return delivery history");
+        if (turns.some(entry => entry.items?.some(item => item.type === "userMessage" && item.clientId === clientUserMessageId))) {
+          op.apply();
+        } else {
+          op.fail(Object.assign(new Error("Codex finished before consuming the follow-up"), { codexSteerRejected: true }));
+        }
+      } catch (error) {
+        error.codexSteerUncertain = true;
+        op.fail(error);
+      }
+    };
+    this._steers.set(clientUserMessageId, op);
+    this._request("turn/steer", { threadId, input, expectedTurnId, clientUserMessageId })
+      .then(result => {
+        if (op.applied) return;
+        if (result?.turnId !== expectedTurnId) throw new Error("Codex accepted an unexpected turn");
+        op.accepted = true;
+        if (this._turn !== turn) void op.verify();
+      })
+      .catch(error => {
+        if (error.codexRpcError) error.codexSteerRejected = true;
+        else error.codexSteerUncertain = true;
+        op.fail(error);
+      });
+    return op.promise;
   }
 
   /** 收掉进程。在跑的那一轮会以中断收场。 */
@@ -228,6 +303,23 @@ export class PersistentCodexRuntime {
     const err = new Error("Codex 请求已取消");
     err.name = "AbortError";
     return err;
+  }
+
+  _interruptAbortedTurn() {
+    const turn = this._turn;
+    const proc = this.proc;
+    if (!turn?.aborted || turn.interruptSent) return;
+    if (!turn.cancelTimer) {
+      turn.cancelTimer = setTimeout(() => {
+        if (this._turn === turn && this.proc === proc) this.kill();
+      }, 5_000);
+      turn.cancelTimer.unref?.();
+    }
+    // turn/start can still be in flight. The protocol requires a real turn ID.
+    if (!this.turnId) return;
+    turn.interruptSent = true;
+    this._request("turn/interrupt", { threadId: this.threadId, turnId: this.turnId })
+      .catch(() => { if (this._turn === turn && this.proc === proc) this.kill(); });
   }
 
   _send(payload) {
@@ -270,7 +362,9 @@ export class PersistentCodexRuntime {
       const waiter = this._pending.get(message.id);
       this._pending.delete(message.id);
       clearTimeout(waiter.timer);
-      if (message.error) waiter.reject(new Error(message.error.message || JSON.stringify(message.error)));
+      if (message.error) waiter.reject(Object.assign(new Error(message.error.message || JSON.stringify(message.error)), {
+        codexRpcError: true, code: message.error.code, data: message.error.data,
+      }));
       else waiter.resolve(message.result);
       return;
     }
@@ -295,16 +389,29 @@ export class PersistentCodexRuntime {
 
   _onNotification(method, params) {
     const turn = this._turn;
-    if (method === "thread/started" && params?.thread?.id) this.threadId = params.thread.id;
-    if (method === "turn/started" && params?.turn?.id) this.turnId = params.turn.id;
+    const eventThreadId = params.threadId || params.thread?.id;
+    const ownThread = !eventThreadId || !this.threadId || eventThreadId === this.threadId;
+    const eventTurnId = params.turnId || params.turn?.id;
+    if (!ownThread || (eventTurnId && (this._completedTurnIds.has(eventTurnId)
+      || (this.turnId && eventTurnId !== this.turnId)))) return;
+    if ((method === "item/started" || method === "item/completed") && params?.item?.type === "userMessage") {
+      const op = this._steers.get(params.item.clientId);
+      if (op && op.turn === turn && (!params.turnId || params.turnId === op.turnId)
+        && (!params.threadId || params.threadId === this.threadId)) op.apply();
+    }
+    if (method === "thread/started" && !this.threadId && params?.thread?.id) this.threadId = params.thread.id;
+    if (method === "turn/started" && ownThread && turn && params?.turn?.id) {
+      this.turnId = params.turn.id;
+      this._interruptAbortedTurn();
+    }
     if (method === "thread/tokenUsage/updated" && turn) turn.usage = params?.tokenUsage ?? turn.usage;
 
     if (turn?.onEvent) {
       try { turn.onEvent(method, params); } catch { /* 翻译失败不该把整轮带崩 */ }
     }
 
-    if (method === "turn/completed") {
-      this.turnId = null;
+    if (method === "turn/completed" && ownThread
+      && (!this.turnId || !params.turn?.id || params.turn.id === this.turnId)) {
       this._settleTurn(null, params?.turn ?? null);
     }
   }
@@ -315,6 +422,9 @@ export class PersistentCodexRuntime {
     this.signature = null;
     this.threadId = null;
     this.turnId = null;
+    for (const op of this._steers.values()) {
+      op.fail(Object.assign(new Error("Codex exited before confirming the follow-up"), { codexSteerUncertain: true }));
+    }
     for (const [, waiter] of this._pending) {
       clearTimeout(waiter.timer);
       waiter.reject(new Error("codex app-server 已退出"));
@@ -334,7 +444,16 @@ export class PersistentCodexRuntime {
   _settleTurn(error, turnResult = null) {
     const turn = this._turn;
     if (!turn) return;
+    const completedId = this.turnId || turnResult?.id;
+    if (completedId) {
+      this._completedTurnIds.add(completedId);
+      if (this._completedTurnIds.size > 50) this._completedTurnIds.delete(this._completedTurnIds.values().next().value);
+    }
+    this.turnId = null;
     this._turn = null;
+    for (const op of this._steers.values()) {
+      if (op.turn === turn) void op.verify();
+    }
     turn.detach();
     if (error) { turn.reject(error); return; }
     if (turn.aborted) { turn.reject(this._abortError()); return; }

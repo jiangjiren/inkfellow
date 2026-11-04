@@ -151,6 +151,12 @@ html, body {
   box-shadow: inset 0 0 0 1px var(--border);
 }
 .msg-body { line-height: 1.6; word-break: break-word; }
+.video-open-card { display:flex; align-items:center; gap:9px; width:100%; margin-top:10px; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--tool-bg); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.video-open-card:hover { background:var(--bg3); border-color:var(--accent); }
+.video-open-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.video-open-icon { color:var(--accent); font-size:16px; }
+.video-open-label { display:block; font-size:12px; font-weight:600; }
+.video-open-filename { display:block; color:var(--text-dim); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .msg-user .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg-body p { margin: 4px 0; }
 .msg-body p:first-child { margin-top: 0; }
@@ -255,12 +261,15 @@ html, body {
 .sq-row[data-s="failed"] .sq-dot { background: var(--yellow); }
 .sq-row[data-s="failed"] .sq-dot::after { content: ''; width: 1.5px; height: 4px; background: var(--bg); border-radius: 1px; }
 
-.sq-label { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.3s ease; }
+/* 任务名是这一行的主体。窄面板里行尾的追问数、厂商标签、结果摘要会把它挤得只剩
+   一个字，所以给它留底，让行尾那几样先缩成省略号 */
+.sq-label { flex: 1; min-width: 5.5em; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.3s ease; }
 .sq-row[data-s="done"] .sq-label { color: var(--text-dim); }
 .sq-row[data-s="asking"] .sq-label { color: var(--accent); font-weight: 550; }
 .sq-origin {
   display: none;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
   max-width: 42%;
   padding: 1px 6px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
@@ -275,7 +284,7 @@ html, body {
 }
 .sq-origin.visible { display: block; }
 /* 成果摘要用 sans：mono 排中文会散架，等宽只留给时间和数字 */
-.sq-meta { flex-shrink: 0; max-width: 52%; font-size: 10.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity 0.15s; }
+.sq-meta { flex-shrink: 1; min-width: 0; max-width: 52%; font-size: 10.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity 0.15s; }
 .sq-meta.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .sq-stop { position: absolute; right: 6px; border: 0; background: var(--bg); padding: 2px 7px; border-radius: 5px; font-family: inherit; font-size: 10px; color: var(--text-dim); cursor: pointer; opacity: 0; transition: opacity 0.15s; box-shadow: inset 0 0 0 1px var(--border); }
 .sq-row:hover .sq-stop { opacity: 1; }
@@ -287,10 +296,31 @@ html, body {
 .sq-detail { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.28s var(--ease-out); }
 .sq-detail > * { min-height: 0; overflow: hidden; }
 .sq-detail.open { grid-template-rows: 1fr; }
-.sq-detail-in { margin: 0 6px 6px 34px; padding: 7px 9px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-item); font-family: var(--font-mono); font-size: 10.5px; line-height: 1.85; color: var(--text-dim); }
-.sq-detail-in .st { display: block; }
-.sq-detail-in .st.now { color: var(--text); }
-.sq-detail-in .rs { display: block; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--border); font-family: var(--font-sans); font-size: 11px; color: var(--text); }
+/* 就地展开 = 扫一眼：谁做的、做完没有、产出开头几行。要看全文或接着追问，点「查看全部」进子任务页 */
+.sq-detail-in { margin: 2px 6px 8px 34px; padding: 9px 11px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-item); display: flex; flex-direction: column; gap: 8px; }
+.sq-ix-who { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sq-ix-preview { max-height: 8.2em; overflow: hidden; font-size: 12px; -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
+.sq-ix-preview.short { max-height: none; -webkit-mask-image: none; mask-image: none; }
+.sq-ix-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+.sq-ix-thread { font-size: 11px; color: var(--text-dim); padding: 6px 8px; border-radius: 6px; background: var(--bg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sq-ix-thread b { color: var(--accent); font-weight: 600; }
+.sq-ix-open { align-self: flex-start; border: 1px solid var(--border-strong); background: var(--bg-document); color: var(--text); border-radius: 7px; padding: 4px 10px; font-family: inherit; font-size: 11.5px; cursor: pointer; }
+.sq-ix-open:hover { border-color: var(--text-dim); }
+.sq-row.sq-row-viewing { background: var(--accent-bg); }
+.sq-thread { flex-shrink: 0; font-size: 10px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.sq-thread:empty { display: none; }
+/* 子任务本身早跑完了，但它正在回一条追问：照样得看得出「在干活」 */
+.sq-row[data-follow="running"] .sq-dot { background: var(--text-dim); animation: sqBreathe var(--beat) ease-in-out infinite; }
+.sq-row[data-follow="running"] .sq-dot::after { display: none; }
+/* 子任务的署名、步骤流：就地展开和子任务页共用 */
+.st-chip { min-width: 0; max-width: 100%; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 7%, var(--bg)); color: var(--accent); font-family: var(--font-mono); font-size: 9.5px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-steptog { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); cursor: pointer; }
+.st-steptog:hover { color: var(--text); }
+.st-steptog svg { width: 10px; height: 10px; transition: transform 0.2s var(--ease-out); }
+.st-steptog[aria-expanded="true"] svg { transform: rotate(90deg); }
+.st-steps { margin: 0; padding: 0; list-style: none; font-family: var(--font-mono); font-size: 10.5px; line-height: 1.85; color: var(--text-dim); overflow-wrap: anywhere; }
+.st-steps[hidden] { display: none; }
+.st-steps li.now { color: var(--text); }
 
 /* 合流后整卡塌成一行 —— 完成的东西不该继续占注意力 */
 .sq-summary { display: none; align-items: center; gap: 7px; padding: 9px 12px; font-size: 11.5px; color: var(--text-dim); }
@@ -323,10 +353,13 @@ html, body {
 
 .bga-head {
   display: flex; align-items: center; gap: 8px;
+  width: 100%; border: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left;
   padding: 8px 10px 8px 12px;
   cursor: pointer; user-select: none;
 }
 .bga-head:hover { background: var(--bg3); }
+.bga-head:focus-visible, .bga-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .bga-dot {
   width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
   background: var(--accent); animation: genPulse var(--beat) ease-in-out infinite;
@@ -337,12 +370,6 @@ html, body {
   transform: rotate(180deg); transition: transform 0.24s var(--ease-out);
 }
 #bg-activity.open .bga-chev { transform: none; }
-/* 完成即停止脉冲：还在动的点意味着还在忙 */
-#bg-activity.done .bga-dot { background: var(--green); animation: none; }
-#bg-activity.done .bga-text { color: var(--green); }
-/* 有跑挂的就别报绿 —— 绿色是"都好了"的意思 */
-#bg-activity.done.has-fail .bga-dot { background: var(--yellow); }
-#bg-activity.done.has-fail .bga-text { color: var(--text); }
 
 .bga-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.26s var(--ease-out); }
 .bga-body > .bga-clip { min-height: 0; overflow: hidden; }
@@ -350,22 +377,91 @@ html, body {
 .bga-list { max-height: 44vh; overflow-y: auto; padding: 2px 0 6px; border-top: 1px solid var(--border); }
 .bga-item {
   display: flex; align-items: center; gap: 9px;
+  width: 100%; border: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left;
   padding: 7px 12px; cursor: pointer; transition: background 0.12s;
 }
 .bga-item:hover { background: var(--bg3); }
 .bga-idot { position: relative; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; }
 .bga-item[data-s="running"] .bga-idot { background: var(--accent); animation: sqBreathe var(--beat) ease-in-out infinite; }
 .bga-item[data-s="queued"] .bga-idot { box-shadow: inset 0 0 0 1.5px var(--border-strong); }
-.bga-item[data-s="done"] .bga-idot::after {
-  content: ''; width: 3px; height: 6.5px; margin-top: -2px; margin-left: 1px;
-  border: solid var(--text-dim); border-width: 0 1.5px 1.5px 0; transform: rotate(42deg);
-}
-.bga-item[data-s="failed"] .bga-idot { background: var(--yellow); }
-.bga-item[data-s="failed"] .bga-idot::after { content: ''; width: 1.5px; height: 4px; background: var(--bg); border-radius: 1px; }
 .bga-ilabel { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bga-item[data-s="done"] .bga-ilabel, .bga-item[data-s="failed"] .bga-ilabel { color: var(--text-dim); }
 .bga-iorigin { flex-shrink: 0; max-width: 38%; color: var(--accent); font-family: var(--font-mono); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bga-imeta { flex-shrink: 0; font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* ── 子任务页 ──
+   窄面板里从右侧推入、盖住整个面板，返回键回主对话；面板够宽（≥680px）时改成
+   右半边分栏，主对话留在左边照常可用。追问只发给这个子任务，不进主时间线。 */
+#app { position: relative; }
+#subtask-view {
+  position: absolute; inset: 0; z-index: 60;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  transform: translateX(100%); visibility: hidden;
+  transition: transform 0.32s var(--ease-out), visibility 0s linear 0.32s;
+}
+#subtask-view.open { transform: none; visibility: visible; transition: transform 0.32s var(--ease-out), visibility 0s; box-shadow: -10px 0 30px rgba(0, 0, 0, 0.08); }
+#app.subtask-split { padding-right: 50%; }
+#app.subtask-split #subtask-view { left: auto; width: 50%; transform: none; transition: none; box-shadow: none; border-left: 1px solid var(--border); }
+.stv-head { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 7px 10px 7px 6px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.stv-back { flex-shrink: 0; display: inline-flex; align-items: center; gap: 2px; border: 0; background: transparent; padding: 4px 8px 4px 4px; border-radius: 6px; font-family: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
+.stv-back:hover { background: var(--accent-bg); }
+.stv-back svg { width: 15px; height: 15px; }
+#app.subtask-split .stv-back .stv-back-label { display: none; }
+.stv-title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stv-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px 0; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.stv-status { display: inline-flex; align-items: center; gap: 5px; }
+.stv-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
+.stv-status.running i { background: var(--accent); animation: sqBreathe var(--beat) ease-in-out infinite; }
+.stv-status.failed i { background: var(--yellow); }
+.stv-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.stv-brief { border: 1px solid var(--border); border-radius: var(--radius-item); padding: 8px 10px; background: var(--tool-bg); font-size: 12px; }
+.stv-brief-h { font-size: 10.5px; color: var(--text-dim); margin-bottom: 3px; }
+.stv-brief-x { line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.stv-brief.full .stv-brief-x { display: block; }
+.stv-brief-more { border: 0; background: transparent; padding: 0; margin-top: 3px; font-family: inherit; font-size: 10.5px; color: var(--accent); cursor: pointer; }
+.stv-stepbox { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-item); padding: 8px 10px; background: var(--bg-document); }
+.stv-entry { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stv-sig { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-dim); }
+.stv-user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 17px 17px 6px 17px; background: var(--user-bubble); box-shadow: inset 0 0 0 1px var(--border); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stv-user-note { align-self: flex-end; margin-top: -10px; font-size: 10.5px; color: var(--text-dim); }
+.stv-divider { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--text-dim); }
+.stv-divider::before, .stv-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.stv-divider.switch { color: var(--accent); }
+.stv-divider.switch::before, .stv-divider.switch::after { background: color-mix(in srgb, var(--accent) 25%, var(--border)); }
+.stv-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+.stv-note.failed { color: var(--yellow); }
+.stv-dock { position: relative; flex-shrink: 0; padding: 8px 12px 12px; }
+.stv-composer { background: var(--bg-document); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow-soft); transition: box-shadow 0.2s, border-color 0.2s; }
+.stv-composer:focus-within { border-color: color-mix(in srgb, var(--accent) 35%, transparent); box-shadow: var(--shadow-soft), 0 0 0 3px var(--accent-ring); }
+.stv-target { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 7px 12px 0; font-size: 10.5px; color: var(--text-dim); }
+.stv-row { display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 4px 12px; }
+.stv-row textarea { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); resize: none; font: inherit; font-size: 13.5px; line-height: 1.55; padding: 4px 0; min-height: 26px; max-height: 140px; outline: none; }
+.stv-row textarea::placeholder { color: var(--text-dim); opacity: 0.85; }
+.stv-send { flex-shrink: 0; width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--accent); color: #fff; cursor: pointer; }
+.stv-send:disabled { opacity: 0.35; cursor: default; }
+.stv-send.stop { background: var(--bg3); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.stv-send svg { width: 14px; height: 14px; }
+.stv-tools { display: flex; align-items: center; gap: 6px; padding: 0 10px 8px; font-size: 11px; color: var(--text-dim); }
+.stv-tools[hidden] { display: none; }
+.stv-mpick { display: inline-flex; align-items: center; gap: 3px; margin-left: -4px; border: 0; background: transparent; padding: 2px 6px; border-radius: 6px; font-family: inherit; font-size: 11px; color: var(--text); cursor: pointer; }
+.stv-mpick:hover, .stv-mpick[aria-expanded="true"] { background: var(--bg3); }
+.stv-mpick svg { width: 7px; height: 7px; }
+.stv-mmenu { position: absolute; left: 12px; bottom: calc(100% - 6px); z-index: 5; width: min(260px, calc(100% - 24px)); max-height: 50vh; overflow-y: auto; padding: 4px; background: var(--bg-document); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14); }
+.stv-mmenu[hidden] { display: none; }
+.stv-mmenu-h, .stv-mmenu-f { padding: 6px 10px 4px; font-size: 10.5px; color: var(--text-dim); line-height: 1.5; }
+.stv-mmenu-f { margin-top: 4px; padding-top: 7px; border-top: 1px solid var(--border); }
+.stv-mmenu button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; padding: 7px 10px; border-radius: 6px; font-family: inherit; font-size: 12px; color: var(--text); text-align: left; cursor: pointer; }
+.stv-mmenu button:hover, .stv-mmenu button:focus-visible { background: var(--bg3); }
+.stv-mmenu .ck { width: 12px; flex-shrink: 0; color: var(--accent); }
+.stv-mmenu .nm { flex: 1; min-width: 0; }
+.stv-mmenu .ds { flex-shrink: 0; font-size: 10.5px; color: var(--text-dim); }
+/* 重启后编队卡还原不出来，追问记录退回主时间线显示，带上它追问的是哪个子任务 */
+.subtask-tag { font-size: 10.5px; color: var(--text-dim); }
+.msg-user .subtask-tag { align-self: flex-end; }
+@media (prefers-reduced-motion: reduce) {
+  #subtask-view, #subtask-view.open { transition: none; }
+}
 
 /* ── Codex 的 todo_list：串行计划，刻意不长成编队卡 ── */
 .todo { border: 1px solid var(--border); border-left: 2px solid var(--text-dim); border-radius: var(--radius-item); background: var(--tool-bg); padding: 8px 11px; margin: 6px 0; animation: squadIn 0.3s var(--ease-out) both; }
@@ -2214,6 +2310,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 #auth-profile-list::-webkit-scrollbar-track { background: transparent; }
 #auth-profile-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+.auth-profile-group { display: flex; flex-direction: column; gap: 8px; }
+.auth-profile-group + .auth-profile-group { margin-top: 8px; }
+.auth-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 0 2px; }
+.auth-group-title { font-size: 11.5px; font-weight: 600; color: var(--text); }
+.auth-group-hint { font-size: 10.5px; color: var(--text-dim); }
+
 .auth-profile-item {
   display: flex;
   align-items: center;
@@ -2375,6 +2477,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .auth-profile-item:hover .auth-profile-actions { opacity: 1; }
 
+.auth-profile-login,
 .auth-profile-edit,
 .auth-profile-del {
   width: 26px; height: 26px;
@@ -2387,6 +2490,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   transition: all 0.15s ease;
   padding: 0;
 }
+.auth-profile-login:hover,
 .auth-profile-edit:hover { background: var(--bg3); color: var(--text); }
 .auth-profile-del:hover  { background: rgba(192,57,43,0.1); color: var(--red); }
 
@@ -2399,6 +2503,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   flex-shrink: 0;
 }
 .auth-section-label + #auth-profile-list { padding-top: 4px; }
+.completion-preferences { margin-top: 12px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.completion-preferences[hidden] { display: none; }
+.completion-preferences label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; cursor: pointer; }
+.completion-preferences input { width: 16px; height: 16px; accent-color: var(--accent); }
+.completion-preferences p { margin: 6px 0 0; font-size: 11px; line-height: 1.6; color: var(--text-dim); }
 #auth-wechat-section {
   border-top: 1px solid var(--border);
   padding: 0 12px 14px;
@@ -2492,8 +2601,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 #auth-add-section {
   padding: 10px 12px 14px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-#auth-add-toggle {
+.auth-add-btn {
   width: 100%;
   display: flex;
   align-items: center;
@@ -2510,12 +2622,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   cursor: pointer;
   transition: all 0.15s ease;
 }
-#auth-add-toggle:hover { 
-  color: var(--accent); 
+.auth-add-btn:hover {
+  color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   background: color-mix(in srgb, var(--accent) 2%, transparent);
 }
-#auth-add-toggle .add-icon {
+.auth-add-btn .add-icon {
   display: grid; place-items: center;
   color: inherit;
 }
@@ -2547,6 +2659,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   line-height: 1.5;
   color: var(--text-dim);
 }
+/* 表单顶上那段说明：添加 Claude 会员账号时有好几行，贴着下面的输入框太挤 */
+#auth-form-hint { margin: 0 4px 10px; }
 
 .form-group {
   display: flex;
@@ -2913,11 +3027,17 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 
       <!-- 底部添加区域 -->
       <div id="auth-add-section">
-        <button id="auth-add-toggle" type="button" aria-expanded="false">
+        <button id="auth-add-claude" class="auth-add-btn" type="button">
           <span class="add-icon" aria-hidden="true">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1V9M1 5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           </span>
-          添加账号
+          添加 Claude 会员账号
+        </button>
+        <button id="auth-add-toggle" class="auth-add-btn" type="button" aria-expanded="false">
+          <span class="add-icon" aria-hidden="true">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1V9M1 5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          添加 API 账号
         </button>
       </div>
       
@@ -2947,6 +3067,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
           </div>
         </div>
       </div>
+      <section id="completion-preferences" class="completion-preferences" hidden>
+        <label for="completion-notifications-enabled">
+          <span>完成提醒</span>
+          <input id="completion-notifications-enabled" type="checkbox" checked aria-describedby="completion-notifications-hint" />
+        </label>
+        <p id="completion-notifications-hint">软件处于后台或最小化时，回复完成后显示系统通知并播放提示音。</p>
+      </section>
     </div>
 
     <!-- 视图 2：添加/编辑表单 -->
@@ -2955,11 +3082,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <button class="auth-back" id="auth-back" title="返回" aria-label="返回账号列表">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 13L3 7L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <span class="auth-title" id="auth-form-title" style="margin-left: 2px;">添加账号</span>
+        <span class="auth-title" id="auth-form-title" style="margin-left: 2px;">添加 API 账号</span>
         <span id="auth-form-status" aria-live="polite"></span>
       </header>
       
-      <div id="auth-add-form" role="form" aria-label="添加 / 编辑账号">
+      <div id="auth-add-form" role="form" aria-labelledby="auth-form-title">
+          <p class="add-hint" id="auth-form-hint">填写 API 密钥，按 API 用量计费或扣除 API 余额。</p>
           <!-- 基本信息：只有这一段是常驻的 -->
           <div class="form-group">
             <div class="add-field" id="add-segment">
@@ -3030,12 +3158,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     <!-- 子任务活动条：只要还有子 agent 在跑就常驻在输入框上方，跑完自行消失。
          发送键始终可用 —— 派生子任务的意义就是你可以继续做别的。 -->
     <div id="bg-activity" hidden>
-      <div class="bga-head" role="status" aria-live="polite">
+      <button class="bga-head" type="button" aria-expanded="false" aria-controls="bg-activity-list" aria-labelledby="bg-activity-label">
         <span class="bga-dot"></span>
-        <span class="bga-text"></span>
+        <span id="bg-activity-label" class="bga-text" role="status" aria-live="polite"></span>
         <svg class="bga-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4"/></svg>
-      </div>
-      <div class="bga-body"><div class="bga-clip"><div class="bga-list"></div></div></div>
+      </button>
+      <div class="bga-body"><div class="bga-clip"><div id="bg-activity-list" class="bga-list" inert></div></div></div>
     </div>
     <div id="composer">
       <section id="steering-tray" aria-label="待追加到当前任务的消息">
@@ -3100,14 +3228,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <div style="flex:1"></div>
         <div id="model-picker">
           <button id="model-btn" class="toolbar-picker-btn" aria-label="选择模型" aria-haspopup="listbox">
-            <span id="model-label">Sonnet 5</span>
+            <span id="model-label">Sonnet 5.5</span>
             <span id="effort-label-inline" class="effort-inline">高</span>
             <svg width="7" height="7" viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 5.3L4 2.8l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <div id="model-dropdown" class="picker-dropdown" role="listbox" aria-label="模型列表">
             <div class="model-view">
-              <button class="picker-option model-option active" data-model="claude-sonnet-5" data-label="Sonnet 5" role="option" aria-selected="true">
-                <span class="picker-option-name">Sonnet 5</span>
+              <button class="picker-option model-option active" data-model="claude-sonnet-5-5" data-label="Sonnet 5.5" role="option" aria-selected="true">
+                <span class="picker-option-name">Sonnet 5.5</span>
                 <span class="picker-option-desc">快速均衡</span>
               </button>
               <button class="picker-option model-option" data-model="claude-opus-5-5" data-label="Opus 5.5" role="option" aria-selected="false">
@@ -3165,7 +3293,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </div>
 </div>
 
+<script src="turn-completion.js?v=1"></script>
 <script>
+globalThis.InkfellowCompletion = new InkfellowTurnCompletionTracker((completion) => {
+  postParentMessage({ type: "ai-turn-completed", ...completion, title: convTitleOf(completion.conversationId) });
+});
 const messagesEl  = document.getElementById("messages");
 const promptEl    = document.getElementById("prompt");
 const sendBtn     = document.getElementById("send");
@@ -3231,6 +3363,10 @@ if (isDesktopEmbed && parentOrigin && configuredParentToken) {
 const settingsBtn   = document.getElementById("btn-settings");
 const authDialog    = document.getElementById("auth-dialog");
 const authBackdrop  = document.getElementById("auth-backdrop");
+document.getElementById("completion-preferences").hidden = !isDesktopEmbed;
+document.getElementById("completion-notifications-enabled").addEventListener("change", (event) => {
+  postParentMessage({ type: "completion-notifications-preference", enabled: event.target.checked });
+});
 const authStatusEl  = document.getElementById("auth-status");
 const authViewList  = document.getElementById("auth-view-list");
 const authViewForm  = document.getElementById("auth-view-form");
@@ -3290,8 +3426,9 @@ let resetRequested = false;
 let pendingRequestDraft = null;
 let activeRequestId = null;
 let requestRetryTimer = null;
-const steeringQueue = [];
-const steeringRemovalPending = new Set();
+let steeringQueue = [];
+let steeringRemovalPending = new Set();
+const conversationDeliveryStates = new Map();
 let steeringEditingId = null;
 let steeringDraggingId = null;
 let errorCompletionTimer = null;
@@ -3331,18 +3468,28 @@ function renderImageChip() {
   });
 }
 
-function addImage(dataUrl, mediaType) {
-  if (pendingImages.length >= MAX_IMAGES) return;
-  pendingImages.push({ data: dataUrl.split(",")[1], mediaType, previewUrl: dataUrl });
-  renderImageChip();
+const attachmentVersions = new Map();
+let filePickerOwner = null;
+
+function addImage(dataUrl, mediaType, owner = currentConvId, version = attachmentVersions.get(owner) || 0) {
+  if (version !== (attachmentVersions.get(owner) || 0)) return;
+  const visible = owner === currentConvId;
+  const draft = visible ? null : (conversationDrafts.get(owner) || { text: "", images: [], mentions: [], quote: null });
+  const images = visible ? pendingImages : draft.images;
+  if (images.length >= MAX_IMAGES) return;
+  images.push({ data: dataUrl.split(",")[1], mediaType, previewUrl: dataUrl });
+  if (visible) renderImageChip();
+  else conversationDrafts.set(owner, draft);
 }
 
 function clearImages() {
+  attachmentVersions.set(currentConvId, (attachmentVersions.get(currentConvId) || 0) + 1);
   pendingImages = [];
   renderImageChip();
 }
 
 document.getElementById("btn-attach").addEventListener("click", () => {
+  filePickerOwner = { id: currentConvId, version: attachmentVersions.get(currentConvId) || 0 };
   fileInput.value = "";
   fileInput.click();
 });
@@ -3362,9 +3509,11 @@ document.getElementById("btn-mention").addEventListener("click", () => {
 });
 
 fileInput.addEventListener("change", () => {
+  const owner = filePickerOwner || { id: currentConvId, version: attachmentVersions.get(currentConvId) || 0 };
+  filePickerOwner = null;
   Array.from(fileInput.files).forEach(file => {
     const reader = new FileReader();
-    reader.onload = (e) => addImage(e.target.result, file.type);
+    reader.onload = (e) => addImage(e.target.result, file.type, owner.id, owner.version);
     reader.readAsDataURL(file);
   });
 });
@@ -3375,11 +3524,13 @@ document.addEventListener("paste", (e) => {
   const imgItems = items.filter(item => item.type.startsWith("image/"));
   if (imgItems.length === 0) return;
   e.preventDefault();
+  const owner = currentConvId;
+  const version = attachmentVersions.get(owner) || 0;
   imgItems.forEach(item => {
     const file = item.getAsFile();
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => addImage(ev.target.result, file.type);
+    reader.onload = (ev) => addImage(ev.target.result, file.type, owner, version);
     reader.readAsDataURL(file);
   });
 });
@@ -3389,6 +3540,7 @@ let messageLog = [];       // messages in current conversation
 let currentConvId = null;  // current conversation id
 let currentSessionId = null; // current provider-side session id
 let currentSessionProvider = null;
+const deletedConversationIds = new Set();
 
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -3401,7 +3553,7 @@ async function fetchHistory() {
   try {
     const res = await fetch("api/history");
     if (res.ok) {
-      _historyCache = await res.json();
+      _historyCache = (await res.json()).filter(entry => !deletedConversationIds.has(entry.id));
       return _historyCache;
     }
   } catch { }
@@ -3410,7 +3562,7 @@ async function fetchHistory() {
 
 // ── Auth: 账号配置列表 ────────────────────────────────────────
 const CLAUDE_MODELS = [
-  { model: "claude-sonnet-5",            label: "Sonnet 5",   name: "Sonnet 5",   desc: "快速均衡" },
+  { model: "claude-sonnet-5-5",          label: "Sonnet 5.5", name: "Sonnet 5.5", desc: "快速均衡" },
   { model: "claude-opus-5-5",            label: "Opus 5.5",   name: "Opus 5.5",   desc: "最强推理" },
   { model: "claude-fable-5-1",           label: "Fable 5.1",  name: "Fable 5.1",  desc: "旗舰最强" },
 ];
@@ -3478,6 +3630,7 @@ async function loadAgyModelCatalog() {
 let CODEX_MODELS = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   name: "GPT-6-Astra",   desc: "旗舰最强" },
   { model: "gpt-6-sol",     label: "GPT-6-Sol",     name: "GPT-6-Sol",     desc: "综合可靠" },
+  { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", name: "GPT-6.1 Terra", desc: "视觉理解与写作" },
   { model: "gpt-6-luna",    label: "GPT-6-Luna",    name: "GPT-6-Luna",    desc: "快速经济" },
 ];
 // 全目录，含菜单上撤下来的旧版本——还选着旧模型的对话要认得出它属于这个账号
@@ -3525,6 +3678,7 @@ function effectiveEffort(levels) {
 
 // 旧模型 ID → 新模型 ID，保留用户此前选中的档位
 const MODEL_MIGRATIONS = {
+  "claude-sonnet-5": "claude-sonnet-5-5",
   "claude-opus-4-6": "claude-opus-5-5",
   "claude-opus-4-8": "claude-opus-5-5",
   "claude-opus-5":   "claude-opus-5-5",
@@ -3533,7 +3687,13 @@ const MODEL_MIGRATIONS = {
 
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
 let _dispatchProviders = [];
-let _claudeAuthStatus = null; // null=checking, true=ok, false=not logged in
+let _claudeAuthStatus = null; // 主号：null=checking, true=ok, false=not logged in
+// 每个 Claude 会员账号各自的登录状态：profileId → { authenticated, email, subscriptionType }。
+// null 表示还没查回来。额外加的号各用各的配置目录，登录状态互不相干。
+let _claudeAccountAuth = null;
+// 刚点了登录、还在等浏览器那边授权的账号：profileId → { deadline, email（点之前登的是谁） }
+const _claudeLoginPending = new Map();
+const CLAUDE_LOGIN_WAIT_MS = 3 * 60_000;
 let _codexAuthStatus  = null;
 let _agyAuthStatus    = null;
 
@@ -3579,13 +3739,29 @@ function looksLikeDispatchAttempt(value) {
 
 async function checkClaudeAuth() {
   try {
-    const res = await fetch("api/health/claude-auth");
+    const res = await fetch("api/health/claude-auth", { cache: "no-store" });
     const d = await res.json().catch(() => ({}));
     _claudeAuthStatus = !!d.authenticated;
+    _claudeAccountAuth = d.accounts && typeof d.accounts === "object" ? d.accounts : {};
   } catch {
     _claudeAuthStatus = false;
+    _claudeAccountAuth = {};
+  }
+  /* 等着的号登上了就收工。重新登录的号本来就是登着的，得看到换了人才算数；
+     换回同一个号的那种分辨不出来，等超时自己消掉。 */
+  let justLoggedIn = false;
+  for (const [id, pending] of _claudeLoginPending) {
+    const auth = _claudeAccountAuth[id];
+    if (auth?.authenticated && (!pending.email || auth.email !== pending.email)) {
+      _claudeLoginPending.delete(id);
+      justLoggedIn = true;
+    }
   }
   renderProfileList(_profileData);
+  if (justLoggedIn) {
+    setAuthStatus("saved", "已登录");
+    if (authDialog.classList.contains("open")) void checkProviderUsageLimits({ silent: true });
+  }
 }
 
 async function checkCodexAuth() {
@@ -3672,7 +3848,7 @@ function conversationRememberedProvider(id) {
   } catch { return null; }
 }
 
-function renderModelOptions(activeProfile) {
+function modelOptionsForProfile(activeProfile) {
   const provider = activeProfile?.provider || "claude";
   let options;
   if (provider === "claude") {
@@ -3681,11 +3857,11 @@ function renderModelOptions(activeProfile) {
     // Antigravity 通道能开的不止 Gemini，Claude 那两个也算 Google 那边的额度。
     // 这里不走 opus/sonnet/haiku 三档——那三个槽位装不下四个模型，而且推理
     // 档位由界面上的 effort 选择器控制，不该再挤进模型名里。
-    loadAgyModelCatalog();   // 第一次切到这个通道时才去拉真目录，回来后自己重渲染
+    // loadAgyModelCatalog();   // 第一次切到这个通道时才去拉真目录，回来后自己重渲染
     options = AGY_MODELS;
   } else if (provider === "codex") {
     // 同样不走 opus/sonnet/haiku 三档：Codex 那边挂着四个以上的模型，装不下
-    loadCodexModelCatalog();
+    // loadCodexModelCatalog();
     options = CODEX_MODELS;
   } else {
     // 收集三档模型，相同模型合并显示 tier 标签
@@ -3707,6 +3883,14 @@ function renderModelOptions(activeProfile) {
     });
     if (!options.length) options = CLAUDE_MODELS;
   }
+  return options;
+}
+
+function renderModelOptions(activeProfile) {
+  const provider = activeProfile?.provider || "claude";
+  if (provider === "antigravity") loadAgyModelCatalog();
+  if (provider === "codex") loadCodexModelCatalog();
+  const options = modelOptionsForProfile(activeProfile);
   const key = `model:${provider === "claude" ? "claude" : activeProfile?.id || provider}`;
   /* 先认这个对话自己记着的，没有才落到全局默认。换厂商时这份记录多半不在新
      清单里，下面那句 options.some(...) 会把它退回默认，不用单独判断。 */
@@ -4011,10 +4195,12 @@ const PROVIDER_LABEL = {
 };
 
 const ICON_EDIT  = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M8.5 2L11 4.5L4.5 11H2V8.5L8.5 2Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_KEY   = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><circle cx="4.5" cy="8.5" r="2.5" stroke="currentColor" stroke-width="1.25"/><path d="M6.3 6.7L11 2M9.2 3.8l1.3 1.3M10.4 2.6l1 1" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_TRASH = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 // ── Render profile list ────────────────────────────────────
 let _providerUsageLimits = {
   claude: { status: "idle" },
+  claudeAccounts: {},   // 额外 Claude 会员账号：profileId → 同 claude 的结构
   codex: { status: "idle" },
   antigravity: { status: "idle" },
 };
@@ -4073,20 +4259,51 @@ function codexPlanSuffix() {
   return ` · ${label}`;
 }
 
-const CLAUDE_PLAN_LABEL = { free: "Free", pro: "Pro", max_5x: "Max 5x", max_20x: "Max 20x", team: "Team", enterprise: "Enterprise" };
+// `claude auth status` 报 Max 只给 "max"，额度接口才细分 5x / 20x
+const CLAUDE_PLAN_LABEL = { free: "Free", pro: "Pro", max: "Max", max_5x: "Max 5x", max_20x: "Max 20x", team: "Team", enterprise: "Enterprise" };
 
-function claudePlanSuffix() {
-  const limit = _providerUsageLimits.claude;
-  const planType = limit?.subscriptionType;
+const PRIMARY_CLAUDE_PROFILE_ID = "p_claude";
+
+/** 后来加的 Claude 会员账号（主号之外的）：有自己的登录，可以改名、删除。 */
+function isExtraClaudeProfile(p) {
+  return p?.provider === "claude" && p.id !== PRIMARY_CLAUDE_PROFILE_ID;
+}
+
+/** 这个 Claude 账号的登录状态；null = 还没查回来。老服务端不回 accounts，主号退回到顶层那个布尔值。 */
+function claudeAuthFor(p) {
+  const auth = _claudeAccountAuth?.[p.id];
+  if (auth) return auth;
+  if (p.id === PRIMARY_CLAUDE_PROFILE_ID && _claudeAuthStatus !== null) return { authenticated: _claudeAuthStatus };
+  return _claudeAccountAuth ? { authenticated: false } : null;
+}
+
+function claudeUsageFor(p) {
+  return isExtraClaudeProfile(p) ? _providerUsageLimits.claudeAccounts?.[p.id] : _providerUsageLimits.claude;
+}
+
+function claudePlanSuffix(p, auth) {
+  const planType = claudeUsageFor(p)?.subscriptionType || auth?.subscriptionType;
   if (!planType) return "";
   const label = CLAUDE_PLAN_LABEL[String(planType).toLowerCase()] || planType;
   return ` · ${label}`;
 }
 
-function renderProviderUsageLimit(provider) {
+/** 排在它前面、登的是同一个邮箱的 Claude 账号。只提醒后加的那个，免得两个都标黄。 */
+function sameClaudeAccountBefore(p, email) {
+  if (!email) return null;
+  const claudeProfiles = _profileData.profiles.filter(q => q.provider === "claude");
+  const index = claudeProfiles.findIndex(q => q.id === p.id);
+  return claudeProfiles.slice(0, Math.max(0, index)).find(q => {
+    const other = claudeAuthFor(q);
+    return other?.authenticated && other.email && other.email.toLowerCase() === email.toLowerCase();
+  }) ?? null;
+}
+
+function renderProviderUsageLimit(p) {
+  const provider = p.provider;
   // antigravity 有两组配额，接不进这一行，走下面的 renderProviderUsageGroups
   if (provider !== "claude" && provider !== "codex") return "";
-  const limit = _providerUsageLimits[provider];
+  const limit = provider === "claude" ? claudeUsageFor(p) : _providerUsageLimits.codex;
   // 读不到就什么都不显示 —— 以前那个 checking / unavailable 灰药丸只是噪音
   if (!limit || !limit.available) return "";
   const windows = renderLimitWindows(limit.fiveHour, limit.week);
@@ -4112,6 +4329,7 @@ async function checkProviderUsageLimits({ silent = false, agyAttempt = 0 } = {})
   if (!silent) {
     _providerUsageLimits = {
       claude: { status: "loading" },
+      claudeAccounts: {},
       codex: { status: "loading" },
       antigravity: { status: "loading" },
     };
@@ -4124,6 +4342,7 @@ async function checkProviderUsageLimits({ silent = false, agyAttempt = 0 } = {})
     if (!res.ok) throw new Error(data.error || "usage query failed");
     _providerUsageLimits = {
       claude: data.providers?.claude ?? { status: "unavailable", available: false },
+      claudeAccounts: data.providers?.claudeAccounts ?? {},
       codex: data.providers?.codex ?? { status: "unsupported", available: false },
       antigravity: data.providers?.antigravity ?? { status: "unsupported", available: false },
     };
@@ -4132,6 +4351,7 @@ async function checkProviderUsageLimits({ silent = false, agyAttempt = 0 } = {})
     const message = String(err?.message || err || "usage query failed");
     _providerUsageLimits = {
       claude: { status: "error", available: false, message },
+      claudeAccounts: {},
       codex: { status: "error", available: false, message },
       antigravity: { status: "error", available: false, message },
     };
@@ -4180,9 +4400,19 @@ const authProfileList = document.getElementById("auth-profile-list");
 // 一行状态：点 + 一句中文。会员类讲登录，Key 类讲密钥和模型。
 function profileStatus(p) {
   if (p.provider === "claude") {
-    if (_claudeAuthStatus === true)  return { tone: "ok",   text: `已登录${claudePlanSuffix()}` };
-    if (_claudeAuthStatus === false) return { tone: "warn", text: "未登录 · 在服务器跑一次 claude" };
-    return { tone: "idle", text: "检测中…" };
+    if (_claudeLoginPending.has(p.id)) return { tone: "idle", text: "等待登录 · 在弹出的终端和浏览器里完成" };
+    const auth = claudeAuthFor(p);
+    if (!auth) return { tone: "idle", text: "检测中…" };
+    if (!auth.authenticated) return { tone: "warn", text: "未登录 · 点右侧钥匙登录" };
+    const twin = sameClaudeAccountBefore(p, auth.email);
+    if (twin) return { tone: "warn", text: `跟「${twin.name}」是同一个号 · 点钥匙换号重登`, title: auth.email };
+    // 只有一个 Claude 号时邮箱是废话；有两个以上才靠它分清谁是谁
+    const showEmail = auth.email && _profileData.profiles.filter(q => q.provider === "claude").length > 1;
+    return {
+      tone: "ok",
+      text: `已登录${showEmail ? ` · ${auth.email}` : ""}${claudePlanSuffix(p, auth)}`,
+      ...(auth.email ? { title: auth.email } : {}),
+    };
   }
   if (p.provider === "codex") {
     if (_codexAuthStatus === true) {
@@ -4209,6 +4439,10 @@ function profileStatus(p) {
   };
 }
 
+function isMembershipProfile(p) {
+  return ["claude", "codex", "antigravity"].includes(p.provider);
+}
+
 function renderProfileList(data, { adopt = false } = {}) {
   /* 谁说了算：当前对话自己记着的账号 > 本实例的 localStorage 全局默认 > 服务端
      那份。adopt 是唯一的例外——用户刚在这个面板里点了某个账号，服务端回的就是
@@ -4218,16 +4452,21 @@ function renderProfileList(data, { adopt = false } = {}) {
     data = { ...data, activeProfileId: preferredId };
   }
   _profileData = data;
-  authProfileList.innerHTML = data.profiles.map(p => {
+  const renderProfile = p => {
     const isActive = p.id === data.activeProfileId;
     const st = profileStatus(p);
     // 名字里已经写了厂商就不再挂一个标签重复说一遍
     const vendor = PROVIDER_LABEL[p.provider] ?? p.provider;
     const showVendor = !String(p.name || "").toLowerCase().includes(vendor.toLowerCase());
-    const canEdit   = p.provider !== "claude";
-    const canDelete = p.provider !== "claude";
-    const actions = (canEdit || canDelete) ? `
+    // Claude 主号固定在那儿；后来加的 Claude 会员账号跟 API 账号一样能改名、能删
+    const canEdit   = p.provider !== "claude" || isExtraClaudeProfile(p);
+    const canDelete = canEdit;
+    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口
+    const canLogin  = p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
+    const loginLabel = claudeAuthFor(p)?.authenticated ? "重新登录 / 换号" : "登录";
+    const actions = (canEdit || canDelete || canLogin) ? `
       <span class="auth-profile-actions">
+        ${canLogin  ? `<span class="auth-profile-login" data-login="${escapeAttr(p.id)}" title="${loginLabel}" aria-label="${loginLabel}" role="button">${ICON_KEY}</span>` : ""}
         ${canEdit   ? `<span class="auth-profile-edit" data-edit="${escapeAttr(p.id)}" title="编辑" aria-label="编辑" role="button">${ICON_EDIT}</span>` : ""}
         ${canDelete ? `<span class="auth-profile-del"  data-del="${escapeAttr(p.id)}"  title="删除" aria-label="删除" role="button">${ICON_TRASH}</span>` : ""}
       </span>` : "";
@@ -4242,19 +4481,60 @@ function renderProfileList(data, { adopt = false } = {}) {
           <span class="auth-dot ${st.tone}" aria-hidden="true"></span>
           <span class="auth-status-text">${escapeHtml(st.text)}</span>
         </span>
-        ${renderProviderUsageLimit(p.provider)}
+        ${renderProviderUsageLimit(p)}
         ${renderProviderUsageGroups(p.provider)}
       </span>
       ${actions}
     </button>`;
-  }).join("");
+  };
+  const groups = [
+    { id: "membership", label: "会员账号", hint: "通过账号登录，使用对应会员额度", profiles: data.profiles.filter(isMembershipProfile) },
+    { id: "api", label: "API 账号", hint: "使用 API 密钥，按 API 用量计费", profiles: data.profiles.filter(p => !isMembershipProfile(p)) },
+  ];
+  authProfileList.innerHTML = groups.filter(group => group.profiles.length).map(group => `
+    <div class="auth-profile-group" role="group" aria-labelledby="auth-group-${group.id}">
+      <div class="auth-group-heading">
+        <span class="auth-group-title" id="auth-group-${group.id}">${group.label}</span>
+        <span class="auth-group-hint">${group.hint}</span>
+      </div>
+      ${group.profiles.map(renderProfile).join("")}
+    </div>
+  `).join("");
   renderModelOptions(getActiveProfile());
   requestSkillRefresh();
   void fetchDispatchProviders();
 }
 
 // ── Activate / delete ─────────────────────────────────────
+const profileActivationVersions = new Map();
+
+function applyConversationProfile(data, owner, profileId, effort) {
+  const profile = data.profiles.find(p => p.id === profileId);
+  if (!profile) return;
+  const options = modelOptionsForProfile(profile);
+  const provider = profile.provider || "claude";
+  const previous = convModelPrefs.get(owner);
+  const raw = previous?.model ?? localStorage.getItem(`model:${provider === "claude" ? "claude" : profile.id}`);
+  const saved = provider === "claude" ? (MODEL_MIGRATIONS[raw] ?? raw) : raw;
+  const fallback = provider === "claude" ? options[0].model : (profile.sonnetModel || options[0].model);
+  const pref = { profileId, model: options.some(o => o.model === saved) ? saved : fallback, effort: previous?.effort ?? effort };
+  convModelPrefs.set(owner, pref);
+  persistConvModelPrefs();
+  persistConvPrefsToServer(owner, pref);
+  // Install the owner's preference before repainting: a hidden operation must
+  // preserve the visible conversation even when it has no saved preference yet.
+  const visibleId = activeProfileId();
+  if (owner !== currentConvId && currentConvId && !convModelPrefs.has(currentConvId)) rememberConvModelPrefs();
+  renderProfileList(owner === currentConvId ? { ...data, activeProfileId: profileId } : { ...data, activeProfileId: visibleId }, { adopt: owner === currentConvId });
+  if (owner === currentConvId) rememberConvModelPrefs();
+}
+
 async function activateProfile(id) {
+  const owner = currentConvId;
+  const effort = selectedEffort;
+  const originalProfileId = activeProfileId();
+  const version = (profileActivationVersions.get(owner) || 0) + 1;
+  profileActivationVersions.set(owner, version);
   setAuthStatus("saving", "切换中…");
   try {
     const res = await fetch("api/auth-profile", { method: "PUT",
@@ -4262,19 +4542,18 @@ async function activateProfile(id) {
       body: JSON.stringify({ action: "activate", profileId: id }) });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || "切换失败");
+    if (profileActivationVersions.get(owner) !== version) return;
     localStorage.setItem("activeProfileId", id);
-    renderProfileList(d.data, { adopt: true });
-    /* 账号跟着对话走，所以手点切换要记到当前对话名下。必须在 renderProfileList
-       之后——那一步才把 selectedModel 落到新厂商的清单里，早记会把旧厂商的模型
-       一起写进去，下次切回来又得退一次默认。 */
-    rememberConvModelPrefs();
-    if (d.resetSession) resetProviderSession();
+    applyConversationProfile(d.data, owner, id, effort);
+    if (originalProfileId !== id) resetProviderSession(owner);
     setAuthStatus("saved", "已切换");
     setTimeout(closeAuthDialog, 600);
-  } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
+  } catch (err) { if (profileActivationVersions.get(owner) === version) setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
 }
 
 async function deleteProfile(id) {
+  const owner = currentConvId;
+  const wasActive = activeProfileId() === id;
   setAuthStatus("saving", "删除中…");
   try {
     const res = await fetch("api/auth-profile", { method: "PUT",
@@ -4285,7 +4564,7 @@ async function deleteProfile(id) {
     // 别的对话还记着这个账号；留着死 id 只会让每次切进去都白判断一次「它还在吗」
     forgetProfileFromConvPrefs(id);
     renderProfileList(d.data);
-    if (d.resetSession) resetProviderSession();
+    if (d.resetSession && wasActive) resetProviderSession(owner);
     setAuthStatus("saved", "已删除");
   } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "删除失败"); }
 }
@@ -4308,8 +4587,8 @@ const addErrorEl      = document.getElementById("add-error");
 const authFormTitle   = document.getElementById("auth-form-title");
 
 const ADD_PRESETS = {
-  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5",                  haikuModel: "claude-haiku-4-5-20251001",     keyPlaceholder: "", namePlaceholder: "Anthropic API" },
-  deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-v4-flash",             keyPlaceholder: "",    namePlaceholder: "DeepSeek" },
+  anthropic:  { baseUrl: "",                                    opusModel: "claude-opus-5-5",                 sonnetModel: "claude-sonnet-5-5",                haikuModel: "claude-haiku-5-5",              keyPlaceholder: "", namePlaceholder: "Anthropic API" },
+  deepseek:   { baseUrl: "https://api.deepseek.com/anthropic", opusModel: "deepseek-v4-pro[1m]",            sonnetModel: "deepseek-v4-pro[1m]",             haikuModel: "deepseek-flash",                keyPlaceholder: "",    namePlaceholder: "DeepSeek" },
   openrouter: { baseUrl: "https://openrouter.ai/api",          opusModel: "~anthropic/claude-opus-latest",   sonnetModel: "~anthropic/claude-sonnet-latest",  haikuModel: "~anthropic/claude-haiku-latest", keyPlaceholder: "", namePlaceholder: "OpenRouter" },
   minimax:    { baseUrl: "https://api.minimaxi.com/anthropic", opusModel: "MiniMax-M3",                      sonnetModel: "MiniMax-M3",                       haikuModel: "MiniMax-M3",                    keyPlaceholder: "",    namePlaceholder: "MiniMax" },
   custom:     { baseUrl: "",                                    opusModel: "",                                sonnetModel: "",                                 haikuModel: "",                              keyPlaceholder: "",    namePlaceholder: "自定义账号" },
@@ -4326,6 +4605,7 @@ const DEFAULT_GOOD_AT = {
 
 let _addProvider = "anthropic";
 let _editingProfileId = null;  // null = add mode; string = edit mode (profile id)
+let _addingClaudeMember = false;
 
 function setAddProvider(value) {
   _addProvider = value;
@@ -4350,6 +4630,7 @@ function showListView() {
   authViewForm.classList.remove("active");
   authViewList.classList.add("active");
   _editingProfileId = null;
+  _addingClaudeMember = false;
 }
 
 function showFormView() {
@@ -4357,15 +4638,29 @@ function showFormView() {
   authViewForm.classList.add("active");
 }
 
-// openAccountForm: pass null/undefined to add, or a profile object to edit
-function openAccountForm(existingProfile) {
+const CLAUDE_MEMBER_ADD_HINT = "再登一个 Claude 会员，额度跟主号分开算，用完一个切另一个。添加后会弹出终端窗口并打开浏览器登录页："
+  + "先在浏览器里切到要加的那个号（或把终端里的登录链接复制到无痕窗口打开），再点授权。技能、插件、设置和记忆跟主号共用。";
+
+// openAccountForm: pass null/undefined to add, or a profile object to edit.
+// claudeMember：添加的是 Claude 会员账号（登录拿额度，不填密钥）
+function openAccountForm(existingProfile, { claudeMember = false } = {}) {
   _editingProfileId = existingProfile ? existingProfile.id : null;
+  _addingClaudeMember = !existingProfile && claudeMember;
   showFormView();
   addErrorEl.textContent = "";
+  const membership = (existingProfile && isMembershipProfile(existingProfile)) || _addingClaudeMember;
+  document.getElementById("auth-form-hint").textContent = _addingClaudeMember
+    ? CLAUDE_MEMBER_ADD_HINT
+    : membership
+      ? "通过账号登录，使用对应会员额度。"
+      : "填写 API 密钥，按 API 用量计费或扣除 API 余额。";
+  for (const id of ["add-field-key", "add-field-opus", "add-field-sonnet", "add-field-haiku"]) {
+    document.getElementById(id).classList.toggle("hidden", !!membership);
+  }
 
   if (existingProfile) {
     // Edit mode
-    authFormTitle.textContent = "编辑账号";
+    authFormTitle.textContent = membership ? "编辑会员账号" : "编辑 API 账号";
     addProviderWrap.style.display = "none";
     addSubmitBtn.textContent = "保存";
     const provider = existingProfile.provider;
@@ -4386,9 +4681,20 @@ function openAccountForm(existingProfile) {
     addGoodAtInput.placeholder = defaultGoodAt;
     const isCustom = provider === "custom";
     addFieldBaseUrl.classList.toggle("hidden", !isCustom);
+  } else if (_addingClaudeMember) {
+    authFormTitle.textContent = "添加 Claude 会员账号";
+    addProviderWrap.style.display = "none";
+    addSubmitBtn.textContent = "添加并登录";
+    _addProvider = "claude";
+    addNameInput.value = "";
+    addNameInput.placeholder = `Claude 会员 ${_profileData.profiles.filter(p => p.provider === "claude").length + 1}`;
+    addKeyInput.value = "";
+    for (const input of [addOpusInput, addSonnetInput, addHaikuInput, addBaseUrlInput, addGoodAtInput]) input.value = "";
+    addGoodAtInput.placeholder = DEFAULT_GOOD_AT.claude;
+    addFieldBaseUrl.classList.add("hidden");
   } else {
     // Add mode
-    authFormTitle.textContent = "添加账号";
+    authFormTitle.textContent = "添加 API 账号";
     addProviderWrap.style.display = "";
     addSubmitBtn.textContent = "确认添加";
     setAddProvider("anthropic");
@@ -4399,9 +4705,88 @@ function openAccountForm(existingProfile) {
 }
 
 addToggleBtn.addEventListener("click", () => openAccountForm(null));
+document.getElementById("auth-add-claude").addEventListener("click", () => openAccountForm(null, { claudeMember: true }));
 authBackBtn.addEventListener("click", showListView);
 
+/* 新加的 Claude 会员账号不切过去（还没登录，切过去下一条就报错），也就不动当前对话的
+   会话；加完直接拉起登录，登上之后用户自己点它切换。 */
+async function addClaudeMemberAccount() {
+  const name = addNameInput.value.trim() || addNameInput.placeholder;
+  const goodAt = addGoodAtInput.value.trim();
+  addErrorEl.textContent = "";
+  addSubmitBtn.disabled = true;
+  try {
+    const res = await fetch("api/auth-profile", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add", profile: { name, provider: "claude", goodAt } }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "添加失败");
+    renderProfileList(d.data);
+    showListView();
+    if (d.addedProfileId) await startClaudeLogin(d.addedProfileId);
+    else setAuthStatus("saved", "已添加");
+  } catch (err) {
+    addErrorEl.textContent = err instanceof Error ? err.message : "添加失败";
+    setAuthStatus("error", "失败", true);
+  } finally { addSubmitBtn.disabled = false; }
+}
+
+let _claudeLoginPollTimer = null;
+
+function scheduleClaudeLoginPoll() {
+  if (_claudeLoginPollTimer) return;
+  _claudeLoginPollTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, pending] of _claudeLoginPending) if (pending.deadline <= now) _claudeLoginPending.delete(id);
+    if (_claudeLoginPending.size === 0) {
+      clearInterval(_claudeLoginPollTimer);
+      _claudeLoginPollTimer = null;
+      renderProfileList(_profileData);
+      return;
+    }
+    // 面板关着就不白查，下次打开面板本来就会查一遍
+    if (authDialog.classList.contains("open")) void checkClaudeAuth();
+  }, 3_000);
+}
+
+async function startClaudeLogin(id) {
+  const profile = _profileData.profiles.find(p => p.id === id);
+  if (!profile) return;
+  setAuthStatus("saving", "正在打开登录窗口…");
+  try {
+    const res = await fetch("api/claude-accounts/login", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profileId: id }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "打开登录窗口失败");
+    const before = claudeAuthFor(profile);
+    _claudeLoginPending.set(id, {
+      deadline: Date.now() + CLAUDE_LOGIN_WAIT_MS,
+      email: before?.authenticated ? (before.email ?? null) : null,
+    });
+    renderProfileList(_profileData);
+    scheduleClaudeLoginPoll();
+    if (d.launched) {
+      setAuthStatus("saved", "已打开登录窗口");
+    } else {
+      // 这个系统上弹不出终端：把命令交给用户自己跑
+      let copied = false;
+      try { await navigator.clipboard.writeText(d.command); copied = true; } catch { }
+      setAuthStatus("error", copied ? "登录命令已复制，粘到终端里运行" : `请在终端运行：${d.command}`);
+    }
+  } catch (err) {
+    setAuthStatus("error", err instanceof Error ? err.message : "打开登录窗口失败");
+  }
+}
+
 addSubmitBtn.addEventListener("click", async () => {
+  if (_addingClaudeMember) { await addClaudeMemberAccount(); return; }
+  const owner = currentConvId;
+  const effort = selectedEffort;
+  const originalProfileId = activeProfileId();
+  const editingProfileId = _editingProfileId;
+  const version = (profileActivationVersions.get(owner) || 0) + 1;
+  profileActivationVersions.set(owner, version);
   const isEdit    = !!_editingProfileId;
   const provider  = _addProvider;
   const name      = addNameInput.value.trim()   || addNameInput.placeholder;
@@ -4420,17 +4805,19 @@ addSubmitBtn.addEventListener("click", async () => {
   addSubmitBtn.disabled = true;
   try {
     const profilePayload = isEdit
-      ? { id: _editingProfileId, name, opusModel, sonnetModel, haikuModel, goodAt, ...(apiKey ? { apiKey } : {}), ...(provider === "custom" ? { baseUrl } : {}) }
+      ? { id: editingProfileId, name, opusModel, sonnetModel, haikuModel, goodAt, ...(apiKey ? { apiKey } : {}), ...(provider === "custom" ? { baseUrl } : {}) }
       : { name, provider, apiKey, opusModel, sonnetModel, haikuModel, baseUrl, goodAt };
     const res = await fetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: isEdit ? "update" : "add", profile: profilePayload }) });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || (isEdit ? "保存失败" : "添加失败"));
+    if (profileActivationVersions.get(owner) !== version) return;
     // 新增的账号服务端会直接设为当前，跟手点切换是一回事；编辑不动当前是谁
-    renderProfileList(d.data, { adopt: !isEdit });
-    if (!isEdit) rememberConvModelPrefs();
-    if (d.resetSession) resetProviderSession();
+    if (!isEdit || editingProfileId === originalProfileId) {
+      applyConversationProfile(d.data, owner, isEdit ? originalProfileId : d.data.activeProfileId, effort);
+      if (!isEdit || d.resetSession) resetProviderSession(owner);
+    } else renderProfileList(d.data);
     showListView();
     setAuthStatus("saved", isEdit ? "已保存" : "已添加", false);
   } catch (err) {
@@ -4441,6 +4828,8 @@ addSubmitBtn.addEventListener("click", async () => {
 
 // ── Profile list click delegation ─────────────────────────
 authProfileList.addEventListener("click", (e) => {
+  const loginBtn = e.target.closest(".auth-profile-login");
+  if (loginBtn) { e.stopPropagation(); void startClaudeLogin(loginBtn.dataset.login); return; }
   const editBtn = e.target.closest(".auth-profile-edit");
   if (editBtn) {
     e.stopPropagation();
@@ -4461,7 +4850,11 @@ authProfileList.addEventListener("click", (e) => {
 async function fetchProfiles() {
   try {
     const res = await fetch("api/auth-profile", { cache: "no-store" });
-    if (res.ok) renderProfileList(await res.json());
+    if (res.ok) {
+      renderProfileList(await res.json());
+      // 先恢复账号和模型，再给新对话记录选择；首帧默认值不能覆盖上次的选择。
+      if (currentConvId && !convModelPrefs.has(currentConvId)) rememberConvModelPrefs();
+    }
   } catch { }
 }
 
@@ -4632,7 +5025,7 @@ document.getElementById("wechat-verify-submit").addEventListener("click", () => 
 });
 
 async function saveCurrentConversation() {
-  if (!currentConvId || messageLog.length === 0) return;
+  if (!currentConvId || deletedConversationIds.has(currentConvId) || messageLog.length === 0) return;
   const firstUser = messageLog.find(m => m.role === "user");
   const title = firstUser
     ? firstUser.text.replace(/[\n\r]+/g, " ").slice(0, 60)
@@ -4652,11 +5045,12 @@ async function saveCurrentConversation() {
   };
   const messageCount = messageLog.length;
   try {
-    await fetch(`api/history/${conv.id}`, {
+    const response = await fetch(`api/history/${conv.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(conv),
     });
+    if (!response.ok || deletedConversationIds.has(conv.id)) return;
     // 更新内存缓存，使下次打开历史面板时可立即渲染
     if (_historyCache !== null) {
       const idx = _historyCache.findIndex(h => h.id === conv.id);
@@ -4949,6 +5343,47 @@ function renderAssistantBlocks(body, blocks) {
   applyToolFailuresFromBlocks(body, blocks);
 }
 
+function extractVideoPaths(text) {
+  if (typeof text !== "string") return [];
+  const paths = [];
+  const seen = new Set();
+  const candidates = text.match(/[^\s`"'“”‘’（）(){}\[\]<>，。；：、！？!?,;]+\.mp4(?=$|[\s`"'“”‘’（）(){}\[\]<>，。；：、！？!?,;:])/giu) || [];
+  for (const raw of candidates) {
+    if (raw.includes("://")) continue;
+    const candidate = raw.replace(/^.*?(?=[A-Za-z]:[\\/])/, "");
+    if (!/(?:^|[\\/])out[\\/].+\.mp4$/i.test(candidate)) continue;
+    const key = candidate.replaceAll("\\", "/").toLowerCase();
+    if (!seen.has(key)) { seen.add(key); paths.push(candidate); }
+  }
+  return paths;
+}
+
+function renderVideoOpenCard(messageEl, text) {
+  if (!isDesktopEmbed || !messageEl) return;
+  messageEl.querySelector(".video-open-card")?.remove();
+  const path = extractVideoPaths(text).at(-1);
+  if (!path) return;
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "video-open-card";
+  const icon = document.createElement("span");
+  icon.className = "video-open-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "▶";
+  const content = document.createElement("span");
+  content.style.minWidth = "0";
+  const label = document.createElement("span");
+  label.className = "video-open-label";
+  label.textContent = "打开视频";
+  const filename = document.createElement("span");
+  filename.className = "video-open-filename";
+  filename.textContent = path.split(/[\\/]/).at(-1);
+  content.append(label, filename);
+  card.append(icon, content);
+  card.addEventListener("click", () => postParentMessage({ type: "agent-open-video", path }));
+  messageEl.querySelector(".msg-body")?.appendChild(card);
+}
+
 function applyToolFailuresFromBlocks(body, blocks) {
   for (const block of blocks || []) {
     const raw = block?.raw ?? block;
@@ -4967,6 +5402,8 @@ function applyToolFailuresFromBlocks(body, blocks) {
 function ensureProgressIndicator() {
   if (!isGenerating) return;
   if (document.getElementById("typing") || genChipEl) return;
+  // 思考块自己带一颗在跳的点，再挂 chip 就是上下两颗一模一样的蓝点
+  if (assistantEl?.querySelector(".thinking-active")) return;
   if (assistantEl) showGenChip("");
   else addTyping();
 }
@@ -5095,6 +5532,11 @@ function isTrustedParentMessage(event) {
 
 window.addEventListener("message", (e) => {
   if (!isTrustedParentMessage(e)) return;
+  if (e.data?.type === "completion-notifications-state") {
+    const checkbox = document.getElementById("completion-notifications-enabled");
+    if (checkbox) checkbox.checked = e.data.enabled === true;
+    return;
+  }
   if (e.data?.type === "vault-notes") {
     vaultNotes = normalizeVaultNotes(e.data.notes);
     for (const path of selectedMentionNotes.keys()) {
@@ -5137,6 +5579,10 @@ window.addEventListener("message", (e) => {
   }
   if (e.data?.type === "focus-input") {
     promptEl.focus();
+  }
+  if (e.data?.type === "open-conversation" && typeof e.data.conversationId === "string") {
+    closeHistoryPanel();
+    void switchToConversation(e.data.conversationId);
   }
 });
 
@@ -5188,9 +5634,8 @@ function connect() {
   ws = new WebSocket(wsUrl);
   ws.onopen = () => {
     syncComposerAction();
-    if (resetRequested) sendResetRequest();
-    else resendPendingRequest();
-    if (!pendingRequestDraft) flushLocalSteering();
+    resendConversationRequests();
+    retryOfflineSubtaskFollowups();
     requestSkillRefresh(true);
     postParentMessage({ type: "agent-ready" });
     clearTimeout(connectionStateSyncTimer);
@@ -5203,8 +5648,11 @@ function connect() {
   ws.onclose = () => {
     clearTimeout(connectionStateSyncTimer);
     if (stopRequested) stopResendPending = true;
-    for (const item of steeringQueue) {
-      if (!item.serverOwned && item.sent) item.sent = false;
+    saveConversationDeliveryState();
+    for (const state of conversationDeliveryStates.values()) {
+      for (const item of state.queue) {
+        if (!item.serverOwned && item.sent) item.sent = false;
+      }
     }
     postParentMessage({ type: "agent-not-ready" });
     syncComposerAction();
@@ -5547,6 +5995,20 @@ function wasSquadItemSettled(id, conversationId) {
 let activeSquad = null;
 let squadSeq = 0;
 
+/* 子任务页的状态。放在 SquadCard 之前：卡片 spawn / 还原时就要往这里登记。
+   key 一律是「对话|项 id」——卡片实例会因为会话切换、快照还原被换掉，追问记录不能
+   跟着实例走，否则切个对话回来追问就全没了。 */
+const SUBTASK_OUTPUT_KEEP = 40000;
+const subtaskThreads = new Map();   // key → 这个子任务的追问记录
+const subtaskCardRefs = new Map();  // key → 最近一次画出这一项的 SquadCard
+const subtaskDrafts = new Map();    // key → 子任务页里没发出去的草稿
+let subtaskView = null;             // 正打开着的那一个
+let subtaskViewEl = null;
+let subtaskViewTicker = null;
+let subtaskCoverApplied = false;
+// 测试夹具在没有 window 的 VM 里跑这段脚本，这里不能直接碰 window
+const subtaskSplitQuery = globalThis.matchMedia?.("(min-width: 680px)") ?? { matches: false };
+
 /* 派生子 agent 的工具名。SDK 现在叫 Agent（sdk-tools.d.ts 的 AgentInput），
    历史上叫 Task —— 两个都认，否则换一版 SDK 编队卡就整个失效。 */
 const SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task", "dispatch_to_provider"]);
@@ -5644,7 +6106,9 @@ function parseDispatchResult(content) {
     return {
       provider: parsed.provider || "",
       providerName: parsed.providerName || parsed.provider || "",
+      profileId: parsed.profileId || "",
       model: parsed.model || "",
+      sessionId: parsed.sessionId || "",
       output: typeof parsed.output === "string" ? parsed.output : "",
       // 自动派发时前端事先不知道会不会续接（tool_use 的 input 由模型给出，
       // 不含这个字段），只能从结果里读，读到再补标到卡片上
@@ -5721,6 +6185,7 @@ class SquadCard {
     this.labels.set(id, label);
     this.order.push(id);
     squadOfTask.set(id, this.id);
+    subtaskCardRefs.set(subtaskKey(this.ownerConversationId, id), this);
     // 历史登记不能等 800ms 的视觉延迟，否则切走前的快照会漏掉这张卡。
     this.ensureBlock();
     if (this.el) this.addRow(id, this.order.length - 1);
@@ -5749,6 +6214,18 @@ class SquadCard {
     if (this.openId === id) this.paintDetail(id);
     this.syncBlock();
     this.syncChip();
+    refreshSubtaskViewFor(this.ownerConversationId, id);
+  }
+
+  /* 子任务页要的东西：它是谁派的、原始任务、用哪个账号哪个模型。流式输出时
+     spawn 拿到的 input 还不完整，完整的 tool_use 到了再补；已有的不覆盖。 */
+  describe(id, meta) {
+    const s = this.state.get(id);
+    if (!s || !meta) return;
+    for (const key of ["kind", "brief", "profileId", "model"]) {
+      if (meta[key] && !s[key]) s[key] = meta[key];
+    }
+    this.syncBlock();
   }
 
   /* 子任务的进度由活动条报，gen chip 让位。同一件事在两处喊，眼睛不知道看哪个 ——
@@ -5758,10 +6235,14 @@ class SquadCard {
     if (this.counts.live > 0) updateGenChip("");
   }
 
-  settle(id, status, result, origin = null) {
+  settle(id, status, result, origin = null, output = null) {
     const s = this.state.get(id);
     if (!s || s.status === "done" || s.status === "failed") return;
     s.status = status;
+    // 完整产出只给子任务页用；行尾那 40 字摘要另算
+    if (typeof output === "string" && output.trim()) s.output = output.trim().slice(0, SUBTASK_OUTPUT_KEEP);
+    if (origin?.profileId) s.profileId = origin.profileId;
+    if (origin?.model) s.model = origin.model;
     rememberSettledSquadItem(id, this.ownerConversationId);
     for (const [taskId, itemId] of squadTaskAlias) {
       if (itemId === id) rememberSettledSquadItem(taskId, this.ownerConversationId);
@@ -5783,6 +6264,8 @@ class SquadCard {
     this.syncChip();
     updateBackgroundActivity();
     if (this.counts.live === 0) this.join();
+    // 子任务跑着时排进来的追问，等的就是这一刻
+    onSubtaskItemSettled(this.ownerConversationId, id);
   }
 
   /* 把自己登记成一个 assistantBlock：既支撑 assistant 事件的全量重渲染，
@@ -5798,7 +6281,10 @@ class SquadCard {
     return {
       order: [...this.order],
       labels: [...this.labels],
-      state: [...this.state].map(([k, v]) => [k, { status: v.status, result: v.result, origin: v.origin ?? null, steps: [...v.steps], startAt: v.startAt, endAt: v.endAt }]),
+      state: [...this.state].map(([k, v]) => [k, {
+        status: v.status, result: v.result, origin: v.origin ?? null, steps: [...v.steps], startAt: v.startAt, endAt: v.endAt,
+        kind: v.kind ?? null, brief: v.brief ?? "", output: v.output ?? "", profileId: v.profileId ?? null, model: v.model ?? "", followupModel: v.followupModel ?? "",
+      }]),
       startAt: this.startAt,
       finishedAt: this.finishedAt,
       ownerRequestId: this.ownerRequestId,
@@ -5810,6 +6296,9 @@ class SquadCard {
 
   syncBlock() {
     if (this.block) this.block.snapshot = this.snapshot();
+    if (typeof wsSend === "function" && this.ownerConversationId && this.order.length) {
+      wsSend({ type: "subtask_snapshot", conversationId: this.ownerConversationId, squadId: this.id, snapshot: this.snapshot() });
+    }
   }
 
   static fromSnapshot(id, snap) {
@@ -5819,6 +6308,7 @@ class SquadCard {
     card.state = new Map((snap.state ?? []).map(([k, v]) => [k, {
       status: v.status, result: v.result, origin: v.origin ?? null, steps: [...(v.steps ?? [])],
       startAt: v.startAt ?? snap.startAt ?? 0, endAt: v.endAt ?? 0,
+      kind: v.kind ?? null, brief: v.brief ?? "", output: v.output ?? "", profileId: v.profileId ?? null, model: v.model ?? "", followupModel: v.followupModel ?? "",
     }]));
     card.startAt = snap.startAt ?? Date.now();
     card.finishedAt = snap.finishedAt ?? 0;
@@ -5887,8 +6377,7 @@ class SquadCard {
     });
     // 重建时若早已合流，直接恢复到摘要态，不重放动画
     if (allSettled) { card.classList.add("done"); this.paintSummary(); }
-    // 此刻 card 还没被 appendChild，isConnected 仍是 false —— 直接刷新会被
-    // liveSquadCards 的死链剔除误伤。挪到调用方插完 DOM 之后。
+    // 等调用方完成 DOM 重建后再同步输入区。
     queueMicrotask(updateBackgroundActivity);
     return card;
   }
@@ -5915,10 +6404,13 @@ class SquadCard {
       <i class="sq-conn"></i>
       <span class="sq-dot"></span>
       <span class="sq-label"></span>
+      <span class="sq-thread"></span>
       <span class="sq-origin"></span>
       <span class="sq-meta num"></span>
       <button class="sq-stop">停止</button>`;
     row.querySelector(".sq-label").textContent = this.labels.get(id) || id;
+    // 会话切换会用快照重建实例；子任务页认的是最近一次画出这一行的那个
+    subtaskCardRefs.set(subtaskKey(this.ownerConversationId, id), this);
 
     const det = document.createElement("div");
     det.className = "sq-detail";
@@ -5927,6 +6419,8 @@ class SquadCard {
 
     row.onclick = (e) => {
       if (e.target.closest(".sq-stop")) return;
+      // 分栏时右边本来就有地方，点一行直接在那儿打开，不必先就地展开
+      if (subtaskSplitAvailable()) { openSubtaskView(this, id); return; }
       this.toggleDetail(id);
     };
     row.querySelector(".sq-stop").onclick = () => this.stopOne(id);
@@ -5946,7 +6440,7 @@ class SquadCard {
     if (!row || !s) return;
     row.dataset.s = s.status;
     const origin = row.querySelector(".sq-origin");
-    const originText = formatDispatchOrigin(s.origin);
+    const originText = formatDispatchOrigin(subtaskRowOrigin(this.ownerConversationId, id, s));
     origin.textContent = originText;
     origin.title = originText;
     origin.classList.toggle("visible", !!originText);
@@ -5957,6 +6451,11 @@ class SquadCard {
     } else {
       meta.textContent = "";
     }
+    const followups = subtaskFollowupCount(this.ownerConversationId, id);
+    const threadEl = row.querySelector(".sq-thread");
+    if (threadEl) threadEl.textContent = followups ? `追问 ${followups}` : "";
+    row.dataset.follow = subtaskThreadBusy(this.ownerConversationId, id) ? "running" : "";
+    row.classList.toggle("sq-row-viewing", subtaskViewShowing(this.ownerConversationId, id));
   }
 
   toggleDetail(id) {
@@ -5969,29 +6468,77 @@ class SquadCard {
     }
   }
 
+  /* 就地展开：署名和状态、产出的开头几行（跑着的时候是最近几步），以及进子任务页的入口 */
   paintDetail(id) {
     const box = this.el?.querySelector(`.sq-detail[data-for="${cssEscapeValue(id)}"] .sq-detail-in`);
     const s = this.state.get(id);
     if (!box || !s) return;
+    const running = !subtaskItemSettled(s);
+    const stepsOpen = this.peekStepsOpen?.has(id) ?? false;
     box.innerHTML = "";
-    s.steps.forEach((txt, i) => {
-      const e = document.createElement("span");
-      e.className = "st" + (i === s.steps.length - 1 && s.status === "running" ? " now" : "");
-      e.textContent = txt;
-      box.appendChild(e);
-    });
-    if (!s.steps.length) {
-      const e = document.createElement("span");
-      e.className = "st";
-      e.textContent = "等待子任务的第一个动作…";
-      box.appendChild(e);
+
+    const who = document.createElement("div");
+    who.className = "sq-ix-who";
+    const whoText = subtaskWho(s, subtaskCurrentModel(this.ownerConversationId, id, s));
+    if (whoText) {
+      const chip = document.createElement("span");
+      chip.className = "st-chip";
+      chip.textContent = whoText;
+      chip.title = whoText;
+      who.appendChild(chip);
     }
-    if (s.result) {
-      const r = document.createElement("span");
-      r.className = "rs";
-      r.textContent = s.result;
-      box.appendChild(r);
+    const status = document.createElement("span");
+    status.textContent = subtaskStatusText(s);
+    who.appendChild(status);
+    box.appendChild(who);
+
+    if (running) {
+      box.appendChild(subtaskStepsList(s.steps, { running: true, limit: 4 }));
+      const note = document.createElement("div");
+      note.className = "sq-ix-note";
+      note.textContent = s.steps.length ? "还没有产出，完成后这里显示结果。" : "等待子任务的第一个动作…";
+      box.appendChild(note);
+    } else {
+      if (s.steps.length) {
+        const list = subtaskStepsList(s.steps);
+        list.hidden = !stepsOpen;
+        box.appendChild(subtaskStepsToggle(list, s.steps.length, (open) => {
+          this.peekStepsOpen ??= new Set();
+          if (open) this.peekStepsOpen.add(id); else this.peekStepsOpen.delete(id);
+        }));
+        box.appendChild(list);
+      }
+      if (s.output) {
+        const preview = document.createElement("div");
+        preview.className = "sq-ix-preview msg-body";
+        preview.innerHTML = renderMarkdown(s.output);
+        if (s.output.length < 280 && s.output.split("\n").length <= 5) preview.classList.add("short");
+        box.appendChild(preview);
+      } else if (s.result) {
+        const note = document.createElement("div");
+        note.className = "sq-ix-note";
+        note.textContent = s.result;
+        box.appendChild(note);
+      }
     }
+
+    const thread = subtaskThreads.get(subtaskKey(this.ownerConversationId, id));
+    const asked = subtaskFollowupCount(this.ownerConversationId, id);
+    if (asked) {
+      const line = document.createElement("div");
+      line.className = "sq-ix-thread";
+      const count = document.createElement("b");
+      count.textContent = `追问 ${asked} 次`;
+      line.append(count, ` · ${subtaskThreadPreview(thread)}`);
+      box.appendChild(line);
+    }
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "sq-ix-open";
+    open.textContent = "查看全部 →";
+    open.onclick = (e) => { e.stopPropagation(); openSubtaskView(this, id); };
+    box.appendChild(open);
   }
 
   refresh() {
@@ -6124,7 +6671,7 @@ class SquadCard {
  * 服务端因为回合号已经变了不会再补发 tool_result，卡片就永远停在"进行中"——
  * 而底下的子进程其实早就被杀干净了。UI 说谎比 UI 难看严重得多。
  */
-function settleRunningSquadTasks(reason = "已停止", requestId = null) {
+function settleRunningSquadTasks(reason = "已停止", requestId = null, preserveBackground = false) {
   for (const card of squadCards.values()) {
     if (card.ownerConversationId !== currentConvId) continue;
     // 只收本轮的卡。跨回合存活的后台任务不归这次停止管——它们还在真跑，
@@ -6132,6 +6679,7 @@ function settleRunningSquadTasks(reason = "已停止", requestId = null) {
     // 追不回来了。owner 为空的是早于本机制创建的卡，保守起见也放过。
     if (!card.ownerRequestId || (requestId && card.ownerRequestId !== requestId)) continue;
     for (const id of card.order) {
+      if (preserveBackground && asyncAgentItems.has(id)) continue;
       const s = card.state.get(id);
       if (s && s.status !== "done" && s.status !== "failed") {
         card.settle(id, "failed", reason);
@@ -6238,7 +6786,8 @@ function taskIdForDispatchKey(key) {
 function currentSquad(create) {
   if (activeSquad && squadCards.get(activeSquad)?.ownerConversationId === currentConvId) return squadCards.get(activeSquad);
   if (!create) return null;
-  const id = `${currentConvId}:sq_${++squadSeq}`;
+  let id;
+  do { id = `${currentConvId}:sq_${++squadSeq}`; } while (squadCards.has(id));
   const card = new SquadCard(id);
   squadCards.set(id, card);
   activeSquad = id;
@@ -6282,7 +6831,7 @@ function resetSquads() {
    （旧版在 isGenerating 时把自己藏起来，让位给 gen chip，结果是最该看见的
    那段时间反而什么都没有，而 gen chip 会随消息流滚走。） */
 let bgActivityEl = null;
-let bgActivityHideTimer = null;
+let bgActivityConversationId = null;
 let bgActivityOpen = false;   // 展开状态跨轮保持：手动开过就说明你想盯着
 
 // 惰性获取并绑定：setGenerating 可能在脚本执行期就被调用，顶层 const 会踩 TDZ
@@ -6294,6 +6843,8 @@ function ensureBgActivityEl() {
   el.querySelector(".bga-head").onclick = () => {
     bgActivityOpen = !bgActivityOpen;
     el.classList.toggle("open", bgActivityOpen);
+    el.querySelector(".bga-head").setAttribute("aria-expanded", String(bgActivityOpen));
+    el.querySelector(".bga-list").inert = !bgActivityOpen;
     if (bgActivityOpen) renderBgActivityList();
     else syncBgActivityTicker();   // 收起就别再空转
   };
@@ -6311,37 +6862,22 @@ function liveBackgroundTasks() {
 function updateBackgroundActivity() {
   const el = ensureBgActivityEl();
   if (!el) return;
-  const live = liveBackgroundTasks();
-  const tasks = allSubagentTasks();
-  const total = tasks.length;
-
-  if (live > 0) {
-    clearTimeout(bgActivityHideTimer);
-    el.classList.remove("done");
-    el.querySelector(".bga-text").textContent =
-      total > live ? `${live} 个子任务进行中 · 共 ${total} 项` : `${live} 个子任务进行中`;
-    el.hidden = false;
-    el.classList.toggle("open", bgActivityOpen);
-    if (bgActivityOpen) renderBgActivityList();
-    return;
+  if (bgActivityConversationId !== currentConvId) {
+    bgActivityConversationId = currentConvId;
+    bgActivityOpen = false;
   }
-
-  // 刚从"有任务"跌到 0：报一次结果，留几秒够你点开看，然后自己消失
-  if (!el.hidden && !el.classList.contains("done")) {
-    const fail = tasks.filter((t) => t.s.status === "failed").length;
-    el.classList.add("done");
-    el.classList.toggle("has-fail", fail > 0);
-    el.querySelector(".bga-text").textContent = !total ? "子任务已结束"
-      : fail ? `${total - fail} 个完成 · ${fail} 个未成功`
-        : `${total} 个子任务已全部完成`;
-    if (bgActivityOpen) renderBgActivityList();
-    clearTimeout(bgActivityHideTimer);
-    bgActivityHideTimer = setTimeout(() => {
-      el.hidden = true;
-      el.classList.remove("open");
-      bgActivityOpen = false;
-      syncBgActivityTicker();
-    }, 8000);
+  const live = activeSubagentTasks().length;
+  el.hidden = live === 0;
+  if (!live) bgActivityOpen = false;
+  el.classList.toggle("open", bgActivityOpen);
+  el.querySelector(".bga-head").setAttribute("aria-expanded", String(bgActivityOpen));
+  el.querySelector(".bga-list").inert = !bgActivityOpen;
+  el.querySelector(".bga-text").textContent = live ? `${live} 个子任务进行中` : "";
+  // 输入区只显示当前活动；完成结果留在原对话卡片中。
+  if (bgActivityOpen) renderBgActivityList();
+  else {
+    el.querySelector(".bga-list").innerHTML = "";
+    syncBgActivityTicker();
   }
 }
 
@@ -6390,21 +6926,32 @@ function revealSquadCard(card, taskId) {
   flashElement(row || card.el, row ? 2 : 3);
 }
 
-/* 当前所有子任务，按"未完成在前、刚结束的紧随其后"排。
-   刚完成的排在已结束一侧的最前 —— 那是最可能被回头看一眼的 */
-function allSubagentTasks() {
-  const running = [], settled = [];
-  liveSquadCards().forEach((card) => {
+/* 输入区只列当前对话尚未结束的任务，直接读取状态，不依赖延迟挂载的消息 DOM。 */
+function activeSubagentTasks() {
+  const running = [];
+  squadCards.forEach((card) => {
+    if (card.ownerConversationId !== currentConvId) return;
     card.order.forEach((id) => {
       const s = card.state.get(id);
-      if (!s) return;
-      (s.status === "done" || s.status === "failed" ? settled : running)
-        .push({ card, id, s, label: card.labels.get(id) || id });
+      if (!s || s.status === "done" || s.status === "failed") return;
+      running.push({ card, id, s, label: card.labels.get(id) || id });
+    });
+  });
+  // 子任务本身跑完了、正在回追问的，也算「在干活」
+  subtaskThreads.forEach((thread) => {
+    if (thread.conversationId !== currentConvId || !thread.inflight) return;
+    const card = subtaskCardRefs.get(thread.key);
+    const s = card?.state.get(thread.itemId);
+    if (!s || !subtaskItemSettled(s)) return;
+    running.push({
+      card,
+      id: thread.itemId,
+      s: { status: "running", startAt: thread.inflight.reply.at, origin: s.origin },
+      label: `追问 · ${card.labels.get(thread.itemId) || thread.itemId}`,
     });
   });
   running.sort((a, b) => (a.s.startAt ?? 0) - (b.s.startAt ?? 0));
-  settled.sort((a, b) => (b.s.endAt ?? 0) - (a.s.endAt ?? 0));
-  return running.concat(settled);
+  return running;
 }
 
 function renderBgActivityList() {
@@ -6412,8 +6959,9 @@ function renderBgActivityList() {
   if (!listEl) return;
   const now = Date.now();
   listEl.innerHTML = "";
-  allSubagentTasks().forEach(({ card, id, s, label }) => {
-    const item = document.createElement("div");
+  activeSubagentTasks().forEach(({ card, id, s, label }) => {
+    const item = document.createElement("button");
+    item.type = "button";
     item.className = "bga-item";
     item.dataset.s = s.status;
     if (s.startAt) item.dataset.start = String(s.startAt);
@@ -6423,11 +6971,10 @@ function renderBgActivityList() {
     // 跑着的显示走动的秒数：静态的"运行中"分不出刚起步和卡了三分钟
     item.querySelector(".bga-imeta").textContent =
       s.status === "running" ? (s.startAt ? formatElapsed(now - s.startAt) : "运行中")
-        : s.status === "failed" ? "未完成"
-          : s.endAt && s.startAt ? formatElapsed(s.endAt - s.startAt) : "";
+        : "等待中";
     item.title = label;
-    // 点一项 = 跳到它所在的卡并就地展开它的工具流，比自己翻回去快得多
-    item.onclick = () => revealSquadCard(card, id);
+    // 点一项 = 直接打开它的子任务页：卡片多半早被后面的消息顶出视口了
+    item.onclick = () => openSubtaskView(card, id);
     listEl.appendChild(item);
   });
   syncBgActivityTicker();
@@ -6456,6 +7003,951 @@ function tickBgActivityElapsed() {
     el.querySelector(".bga-imeta").textContent = formatElapsed(now - Number(el.dataset.start));
   });
 }
+
+/* ══════════════════════════════════════════════════════════
+   子任务页
+   点开一个子任务：看完整的任务、过程和产出，并在里面接着追问。
+   追问不占主对话的回合——走 WebSocket 的 subtask_followup，服务端续接这个子任务
+   自己的会话（Claude 子 agent 跑完即结束，会带着它的产出重新派一个），回复只出现
+   在这里；主模型下一轮通过上下文交接看到。模型只能在同一家里换。
+   ══════════════════════════════════════════════════════════ */
+const SUBTASK_CHEVRON_SVG = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3.5 2 6.5 5l-3 3"/></svg>';
+const SUBTASK_SEND_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3.5M3.8 7.5 8 3.3l4.2 4.2"/></svg>';
+const SUBTASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/></svg>';
+
+function subtaskKey(conversationId, itemId) {
+  return `${conversationId ?? ""}|${itemId}`;
+}
+
+function subtaskItemSettled(s) {
+  return s?.status === "done" || s?.status === "failed";
+}
+
+function subtaskThreadFor(conversationId, itemId) {
+  const key = subtaskKey(conversationId, itemId);
+  let thread = subtaskThreads.get(key);
+  if (!thread) {
+    thread = { key, conversationId, itemId, items: [], queue: [], inflight: null, model: null };
+    subtaskThreads.set(key, thread);
+  }
+  return thread;
+}
+
+function persistSubtaskPending(conversationId) {
+  if (!conversationId || typeof localStorage === "undefined") return;
+  const pending = [];
+  for (const thread of subtaskThreads.values()) {
+    if (thread.conversationId !== conversationId) continue;
+    for (const item of thread.queue) pending.push({ itemId: thread.itemId, id: item.id, text: item.text, state: "queued" });
+    for (const item of thread.items) if (item.role === "user" && item.status === "held") pending.push({ itemId: thread.itemId, id: item.id, text: item.text, state: "held" });
+    if (thread.inflight && !thread.inflight.acknowledged) {
+      const item = thread.items.find(entry => entry.id === thread.inflight.requestId && entry.role === "user");
+      if (item) pending.push({ itemId: thread.itemId, id: item.id, text: item.text, state: "sent" });
+    }
+  }
+  try {
+    const key = `inkfellow.subtask.pending.${conversationId}`;
+    if (pending.length) localStorage.setItem(key, JSON.stringify(pending));
+    else localStorage.removeItem(key);
+  } catch { /* 浏览器禁用存储或空间不足时仍保留内存队列 */ }
+}
+
+function restoreSubtaskPending(conversationId, messages) {
+  if (typeof localStorage === "undefined") return;
+  let pending;
+  try { pending = JSON.parse(localStorage.getItem(`inkfellow.subtask.pending.${conversationId}`) || "[]"); }
+  catch { return; }
+  if (!Array.isArray(pending)) return;
+  const savedIds = new Set((messages || []).map(item => item.id));
+  for (const entry of pending) {
+    if (!entry?.id || !entry.itemId || !entry.text || savedIds.has(entry.id)) continue;
+    const thread = subtaskThreadFor(conversationId, entry.itemId);
+    if (thread.items.some(item => item.id === entry.id)) continue;
+    const item = { id: entry.id, role: "user", text: entry.text, status: entry.state === "sent" ? "sent" : (entry.state === "held" ? "held" : "queued"), at: Date.now() };
+    thread.items.push(item);
+    if (entry.state === "sent" && !thread.inflight) {
+      const reply = { id: `${entry.id}_reply`, role: "assistant", status: "running", text: "", steps: [], model: thread.model, at: item.at };
+      thread.items.push(reply);
+      thread.inflight = { requestId: entry.id, reply };
+      wsSend({ type: "subtask_status", conversationId, subtaskId: entry.itemId, requestId: entry.id });
+    } else if (entry.state === "queued") thread.queue.push(item);
+  }
+  persistSubtaskPending(conversationId);
+}
+
+// 服务端的追问消息是权威记录；页面刷新时按子任务重新组装，不覆盖仍在内存中的运行队列。
+function restoreSubtaskThreads(conversationId, messages) {
+  const groups = new Map();
+  for (const msg of messages || []) {
+    const id = msg?.subtask?.id;
+    if (!id || (msg.role !== "user" && msg.role !== "assistant")) continue;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(msg);
+  }
+  for (const [id, entries] of groups) {
+    const key = subtaskKey(conversationId, id);
+    if (subtaskThreads.has(key)) continue;
+    const thread = subtaskThreadFor(conversationId, id);
+    for (const msg of entries) {
+      const at = Date.parse(msg.createdAt || "") || Date.now();
+      if (msg.role === "user") {
+        thread.items.push({ id: msg.id, role: "user", text: msg.text || "", status: "sent", at });
+      } else {
+        const status = msg.status === "complete" ? "done" : msg.status === "stopped" ? "stopped" : "failed";
+        const error = msg.blocks?.find(block => block.type === "codex_error")?.message;
+        thread.items.push({ id: msg.id, role: "assistant", text: msg.text || error || "", status,
+          model: msg.via?.model || "", steps: [], at });
+        if (msg.via?.model) thread.model = msg.via.model;
+      }
+    }
+    // 已写入但没有回复的消息可能仍在运行，也可能因服务重启中断；向服务端查证。
+    const lastUser = [...thread.items].reverse().find(item => item.role === "user");
+    if (lastUser && !thread.items.some(item => item.id === `${lastUser.id}_reply`)) {
+      const reply = { id: `${lastUser.id}_reply`, role: "assistant", status: "running", text: "", steps: [], model: thread.model, at: lastUser.at };
+      thread.items.push(reply);
+      thread.inflight = { requestId: lastUser.id, reply, acknowledged: true };
+      wsSend({ type: "subtask_status", conversationId, subtaskId: id, requestId: lastUser.id });
+    }
+  }
+}
+
+function restoreSubtaskCards(conv) {
+  const restored = new Set();
+  for (const [id, saved] of Object.entries(conv.subtaskSnapshots || {})) {
+    const snap = saved?.snapshot;
+    if (!snap || !Array.isArray(snap.order) || !Array.isArray(snap.state)) continue;
+    const existing = snap.order.every(itemId => subtaskCardRefs.get(subtaskKey(conv.id, itemId))?.el?.isConnected);
+    if (existing) {
+      for (const itemId of snap.order) {
+        restored.add(itemId);
+        const thread = subtaskThreads.get(subtaskKey(conv.id, itemId));
+        if (thread?.queue.length) pumpSubtaskThread(thread);
+      }
+      continue;
+    }
+    const copy = structuredClone(snap);
+    if (saved.bootId !== conv.subtaskServerBootId) {
+      for (const [, state] of copy.state) {
+        if (state.status !== "done" && state.status !== "failed") {
+          state.status = "failed"; state.result = "应用重启，任务已中断"; state.endAt = Date.now();
+        }
+      }
+    }
+    copy.shown = true;
+    const card = SquadCard.fromSnapshot(scopedSquadId(id), copy);
+    for (const itemId of copy.order) {
+      const thread = subtaskThreads.get(subtaskKey(conv.id, itemId));
+      const preferred = card.state.get(itemId)?.followupModel;
+      if (thread && preferred) thread.model = preferred;
+      if (thread && saved.bootId !== conv.subtaskServerBootId
+          && snap.state.some(([stateId, state]) => stateId === itemId && state.status !== "done" && state.status !== "failed")) {
+        for (const item of thread.queue.splice(0)) item.status = "held";
+        persistSubtaskPending(conv.id);
+      }
+    }
+    /* 放回原来的位置。历史回放时，派生它的那次工具调用被画成了一行普通工具调用，
+       正好占着卡片该在的地方：替换掉它，否则同一个子任务出现两次，卡片还全堆到
+       对话末尾、跟时间线对不上。找不到那一行才退到末尾。 */
+    const rendered = card.render();
+    const lines = copy.order
+      .map(itemId => messagesEl.querySelector(`.tool-call[data-tool-id="${cssEscapeValue(itemId)}"]`))
+      .filter(Boolean);
+    if (lines.length) {
+      lines[0].replaceWith(rendered);
+      for (const extra of lines.slice(1)) extra.remove();
+    } else {
+      addMessage("assistant", "").querySelector(".msg-body").appendChild(rendered);
+    }
+    for (const itemId of copy.order) {
+      restored.add(itemId);
+      const thread = subtaskThreads.get(subtaskKey(conv.id, itemId));
+      if (thread?.queue.length) pumpSubtaskThread(thread);
+    }
+  }
+  return restored;
+}
+
+function subtaskFollowupCount(conversationId, itemId) {
+  const thread = subtaskThreads.get(subtaskKey(conversationId, itemId));
+  return thread ? thread.items.filter((item) => item.role === "user").length : 0;
+}
+
+function subtaskThreadBusy(conversationId, itemId) {
+  return Boolean(subtaskThreads.get(subtaskKey(conversationId, itemId))?.inflight);
+}
+
+function subtaskOneLine(text, max) {
+  const line = String(text ?? "").replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/* 卡片上那一行灰字：最近一条回复说了什么 */
+function subtaskThreadPreview(thread) {
+  const items = thread?.items ?? [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.role !== "assistant") continue;
+    if (item.status === "running") return "正在回复…";
+    if (item.status === "done" && item.text) return `最新：${subtaskOneLine(item.text, 60)}`;
+    if (item.status === "failed") return "最近一次追问没有成功";
+    if (item.status === "stopped") return "最近一次追问已停止";
+  }
+  return "等待回复…";
+}
+
+function subtaskProfile(s) {
+  if (!s?.profileId) return null;
+  return _profileData?.profiles?.find((profile) => profile.id === s.profileId) ?? null;
+}
+
+/* 能不能追问：得知道它是哪种子任务、当时用的哪个账号，而且那个账号还在。
+   SDK 自己的后台任务（task_* 事件，比如后台跑的命令）没有可续接的对象。 */
+function subtaskCanFollowUp(s) {
+  return Boolean(s?.kind && subtaskProfile(s));
+}
+
+function subtaskModelOptions(s) {
+  const profile = subtaskProfile(s);
+  return profile ? modelOptionsForProfile(profile) : [];
+}
+
+function subtaskModelLabel(s, model) {
+  if (!model) return "";
+  return subtaskModelOptions(s).find((option) => option.model === model)?.label || model;
+}
+
+function subtaskVendorName(s) {
+  return s?.origin?.providerName || subtaskProfile(s)?.name || s?.origin?.provider || "";
+}
+
+function subtaskCurrentModel(conversationId, itemId, s) {
+  return subtaskThreads.get(subtaskKey(conversationId, itemId))?.model || s?.followupModel || s?.model || "";
+}
+
+/* 编队卡这一行报的是「现在接着这个子任务的是谁」：子任务页里换过模型，行尾的
+   厂商标签跟着换，不然卡上写着旧模型、点进去却是新模型 */
+function subtaskRowOrigin(conversationId, itemId, s) {
+  const model = subtaskThreads.get(subtaskKey(conversationId, itemId))?.model;
+  return model && s?.origin ? { ...s.origin, model } : (s?.origin ?? null);
+}
+
+function subtaskWho(s, model = s?.model) {
+  const base = [subtaskVendorName(s), subtaskModelLabel(s, model)].filter(Boolean).join(" · ");
+  if (s?.kind === "agent") return base ? `${base} · 子 agent` : "子 agent";
+  return base;
+}
+
+function subtaskStatusText(s) {
+  const settled = subtaskItemSettled(s);
+  const label = s.status === "done" ? "完成" : (s.status === "failed" ? "未成功" : "进行中");
+  if (!s.startAt) return label;
+  return `${label} · ${formatElapsed((settled ? (s.endAt || Date.now()) : Date.now()) - s.startAt)}`;
+}
+
+/* 从派生它的那次工具调用里认出：哪种子任务、原始任务、账号和模型 */
+function subtaskMetaFromToolUse(name, input) {
+  const i = input || {};
+  if (isDispatchTool(name)) {
+    const profile = findDispatchProvider(i.provider);
+    return { kind: "dispatch", brief: String(i.task || "").trim(), profileId: profile?.id || null, model: profile?.model || "" };
+  }
+  if (!isSubagentTool(name)) return null;
+  // Claude 的 Agent 子 agent 跑在主对话当时的账号上；没点名模型时跟主模型走
+  // 测试夹具只加载编队卡这一段，账号和模型那几个函数不一定在
+  const profile = typeof getActiveProfile === "function" ? getActiveProfile() : null;
+  let model = typeof selectedModel === "string" ? selectedModel : "";
+  if (i.model && typeof modelOptionsForProfile === "function") {
+    const hit = modelOptionsForProfile(profile).find((option) => String(option.model).includes(String(i.model)));
+    if (hit) model = hit.model;
+  }
+  return { kind: "agent", brief: String(i.prompt || i.description || "").trim(), profileId: profile?.id || null, model };
+}
+
+function subtaskStepsList(steps, { running = false, limit = 0 } = {}) {
+  const list = document.createElement("ol");
+  list.className = "st-steps";
+  const shown = limit ? steps.slice(-limit) : steps;
+  shown.forEach((text, i) => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    if (running && i === shown.length - 1) li.className = "now";
+    list.appendChild(li);
+  });
+  return list;
+}
+
+function subtaskStepsToggle(list, count, onToggle = null) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "st-steptog";
+  btn.setAttribute("aria-expanded", String(!list.hidden));
+  btn.innerHTML = `${SUBTASK_CHEVRON_SVG}<span></span>`;
+  btn.querySelector("span").textContent = `过程 · ${count} 步`;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = list.hidden;
+    list.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    onToggle?.(open);
+  };
+  return btn;
+}
+
+function subtaskSplitAvailable() {
+  return subtaskSplitQuery.matches;
+}
+
+function subtaskSplitActive() {
+  return Boolean(subtaskView) && subtaskSplitQuery.matches;
+}
+
+function subtaskViewShowing(conversationId, itemId) {
+  return subtaskSplitActive() && subtaskView.key === subtaskKey(conversationId, itemId);
+}
+
+function subtaskViewContext() {
+  if (!subtaskView) return null;
+  const card = subtaskCardRefs.get(subtaskView.key);
+  const s = card?.state.get(subtaskView.itemId);
+  if (!s) return null;
+  return {
+    card,
+    s,
+    label: card.labels.get(subtaskView.itemId) || subtaskView.itemId,
+    thread: subtaskThreads.get(subtaskView.key) ?? null,
+  };
+}
+
+/* 窄面板时子任务页盖住整个面板，底下的东西不该还能被 Tab 到；分栏时两边都能用 */
+function applySubtaskLayout() {
+  const split = subtaskSplitActive();
+  document.getElementById("app")?.classList.toggle("subtask-split", split);
+  const covered = Boolean(subtaskView) && !split;
+  if (covered === subtaskCoverApplied) return;
+  subtaskCoverApplied = covered;
+  for (const id of ["chat-header", "git-banner", "messages", "input-wrap"]) {
+    const el = document.getElementById(id);
+    if (el) el.inert = covered;
+  }
+}
+
+subtaskSplitQuery.addEventListener?.("change", () => {
+  applySubtaskLayout();
+  if (subtaskView) paintSubtaskView();
+});
+
+function ensureSubtaskViewEl() {
+  if (subtaskViewEl) return subtaskViewEl;
+  const el = document.createElement("section");
+  el.id = "subtask-view";
+  el.setAttribute("role", "region");
+  el.setAttribute("aria-label", "子任务");
+  el.inert = true;
+  el.innerHTML = `
+    <div class="stv-head">
+      <button type="button" class="stv-back" title="返回主对话（Esc）">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>
+        <span class="stv-back-label">主对话</span>
+      </button>
+      <span class="stv-title"></span>
+    </div>
+    <div class="stv-meta"></div>
+    <div class="stv-body"></div>
+    <div class="stv-dock">
+      <div class="stv-mmenu" role="listbox" hidden></div>
+      <div class="stv-composer">
+        <div class="stv-target"></div>
+        <div class="stv-row">
+          <textarea rows="1" aria-label="追问这个子任务"></textarea>
+          <button type="button" class="stv-send" aria-label="发送"></button>
+        </div>
+        <div class="stv-tools">
+          <button type="button" class="stv-mpick" aria-haspopup="listbox" aria-expanded="false" title="切换模型"></button>
+          <span class="stv-tools-note"></span>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("app").appendChild(el);
+  el.querySelector(".stv-back").onclick = () => closeSubtaskView();
+  const input = el.querySelector("textarea");
+  input.addEventListener("input", () => {
+    autosizeSubtaskInput(input);
+    paintSubtaskSend();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    submitSubtaskFollowup();
+  });
+  el.querySelector(".stv-send").onclick = () => {
+    const ctx = subtaskViewContext();
+    if (ctx?.thread?.inflight && !input.value.trim()) stopSubtaskFollowup();
+    else submitSubtaskFollowup();
+  };
+  el.querySelector(".stv-mpick").onclick = () => toggleSubtaskModelMenu();
+  subtaskViewEl = el;
+  return el;
+}
+
+function autosizeSubtaskInput(input) {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+}
+
+function stashSubtaskDraft() {
+  if (!subtaskView || !subtaskViewEl) return;
+  const value = subtaskViewEl.querySelector("textarea").value;
+  if (value.trim()) subtaskDrafts.set(subtaskView.key, value);
+  else subtaskDrafts.delete(subtaskView.key);
+}
+
+function openSubtaskView(card, itemId) {
+  if (!card?.state.has(itemId) || card.ownerConversationId !== currentConvId) return;
+  const key = subtaskKey(card.ownerConversationId, itemId);
+  subtaskCardRefs.set(key, card);
+  const el = ensureSubtaskViewEl();
+  const previous = subtaskView;
+  if (previous?.key === key) return;
+  if (previous) stashSubtaskDraft();
+  closeSubtaskModelMenu();
+  subtaskView = {
+    key,
+    conversationId: card.ownerConversationId,
+    itemId,
+    // 还在跑的时候过程就是全部内容，默认摊开；跑完了产出才是重点
+    stepsOpen: !subtaskItemSettled(card.state.get(itemId)),
+    briefOpen: false,
+  };
+  const input = el.querySelector("textarea");
+  input.value = subtaskDrafts.get(key) || "";
+  autosizeSubtaskInput(input);
+  el.inert = false;
+  el.classList.add("open");
+  applySubtaskLayout();
+  paintSubtaskView({ scroll: "top" });
+  if (previous) refreshSubtaskRowByKey(previous.key, previous.itemId);
+  refreshSubtaskRowByKey(key, itemId);
+  updateBackgroundActivity();
+  // 进来先看结果：焦点放在返回键上，想追问再点输入框
+  requestAnimationFrame(() => el.querySelector(".stv-back")?.focus({ preventScroll: true }));
+}
+
+function closeSubtaskView({ reveal = true } = {}) {
+  if (!subtaskView) return;
+  const { key, itemId } = subtaskView;
+  stashSubtaskDraft();
+  closeSubtaskModelMenu();
+  subtaskView = null;
+  subtaskViewEl.classList.remove("open");
+  subtaskViewEl.inert = true;
+  applySubtaskLayout();
+  syncSubtaskViewTicker();
+  const card = subtaskCardRefs.get(key);
+  refreshSubtaskRowByKey(key, itemId);
+  // 回到主对话时把那张卡带到眼前，就地展开里能看到刚才的追问记录
+  if (reveal && card?.el?.isConnected && card.ownerConversationId === currentConvId) {
+    revealSquadCard(card, itemId);
+    card.el.querySelector(`.sq-detail[data-for="${cssEscapeValue(itemId)}"] .sq-ix-open`)?.focus({ preventScroll: true });
+  }
+}
+
+function refreshSubtaskRowByKey(key, itemId) {
+  const card = subtaskCardRefs.get(key);
+  if (!card?.el?.isConnected) return;
+  card.paintRow(itemId);
+  if (card.openId === itemId) card.paintDetail(itemId);
+}
+
+function refreshSubtaskViewFor(conversationId, itemId, scroll = "follow") {
+  if (!subtaskView || subtaskView.key !== subtaskKey(conversationId, itemId)) return;
+  paintSubtaskView({ scroll });
+}
+
+function onSubtaskItemSettled(conversationId, itemId) {
+  refreshSubtaskViewFor(conversationId, itemId);
+  const thread = subtaskThreads.get(subtaskKey(conversationId, itemId));
+  if (thread) pumpSubtaskThread(thread);
+}
+
+function paintSubtaskView({ scroll = "keep" } = {}) {
+  const ctx = subtaskViewContext();
+  if (!ctx) { closeSubtaskView({ reveal: false }); return; }
+  const el = subtaskViewEl;
+  el.setAttribute("aria-label", `子任务：${ctx.label}`);
+  const title = el.querySelector(".stv-title");
+  title.textContent = ctx.label;
+  title.title = ctx.label;
+  paintSubtaskMeta(ctx);
+  const body = el.querySelector(".stv-body");
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+  const previousTop = body.scrollTop;
+  paintSubtaskBody(body, ctx);
+  if (scroll === "top") body.scrollTop = 0;
+  else if (scroll === "bottom" || (scroll === "follow" && nearBottom)) body.scrollTop = body.scrollHeight;
+  else body.scrollTop = previousTop;
+  paintSubtaskComposer(ctx);
+  syncSubtaskViewTicker();
+}
+
+function subtaskViewStatusText(s, thread) {
+  if (thread?.inflight) return `正在回复 · ${formatElapsed(Date.now() - thread.inflight.reply.at)}`;
+  return subtaskStatusText(s);
+}
+
+function makeSubtaskChip(text) {
+  const chip = document.createElement("span");
+  chip.className = "st-chip";
+  chip.textContent = text;
+  chip.title = text;
+  return chip;
+}
+
+function paintSubtaskMeta({ s, thread }) {
+  const meta = subtaskViewEl.querySelector(".stv-meta");
+  meta.innerHTML = "";
+  const who = subtaskWho(s, subtaskCurrentModel(subtaskView.conversationId, subtaskView.itemId, s));
+  if (who) meta.appendChild(makeSubtaskChip(who));
+  const busy = !subtaskItemSettled(s) || Boolean(thread?.inflight);
+  const status = document.createElement("span");
+  status.className = `stv-status${busy ? " running" : (s.status === "failed" ? " failed" : "")}`;
+  status.innerHTML = '<i aria-hidden="true"></i><span class="stv-elapsed"></span>';
+  status.querySelector(".stv-elapsed").textContent = subtaskViewStatusText(s, thread);
+  meta.appendChild(status);
+}
+
+function paintSubtaskBody(body, { s, thread }) {
+  body.innerHTML = "";
+  const settled = subtaskItemSettled(s);
+
+  if (s.brief) {
+    const brief = document.createElement("div");
+    brief.className = `stv-brief${subtaskView.briefOpen ? " full" : ""}`;
+    brief.innerHTML = '<div class="stv-brief-h"></div><div class="stv-brief-x"></div>';
+    brief.querySelector(".stv-brief-h").textContent = s.kind === "dispatch" ? "派给它的任务" : "主模型交代的任务";
+    brief.querySelector(".stv-brief-x").textContent = s.brief;
+    if (s.brief.length > 80 || s.brief.includes("\n")) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "stv-brief-more";
+      more.textContent = subtaskView.briefOpen ? "收起" : "展开";
+      more.onclick = () => {
+        subtaskView.briefOpen = !subtaskView.briefOpen;
+        brief.classList.toggle("full", subtaskView.briefOpen);
+        more.textContent = subtaskView.briefOpen ? "收起" : "展开";
+      };
+      brief.appendChild(more);
+    }
+    body.appendChild(brief);
+  }
+
+  if (s.steps.length || !settled) {
+    const box = document.createElement("div");
+    box.className = "stv-stepbox";
+    const list = s.steps.length
+      ? subtaskStepsList(s.steps, { running: !settled })
+      : subtaskStepsList(["等待子任务的第一个动作…"]);
+    list.hidden = !subtaskView.stepsOpen;
+    box.append(subtaskStepsToggle(list, s.steps.length, (open) => { subtaskView.stepsOpen = open; }), list);
+    body.appendChild(box);
+  }
+
+  if (s.output) {
+    const entry = document.createElement("div");
+    entry.className = "stv-entry";
+    const sig = document.createElement("div");
+    sig.className = "stv-sig";
+    const who = subtaskWho(s, s.model);
+    if (who) sig.appendChild(makeSubtaskChip(who));
+    sig.append("的产出");
+    const md = document.createElement("div");
+    md.className = "msg-body";
+    md.innerHTML = renderMarkdown(s.output);
+    entry.append(sig, md);
+    body.appendChild(entry);
+  } else {
+    const note = document.createElement("div");
+    note.className = `stv-note${s.status === "failed" ? " failed" : ""}`;
+    note.textContent = !settled
+      ? "还在做，产出会出现在这里。现在发的话会在它这一步结束后送达。"
+      : (s.result || "没有拿到它的产出。");
+    body.appendChild(note);
+  }
+
+  const items = thread?.items ?? [];
+  if (items.some((item) => item.role === "user")) {
+    const divider = document.createElement("div");
+    divider.className = "stv-divider";
+    divider.textContent = "追问";
+    body.appendChild(divider);
+  }
+  for (const item of items) body.appendChild(renderSubtaskThreadItem(item, s, settled));
+}
+
+function renderSubtaskThreadItem(item, s, settled) {
+  if (item.role === "switch") {
+    const divider = document.createElement("div");
+    divider.className = "stv-divider switch";
+    divider.textContent = item.text;
+    return divider;
+  }
+  if (item.role === "user") {
+    const wrap = document.createElement("div");
+    wrap.className = "stv-entry";
+    const bubble = document.createElement("div");
+    bubble.className = "stv-user";
+    bubble.textContent = item.text;
+    wrap.appendChild(bubble);
+    const pending = item.status === "held" ? "原任务因重启中断，这条未发送；请复制后重新发送。" : item.status === "queued"
+      ? (settled ? "排队中 · 上一条回复完就发" : "排队中 · 它这一步结束后送达")
+      : (item.status === "offline" ? "连接断开了，重连后自动发送" : "");
+    if (pending) {
+      const note = document.createElement("div");
+      note.className = "stv-user-note";
+      note.textContent = pending;
+      wrap.appendChild(note);
+    }
+    return wrap;
+  }
+  const entry = document.createElement("div");
+  entry.className = "stv-entry";
+  const sig = document.createElement("div");
+  sig.className = "stv-sig";
+  const who = subtaskWho(s, item.model);
+  if (who) sig.appendChild(makeSubtaskChip(who));
+  if (item.steps?.length) sig.append(`· 做了 ${item.steps.length} 步`);
+  entry.appendChild(sig);
+  if (item.resumed === false) {
+    const note = document.createElement("div");
+    note.className = "stv-note";
+    note.textContent = "已另开会话，并附上原任务和已有结果。";
+    entry.appendChild(note);
+  }
+  if (item.status === "running") {
+    if (item.steps?.length) entry.appendChild(subtaskStepsList(item.steps, { running: true, limit: 3 }));
+    const typing = document.createElement("div");
+    typing.className = "typing";
+    typing.innerHTML = "<span></span><span></span><span></span>";
+    entry.appendChild(typing);
+  } else if (item.status === "done") {
+    const md = document.createElement("div");
+    md.className = "msg-body";
+    md.innerHTML = renderMarkdown(item.text || "（没有文字回复）");
+    entry.appendChild(md);
+  } else {
+    const note = document.createElement("div");
+    note.className = `stv-note${item.status === "failed" ? " failed" : ""}`;
+    note.textContent = item.status === "failed" ? (item.text || "这次追问没有成功。") : "已停止。";
+    entry.appendChild(note);
+  }
+  return entry;
+}
+
+function paintSubtaskComposer({ s, thread }) {
+  const el = subtaskViewEl;
+  const input = el.querySelector("textarea");
+  const target = el.querySelector(".stv-target");
+  const tools = el.querySelector(".stv-tools");
+  const canFollowUp = subtaskCanFollowUp(s);
+  target.innerHTML = "";
+  input.disabled = !canFollowUp;
+  if (!canFollowUp) {
+    target.textContent = s.kind ? "派它的那个账号已经不在了，没法接着追问。" : "这类后台任务不支持追问。";
+    input.placeholder = "不能追问";
+    tools.hidden = true;
+    paintSubtaskSend();
+    return;
+  }
+  const vendor = subtaskVendorName(s) || "它";
+  const model = subtaskCurrentModel(subtaskView.conversationId, subtaskView.itemId, s);
+  const settled = subtaskItemSettled(s);
+  const replied = thread?.items.some((item) => item.role === "assistant" && item.status === "done");
+  if (s.kind === "agent" && !replied) {
+    target.textContent = settled
+      ? "子 agent 已经结束，追问时会带着它的产出重新派一个"
+      : "它这一步结束后送达";
+  } else {
+    target.append("发给", makeSubtaskChip(subtaskWho(s, model)), settled ? "· 接着这个子任务往下说" : "· 它这一步结束后送达");
+  }
+  input.placeholder = s.kind === "agent" ? "接着追问这个子 agent…" : `继续跟 ${vendor} 说…`;
+  tools.hidden = false;
+  const pick = el.querySelector(".stv-mpick");
+  pick.innerHTML = `<span></span><svg viewBox="0 0 8 8" fill="none" aria-hidden="true"><path d="M1.5 5.3L4 2.8l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  pick.querySelector("span").textContent = subtaskModelLabel(s, model) || "选择模型";
+  el.querySelector(".stv-tools-note").textContent = s.kind === "agent" ? "重新派出时使用" : `只在 ${vendor} 内切换`;
+  paintSubtaskSend();
+}
+
+/* 一个主按钮，跟主输入框同一套规矩：有字就是发送（排在正在回复的那条后面），
+   没字又正在回复时变成停止 */
+function paintSubtaskSend() {
+  const ctx = subtaskViewContext();
+  if (!ctx || !subtaskViewEl) return;
+  const btn = subtaskViewEl.querySelector(".stv-send");
+  const hasText = Boolean(subtaskViewEl.querySelector("textarea").value.trim());
+  const stop = Boolean(ctx.thread?.inflight) && !hasText;
+  btn.classList.toggle("stop", stop);
+  btn.innerHTML = stop ? SUBTASK_STOP_SVG : SUBTASK_SEND_SVG;
+  btn.setAttribute("aria-label", stop ? "停止这条追问" : "发送");
+  btn.title = stop ? "停止这条追问" : "发送";
+  btn.disabled = !stop && (!hasText || !subtaskCanFollowUp(ctx.s));
+}
+
+function syncSubtaskViewTicker() {
+  const ctx = subtaskViewContext();
+  const needed = Boolean(ctx) && (!subtaskItemSettled(ctx.s) || Boolean(ctx.thread?.inflight));
+  if (needed && !subtaskViewTicker) {
+    subtaskViewTicker = setInterval(() => {
+      const current = subtaskViewContext();
+      const el = subtaskViewEl?.querySelector(".stv-elapsed");
+      if (current && el) el.textContent = subtaskViewStatusText(current.s, current.thread);
+      syncSubtaskViewTicker();
+    }, 1000);
+  } else if (!needed && subtaskViewTicker) {
+    clearInterval(subtaskViewTicker);
+    subtaskViewTicker = null;
+  }
+}
+
+// ── 模型：只列这一家的 ──
+function closeSubtaskModelMenu() {
+  const menu = subtaskViewEl?.querySelector(".stv-mmenu");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  subtaskViewEl.querySelector(".stv-mpick")?.setAttribute("aria-expanded", "false");
+}
+
+function toggleSubtaskModelMenu() {
+  const menu = subtaskViewEl?.querySelector(".stv-mmenu");
+  const ctx = subtaskViewContext();
+  if (!menu || !ctx) return;
+  if (!menu.hidden) { closeSubtaskModelMenu(); return; }
+  // 两家的真目录是懒加载的；先用手上的画，拉回来了再重画一次
+  const provider = subtaskProfile(ctx.s)?.provider;
+  const loading = provider === "antigravity" ? loadAgyModelCatalog() : (provider === "codex" ? loadCodexModelCatalog() : null);
+  loading?.then(() => { if (!menu.hidden) paintSubtaskModelMenu(); });
+  paintSubtaskModelMenu();
+  menu.hidden = false;
+  subtaskViewEl.querySelector(".stv-mpick").setAttribute("aria-expanded", "true");
+  (menu.querySelector('[aria-selected="true"]') || menu.querySelector("button"))?.focus({ preventScroll: true });
+}
+
+function paintSubtaskModelMenu() {
+  const menu = subtaskViewEl?.querySelector(".stv-mmenu");
+  const ctx = subtaskViewContext();
+  if (!menu || !ctx) return;
+  const { s } = ctx;
+  const vendor = subtaskVendorName(s) || "这家";
+  const current = subtaskCurrentModel(subtaskView.conversationId, subtaskView.itemId, s);
+  menu.setAttribute("aria-label", `${vendor} 的模型`);
+  menu.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "stv-mmenu-h";
+  head.textContent = `${vendor} 的模型`;
+  menu.appendChild(head);
+  for (const option of subtaskModelOptions(s)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("role", "option");
+    btn.setAttribute("aria-selected", String(option.model === current));
+    btn.innerHTML = '<span class="ck" aria-hidden="true"></span><span class="nm"></span><span class="ds"></span>';
+    btn.querySelector(".ck").textContent = option.model === current ? "✓" : "";
+    btn.querySelector(".nm").textContent = option.name || option.label || option.model;
+    btn.querySelector(".ds").textContent = option.desc || "";
+    btn.onclick = () => {
+      closeSubtaskModelMenu();
+      switchSubtaskModel(option.model);
+      subtaskViewEl.querySelector("textarea")?.focus({ preventScroll: true });
+    };
+    menu.appendChild(btn);
+  }
+  const foot = document.createElement("div");
+  foot.className = "stv-mmenu-f";
+  foot.textContent = s.kind === "agent"
+    ? "下次追问会用选中的模型。换不了别家：要换厂商，请回主对话用「>厂商」重新派。"
+    : `只能在 ${vendor} 内切换。还是同一个子任务，前面的内容会接着带上。`;
+  menu.appendChild(foot);
+}
+
+function switchSubtaskModel(model) {
+  const ctx = subtaskViewContext();
+  if (!ctx || !model) return;
+  const { s } = ctx;
+  const thread = subtaskThreadFor(subtaskView.conversationId, subtaskView.itemId);
+  if (model === subtaskCurrentModel(subtaskView.conversationId, subtaskView.itemId, s)) return;
+  thread.model = model;
+  s.followupModel = model;
+  ctx.card.syncBlock();
+  const label = subtaskModelLabel(s, model);
+  const busy = Boolean(thread.inflight) || !subtaskItemSettled(s);
+  const text = busy ? `下一条起改用 ${label}` : `以下由 ${label} 回复`;
+  // 连着切几次只留最后一条，免得刷出一串没有回复的分隔线
+  const last = thread.items[thread.items.length - 1];
+  if (last?.role === "switch") last.text = text;
+  else thread.items.push({ id: `sw_${genId()}`, role: "switch", text });
+  paintSubtaskView({ scroll: "bottom" });
+  refreshSubtaskRowByKey(thread.key, thread.itemId);
+}
+
+// ── 发送 / 停止 / 回执 ──
+function submitSubtaskFollowup() {
+  const ctx = subtaskViewContext();
+  if (!ctx || !subtaskCanFollowUp(ctx.s)) return;
+  const input = subtaskViewEl.querySelector("textarea");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  autosizeSubtaskInput(input);
+  subtaskDrafts.delete(subtaskView.key);
+  const thread = subtaskThreadFor(subtaskView.conversationId, subtaskView.itemId);
+  const item = { id: `st_${genId()}`, role: "user", text, status: "queued", at: Date.now() };
+  thread.items.push(item);
+  thread.queue.push(item);
+  persistSubtaskPending(thread.conversationId);
+  pumpSubtaskThread(thread);
+  paintSubtaskView({ scroll: "bottom" });
+  refreshSubtaskRowByKey(thread.key, thread.itemId);
+}
+
+/* 同一个子任务一次只发一条：对方的会话是串行的，并发写进去两边的历史会交错。
+   子任务自己还在跑时也先压着——等 settle 再发（onSubtaskItemSettled）。 */
+function pumpSubtaskThread(thread) {
+  if (!thread || thread.inflight || !thread.queue.length) return;
+  const card = subtaskCardRefs.get(thread.key);
+  const s = card?.state.get(thread.itemId);
+  if (!s || !subtaskItemSettled(s) || !subtaskCanFollowUp(s)) return;
+  const item = thread.queue[0];
+  const model = thread.model || s.model || null;
+  const history = thread.items
+    .filter((entry) => entry !== item
+      && ((entry.role === "user" && entry.status === "sent")
+        || (entry.role === "assistant" && entry.status === "done" && entry.text)))
+    .map((entry) => ({ role: entry.role, text: entry.text }));
+  const sent = wsSend({
+    type: "subtask_followup",
+    conversationId: thread.conversationId,
+    subtaskId: thread.itemId,
+    requestId: item.id,
+    profileId: s.profileId,
+    model,
+    prompt: item.text,
+    label: card.labels.get(thread.itemId) || "",
+    brief: s.brief || "",
+    output: s.output || s.result || "",
+    thread: history,
+    permissionMode: selectedPermissionMode,
+  });
+  if (!sent) {
+    item.status = "offline";
+    return;
+  }
+  thread.queue.shift();
+  item.status = "sent";
+  const reply = { id: `${item.id}_reply`, role: "assistant", status: "running", text: "", steps: [], model, at: Date.now() };
+  thread.items.push(reply);
+  thread.inflight = { requestId: item.id, reply };
+  persistSubtaskPending(thread.conversationId);
+  updateBackgroundActivity();
+}
+
+function retryOfflineSubtaskFollowups() {
+  const cards = new Set(subtaskCardRefs.values());
+  for (const card of cards) {
+    if (card.order.length && !deletedConversationIds.has(card.ownerConversationId)) card.syncBlock();
+  }
+  for (const thread of subtaskThreads.values()) {
+    if (thread.inflight) {
+      wsSend({ type: "subtask_status", conversationId: thread.conversationId, subtaskId: thread.itemId, requestId: thread.inflight.requestId });
+      if (thread.inflight.stopPending) {
+        wsSend({ type: "subtask_stop", conversationId: thread.conversationId, requestId: thread.inflight.requestId });
+      }
+    }
+    for (const item of thread.queue) if (item.status === "offline") item.status = "queued";
+    pumpSubtaskThread(thread);
+    refreshSubtaskViewFor(thread.conversationId, thread.itemId);
+  }
+}
+
+function stopSubtaskFollowup() {
+  const ctx = subtaskViewContext();
+  const inflight = ctx?.thread?.inflight;
+  if (!inflight) return;
+  inflight.stopPending = true;
+  wsSend({ type: "subtask_stop", conversationId: subtaskView.conversationId, requestId: inflight.requestId });
+}
+
+const SUBTASK_TERMINAL_EVENTS = { subtask_done: "done", subtask_error: "failed", subtask_stopped: "stopped" };
+
+function handleSubtaskEvent(ev) {
+  const thread = subtaskThreads.get(subtaskKey(ev.conversationId, ev.subtaskId));
+  const reply = thread?.items.find((item) => item.id === `${ev.requestId}_reply`);
+  if (!reply) return;
+  if (ev.type === "subtask_started") {
+    if (ev.model) reply.model = ev.model;
+    if (typeof ev.resumed === "boolean") reply.resumed = ev.resumed;
+    if (thread.inflight?.requestId === ev.requestId) thread.inflight.acknowledged = true;
+    persistSubtaskPending(thread.conversationId);
+  } else if (ev.type === "subtask_step") {
+    if (reply.status === "running") reply.steps.push(subagentToolLabel(ev.name, ev.input));
+  } else if (SUBTASK_TERMINAL_EVENTS[ev.type]) {
+    if (reply.status !== "running") return;
+    reply.status = SUBTASK_TERMINAL_EVENTS[ev.type];
+    reply.text = ev.type === "subtask_done" ? String(ev.output || "") : (ev.type === "subtask_error" ? String(ev.text || "") : "");
+    if (ev.model) reply.model = ev.model;
+    if (thread.inflight?.requestId === ev.requestId) thread.inflight = null;
+    persistSubtaskPending(thread.conversationId);
+    pumpSubtaskThread(thread);
+    updateBackgroundActivity();
+  } else {
+    return;
+  }
+  refreshSubtaskViewFor(thread.conversationId, thread.itemId);
+  refreshSubtaskRowByKey(thread.key, thread.itemId);
+}
+
+/* 应用重启后编队卡还原不出来，追问记录就挂不回去了。退回主时间线显示，并写明
+   追问的是哪个子任务——总比让它们从界面上消失强。 */
+function renderSubtaskHistoryMessage(msg) {
+  const label = msg.subtask?.label || "子任务";
+  const failed = msg.role === "assistant" && !msg.text;
+  const el = addMessage(msg.role, failed ? "" : (msg.text || ""));
+  el.classList.add("msg-subtask");
+  const tag = document.createElement("div");
+  tag.className = "subtask-tag";
+  const vendor = msg.via?.model || msg.via?.provider || "";
+  tag.textContent = msg.role === "user"
+    ? `追问子任务「${label}」`
+    : `子任务「${label}」的回复${vendor ? ` · ${vendor}` : ""}`;
+  el.prepend(tag);
+  if (failed) {
+    const note = document.createElement("div");
+    note.className = "stv-note";
+    note.textContent = msg.status === "stopped" ? "这次追问被停止了。" : "这次追问没有成功。";
+    el.querySelector(".msg-body")?.appendChild(note);
+  }
+}
+
+document.addEventListener?.("keydown", (e) => {
+  if (e.key !== "Escape" || e.isComposing || !subtaskView || !subtaskViewEl) return;
+  // 分栏时主对话照常可用，焦点在左边就别抢它的 Esc（斜杠面板、停止生成）
+  if (subtaskSplitActive() && !subtaskViewEl.contains(e.target)) return;
+  // 全局弹窗和下拉可能盖在子任务页上；先让各自的 Esc 处理器关掉顶层 UI。
+  if (document.querySelector?.("#auth-dialog.open, #history-dropdown.open, #action-sheet.open, #slash-popup.open, #model-dropdown.open, #permission-dropdown.open")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const menu = subtaskViewEl.querySelector(".stv-mmenu");
+  if (!menu.hidden) {
+    closeSubtaskModelMenu();
+    subtaskViewEl.querySelector(".stv-mpick")?.focus({ preventScroll: true });
+    return;
+  }
+  closeSubtaskView();
+}, true);
+
+document.addEventListener?.("mousedown", (e) => {
+  if (!subtaskViewEl) return;
+  const menu = subtaskViewEl.querySelector(".stv-mmenu");
+  if (!menu.hidden && !e.target.closest?.(".stv-mmenu, .stv-mpick")) closeSubtaskModelMenu();
+});
 
 /* ── Codex 的串行 checklist ── */
 let todoListEl = null;
@@ -6521,6 +8013,7 @@ function subagentIngest(ev) {
             : (b.input?.description || b.input?.subagent_type || "子任务"),
           isDispatchTool(b.name) ? dispatchProviderInfo(b.input?.provider) : null,
         );
+        card.describe(b.id, subtaskMetaFromToolUse(b.name, b.input));
         // 记下 key→id，好让后续 dispatch_step 找得到这张卡
         if (isDispatchTool(b.name)) registerDispatchKey(b.input, b.id);
       });
@@ -6537,11 +8030,13 @@ function subagentIngest(ev) {
       if (!card) continue;
       hit = true;
       if (isAsyncLaunchAck(b.tool_use_id, b.content)) continue;   // 只是启动回执
+      const dispatched = parseDispatchResult(b.content);
       card.settle(
         b.tool_use_id,
         b.is_error ? "failed" : "done",
         subagentResultSummary(b.content),
-        parseDispatchResult(b.content),
+        dispatched,
+        b.is_error ? null : (dispatched ? dispatched.output : toolResultText(b.content)),
       );
     }
     if (hit) return true;
@@ -6565,7 +8060,9 @@ function subagentIngest(ev) {
     if (taskEventIsDone(ev)) {
       asyncAgentItems.delete(id);
       const unsuccessful = ["failed", "error", "stopped", "killed", "cancelled", "canceled"].includes(status);
-      card.settle(id, unsuccessful ? "failed" : "done", desc || (unsuccessful ? "已停止或未成功" : "已完成"));
+      // task_notification 的 summary 可能远超行尾摘要，追问还需要拿到完整前情。
+      const output = typeof ev.summary === "string" && ev.summary.trim() ? ev.summary : null;
+      card.settle(id, unsuccessful ? "failed" : "done", desc || (unsuccessful ? "已停止或未成功" : "已完成"), null, output);
     } else {
       asyncAgentItems.set(id, taskId);   // 记下 task_id，供识别启动回执
       if (desc) card.step(id, desc);
@@ -6585,14 +8082,31 @@ function subagentIngest(ev) {
 }
 
 // ── Event handling ────────────────────────────────────────
+function staleConversationTerminal(ev) {
+  const id = ev.conversationId || currentConvId;
+  const expected = id === currentConvId ? activeRequestId : conversationDeliveryStates.get(id)?.activeRequestId;
+  return Boolean(expected && ev.userMessageId !== expected && ev.conversationId);
+}
+
 function handleEvent(ev) {
+  if (ev.conversationId && deletedConversationIds.has(ev.conversationId)) return;
   lastWsEventAt = Date.now();
 
   // Server heartbeat (every 30s) — only used to keep lastWsEventAt fresh so the
   // dead-socket detector below never fires on a healthy connection.
   if (ev.type === "ping") return;
 
+  // 子任务页的追问回执：按「对话|子任务」归位，不管现在看的是哪个对话，
+  // 也不进主对话那套回合、完成提醒和会话状态点的逻辑
+  if (typeof ev.type === "string" && ev.type.startsWith("subtask_")) { handleSubtaskEvent(ev); return; }
+
   if (ev.type === "sessions_snapshot") { applySessionsSnapshot(ev); return; }
+
+  if ((["done", "stopped", "error"].includes(ev.type)
+    || (ev.type === "system" && ev.subtype === "session_state_changed" && ev.state === "idle"))
+    && staleConversationTerminal(ev)) return;
+
+  globalThis.InkfellowCompletion?.ingest(ev);
 
   /* 终结事件先于会话路由处理：不论它属于当前这个对话还是后台某个，
      都意味着那一轮跑完了，得马上从「在跑」里摘掉。
@@ -6622,6 +8136,8 @@ function handleEvent(ev) {
      它们只用来更新会话列表上的状态点和未读标记。
      没带 conversationId 的是连接级事件（init、快照之类），不受此限。 */
   if (ev.conversationId && currentConvId && ev.conversationId !== currentConvId) {
+    handleBackgroundDeliveryEvent(ev);
+    handleSteeringEvent(ev);
     ingestOwnedTaskEvent(ev);
     if (ev.type === "ask_user_question") renderAskUserQuestion(ev);
     if (ev.type === "ask_user_question_cancelled" || ev.type === "ask_user_question_error") {
@@ -6650,11 +8166,14 @@ function handleEvent(ev) {
 
   if (ev.type === "reset_complete") {
     resetRequested = false;
+    const resetState = conversationDeliveryState();
+    resetState.resetPending = false;
+    resetState.resetPayload = null;
     /* reset 是个来回：发出去，等这条回来才算数。这中间人是可以切走的——新建之后
        立刻按 Ctrl+1 回上一个就够快，服务端要关 runtime、abort、清一堆 timer，
        往返几百毫秒很正常。而 reset_complete 不带归属，照着清就是把另一个对话的
        消息流连同它正在跑的那一轮一起抹掉：切回去一看，什么都没了。 */
-    if (resetLandingConvId && resetLandingConvId !== currentConvId) {
+    if (!ev.conversationId && resetLandingConvId && resetLandingConvId !== currentConvId) {
       resetLandingConvId = null;
       return;
     }
@@ -6675,6 +8194,7 @@ function handleEvent(ev) {
     setGenerating(false);
     removeTyping();
     if (!ev.preserveMessages) {
+      if (subtaskView) closeSubtaskView({ reveal: false });
       messagesEl.innerHTML = "";
       messageLog = [];
     }
@@ -6692,6 +8212,7 @@ function handleEvent(ev) {
       cacheCurrentConversationView();
       void saveCurrentConversation();
     }
+    flushLocalSteering();
     return;
   }
 
@@ -6700,7 +8221,8 @@ function handleEvent(ev) {
   if (resetRequested) return;
 
   if (ev.type === "request_ack") {
-    if (ev.state === "running") materializeStartedSteering(ev);
+    if (ev.state === "running" || ev.state === "steering_applied") materializeStartedSteering(ev);
+    settleAcknowledgedSteering(ev);
     if (pendingRequestDraft?.userMessageId === ev.userMessageId) {
       pendingRequestDraft = null;
       clearTimeout(requestRetryTimer);
@@ -6708,8 +8230,10 @@ function handleEvent(ev) {
     }
     if (ev.state === "queued" || ev.state === "running") {
       activeRequestId = ev.userMessageId || activeRequestId;
+      /* 指示器交给 setGenerating 挑：回答已经写了一半（重连、排队消息的 ack）
+         时该是气泡上的 chip。以前这里和 request_started / run_attached 都会再
+         无条件补一个 typing，于是 chip 底下又多出三个点，一直跟到这轮结束。 */
       setGenerating(true);
-      if (!document.getElementById("typing")) addTyping();
       if (stopRequested && stopResendPending) sendStopRequest();
     } else if (activeRequestId && ev.userMessageId === activeRequestId) {
       finishGenerationAndContinue(ev.userMessageId);
@@ -6727,7 +8251,6 @@ function handleEvent(ev) {
     }
     activeRequestId = ev.userMessageId || activeRequestId;
     setGenerating(true);
-    if (!document.getElementById("typing")) addTyping();
     flushLocalSteering();
     return;
   }
@@ -6737,12 +8260,16 @@ function handleEvent(ev) {
     updateTypingStatus("AI 服务正在安全重启，消息会自动重试...");
     if (stopRequested) stopResendPending = true;
     clearTimeout(requestRetryTimer);
+    const ownerId = currentConvId;
+    const draft = pendingRequestDraft;
     requestRetryTimer = setTimeout(() => {
-      requestRetryTimer = null;
-      if (!pendingRequestDraft || !resendPendingRequest()) return;
-      if (stopRequested) {
-        stopResendPending = true;
-        sendStopRequest();
+      const state = conversationDeliveryState(ownerId);
+      state.retryTimer = null;
+      if (ownerId === currentConvId) requestRetryTimer = null;
+      const pending = ownerId === currentConvId ? pendingRequestDraft : state.pendingDraft;
+      if (pending !== draft || !wsSend(draft.wsPayload)) return;
+      if (ownerId === currentConvId ? stopRequested : state.stopRequested) {
+        wsSend({ stop: true, conversationId: ownerId, userMessageId: draft.userMessageId });
       }
     }, Math.max(100, Number(ev.retryAfterMs) || 1000));
     return;
@@ -6755,13 +8282,11 @@ function handleEvent(ev) {
     if (ev.userMessageId) activeRequestId = ev.userMessageId;
     if (pendingRequestDraft) {
       setGenerating(true);
-      if (!document.getElementById("typing")) addTyping();
       if (stopRequested) sendStopRequest();
       return;
     }
     if (ev.running) {
       setGenerating(true);
-      if (!document.getElementById("typing")) addTyping();
       // A Stop frame may have raced with the disconnect. Re-send it after the
       // server confirms that the foreground run is still alive.
       if (stopRequested) sendStopRequest();
@@ -7013,14 +8538,18 @@ function handleEvent(ev) {
       if (b?.isTask) {
         let desc = "";
         let origin = null;
+        let meta = null;
         try {
           const raw = JSON.parse(b.accumulated || "{}");
           desc = isDispatchTool(b.name)
             ? dispatchCardLabel(raw)
             : (raw.description || raw.subagent_type || "");
           if (isDispatchTool(b.name)) origin = dispatchProviderInfo(raw.provider);
+          meta = subtaskMetaFromToolUse(b.name, raw);
         } catch { }
-        currentSquad(true).spawn(b.id, desc || "子任务", origin);
+        const squad = currentSquad(true);
+        squad.spawn(b.id, desc || "子任务", origin);
+        squad.describe(b.id, meta);
         return;
       }
       if (isToolUseType(b?.type)) {
@@ -7111,17 +8640,27 @@ function handleEvent(ev) {
   // 后台任务事件在上面已经收掉了（原先这里那个分支调的是个不存在的函数）
 
   if (ev.type === "result") {
+    // 先收尾再保存快照，避免历史恢复把无结果的前台任务重新算作运行中。
+    const resultRequestId = ev.userMessageId ?? activeRequestId;
+    const resultWasStopped = stopRequested && resultRequestId && resultRequestId === activeRequestId;
+    settleRunningSquadTasks(resultWasStopped ? "已停止" : "已结束，未收到结果", resultRequestId, !resultWasStopped);
     const savedText = assistantTxt;
     const savedBlocks = cloneJson(assistantBlocks);
+    // 后台任务可能晚于主回复结束；之后的完成信号也要写回这份历史快照。
+    for (const block of savedBlocks) {
+      if (block.type !== "squad") continue;
+      const card = squadCards.get(block.squadId);
+      if (card?.ownerConversationId === currentConvId) card.block = block;
+    }
     const savedRawMessages = cloneJson(assistantRawMessages);
     const savedEvents = cloneJson(assistantEvents);
+    if (!resultWasStopped) renderVideoOpenCard(assistantEl, savedText);
     let resultCost = null;
     if (ev.total_cost_usd != null) {
       resultCost = ev.total_cost_usd;
     }
     resetAssistantState();
     if (savedText || savedBlocks?.length) {
-      const resultWasStopped = stopRequested && ev.userMessageId && ev.userMessageId === activeRequestId;
       messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status: resultWasStopped ? "stopped" : "complete" });
       saveCurrentConversation();
     }
@@ -7132,6 +8671,7 @@ function handleEvent(ev) {
     // 停止时服务端不会再补 tool_result（回合号已变），卡片得自己收尾。
     // done 也一并收：正常结束还挂着"进行中"的，同样是没等到结果的孤儿。
     if (ev.type === "stopped") settleRunningSquadTasks("已停止", ev.userMessageId ?? activeRequestId);
+    else settleRunningSquadTasks("已结束，未收到结果", ev.userMessageId ?? activeRequestId, true);
     finishGenerationAndContinue(ev.userMessageId ?? null);
     return;
   }
@@ -7288,6 +8828,8 @@ function makeSearchResultBlock(block) {
    把它挂在这里，输入区就不用为一个偶尔才需要的动作常驻第二个按钮。 */
 function addTyping() {
   removeTyping();
+  // 气泡上已经挂着 chip，再在底下起三个点看着像还有第二条回答要来
+  if (genChipEl && assistantEl) return;
   const el = document.createElement("div");
   el.id = "typing"; el.className = "msg";
   el.innerHTML = `<div class="typing"><span></span><span></span><span></span><small class="typing-status"></small></div>`;
@@ -7312,11 +8854,17 @@ function updateGenChip(text) {
 function reanchorGenChip() {
   if (!genChipEl || !assistantEl) return;
   const body = assistantEl.querySelector(".msg-body");
-  if (body) body.appendChild(genChipEl);
+  if (!body) return;
+  body.appendChild(genChipEl);
+  // 指示器从 typing 交接给 chip：两者同一时刻只能有一个
+  removeTyping();
 }
 function removeGenChip() {
   genChipEl?.remove();
   genChipEl = null;
+  // Cached HTML contains cloned chips that genChipEl no longer owns. Remove
+  // those too before restoring a run or settling it, so no orphan keeps blinking.
+  messagesEl.querySelectorAll(".gen-chip").forEach(el => el.remove());
 }
 
 function updateTypingStatus(text) {
@@ -7800,12 +9348,137 @@ function steeringById(id) {
   return steeringQueue.find((item) => item.id === id) || null;
 }
 
+// Delivery state outlives the DOM cache: a hidden conversation can still receive
+// acknowledgements and consume its queue while its view has been evicted.
+function conversationDeliveryState(id = currentConvId) {
+  if (!conversationDeliveryStates.has(id)) {
+    conversationDeliveryStates.set(id, {
+      queue: [], removals: new Set(), editingId: null,
+      pendingDraft: null, stopRequested: false, resetPending: false, resetPayload: null, activeRequestId: null, retryTimer: null,
+    });
+  }
+  return conversationDeliveryStates.get(id);
+}
+
+function saveConversationDeliveryState() {
+  if (!currentConvId) return;
+  Object.assign(conversationDeliveryState(), {
+    queue: steeringQueue, removals: steeringRemovalPending,
+    editingId: steeringEditingId, pendingDraft: pendingRequestDraft,
+    stopRequested, resetPending: resetRequested, activeRequestId, retryTimer: requestRetryTimer,
+  });
+}
+
+function restoreConversationDeliveryState(id) {
+  clearTimeout(errorCompletionTimer);
+  errorCompletionTimer = null;
+  const state = conversationDeliveryState(id);
+  steeringQueue = state.queue;
+  steeringRemovalPending = state.removals;
+  steeringEditingId = state.editingId;
+  steeringDraggingId = null;
+  pendingRequestDraft = state.pendingDraft;
+  requestRetryTimer = state.retryTimer;
+  stopRequested = state.stopRequested;
+  resetRequested = state.resetPending;
+  stopResendPending = state.stopRequested;
+  renderSteeringTray();
+}
+
+function handleBackgroundDeliveryEvent(ev) {
+  const state = conversationDeliveryState(ev.conversationId);
+  if (ev.type === "request_ack" || ev.type === "request_started") {
+    settleAcknowledgedSteering(ev);
+    if (state.pendingDraft?.userMessageId === ev.userMessageId) {
+      state.pendingDraft = null;
+      clearTimeout(state.retryTimer);
+      state.retryTimer = null;
+    }
+    if (ev.type === "request_started" || ev.state === "running") {
+      state.activeRequestId = ev.userMessageId;
+      const index = state.queue.findIndex(item => item.id === ev.userMessageId);
+      if (index >= 0) {
+        state.queue.splice(index, 1);
+        state.removals.delete(ev.userMessageId);
+        convStaleIds.add(ev.conversationId);
+      }
+    }
+    if (state.stopRequested && state.activeRequestId) {
+      wsSend({ stop: true, conversationId: ev.conversationId, userMessageId: state.activeRequestId });
+    }
+    flushLocalSteering();
+  } else if (ev.type === "request_retry" && state.pendingDraft?.userMessageId === ev.userMessageId) {
+    clearTimeout(state.retryTimer);
+    const draft = state.pendingDraft;
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null;
+      const pending = ev.conversationId === currentConvId ? pendingRequestDraft : state.pendingDraft;
+      if (pending === draft) wsSend(draft.wsPayload);
+    }, Math.max(100, Number(ev.retryAfterMs) || 1000));
+  } else if (["done", "stopped", "error"].includes(ev.type)) {
+    if (!ev.userMessageId || ev.userMessageId === state.activeRequestId) {
+      state.pendingDraft = null;
+      state.activeRequestId = null;
+      state.stopRequested = false;
+    }
+  } else if (ev.type === "reset_complete") {
+    state.queue.length = 0;
+    state.removals.clear();
+    state.pendingDraft = null;
+    state.editingId = null;
+    state.resetPending = false;
+    state.resetPayload = null;
+    state.activeRequestId = null;
+    state.stopRequested = false;
+    const cached = convViewCache.get(ev.conversationId);
+    if (cached) {
+      cached.activeRequestId = null;
+      cached.generating = false;
+      cached.stopRequested = false;
+    }
+    convStaleIds.add(ev.conversationId);
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    flushLocalSteering();
+  }
+}
+
+function settleAcknowledgedSteering(ev) {
+  if (ev.type !== "request_ack" || !["steering_applied", "complete", "stopped", "error"].includes(ev.state)) return;
+  const state = conversationDeliveryState(ev.conversationId || currentConvId);
+  const index = state.queue.findIndex(item => item.id === ev.userMessageId);
+  if (index < 0) return;
+  state.queue.splice(index, 1);
+  state.removals.delete(ev.userMessageId);
+  state.editingId = null;
+  convStaleIds.add(ev.conversationId || currentConvId);
+  if (!ev.conversationId || ev.conversationId === currentConvId) {
+    if (steeringEditingId === ev.userMessageId) steeringEditingId = null;
+    renderSteeringTray();
+  }
+}
+
+function resendConversationRequests() {
+  saveConversationDeliveryState();
+  for (const [id, state] of conversationDeliveryStates) {
+    if (state.resetPending) {
+      wsSend(state.resetPayload || { reset: true, conversationId: id });
+      continue;
+    }
+    if (state.pendingDraft?.wsPayload) wsSend(state.pendingDraft.wsPayload);
+    if (state.stopRequested && state.activeRequestId) {
+      wsSend({ stop: true, conversationId: id, userMessageId: state.activeRequestId });
+    }
+  }
+}
+
 function steeringStateLabel(item) {
+  if (item.claimed) return "AI 正在接收";
   if (item.removing) return "正在移除";
   if (item.paused || item.status === "paused") return "已暂停";
   if (item.status === "sending") return "正在加入";
-  if (item.delivery === "next_turn") return "等待 AI 接收";
-  return "等待当前步骤";
+  if (item.delivery === "next_turn") return "当前回复结束后发送";
+  return "当前步骤结束后发送";
 }
 
 function steeringContextLabel(item) {
@@ -7845,7 +9518,7 @@ function renderSteeringTray() {
     row.dataset.id = item.id;
     row.dataset.state = item.paused ? "paused" : item.status;
     row.setAttribute("role", "listitem");
-    row.draggable = steeringEditingId !== item.id;
+    row.draggable = !item.claimed && steeringEditingId !== item.id;
 
     const grip = document.createElement("button");
     grip.type = "button";
@@ -7856,7 +9529,7 @@ function renderSteeringTray() {
     grip.tabIndex = -1;
     row.appendChild(grip);
 
-    if (steeringEditingId === item.id) {
+    if (steeringEditingId === item.id && !item.claimed) {
       const edit = document.createElement("div");
       edit.className = "steering-edit";
       const textarea = document.createElement("textarea");
@@ -7925,17 +9598,18 @@ function renderSteeringTray() {
       actions.appendChild(steeringAction("▶", "继续处理", "resume", () => resumeSteeringItem(item.id)));
     }
     actions.append(
-      steeringAction("↑", "上移", "up", () => moveSteeringItem(item.id, -1), index === 0),
-      steeringAction("↓", "下移", "down", () => moveSteeringItem(item.id, 1), index === count - 1),
+      steeringAction("↑", "上移", "up", () => moveSteeringItem(item.id, -1), item.claimed || index === 0),
+      steeringAction("↓", "下移", "down", () => moveSteeringItem(item.id, 1), item.claimed || index === count - 1),
       steeringAction("✎", "编辑", "edit", () => {
         steeringEditingId = item.id;
         renderSteeringTray();
-      }),
-      steeringAction("×", "删除", "remove", () => removeSteeringItem(item.id)),
+      }, item.claimed),
+      steeringAction("×", "删除", "remove", () => removeSteeringItem(item.id), item.claimed),
     );
     row.appendChild(actions);
 
     row.addEventListener("dblclick", (event) => {
+      if (item.claimed) return;
       if (event.target.closest("button")) return;
       steeringEditingId = item.id;
       renderSteeringTray();
@@ -8007,7 +9681,7 @@ function sendSteeringOrder() {
 function moveSteeringItem(id, delta) {
   const from = steeringQueue.findIndex((item) => item.id === id);
   const to = Math.max(0, Math.min(steeringQueue.length - 1, from + delta));
-  if (from < 0 || from === to) return;
+  if (from < 0 || from === to || steeringQueue[from].claimed || steeringQueue[to].claimed) return;
   const [item] = steeringQueue.splice(from, 1);
   steeringQueue.splice(to, 0, item);
   renderSteeringTray();
@@ -8018,7 +9692,7 @@ function reorderSteeringBefore(sourceId, targetId) {
   if (!sourceId || !targetId || sourceId === targetId) return;
   const from = steeringQueue.findIndex((item) => item.id === sourceId);
   let to = steeringQueue.findIndex((item) => item.id === targetId);
-  if (from < 0 || to < 0) return;
+  if (from < 0 || to < 0 || steeringQueue[from].claimed || steeringQueue[to].claimed) return;
   const [item] = steeringQueue.splice(from, 1);
   if (from < to) to -= 1;
   steeringQueue.splice(to, 0, item);
@@ -8029,7 +9703,7 @@ function reorderSteeringBefore(sourceId, targetId) {
 function updateSteeringItem(id, value) {
   const item = steeringById(id);
   const composerText = String(value || "").trim();
-  if (!item || !composerText) return;
+  if (!item || item.claimed || !composerText) return;
   const providerDispatch = parseProviderDispatchText(composerText);
   item.draft.composerText = composerText;
   item.draft.text = providerDispatch?.task || composerText;
@@ -8057,6 +9731,7 @@ function removeSteeringItem(id) {
   const index = steeringQueue.findIndex((item) => item.id === id);
   if (index < 0) return;
   const item = steeringQueue[index];
+  if (item.claimed) return;
   if (item.serverOwned || item.sent) {
     steeringRemovalPending.add(id);
     item.removing = true;
@@ -8078,6 +9753,11 @@ function resumeSteeringItem(id) {
   if (!item) return;
   item.paused = false;
   item.status = "sending";
+  if (!item.serverOwned && !item.sent) {
+    sendSteeringItem(item);
+    renderSteeringTray();
+    return;
+  }
   if (!sendSteeringCommand({ type: "steering_resume", userMessageId: id })) {
     item.paused = true;
     item.status = "paused";
@@ -8088,6 +9768,7 @@ function resumeSteeringItem(id) {
 function clearSteeringQueue() {
   for (let index = steeringQueue.length - 1; index >= 0; index -= 1) {
     const item = steeringQueue[index];
+    if (item.claimed) continue;
     if (!item.serverOwned && !item.sent) {
       steeringQueue.splice(index, 1);
       continue;
@@ -8108,19 +9789,24 @@ function clearSteeringQueue() {
 steeringClearBtn.addEventListener("click", clearSteeringQueue);
 
 function sendSteeringItem(item) {
+  const ownerId = item?.draft?.conversationId;
+  const state = ownerId === currentConvId
+    ? { removals: steeringRemovalPending, pendingDraft: pendingRequestDraft, stopRequested, resetPending: resetRequested }
+    : conversationDeliveryState(ownerId);
   if (
     !item
+    || !ownerId
+    || item.paused
+    || state.stopRequested
     || item.removing
-    || steeringRemovalPending.has(item.id)
+    || state.removals.has(item.id)
     || item.serverOwned
     || item.sent
-    || resetRequested
-    || pendingRequestDraft
-    || !activeRequestId
+    || state.resetPending
+    || state.pendingDraft
     || !ws
     || ws.readyState !== WebSocket.OPEN
   ) return false;
-  item.draft.conversationId = currentConvId;
   item.draft.userMessageId = item.id;
   item.draft.wsPayload = requestPayloadForDraft(item.draft, "steer");
   item.status = "sending";
@@ -8131,33 +9817,40 @@ function sendSteeringItem(item) {
     return true;
   } catch {
     item.sent = false;
-    item.status = "paused";
+    item.status = "waiting";
     renderSteeringTray();
     return false;
   }
 }
 
 function flushLocalSteering() {
-  if (!isGenerating || pendingRequestDraft) return;
-  for (const item of steeringQueue) {
-    if (!item.serverOwned && !item.sent) sendSteeringItem(item);
+  saveConversationDeliveryState();
+  for (const state of conversationDeliveryStates.values()) {
+    for (const item of state.queue) {
+      if (!item.serverOwned && !item.sent) sendSteeringItem(item);
+    }
   }
 }
 
 function enqueueSteering(draft) {
+  if (deletedConversationIds.has(draft.conversationId)) return false;
   prepareRequestDraft(draft);
+  const ownerStopped = draft.conversationId === currentConvId
+    ? stopRequested : conversationDeliveryState(draft.conversationId).stopRequested;
   const item = {
     id: draft.userMessageId || genId(),
     draft,
     displayText: draft.displayText,
     delivery: "steer",
-    paused: false,
-    status: "sending",
+    paused: ownerStopped,
+    status: ownerStopped ? "paused" : "sending",
     sent: false,
     serverOwned: false,
   };
   draft.userMessageId = item.id;
-  steeringQueue.push(item);
+  const queue = draft.conversationId === currentConvId
+    ? steeringQueue : conversationDeliveryState(draft.conversationId).queue;
+  queue.push(item);
   renderSteeringTray();
   sendSteeringItem(item);
   return true;
@@ -8215,10 +9908,11 @@ function materializeStartedSteering(raw) {
   return true;
 }
 
-function upsertSteeringFromEvent(raw) {
+function upsertSteeringFromEvent(raw, state = { queue: steeringQueue, removals: steeringRemovalPending }) {
   const event = normalizeSteeringEvent(raw);
-  if (!event.id || steeringRemovalPending.has(event.id)) return null;
-  let item = steeringById(event.id);
+  if (!event.id) return null;
+  const queue = state.queue;
+  let item = queue.find(item => item.id === event.id);
   if (!item) {
     const draft = {
       composerText: event.composerText,
@@ -8246,9 +9940,9 @@ function upsertSteeringFromEvent(raw) {
       serverOwned: true,
     };
     const insertAt = event.position == null
-      ? steeringQueue.length
-      : Math.max(0, Math.min(steeringQueue.length, event.position - 1));
-    steeringQueue.splice(insertAt, 0, item);
+      ? queue.length
+      : Math.max(0, Math.min(queue.length, event.position - 1));
+    queue.splice(insertAt, 0, item);
   } else {
     item.serverOwned = true;
     item.sent = true;
@@ -8260,128 +9954,116 @@ function upsertSteeringFromEvent(raw) {
       item.draft.displayText = event.displayText;
     }
   }
+  item.draft.composerText = event.composerText;
+  item.claimed = Boolean(event.claimed);
+  if (state.removals.has(event.id)) {
+    item.removing = true;
+    item.status = "sending";
+  }
   return item;
 }
 
-function applySteeringOrder(order) {
+function applySteeringOrder(order, queue = steeringQueue) {
   const positions = new Map((order || []).map((id, index) => [String(id), index]));
-  steeringQueue.sort((a, b) => {
+  queue.sort((a, b) => {
     const ai = positions.has(a.id) ? positions.get(a.id) : Number.MAX_SAFE_INTEGER;
     const bi = positions.has(b.id) ? positions.get(b.id) : Number.MAX_SAFE_INTEGER;
     return ai - bi;
   });
 }
 
-function handleSteeringEvent(raw) {
-  if (!String(raw?.type || "").startsWith("steering_")) return false;
-  const event = normalizeSteeringEvent(raw);
-  if (raw.type !== "steering_snapshot" && event.conversationId && event.conversationId !== currentConvId) {
-    return true;
+function reconcileSteeringSnapshot(raw) {
+  saveConversationDeliveryState();
+  const grouped = new Map();
+  for (const item of Array.isArray(raw.items) ? raw.items : []) {
+    if (!item.conversationId) continue;
+    if (deletedConversationIds.has(item.conversationId)) continue;
+    if (!grouped.has(item.conversationId)) grouped.set(item.conversationId, []);
+    grouped.get(item.conversationId).push(item);
+    conversationDeliveryState(item.conversationId);
   }
-
-  if (raw.type === "steering_snapshot") {
-    const localItems = steeringQueue.filter((item) => !item.serverOwned);
-    const priorItems = new Map(steeringQueue.map((item) => [item.id, item]));
-    steeringQueue.length = 0;
-    const snapshotItems = Array.isArray(raw.items) ? [...raw.items] : [];
-    snapshotItems.sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
-    for (const snapshotRaw of snapshotItems) {
-      const snapshot = normalizeSteeringEvent(snapshotRaw);
-      if (
-        !snapshot.id
-        || !currentConvId
-        || snapshot.conversationId !== currentConvId
-      ) continue;
-      const prior = priorItems.get(snapshot.id);
-      if (prior) {
-        prior.serverOwned = true;
-        prior.sent = true;
-        prior.delivery = snapshot.delivery;
-        prior.paused = snapshot.paused;
-        prior.status = steeringRemovalPending.has(snapshot.id)
-          ? "sending"
-          : (snapshot.paused ? "paused" : "waiting");
-        prior.removing = steeringRemovalPending.has(snapshot.id);
-        if (snapshot.displayText) {
-          prior.displayText = snapshot.displayText;
-          prior.draft.displayText = snapshot.displayText;
-        }
-        steeringQueue.push(prior);
-      } else {
-        const restored = upsertSteeringFromEvent(snapshotRaw);
-        if (restored && steeringRemovalPending.has(snapshot.id)) {
-          restored.removing = true;
-          restored.status = "sending";
-        }
-      }
+  for (const [id, state] of conversationDeliveryStates) {
+    const priorItems = new Map(state.queue.map(item => [item.id, item]));
+    const snapshots = grouped.get(id) || [];
+    const serverIds = new Set(snapshots.map(item => String(item.userMessageId)));
+    const localItems = state.queue.filter(item => !item.serverOwned && !serverIds.has(item.id));
+    state.queue.length = 0;
+    snapshots.sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+    for (const item of snapshots) {
+      const prior = priorItems.get(String(item.userMessageId));
+      if (prior) state.queue.push(prior);
+      upsertSteeringFromEvent(item, state);
     }
     for (const local of localItems) {
-      if (!steeringById(local.id)) steeringQueue.push(local);
+      local.sent = false; // The server has not confirmed it; retry the same ID.
+      state.queue.push(local);
     }
-    for (const id of steeringRemovalPending) {
-      sendSteeringCommand({ type: "steering_remove", userMessageId: id });
+    for (const removalId of state.removals) {
+      if (serverIds.has(removalId)) {
+        wsSend({ type: "steering_remove", conversationId: id, userMessageId: removalId });
+      } else {
+        state.removals.delete(removalId);
+        const index = state.queue.findIndex(item => item.id === removalId);
+        if (index >= 0) state.queue.splice(index, 1);
+      }
     }
-    renderSteeringTray();
-    flushLocalSteering();
+    if (state.editingId && !state.queue.some(item => item.id === state.editingId)) state.editingId = null;
+  }
+  steeringEditingId = conversationDeliveryState().editingId;
+  renderSteeringTray();
+  flushLocalSteering();
+}
+
+function handleSteeringEvent(raw) {
+  if (!String(raw?.type || "").startsWith("steering_")) return false;
+  if (raw.type === "steering_snapshot") {
+    reconcileSteeringSnapshot(raw);
     return true;
   }
+  saveConversationDeliveryState();
+  const event = normalizeSteeringEvent(raw);
+  const state = conversationDeliveryState(event.conversationId);
+  const queue = state.queue;
+  const removals = state.removals;
+  const visible = event.conversationId === currentConvId;
 
   if (raw.type === "steering_queued" || raw.type === "steering_updated") {
-    upsertSteeringFromEvent(raw);
-    renderSteeringTray();
-    return true;
-  }
-
-  if (raw.type === "steering_command_error") {
-    const item = steeringById(event.id);
+    upsertSteeringFromEvent(raw, state);
+  } else if (raw.type === "steering_command_error") {
+    const item = queue.find(item => item.id === event.id);
     if (raw.command === "steering_remove") {
-      steeringRemovalPending.delete(event.id);
-      if (item) {
-        item.removing = false;
-        item.status = item.paused ? "paused" : "waiting";
-      }
-    } else if (item) {
-      item.status = raw.command === "steering_resume"
-        ? "paused"
-        : (item.paused ? "paused" : "waiting");
-      if (raw.command === "steering_resume") item.paused = true;
+      removals.delete(event.id);
+      if (item) item.removing = false;
     }
-    showInlineError("待追加消息未更新，请重试。");
-    renderSteeringTray();
-    return true;
-  }
-
-  if (raw.type === "steering_reordered") {
-    applySteeringOrder(raw.order);
-    renderSteeringTray();
-    return true;
-  }
-
-  if (raw.type === "steering_paused") {
+    if (item) {
+      if (raw.command === "steering_resume") item.paused = true;
+      item.status = item.paused ? "paused" : "waiting";
+    }
+    if (visible) showInlineError("待追加消息未更新，请重试。");
+  } else if (raw.type === "steering_reordered") {
+    applySteeringOrder(raw.order, queue);
+  } else if (raw.type === "steering_paused") {
     const ids = new Set((raw.userMessageIds || (event.id ? [event.id] : [])).map(String));
-    for (const item of steeringQueue) {
+    for (const item of queue) {
       if (ids.size === 0 || ids.has(item.id)) {
         item.paused = true;
+        item.claimed = false;
         item.status = "paused";
       }
     }
-    renderSteeringTray();
-    return true;
-  }
-
-  if (raw.type === "steering_applied" || raw.type === "steering_removed") {
-    const index = steeringQueue.findIndex((item) => item.id === event.id);
-    const item = index >= 0 ? steeringQueue[index] : null;
+  } else if (raw.type === "steering_applied" || raw.type === "steering_removed") {
+    const index = queue.findIndex(item => item.id === event.id);
+    const item = index >= 0 ? queue[index] : null;
     if (raw.type === "steering_applied" || raw.reason === "fallback_started") {
-      materializeSteeringItem(item, event);
+      if (visible) materializeSteeringItem(item, event);
+      else convStaleIds.add(event.conversationId);
     }
-    if (index >= 0) steeringQueue.splice(index, 1);
-    steeringRemovalPending.delete(event.id);
-    if (steeringEditingId === event.id) steeringEditingId = null;
-    renderSteeringTray();
-    return true;
+    if (index >= 0) queue.splice(index, 1);
+    removals.delete(event.id);
+    if (state.editingId === event.id) state.editingId = null;
+    if (visible && steeringEditingId === event.id) steeringEditingId = null;
   }
-
+  if (visible) renderSteeringTray();
   return true;
 }
 
@@ -8413,13 +10095,14 @@ function dispatchRequestDraft(draft) {
   if (draft.text === "/clear") {
     resetRequested = true;
     if (!sendResetRequest()) return false;
+    saveConversationDeliveryState();
     saveCurrentConversation();
     clearAskUserQuestion(currentConvId);
     resetAssistantState();
     messagesEl.innerHTML = "";
     messageLog = []; currentConvId = genId(); currentSessionId = null; currentSessionProvider = null;
+    restoreConversationDeliveryState(currentConvId);
     rememberConvModelPrefs();   // 新身份继承你此刻用着的模型
-    markResetLanding();         // reset 是在换 id 之前发的，落点得改成换完之后这个
     pendingRequestDraft = null;
     activeRequestId = null;
     clearTimeout(requestRetryTimer);
@@ -8478,8 +10161,34 @@ function submitRequest(textOverride = null, options = {}) {
   // 先补拉一次再重投。retriedProviders 保证只重投一次：拉取失败时清单仍是空的，
   // 没有这个标记就会无限打转。
   if (!_dispatchProvidersLoaded && !options.retriedProviders && looksLikeDispatchAttempt(text)) {
+    if (resetRequested) return false;
+    const consumeComposer = options.consumeComposer ?? (textOverride == null);
+    const composerSnapshot = consumeComposer ? captureComposerDraft() : null;
+    const draft = takeRequestDraft(textOverride, options);
+    if (!draft) return false;
     ensureDispatchProvidersLoaded().then(() => {
-      submitRequest(textOverride, { ...options, retriedProviders: true });
+      const dispatch = parseProviderDispatchText(draft.composerText);
+      if (!dispatch) {
+        if (composerSnapshot) {
+          if (draft.conversationId === currentConvId && !hasComposerDraft(captureComposerDraft())) {
+            conversationDrafts.set(draft.conversationId, composerSnapshot);
+            restoreComposerDraft(draft.conversationId);
+          } else if (!conversationDrafts.has(draft.conversationId)) {
+            conversationDrafts.set(draft.conversationId, composerSnapshot);
+          }
+        }
+        if (draft.conversationId === currentConvId) showInlineError("未找到指定厂商，请检查账号设置后重试。");
+        return;
+      }
+      draft.text = dispatch.task;
+      draft.displayText = dispatch.displayText;
+      draft.dispatchProvider = dispatch.profile.id;
+      draft.dispatchReason = "用户通过 > 明确指定厂商";
+      // This captured draft owns its text, attachments, model, and conversation.
+      // A delayed provider-list response must never read the newly visible composer.
+      if (draft.conversationId !== currentConvId || isGenerating || pendingRequestDraft
+        || !ws || ws.readyState !== WebSocket.OPEN) enqueueSteering(draft);
+      else dispatchRequestDraft(draft);
     });
     return true;
   }
@@ -8645,17 +10354,31 @@ let resetLandingConvId = null;
 function markResetLanding() { resetLandingConvId = currentConvId; }
 
 // 换账号只作废厂商的运行会话，不能把用户的聊天记录当成 /clear 清掉。
-function resetProviderSession() {
-  currentSessionId = null;
-  currentSessionProvider = null;
-  markResetLanding();
-  wsSend({ reset: true, preserveMessages: true, conversationId: currentConvId });
+function resetProviderSession(owner = currentConvId) {
+  globalThis.InkfellowCompletion?.cancelConversation(owner);
+  const state = conversationDeliveryState(owner);
+  state.resetPending = true;
+  state.resetPayload = { reset: true, preserveMessages: true, conversationId: owner };
+  const cached = convViewCache.get(owner);
+  if (cached) { cached.sessionId = null; cached.sessionProvider = null; }
+  const history = _historyCache?.find(entry => entry.id === owner);
+  if (history) { history.sessionId = null; history.sessionProvider = null; }
+  if (owner === currentConvId) {
+    currentSessionId = null;
+    currentSessionProvider = null;
+    resetRequested = true;
+    markResetLanding();
+  }
+  wsSend(state.resetPayload);
 }
 
 function sendResetRequest() {
   if (!resetRequested) return false;
   markResetLanding();
-  return wsSend({ reset: true });
+  const state = conversationDeliveryState();
+  state.resetPending = true;
+  state.resetPayload ||= { reset: true, conversationId: currentConvId };
+  return wsSend(state.resetPayload);
 }
 
 function sendStopRequest() {
@@ -8665,6 +10388,12 @@ function sendStopRequest() {
     setGenerating(false);
     return false;
   }
+  globalThis.InkfellowCompletion?.ingest({ type: "stopping", conversationId: currentConvId, userMessageId: activeRequestId });
+  for (const item of steeringQueue) {
+    item.paused = true;
+    item.status = "paused";
+  }
+  renderSteeringTray();
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     stopRequested = true;
     stopResendPending = true;
@@ -8744,7 +10473,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ── Header pickers ───────────────────────────────────────
-let selectedModel = "claude-sonnet-5";
+let selectedModel = "claude-sonnet-5-5";
 const permissionModeDefaultVersion = "auto-default-v1";
 if (
   localStorage.getItem("permissionModeDefaultVersion") !== permissionModeDefaultVersion &&
@@ -8834,14 +10563,13 @@ function rememberConvModelPrefs() {
  * 刻意带上原来的 date：不带的话服务端会盖一个新的，换个模型就把这条对话顶到
  * 历史列表最前面去了。
  */
-function persistConvPrefsToServer() {
-  if (!currentConvId || _historyCache === null) return;
-  const entry = _historyCache.find(h => h.id === currentConvId);
+function persistConvPrefsToServer(owner = currentConvId, pref = { model: selectedModel, effort: selectedEffort, profileId: activeProfileId() }) {
+  if (!owner || _historyCache === null) return;
+  const entry = _historyCache.find(h => h.id === owner);
   if (!entry) return;
-  const pref = { model: selectedModel, effort: selectedEffort, profileId: activeProfileId() };
   if (entry.model === pref.model && entry.effort === pref.effort && entry.profileId === pref.profileId) return;
   Object.assign(entry, pref);
-  fetch(`api/history/${currentConvId}`, {
+  fetch(`api/history/${owner}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...pref, date: entry.date }),
@@ -9104,25 +10832,67 @@ const historyDropdown = document.getElementById("history-dropdown");
 const historyBackdrop = document.getElementById("history-backdrop");
 
 async function deleteConversation(id) {
-  try { await fetch(`api/history/${id}`, { method: "DELETE" }); } catch { }
+  try {
+    const response = await fetch(`api/history/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("删除对话失败，请重试。");
+  } catch (error) {
+    showInlineError(error.message || "删除对话失败，请重试。");
+    return false;
+  }
   /* 删掉的对话要从所有地方消失，不然它还挂在未读/最近用过里，
      下一轮 switcherEntries 会再给它分配一个槽位，看起来像删不掉。 */
+  deletedConversationIds.add(id);
+  try { localStorage.removeItem(`inkfellow.subtask.pending.${id}`); } catch { }
+  if (subtaskView?.conversationId === id) closeSubtaskView({ reveal: false });
+  for (const [key, thread] of subtaskThreads) {
+    if (thread.conversationId === id) { subtaskThreads.delete(key); subtaskDrafts.delete(key); subtaskCardRefs.delete(key); }
+  }
   releaseConvSlot(id);
   convViewCache.delete(id);
   conversationDrafts.delete(id);
+  const delivery = conversationDeliveryStates.get(id);
+  clearTimeout(delivery?.retryTimer);
+  conversationDeliveryStates.delete(id);
+  attachmentVersions.set(id, (attachmentVersions.get(id) || 0) + 1);
+  profileActivationVersions.set(id, (profileActivationVersions.get(id) || 0) + 1);
+  convModelPrefs.delete(id);
+  persistConvModelPrefs();
+  convStaleIds.delete(id);
   sessionUnread.delete(id);
   sessionsRunning.delete(id);
   sessionsAwaiting.delete(id);
   clearAskUserQuestion(id);
   const recentAt = recentConvIds.indexOf(id);
   if (recentAt >= 0) recentConvIds.splice(recentAt, 1);
-  if (currentConvId === id) { currentConvId = genId(); rememberConvModelPrefs(); }
+  if (currentConvId === id) {
+    conversationSwitchVersion++;
+    clearTimeout(errorCompletionTimer);
+    errorCompletionTimer = null;
+    pendingRequestDraft = null;
+    activeRequestId = null;
+    clearTimeout(requestRetryTimer);
+    requestRetryTimer = null;
+    resetAssistantState();
+    setGenerating(false);
+    removeTyping();
+    messagesEl.innerHTML = "";
+    messageLog = [];
+    currentSessionId = null;
+    currentSessionProvider = null;
+    currentConvId = genId();
+    restoreConversationDeliveryState(currentConvId);
+    restoreComposerDraft(currentConvId);
+    updateBackgroundActivity();
+    rememberConvModelPrefs();
+  }
   if (_historyCache !== null) {
     _historyCache = _historyCache.filter(h => h.id !== id);
     renderHistoryFromData(_historyCache); // 立即从缓存刷新，不等网络
   } else {
     renderHistoryList();
   }
+  renderSessionBadges();
+  return true;
 }
 
 const esc = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -9143,7 +10913,7 @@ const sessionUnread = new Set();
 let sessionLimit = 10;
 
 function applySessionsSnapshot(ev) {
-  const nextRunning = new Set(ev.running ?? []);
+  const nextRunning = new Set((ev.running ?? []).filter(id => !deletedConversationIds.has(id)));
   // 从「在跑」掉到「不在跑」，而你当时不在看它 —— 那就是一条未读
   for (const id of sessionsRunning) {
     if (!nextRunning.has(id) && id !== currentConvId) sessionUnread.add(id);
@@ -9151,7 +10921,7 @@ function applySessionsSnapshot(ev) {
   sessionsRunning.clear();
   for (const id of nextRunning) sessionsRunning.add(id);
   sessionsAwaiting.clear();
-  for (const id of ev.awaiting ?? []) sessionsAwaiting.add(id);
+  for (const id of ev.awaiting ?? []) if (!deletedConversationIds.has(id)) sessionsAwaiting.add(id);
   for (const id of [...pendingAskUserQuestions.keys()]) {
     if (!sessionsAwaiting.has(id)) clearAskUserQuestion(id);
   }
@@ -9174,7 +10944,10 @@ const convStaleIds = new Set();
 
 function noteBackgroundEvent(ev) {
   const id = ev.conversationId;
-  if (!id || id === currentConvId) return;
+  if (!id || id === currentConvId || deletedConversationIds.has(id)) return;
+  if ((["done", "stopped", "error"].includes(ev.type)
+      || (ev.type === "system" && ev.subtype === "session_state_changed" && ev.state === "idle"))
+      && staleConversationTerminal(ev)) return;
 
   if (!NON_CONTENT_EVENT_TYPES.has(ev.type)) convStaleIds.add(id);
 
@@ -9303,7 +11076,10 @@ function restoreConversationRuntime(cached) {
   assistantRawMessages = [...(cached?.assistantRawMessages || [])];
   assistantEvents = [...(cached?.assistantEvents || [])];
   blockMap = {};
-  assistantEl = cached?.generating
+  /* 只有切走时这一轮已经开了气泡才接回去。还停在三个点（这一轮还没吐字）时，
+     最后一个 assistant 气泡是上一轮的回答——接过去的话新内容会写进上一轮里，
+     chip 挂在上面、三个点留在底下，两个指示器同时在转。 */
+  assistantEl = cached?.generating && cached.hasAssistantEl !== false
     /* class 是 addMessage 拼出来的 `msg msg-${role}`——写成 .msg.assistant 永远
        匹配不到，assistantEl 就一直是 null，切回来之后的增量会另起一个气泡，
        同一段回答从中间劈成两块。 */
@@ -9337,6 +11113,9 @@ function restoreConversationRuntime(cached) {
 
 function cacheCurrentConversationView() {
   if (!currentConvId) return;
+  // 离开这个对话：子任务页是它的，一起收起（草稿留着，回来再点开还在）
+  if (subtaskView) closeSubtaskView({ reveal: false });
+  saveConversationDeliveryState();
   const draft = captureComposerDraft();
   if (hasComposerDraft(draft)) conversationDrafts.set(currentConvId, draft);
   else conversationDrafts.delete(currentConvId);
@@ -9351,6 +11130,7 @@ function cacheCurrentConversationView() {
        界面就停在原地，看着像卡死。 */
     activeRequestId,
     generating: isGenerating,
+    hasAssistantEl: !!assistantEl,
     stopRequested,
     assistantTxt,
     assistantBlocks: [...assistantBlocks],
@@ -9728,7 +11508,7 @@ function adjustPromptHeight() {
 }
 
 async function loadConversation(conv) {
-  if (!conv || !conv.id) return;
+  if (!conv || !conv.id || deletedConversationIds.has(conv.id)) return;
   const switchVersion = ++conversationSwitchVersion;
   if (conv.id === currentConvId) {
     closeSwitcher();
@@ -9751,7 +11531,7 @@ async function loadConversation(conv) {
       } else conv = { ...conv, messages: null };
     } catch { conv = { ...conv, messages: null }; }
   }
-  if (switchVersion !== conversationSwitchVersion) return;
+  if (switchVersion !== conversationSwitchVersion || deletedConversationIds.has(targetId)) return;
   if (!wasCached && !conv.messages && !cached) {
     // 只有草稿、没有发过消息的会话还没有服务端历史。
     if (conversationDrafts.has(targetId)) conv = { ...conv, messages: [] };
@@ -9770,6 +11550,7 @@ async function loadConversation(conv) {
   hideAskUserQuestion();
   if (leavingBlank) forgetConversationLocally(leavingBlank);
   currentConvId = targetId;
+  restoreConversationDeliveryState(targetId);
   currentSessionId = conv.sessionId || null;
   currentSessionProvider = conv.sessionProvider || null;
 
@@ -9803,7 +11584,10 @@ async function loadConversation(conv) {
     }
     messagesEl.innerHTML = "";
     restoreConversationRuntime(null);   // 从历史读回来的对话没有「正在跑的一轮」
-    messageLog = (conv.messages || []).map(m => ({
+    restoreSubtaskThreads(targetId, conv.messages || []);
+    restoreSubtaskPending(targetId, conv.messages || []);
+    // 子任务页里的追问不属于主时间线，也不该被当成「写到一半的那条」接着写
+    messageLog = (conv.messages || []).filter(m => !m.subtask).map(m => ({
       id: m.id ?? null,
       role: m.role,
       text: m.text,
@@ -9815,12 +11599,20 @@ async function loadConversation(conv) {
     }));
     let lastAssistantEl = null;
     for (const msg of (conv.messages || [])) {
+      if (msg.subtask) continue;
       const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
       const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text);
       if (hasAssistantBlocks) {
         renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
       }
+      if (msg.role === "assistant" && msg.status !== "running") {
+        renderVideoOpenCard(el, msg.text || textFromAssistantBlocks(msg.blocks || []));
+      }
       if (msg.role === "assistant") lastAssistantEl = el;
+    }
+    const restoredSubtasks = restoreSubtaskCards(conv);
+    for (const msg of conv.messages || []) {
+      if (msg.subtask && !restoredSubtasks.has(msg.subtask.id)) renderSubtaskHistoryMessage(msg);
     }
     /* 这一轮还没跑完：历史里最后那条 assistant 是「写到一半」的，得从
        messageLog 里摘回来当成进行中的那条接着写。留在里面的话，等 result
@@ -9900,6 +11692,8 @@ function finishConversationSwitch(conv, { rebuilt = true } = {}) {
   /* 交给 setGenerating 去决定指示器长什么样：接上了一条写到一半的回答时，
      该在气泡边上挂 chip，而不是在下面另起三个点——那看着像还有第二条要来。 */
   setGenerating(targetRunning);
+  activeRequestId = conversationDeliveryState(conv.id).activeRequestId;
+  flushLocalSteering();
   if (!targetRunning) removeTyping();
   activateAskUserQuestionForConversation(conv.id);
   renderSessionBadges();
@@ -9921,12 +11715,7 @@ async function startNewConversation() {
 
   pendingRequestDraft = null;
   activeRequestId = null;
-  clearTimeout(requestRetryTimer);
   requestRetryTimer = null;
-  steeringQueue.length = 0;
-  steeringRemovalPending.clear();
-  steeringEditingId = null;
-  renderSteeringTray();
   clearTimeout(errorCompletionTimer);
   errorCompletionTimer = null;
   hideAskUserQuestion();
@@ -9942,6 +11731,7 @@ async function startNewConversation() {
   adjustPromptHeight();
 
   currentConvId = genId();
+  restoreConversationDeliveryState(currentConvId);
   currentSessionId = null;
   currentSessionProvider = null;
   updateBackgroundActivity();
@@ -10215,7 +12005,7 @@ historyBackdrop?.addEventListener("click", closeHistoryPanel);
    输入框，loadConversation 切走时 forgetConversationLocally 会收掉这个槽位。 */
 if (!currentConvId) {
   currentConvId = genId();
-  rememberConvModelPrefs();
+  if (_profileData.profiles.length) rememberConvModelPrefs();
 }
 
 // 启动时静默预取历史标题并初始化常驻标签栏

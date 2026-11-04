@@ -49,6 +49,22 @@ function startRuntime(proc, { signature = "sig", resumeConversationId = null } =
   return runtime;
 }
 
+test("a replaced agy process cannot close or write into its replacement", async () => {
+  const old = fakeProcess(), current = fakeProcess();
+  const runtime = startRuntime(old);
+  old.exitCode = 0;
+  runtime.start({ spawn: () => current, signature: "new" });
+  const turn = runtime.runTurn({ message: userMessage("new") });
+  old.emitLine(textEvent("old", "wrong"));
+  old.emitLine(resultEvent("old"));
+  old.emit("close", 0);
+  assert.equal(runtime.proc, current);
+  assert.equal(runtime.busy, true);
+  current.emitLine(textEvent("new", "right"));
+  current.emitLine(resultEvent("new"));
+  assert.equal((await turn).text, "right");
+});
+
 test("一个进程连着跑两轮，第二轮不重起——常驻的全部意义就在这", async () => {
   const proc = fakeProcess();
   let spawned = 0;

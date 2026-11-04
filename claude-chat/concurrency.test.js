@@ -208,6 +208,7 @@ async function startServer({ limit = "2", autoFinish = false, askQuestion = fals
 
   return {
     events,
+    api: (path, init = {}) => fetch(`http://127.0.0.1:${port}/api/${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } }),
     send: payload => ws.send(JSON.stringify(payload)),
     askIn: (conversationId, userMessageId) => ws.send(JSON.stringify({
       conversationId,
@@ -226,6 +227,26 @@ async function startServer({ limit = "2", autoFinish = false, askQuestion = fals
     },
   };
 }
+
+test("resetting one conversation preserves retry identities for other running conversations", { timeout: 30_000 }, async () => {
+  const server = await startServer({ limit: "5" });
+  try {
+    server.askIn("conv_reset_a", "reset-a");
+    await waitFor(server.events, e => e.type === "request_started" && e.userMessageId === "reset-a");
+    server.askIn("conv_reset_b", "reset-b");
+    await waitFor(server.events, e => e.type === "request_started" && e.userMessageId === "reset-b");
+    server.send({ reset: true, conversationId: "conv_reset_a", preserveMessages: true });
+    const reset = await waitFor(server.events, e => e.type === "reset_complete");
+    assert.equal(reset.conversationId, "conv_reset_a");
+    const before = server.events.length;
+    server.askIn("conv_reset_b", "reset-b");
+    const ack = await waitFor(server.events, (e, index) => index >= before && e.type === "request_ack" && e.userMessageId === "reset-b");
+    assert.equal(ack.state, "running");
+    assert.equal(server.events.some(e => e.type === "request_queued" && e.userMessageId === "reset-b"), false);
+    const history = await (await server.api("history/conv_reset_b")).json();
+    assert.equal(history.messages.filter(e => e.role === "user").length, 1);
+  } finally { await server.close(); }
+});
 
 test("并发时每条会话事件都带着自己的归属", { timeout: 30_000 }, async () => {
   /* 真实事故：request_ack 不带 conversationId，于是另一个对话的 ack 被前端当成
@@ -377,6 +398,39 @@ test("停止只停指定的那个对话，别的照跑", { timeout: 30_000 }, as
   } finally {
     await server.close();
   }
+});
+
+test("并发队列的修改、删除、恢复、排序和停止必须核对会话归属", { timeout: 30_000 }, async () => {
+  const server = await startServer({ limit: "5" });
+  try {
+    for (const id of ["a", "b"]) {
+      server.askIn(`conv_${id}`, `run_${id}`);
+      await waitFor(server.events, e => e.type === "request_started" && e.userMessageId === `run_${id}`);
+      server.send({ conversationId: `conv_${id}`, userMessageId: `pending_${id}`,
+        prompt: `follow ${id}`, displayText: `follow ${id}`, deliveryMode: "steer", profileId: "p_claude" });
+      await waitFor(server.events, e => e.type === "steering_queued" && e.userMessageId === `pending_${id}`);
+    }
+    for (const command of ["steering_update", "steering_remove", "steering_resume", "steering_reorder"]) {
+      server.send({ type: command, conversationId: "conv_b", userMessageId: "pending_a",
+        prompt: "must not replace a", order: ["pending_a", "pending_b"] });
+      const rejected = await waitFor(server.events, e => e.type === "steering_command_error" && e.command === command);
+      assert.equal(rejected.conversationId, "conv_b");
+    }
+    server.send({ stop: true, conversationId: "conv_b", userMessageId: "pending_a" });
+    await delay(100);
+    assert.equal(server.events.some(e => e.type === "steering_removed" && e.userMessageId === "pending_a"), false);
+    server.send({ type: "steering_update", conversationId: "conv_a", userMessageId: "pending_a",
+      prompt: "edited in a", displayText: "edited in a" });
+    const updated = await waitFor(server.events, e => e.type === "steering_updated" && e.userMessageId === "pending_a");
+    assert.equal(updated.displayText, "edited in a");
+    assert.equal(updated.conversationId, "conv_a");
+    server.send({ stop: true, conversationId: "conv_a", userMessageId: "run_a" });
+    await waitFor(server.events, e => e.type === "steering_paused" && e.conversationId === "conv_a");
+    assert.equal(server.events.some(e => e.type === "steering_paused" && e.conversationId === "conv_b"), false);
+    server.send({ type: "steering_remove", conversationId: "conv_b", userMessageId: "pending_b" });
+    const removed = await waitFor(server.events, e => e.type === "steering_removed" && e.userMessageId === "pending_b");
+    assert.equal(removed.conversationId, "conv_b");
+  } finally { await server.close(); }
 });
 
 test("多开时回答 AI 的提问，得落到问问题的那个对话上", { timeout: 30_000 }, async () => {

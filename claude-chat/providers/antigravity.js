@@ -84,6 +84,19 @@ const FALLBACK_CATALOG = [
   { model: "gpt-oss-120b", label: "GPT-OSS 120B", efforts: ["medium"] },
 ];
 
+// 上面这张表是什么时候查的。换表时一起改：它决定多旧的磁盘缓存不该再用。
+const FALLBACK_CATALOG_AS_OF = Date.parse("2026-11-05T11:20:00+08:00");
+
+/**
+ * 磁盘上那份缓存还能不能用。比这个版本自带的兜底表还旧就不用：升级后第一次查询要是
+ * 正好失败（2026-11-05 就碰上了 TLS 握手超时），宁可显示兜底表，也不能退回升级前的
+ * 清单——那上面的模型可能已经下线，新模型也没有。
+ */
+export function isCachedCatalogUsable(fetchedAt) {
+  const at = Date.parse(fetchedAt ?? "");
+  return Number.isFinite(at) && at >= FALLBACK_CATALOG_AS_OF;
+}
+
 const EFFORT_SUFFIX = /-(low|medium|high)$/;
 const EFFORT_ORDER = ["low", "medium", "high"];
 

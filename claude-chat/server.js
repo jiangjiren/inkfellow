@@ -1746,8 +1746,8 @@ let _agyModelsPending = null;
 try {
   if (existsSync(AGY_MODELS_CACHE_FILE)) {
     const cached = JSON.parse(readFileSync(AGY_MODELS_CACHE_FILE, "utf8"));
-    if (agyProvider.setCatalog(cached?.models)) {
-      _agyModelsFetchedAt = Date.parse(cached?.fetchedAt ?? "") || 0;
+    if (agyProvider.isCachedCatalogUsable(cached?.fetchedAt) && agyProvider.setCatalog(cached?.models)) {
+      _agyModelsFetchedAt = Date.parse(cached.fetchedAt);
     }
   }
 } catch { }
@@ -1792,7 +1792,10 @@ function refreshAgyModelCatalog({ force = false } = {}) {
 
   _agyModelsPending = runAgyModelsQuery()
     .then((models) => {
-      if (!models || !agyProvider.setCatalog(models)) return false;
+      if (!models || !agyProvider.setCatalog(models)) {
+        console.log("[agy] 没查到模型清单（网络或登录问题），先用手上的，前端会再问");
+        return false;
+      }
       _agyModelsFetchedAt = Date.now();
       try {
         writeFileSync(
@@ -4650,6 +4653,7 @@ const http = createServer((req, res) => {
        efforts 全目录，含已经从菜单上撤下来但还能跑的旧版本；档位选择器和
                「这个模型属于哪个账号」的反推都要认它们
        live    false = 还在用 provider 里那张兜底表，一次都没查成功过
+       stale   true = 这份已经过期（通常是刚才那次查询失败了），前端要过一会儿再问
      ?wait=1 会等这一次刷新查完（有超时上限）。界面首开时用它，别拿兜底表把
      菜单定死；之后按 TTL 在后台刷，接口本身不等。 */
   if (url === "/api/agy/models" && method === "GET") {
@@ -4662,6 +4666,7 @@ const http = createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         live: agyProvider.hasLiveCatalog(),
+        stale: !agyProvider.hasLiveCatalog() || Date.now() - _agyModelsFetchedAt >= AGY_MODELS_TTL_MS,
         models: agyProvider.menuModels(),
         efforts,
       }));

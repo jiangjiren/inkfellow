@@ -3622,23 +3622,54 @@ let AGY_EFFORT_LEVELS = {
    agy 时才拉，没装的话服务端也只会把兜底表原样退回来。
 
    桌面端一开就是好几天，只拉一次的话新模型要等重启才看得到，所以隔一小时再拉，
-   跟服务端的目录 TTL 对齐（没过期时服务端立刻回，不起进程）。 */
+   跟服务端的目录 TTL 对齐（没过期时服务端立刻回，不起进程）。
+
+   查询是会失败的：2026-11-05 刚开机时网络 TLS 握手超时，agy 查不到清单，服务端
+   只能给手上的旧的（stale）。这时候不能再等一小时，隔一会儿再问，问到新的为止；
+   次数有上限，agy 没装或者一直断网时别没完没了地起进程。 */
 const AGY_MODELS_RELOAD_MS = 60 * 60_000;
+const AGY_MODELS_RETRY_MS = [15_000, 45_000, 120_000, 300_000];
 let _agyModelsLoadedAt = 0;
+let _agyModelsRetries = 0;
+let _agyModelsRetryTimer = null;
+
+function retryAgyModelCatalogSoon() {
+  /* 节流只放开到下一次重试的时间，不能清零：模型菜单重渲染很频繁，清零的话每次都会再问
+     一次，断网时就成了连续起 agy 进程。重试次数用完之后还留着最长的间隔，用户切过来
+     还能再问，但不会更频繁。 */
+  const last = AGY_MODELS_RETRY_MS.length - 1;
+  const delay = AGY_MODELS_RETRY_MS[Math.min(_agyModelsRetries, last)];
+  _agyModelsLoadedAt = Date.now() - AGY_MODELS_RELOAD_MS + delay;
+  clearTimeout(_agyModelsRetryTimer);
+  if (_agyModelsRetries > last) return;
+  _agyModelsRetries += 1;
+  _agyModelsRetryTimer = setTimeout(() => {
+    _agyModelsLoadedAt = 0;
+    void loadAgyModelCatalog();
+  }, delay);
+}
+
 async function loadAgyModelCatalog() {
   if (Date.now() - _agyModelsLoadedAt < AGY_MODELS_RELOAD_MS) return;
   _agyModelsLoadedAt = Date.now();
   try {
     const res = await fetch("api/agy/models?wait=1", { cache: "no-store" });
-    if (!res.ok) return;
+    if (!res.ok) { retryAgyModelCatalogSoon(); return; }
     const data = await res.json();
-    if (!Array.isArray(data?.models) || !data.models.length) return;
+    if (!Array.isArray(data?.models) || !data.models.length) { retryAgyModelCatalogSoon(); return; }
     AGY_MODELS = data.models;
     if (data.efforts && typeof data.efforts === "object") AGY_EFFORT_LEVELS = data.efforts;
     // 目录换了，当前选中的可能已经不在菜单里（版本下线），重渲染会把它落回默认
     renderModelOptions(getActiveProfile());
+    // 放在重渲染之后：重渲染也会调到这里，提前放开节流就成了死循环
+    if (data.stale) {
+      retryAgyModelCatalogSoon();
+    } else {
+      _agyModelsRetries = 0;
+      clearTimeout(_agyModelsRetryTimer);
+    }
   } catch {
-    _agyModelsLoadedAt = 0;   // 网络抖一下就放开，下次切到这个账号还能再试
+    retryAgyModelCatalogSoon();   // 网络抖一下就放开，下次切到这个账号还能再试
   }
 }
 

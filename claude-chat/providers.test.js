@@ -678,6 +678,16 @@ test("agy: 前端首帧兜底和 provider 兜底表说的是同一批模型", as
   assert.deepEqual(literal("AGY_EFFORT_LEVELS"), Object.fromEntries(agy.getCatalog().map(entry => [entry.model, entry.efforts])));
 });
 
+test("agy: 比兜底表还旧的磁盘缓存不能用", () => {
+  // 2026-11-05 真实发生过：升级后第一次查询正好断网，07:11 的旧清单盖掉了版本自带的新清单
+  assert.equal(agy.isCachedCatalogUsable("2026-11-04T23:11:56.595Z"), false);
+  assert.equal(agy.isCachedCatalogUsable("2026-11-05T07:47:12.000Z"), true);
+  // 没有时间或时间读不出来：不知道多旧，当作不能用
+  assert.equal(agy.isCachedCatalogUsable(undefined), false);
+  assert.equal(agy.isCachedCatalogUsable(""), false);
+  assert.equal(agy.isCachedCatalogUsable("不是时间"), false);
+});
+
 test("agy: 没查过目录时用兜底表，不至于菜单空掉", () => {
   agy._resetCatalog();
   const menu = agy.menuModels();

@@ -7,7 +7,7 @@
     <link rel="icon" href="./icon.png?v=3" />
     <link rel="stylesheet" href="./vendor/codemirror.min.css" />
     <link rel="stylesheet" href="./vendor/show-hint.css" />
-    <link rel="stylesheet" href="./app.css?v=28" />
+    <link rel="stylesheet" href="./app.css?v=29" />
     <link rel="stylesheet" href="./video-workbench.css?v=2" />
   </head>
   <body>
@@ -45,6 +45,13 @@
         <div id="search-results" class="searchResults" hidden></div>
 
         <div id="tree-panel" class="treePanel">
+          <button id="nav-all-videos" class="treeFile sidebarVideosEntry" type="button" hidden>
+            <span class="treeNodeIcon" aria-hidden="true">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3" width="11" height="8" rx="1.5"/><path d="M6 5.7l3.1 1.9L6 9.5V5.7z"/></svg>
+            </span>
+            <span class="treeLabel">全部视频</span>
+            <span id="nav-all-videos-count" class="sidebarVideosCount"></span>
+          </button>
           <div id="tree" class="treeGroup"></div>
         </div>
 
@@ -213,6 +220,7 @@
     <script src="./video-open-path.js?v=1"></script>
     <script src="./video-workbench-model.js?v=3"></script>
     <script src="./video-workbench.js?v=3"></script>
-    <script src="./app.js?v=42"></script>
+    <script src="./home-model.js?v=1"></script>
+    <script src="./app.js?v=43"></script>
   </body>
 </html>

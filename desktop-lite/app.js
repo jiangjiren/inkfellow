@@ -40,6 +40,7 @@ const state = {
   previewImages: null,
   // 新建后尚未命名的笔记：文件名跟随正文首行，用户手动改名或切走即退出
   autoTitlePath: null,
+  allVideosQuery: "",
   navHistory: [],
   navIndex: -1,
   expanded: new Set([""]),
@@ -2091,10 +2092,23 @@ function renderDocArea(options = {}) {
   InkfellowVideoWorkbench.leave();
   syncWorkbenchSidebar();
 
+  if (state.activeNote?.extension === ALL_VIDEOS_EXTENSION) {
+    docArea.className = docAreaClass();
+    if (!docArea.querySelector("#all-videos-results")) {
+      docArea.innerHTML = renderAllVideosPage();
+      wireAllVideosPage();
+    }
+    refreshAllVideosInPlace();
+    updateReaderDocumentActions();
+    return;
+  }
+
   if (!state.activeNote) {
     docArea.className = docAreaClass();
-    docArea.innerHTML = renderDashboard();
-    wireDashboard();
+    if (!refreshDashboardInPlace(docArea)) {
+      docArea.innerHTML = renderDashboard();
+      wireDashboard();
+    }
     updateReaderDocumentActions();
     return;
   }
@@ -2353,46 +2367,122 @@ function wireImageZoom() {
   });
 }
 
+const { ALL_VIDEOS_TAB, ALL_VIDEOS_EXTENSION } = InkfellowHomeModel;
+const OPENED_NOTES_KEY_PREFIX = "recent_opened:";
+// 首页最多排 8 个，实际显示几个由 CSS 按宽度决定（只占一行）
+const DASHBOARD_VIDEO_LIMIT = 8;
+const SECTION_LINK_ICON = `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>`;
+
+/* 标签页里除了真实文件，还有两种虚拟页：视频工作台和全部视频。它们没有对应的笔记文件，
+   不能去读写，也不能算进「最近打开」。 */
+function isVirtualTab(path) {
+  return path === ALL_VIDEOS_TAB || InkfellowVideoWorkbench.isProjectTab(path);
+}
+
+function virtualNote(path) {
+  if (path === ALL_VIDEOS_TAB) {
+    return { path, name: "全部视频", extension: ALL_VIDEOS_EXTENSION, content: "", size: 0, updatedAt: 0 };
+  }
+  return InkfellowVideoWorkbench.isProjectTab(path) ? InkfellowVideoWorkbench.makeNote(path) : null;
+}
+
+function isVirtualNote(note = state.activeNote) {
+  return note?.extension === ALL_VIDEOS_EXTENSION || note?.extension === InkfellowVideoWorkbench.EXTENSION;
+}
+
+function openedNotesKey() {
+  return `${OPENED_NOTES_KEY_PREFIX}${state.vaultPath || ""}`;
+}
+
+function readOpenedNotes() {
+  try {
+    return InkfellowHomeModel.parseOpened(localStorage.getItem(openedNotesKey()));
+  } catch {
+    return [];
+  }
+}
+
+function rememberOpenedNote(path) {
+  try {
+    const next = InkfellowHomeModel.recordOpened(readOpenedNotes(), path, Math.floor(Date.now() / 1000));
+    localStorage.setItem(openedNotesKey(), JSON.stringify(next));
+  } catch {}
+}
+
 function recentDashboardFiles() {
-  return flattenFiles(state.tree)
-    .filter((file) => !/^(png|jpe?g|gif|webp|svg|avif|pdf)$/i.test(file.extension || ""))
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-    .slice(0, 6);
+  return InkfellowHomeModel.recentFiles({
+    files: flattenFiles(state.tree),
+    opened: readOpenedNotes(),
+    projects: InkfellowVideoWorkbench.listProjects(),
+  });
+}
+
+function videoCardHtml(project, { showDate = false } = {}) {
+  const cover = project.cover && window.__TAURI__?.core?.convertFileSrc
+    ? window.__TAURI__.core.convertFileSrc(project.cover) : null;
+  const seconds = Number(project.durationSec);
+  const duration = project.durationSec != null && Number.isFinite(seconds) && seconds >= 0
+    ? InkfellowVideoModel.humanDuration(seconds) : "";
+  // 很多工程的文件夹就叫「视频」，名字统一交给工作台，和标签页上显示的一致
+  const title = InkfellowVideoWorkbench.tabLabel(InkfellowVideoWorkbench.tabForProject(project.path));
+  const meta = showDate
+    ? [InkfellowHomeModel.relativeTime(project.updatedAt), duration].filter(Boolean).join(" · ")
+    : duration || "时长未知";
+  return `<button type="button" class="dashboardVideoCard" data-project="${escapeHtml(project.path)}" title="${escapeHtml(title)}">
+    <span class="dashboardVideoCover">${cover
+      ? `<img src="${escapeHtml(cover)}" alt="" loading="lazy" />`
+      : `<span class="dashboardVideoPlaceholder" aria-hidden="true">▶</span>`}</span>
+    <span class="dashboardVideoTitle">${escapeHtml(title)}</span>
+    <span class="dashboardVideoDuration">${escapeHtml(meta)}</span>
+  </button>`;
+}
+
+function recentNoteRowHtml(file, projects) {
+  const context = InkfellowHomeModel.contextOf(file, projects);
+  return `<button type="button" class="dashboardRecentRow" data-path="${escapeHtml(file.path)}" title="${escapeHtml(file.path)}">
+    <span class="dashboardRecentRowIcon" aria-hidden="true">${FILE_KIND_ICONS[fileKindOf(file.extension)] || FILE_ICON}</span>
+    <span class="dashboardRecentRowTitle">${escapeHtml(stripExt(file.name))}</span>
+    ${context ? `<span class="dashboardRecentRowContext">${escapeHtml(context)}</span>` : ""}
+    <span class="dashboardRecentRowDate">${escapeHtml(InkfellowHomeModel.relativeTime(file.touchedAt))}</span>
+  </button>`;
+}
+
+/* 启动时视频列表比文件树先回来。树没到的时候什么都不知道，这一段先不画，
+   不然有笔记的人每次打开都会闪一下「还没有笔记」。 */
+function renderDashboardSections() {
+  const files = recentDashboardFiles();
+  const projects = InkfellowVideoWorkbench.listProjects();
+  const videos = projects.slice(0, DASHBOARD_VIDEO_LIMIT);
+  return `
+    ${videos.length ? `<div class="dashboardSection dashboardVideoSection">
+      <div class="dashboardSectionHeader">
+        <h2 class="dashboardSectionTitle">最近的视频</h2>
+        <button type="button" id="dashboard-all-videos" class="dashboardSectionLink">全部 ${projects.length} 个${SECTION_LINK_ICON}</button>
+      </div>
+      <div class="dashboardVideoGrid">${videos.map((project) => videoCardHtml(project)).join("")}</div>
+    </div>` : ""}
+    ${!state.tree ? "" : `<div class="dashboardSection">
+      <div class="dashboardSectionHeader">
+        <h2 class="dashboardSectionTitle">${files.length ? "继续你的工作" : "开始记录"}</h2>
+        <button type="button" id="dashboard-capture" class="dashboardCaptureChip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
+          <span>记录灵感</span>
+        </button>
+      </div>
+      ${files.length ? `<div class="dashboardRecentList">${files.map((file) => recentNoteRowHtml(file, projects)).join("")}</div>` : `
+        <div class="dashboardEmptyPanel">
+          <p>还没有笔记。点击下方按钮，或左上角「+」开始记录。</p>
+          <button type="button" id="dashboard-empty-create" class="emptyStateCta">新建笔记</button>
+        </div>
+      `}
+    </div>`}`;
 }
 
 function renderDashboard() {
-  const files = recentDashboardFiles();
-  const videos = InkfellowVideoWorkbench.listProjects().slice(0, 6);
-  const videoCards = videos.map((project) => {
-    const cover = project.cover && window.__TAURI__?.core?.convertFileSrc
-      ? window.__TAURI__.core.convertFileSrc(project.cover) : null;
-    const seconds = Number(project.durationSec);
-    const duration = project.durationSec != null && Number.isFinite(seconds) && seconds >= 0
-      ? InkfellowVideoModel.humanDuration(seconds) : "时长未知";
-    return `<button type="button" class="dashboardVideoCard" data-project="${escapeHtml(project.path)}">
-      <span class="dashboardVideoCover">${cover
-        ? `<img src="${escapeHtml(cover)}" alt="" loading="lazy" />`
-        : `<span class="dashboardVideoPlaceholder" aria-hidden="true">▶</span>`}</span>
-      <span class="dashboardVideoTitle">${escapeHtml(project.title || project.name)}</span>
-      <span class="dashboardVideoDuration">${escapeHtml(duration)}</span>
-    </button>`;
-  }).join("");
-  const cards = files.map((file) => `
-    <button type="button" class="dashboardRecentCard" data-path="${escapeHtml(file.path)}">
-      <span class="dashboardRecentCardIcon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-          <polyline points="14 2 14 8 20 8" />
-        </svg>
-      </span>
-      <span class="dashboardRecentCardContent">
-        <span class="dashboardRecentCardTitle">${escapeHtml(stripExt(file.name))}</span>
-        <span class="dashboardRecentCardPath">${escapeHtml(file.path)}</span>
-        <span class="dashboardRecentCardDate">${escapeHtml(formatDate(file.updatedAt))}</span>
-      </span>
-    </button>
-  `).join("");
-
+  dashboardSectionsHtml = renderDashboardSections();
   return `
     <section class="dashboardContainer">
       <div class="dashboardHero">
@@ -2408,40 +2498,64 @@ function renderDashboard() {
           </button>
         </form>
       </div>
-      ${videos.length ? `<div class="dashboardSection dashboardVideoSection">
-        <div class="dashboardSectionHeader"><h2 class="dashboardSectionTitle">最近的视频</h2></div>
-        <div class="dashboardVideoGrid">${videoCards}</div>
-      </div>` : ""}
-      <div class="dashboardSection">
-        <div class="dashboardSectionHeader">
-          <h2 class="dashboardSectionTitle">${files.length ? "继续你的工作" : "开始记录"}</h2>
-          <button type="button" id="dashboard-capture" class="dashboardCaptureChip">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
-            <span>记录灵感</span>
-          </button>
-        </div>
-        ${files.length ? `<div class="dashboardRecentGrid">${cards}</div>` : `
-          <div class="dashboardEmptyPanel">
-            <p>还没有笔记。点击下方按钮，或左上角「+」开始记录。</p>
-            <button type="button" id="dashboard-empty-create" class="emptyStateCta">新建笔记</button>
-          </div>
-        `}
-      </div>
+      <div id="dashboard-sections">${dashboardSectionsHtml}</div>
     </section>`;
 }
 
+/* 笔记库里任何文件一变，首页就要刷新；视频工程列表也是后台异步回来的。整页重画会清掉
+   输入框里正在打的字、丢焦点、再放一遍淡入动画，所以刷新只换下面的列表，内容没变就
+   什么都不动。输入框在这个范围之外，碰不到它。 */
+let dashboardSectionsHtml = "";
+let allVideosResultsHtml = "";
+
+function replaceKeepingFocus(container, html) {
+  const active = container.contains(document.activeElement) ? document.activeElement : null;
+  let selector = null;
+  if (active?.id) selector = `#${CSS.escape(active.id)}`;
+  else if (active?.dataset.path != null) selector = `[data-path="${CSS.escape(active.dataset.path)}"]`;
+  else if (active?.dataset.project != null) selector = `[data-project="${CSS.escape(active.dataset.project)}"]`;
+  container.innerHTML = html;
+  if (selector) container.querySelector(selector)?.focus({ preventScroll: true });
+}
+
+function refreshDashboardInPlace(docArea) {
+  const sections = docArea.querySelector("#dashboard-sections");
+  if (!sections) return false;
+  const html = renderDashboardSections();
+  if (html !== dashboardSectionsHtml) {
+    dashboardSectionsHtml = html;
+    replaceKeepingFocus(sections, html);
+  }
+  return true;
+}
+
+function openVideoCard(card) {
+  const project = card.getAttribute("data-project");
+  if (project != null) void loadNote(InkfellowVideoWorkbench.tabForProject(project));
+}
+
+function openAllVideos() {
+  void loadNote(ALL_VIDEOS_TAB);
+}
+
+function onDashboardSectionsClick(event) {
+  const button = event.target.closest?.("button");
+  if (!button) return;
+  if (button.classList.contains("dashboardVideoCard")) {
+    openVideoCard(button);
+  } else if (button.classList.contains("dashboardRecentRow")) {
+    const path = button.getAttribute("data-path");
+    if (path) void loadNote(path);
+  } else if (button.id === "dashboard-all-videos") {
+    openAllVideos();
+  } else if (button.id === "dashboard-capture" || button.id === "dashboard-empty-create") {
+    createNote();
+  }
+}
+
 function wireDashboard() {
-  document.querySelectorAll(".dashboardVideoCard").forEach((card) => {
-    card.addEventListener("click", () => {
-      const path = card.getAttribute("data-project");
-      if (path) loadNote(InkfellowVideoWorkbench.tabForProject(path));
-    });
-  });
-  qs("dashboard-capture")?.addEventListener("click", createNote);
-  qs("dashboard-empty-create")?.addEventListener("click", createNote);
+  // 列表会被整块替换，事件挂在外层，替换之后不用重新绑
+  qs("dashboard-sections")?.addEventListener("click", onDashboardSectionsClick);
   const askInput = qs("dashboard-ask-input");
   const askSend = qs("dashboard-ask-form")?.querySelector(".dashboardComposerSend");
   const syncAskReady = () => {
@@ -2466,13 +2580,92 @@ function wireDashboard() {
       }
     }, 120);
   });
+}
 
-  document.querySelectorAll(".dashboardRecentCard").forEach((card) => {
-    card.addEventListener("click", () => {
-      const path = card.getAttribute("data-path");
-      if (path) loadNote(path);
-    });
+/* ── 全部视频 ──────────────────────────────────── */
+function allVideosResultsMarkup() {
+  const projects = InkfellowVideoWorkbench.listProjects();
+  const query = state.allVideosQuery.trim();
+  const matches = InkfellowHomeModel.filterVideos(projects, query);
+  if (matches.length) {
+    return `<div class="allVideosGrid">${matches.map((project) => videoCardHtml(project, { showDate: true })).join("")}</div>`;
+  }
+  if (query) {
+    return `<div class="allVideosEmpty">
+      <p>没有找到和「${escapeHtml(query)}」相关的视频</p>
+      <button type="button" id="all-videos-clear" class="allVideosEmptyAction">清除搜索</button>
+    </div>`;
+  }
+  return `<div class="allVideosEmpty"><p>还没有视频。让 Fellow 帮你做一条，做好后会出现在这里。</p></div>`;
+}
+
+function refreshAllVideosInPlace() {
+  const box = qs("all-videos-results");
+  if (!box) return false;
+  const count = qs("all-videos-count");
+  const projects = InkfellowVideoWorkbench.listProjects();
+  const query = state.allVideosQuery.trim();
+  if (count) {
+    const total = projects.length;
+    count.textContent = query ? `${InkfellowHomeModel.filterVideos(projects, query).length} / ${total}` : String(total);
+  }
+  const html = allVideosResultsMarkup();
+  if (html !== allVideosResultsHtml) {
+    allVideosResultsHtml = html;
+    replaceKeepingFocus(box, html);
+  }
+  return true;
+}
+
+function renderAllVideosPage() {
+  allVideosResultsHtml = "";
+  return `
+    <section class="allVideosPage">
+      <header class="allVideosHeader">
+        <h1 class="allVideosTitle">全部视频<span id="all-videos-count" class="allVideosCount" role="status"></span></h1>
+        <input id="all-videos-search" class="allVideosSearch" type="search" placeholder="搜索标题或文件夹…" aria-label="搜索视频" autocomplete="off" spellcheck="false" value="${escapeHtml(state.allVideosQuery)}" />
+      </header>
+      <div id="all-videos-results"></div>
+    </section>`;
+}
+
+function setAllVideosQuery(value) {
+  state.allVideosQuery = value;
+  const input = qs("all-videos-search");
+  if (input && input.value !== value) input.value = value;
+  refreshAllVideosInPlace();
+}
+
+function wireAllVideosPage() {
+  const input = qs("all-videos-search");
+  input?.addEventListener("input", () => setAllVideosQuery(input.value));
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && input.value) {
+      event.preventDefault();
+      event.stopPropagation();
+      setAllVideosQuery("");
+    }
   });
+  qs("all-videos-results")?.addEventListener("click", (event) => {
+    const button = event.target.closest?.("button");
+    if (!button) return;
+    if (button.classList.contains("dashboardVideoCard")) {
+      openVideoCard(button);
+    } else if (button.id === "all-videos-clear") {
+      setAllVideosQuery("");
+      input?.focus();
+    }
+  });
+}
+
+/* 左侧栏的固定入口。一条视频都没有的笔记库不需要它。 */
+function renderAllVideosNav() {
+  const entry = qs("nav-all-videos");
+  if (!entry) return;
+  const total = InkfellowVideoWorkbench.listProjects().length;
+  entry.hidden = total === 0;
+  qs("nav-all-videos-count").textContent = total ? String(total) : "";
+  entry.classList.toggle("treeFileActive", state.activePath === ALL_VIDEOS_TAB);
 }
 
 function addHeadingSlugs() {
@@ -2607,10 +2800,10 @@ function renderNoteMeta() {
   titleEl.textContent = "";
   metaEl.querySelectorAll(".noteBreadcrumb,.noteBreadcrumbSep").forEach((el) => el.remove());
 
-  // 工作台标签背后是 edl.json，「删除文件」不能作用在它上面
-  const isVideoTab = state.activeNote.extension === InkfellowVideoWorkbench.EXTENSION;
-  qs("btn-more-menu").disabled = isVideoTab;
-  if (isVideoTab) toggleMoreMenu(false);
+  // 工作台标签背后是 edl.json，全部视频背后没有文件，「删除文件」都不能作用在它们上面
+  const isVirtual = isVirtualNote();
+  qs("btn-more-menu").disabled = isVirtual;
+  if (isVirtual) toggleMoreMenu(false);
 }
 
 /* ── ⋯ 更多菜单 ──────────────────────────────────── */
@@ -2676,6 +2869,7 @@ function expandAncestors(path) {
 }
 
 function renderTree() {
+  renderAllVideosNav();
   const container = qs("tree");
   container.replaceChildren();
   if (!state.tree) return;
@@ -3120,9 +3314,11 @@ function renderTabs() {
   strip.hidden = state.tabs.length === 0;
   strip.innerHTML = "";
   for (const path of state.tabs) {
-    const name = InkfellowVideoWorkbench.isProjectTab(path)
-      ? InkfellowVideoWorkbench.tabLabel(path)
-      : stripExt(path.split("/").pop() || path);
+    const name = path === ALL_VIDEOS_TAB
+      ? "全部视频"
+      : InkfellowVideoWorkbench.isProjectTab(path)
+        ? InkfellowVideoWorkbench.tabLabel(path)
+        : stripExt(path.split("/").pop() || path);
     const active = path === state.activePath;
 
     const tab = document.createElement("div");
@@ -3130,7 +3326,7 @@ function renderTabs() {
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", active ? "true" : "false");
     tab.dataset.path = path;
-    tab.title = path;
+    tab.title = path === ALL_VIDEOS_TAB ? name : path;
     tab.tabIndex = 0;
 
     const label = document.createElement("span");
@@ -3381,10 +3577,7 @@ async function loadNote(path, opts = {}) {
 
   try {
     const command = isImageExt(extOf(path)) ? "read_asset" : "read_note";
-    const note = opts.note
-      ?? (InkfellowVideoWorkbench.isProjectTab(path)
-        ? InkfellowVideoWorkbench.makeNote(path)
-        : await invoke(command, { path }));
+    const note = opts.note ?? virtualNote(path) ?? await invoke(command, { path });
     state.activePath = note.path;
     state.activeNote = note;
     if (opts.replaceCurrentTab) replaceTabPath(previousActivePath, note.path);
@@ -3401,6 +3594,7 @@ async function loadNote(path, opts = {}) {
     if (!isHtmlNote()) docArea.scrollTop = renderOptions.scrollTop;
     if (state.outlineOpen) renderToc();
     sendNoteContext();
+    if (!isVirtualTab(note.path)) rememberOpenedNote(note.path);
     try { localStorage.setItem(LAST_FILE_KEY, path); } catch {}
   } catch (err) {
     showToast(String(err));
@@ -3897,7 +4091,9 @@ function flushAgentMessages({ includeAgentRequests = true } = {}) {
 }
 
 function sendNoteContext() {
-  postAgentMessage({ type: "note-context", filePath: state.activePath ?? null });
+  // 全部视频不是文件，别让 AI 以为用户正开着一个叫这个名字的文档
+  const filePath = state.activePath === ALL_VIDEOS_TAB ? null : state.activePath ?? null;
+  postAgentMessage({ type: "note-context", filePath });
 }
 
 function sendVaultNotes(force = false) {
@@ -4062,7 +4258,7 @@ async function flushTreeRefresh() {
     await loadTree(false);
     const activePathLower = activePath?.toLowerCase();
     if (!activePathLower || state.activePath?.toLowerCase() !== activePathLower) return;
-    if (InkfellowVideoWorkbench.isProjectTab(activePath)) return;
+    if (isVirtualTab(activePath)) return;
 
     // 精准判断：检查防抖期间所有变化路径，Windows 大小写不敏感
     const activeChanged = accumulated.length === 0 || accumulated.some((p) => {
@@ -4119,6 +4315,7 @@ function requestAutoPull() {
 }
 
 function initVideoWorkbench() {
+  qs("nav-all-videos")?.addEventListener("click", openAllVideos);
   InkfellowVideoWorkbench.init({
     invoke,
     listen: window.__TAURI__?.event?.listen,
@@ -4135,7 +4332,7 @@ function initVideoWorkbench() {
     onProjectsChanged: () => {
       renderTree();
       renderTabs();
-      if (!state.activeNote) renderDocArea({ silent: true });
+      if (!state.activeNote || state.activeNote.extension === ALL_VIDEOS_EXTENSION) renderDocArea({ silent: true });
     },
   });
 }
@@ -5239,7 +5436,7 @@ async function loadTree(selectFirst = false) {
   state.tree = response.root;
   // 清理指向已不存在文件的标签（保留 activePath：新建文件可能先于树刷新出现）
   const existingPaths = new Set(flattenFiles(state.tree).map((f) => f.path));
-  pruneTabs((p) => existingPaths.has(p) || p === state.activePath || InkfellowVideoWorkbench.isProjectTab(p));
+  pruneTabs((p) => existingPaths.has(p) || p === state.activePath || isVirtualTab(p));
   renderTree();
   sendVaultNotes();
   if (!state.activeNote) renderDocArea();
@@ -5247,7 +5444,7 @@ async function loadTree(selectFirst = false) {
   if (selectFirst && !state.activePath) {
     const lastPath = localStorage.getItem(LAST_FILE_KEY);
     const files = flattenFiles(state.tree);
-    const target = lastPath && (InkfellowVideoWorkbench.isProjectTab(lastPath) || files.find((f) => f.path === lastPath))
+    const target = lastPath && (isVirtualTab(lastPath) || files.find((f) => f.path === lastPath))
       ? lastPath
       : files.find((f) => /^(md|html?)$/i.test(f.extension))?.path;
     if (target) await loadNote(target);

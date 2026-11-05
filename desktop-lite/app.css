@@ -1524,7 +1524,34 @@ input, textarea { font-family: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+}
+
+.dashboardSectionLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-right: -8px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--notes-radius-item);
+  background: transparent;
+  color: var(--notes-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--notes-transition-fast);
+}
+
+.dashboardSectionLink:hover {
+  background: var(--notes-accent-bg);
+  color: var(--notes-accent);
+}
+
+.dashboardSectionLink:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: 1px;
 }
 
 .dashboardSectionTitle {
@@ -1563,80 +1590,84 @@ input, textarea { font-family: inherit; }
   height: 15px;
 }
 
-.dashboardRecentGrid {
+/* 「继续你的工作」：紧凑列表。海报负责好看，这里负责好找，一行一条，两边的时间才对得齐。
+   左右各放宽 10px，让文字和小标题左对齐，悬停底色往外伸。 */
+.dashboardRecentList {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
+  column-gap: 24px;
+  margin: 0 -10px;
   min-width: 0;
 }
 
-.dashboardRecentCard {
+.dashboardRecentRow {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  height: 100%;
-  border: 1px solid var(--notes-border);
-  border-radius: 16px;
-  background: var(--notes-bg-sidebar);
-  padding: 20px;
-  color: inherit;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--notes-radius-item);
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: var(--notes-transition-fast);
 }
 
-.dashboardRecentCard:hover {
-  border-color: var(--notes-accent);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-  transform: translateY(-2px);
+.dashboardRecentRow:hover {
+  background: var(--notes-bg-subtle);
 }
 
-.dashboardRecentCardIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
-  margin-right: 16px;
-  border-radius: 8px;
-  background: var(--notes-accent-bg);
-  color: var(--notes-accent);
+.dashboardRecentRow:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: -2px;
 }
 
-.dashboardRecentCardIcon svg {
-  width: 16px;
-  height: 16px;
+.dashboardRecentRowIcon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--notes-text-muted);
 }
 
-.dashboardRecentCardContent {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
+.dashboardRecentRowIcon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dashboardRecentRowTitle,
+.dashboardRecentRowContext {
   min-width: 0;
-}
-
-.dashboardRecentCardTitle {
-  margin: 0 0 4px;
   overflow: hidden;
-  color: var(--notes-text-primary);
-  font-size: 15px;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dashboardRecentCardPath,
-.dashboardRecentCardDate {
-  overflow: hidden;
+.dashboardRecentRowTitle {
+  flex: 0 1 auto;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* 地方不够时说明先缩，标题尽量完整 */
+.dashboardRecentRowContext {
+  flex: 0 100 auto;
   color: var(--notes-text-muted);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.dashboardRecentCardPath {
-  margin-bottom: 12px;
+.dashboardRecentRowDate {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--notes-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .dashboardEmptyPanel {
@@ -1671,9 +1702,6 @@ input, textarea { font-family: inherit; }
     border-radius: 16px;
   }
 
-  .dashboardRecentGrid {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* Document card (preview mode) */
@@ -4396,13 +4424,44 @@ input, textarea { font-family: inherit; }
 .diff-flash { animation: diffFlash 2.5s ease-out forwards; border-radius: 4px; }
 
 /* Dashboard video projects */
+/* 首页的视频只占一行：换行的话 5+1 那一张孤零零占一整行，还会把笔记挤出首屏。
+   能放几张按这块区域的实际宽度算（打开 Fellow 面板也会变窄），所以用容器查询，不用窗口
+   宽度；放不下的是 display:none，键盘也不会跳到看不见的卡片上。断点是
+   张数 × 116 + 间距 × 16。想看更多点「全部 N 个」。 */
 .dashboardVideoSection {
-  margin-bottom: 40px;
+  container-type: inline-size;
+  margin-bottom: 36px;
 }
 .dashboardVideoGrid {
+  --video-columns: 2;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  grid-template-columns: repeat(var(--video-columns), minmax(0, 1fr));
   gap: 16px;
+}
+.dashboardVideoGrid > .dashboardVideoCard:nth-child(n + 3) { display: none; }
+@container (min-width: 380px) {
+  .dashboardVideoGrid { --video-columns: 3; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(3) { display: block; }
+}
+@container (min-width: 512px) {
+  .dashboardVideoGrid { --video-columns: 4; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(4) { display: block; }
+}
+@container (min-width: 644px) {
+  .dashboardVideoGrid { --video-columns: 5; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(5) { display: block; }
+}
+@container (min-width: 776px) {
+  .dashboardVideoGrid { --video-columns: 6; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(6) { display: block; }
+}
+@container (min-width: 908px) {
+  .dashboardVideoGrid { --video-columns: 7; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(7) { display: block; }
+}
+@container (min-width: 1040px) {
+  .dashboardVideoGrid { --video-columns: 8; }
+  .dashboardVideoGrid > .dashboardVideoCard:nth-child(8) { display: block; }
 }
 .dashboardVideoCard {
   min-width: 0;
@@ -4437,3 +4496,90 @@ input, textarea { font-family: inherit; }
 .dashboardVideoDuration { margin-top: 2px; color: var(--notes-text-secondary); font-size: 11px; }
 .dashboardVideoCard:hover .dashboardVideoCover { border-color: var(--notes-accent-warm); }
 .dashboardVideoCard:focus-visible { outline: 2px solid var(--notes-accent); outline-offset: 4px; border-radius: var(--notes-radius-card); }
+
+/* 全部视频 */
+.allVideosPage {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 5% 64px;
+  animation: dashboardFadeIn 0.35s ease-out both;
+}
+.allVideosHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-bottom: 24px;
+}
+.allVideosTitle {
+  margin: 0;
+  color: var(--notes-text-primary);
+  font-size: 20px;
+  font-weight: 600;
+}
+.allVideosCount {
+  margin-left: 8px;
+  color: var(--notes-text-muted);
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.allVideosSearch {
+  width: min(260px, 100%);
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 10px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: var(--notes-transition-fast);
+}
+.allVideosSearch::placeholder { color: var(--notes-text-muted); }
+.allVideosSearch:focus {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px var(--notes-accent-bg);
+}
+.allVideosGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 24px 16px;
+}
+.allVideosEmpty {
+  padding: 64px 16px;
+  color: var(--notes-text-secondary);
+  font-size: 14px;
+  text-align: center;
+}
+.allVideosEmpty p { margin: 0; }
+.allVideosEmptyAction {
+  margin-top: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: var(--notes-radius-item);
+  background: transparent;
+  color: var(--notes-text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.allVideosEmptyAction:hover { background: var(--notes-bg-subtle); }
+
+/* 左侧栏的「全部视频」：视频散在各层文件夹里，这是唯一不用记路径就能看全的地方 */
+.sidebarVideosEntry {
+  width: 100%;
+  margin-bottom: 4px;
+}
+/* .treeFile 写了 display:flex，会盖掉 hidden 属性 */
+.sidebarVideosEntry[hidden] { display: none; }
+.sidebarVideosCount {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--notes-text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.treeFileActive .sidebarVideosCount { color: rgba(255, 255, 255, 0.85); }

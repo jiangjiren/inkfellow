@@ -13,6 +13,7 @@ const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html
 import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import Anthropic from "@anthropic-ai/sdk";
+import { anthropicClientOptions } from "./anthropic-client-options.js";
 import { Codex } from "@openai/codex-sdk";
 import * as scheduler from "./scheduler.js";
 import { PersistentQueryRuntime, SteeringQueue, isTaskLifecycleEvent } from "./agent-session.js";
@@ -365,15 +366,11 @@ function normalizeCodexProfileName(name) {
 // 界面上的模型菜单由 agyProvider.menuModels() 从模型目录里推，这三档只剩两个
 // 用处：账号卡片上显示这个通道主要跑什么，以及派发时的默认模型。
 //
-// 写成函数而不是常量，是为了让它跟着目录刷新走——3.9 出来的那天这里、账号卡片、
+// 写成函数而不是常量，是为了让它跟着目录刷新走——新模型出来的那天这里、账号卡片、
 // 用户存下来的 profile（normalizeProfiles 每次读都拿这三个值强制覆盖一遍）
 // 一起变新，一行代码都不用改。
 function agyDefaultModels() {
-  const menu = agyProvider.menuModels();
-  const pick = (pattern) => menu.find(item => pattern.test(item.model))?.model;
-  const pro = pick(/-pro$/) ?? menu[0]?.model ?? "gemini-3.1-pro";
-  const flash = pick(/-flash$/) ?? pro;
-  return { opusModel: pro, sonnetModel: flash, haikuModel: flash };
+  return agyProvider.defaultModels();
 }
 
 const PROVIDER_PRESETS = {
@@ -531,6 +528,12 @@ function clearAgyConversation() {
 // 已知的几种翻译成人话，并给出下一步该干什么。
 function explainAgyFailure(raw) {
   const text = String(raw || "");
+  if (/is not recognized as a known model/i.test(text)) {
+    /* 目录缓存还没过期就赶上模型下线，才会把下线的名字传过去。这时候马上刷新：
+       下一轮 resolveAgyModel 拿到新目录，自己就会换到能用的模型。 */
+    void refreshAgyModelCatalog({ force: true });
+    return "Antigravity 那边已经下线了这个模型。模型清单正在刷新，重发一次会自动换到能用的模型。";
+  }
   if (/invalid UTF-8/i.test(text)) {
     // 实测过：坏内容不会留在会话历史里连累后面几轮，重发一次通常就好了
     return "Antigravity 请求失败：这轮读到的内容里有不是 UTF-8 编码的文本，模型侧拒收了。"
@@ -544,7 +547,7 @@ function explainAgyFailure(raw) {
   if (/quota|rate limit|resource exhausted/i.test(text)) {
     // Antigravity 的额度按模型家族分开算：Claude 那档用完时 Gemini 往往还能跑
     return `Antigravity 额度或频率受限：${text} `
-      + "这个额度是按模型分别计的，换成另一档模型（Gemini ↔ Claude）通常还能继续。";
+      + "这个额度是按模型分组计的（Gemini、Claude/GPT，Pro 计划下 Gemini 4 Argon 还单独一组），换一组模型通常还能继续。";
   }
   if (/not a valid artifact path/i.test(text)) {
     // 实锤过（翻会话库 steps.error_details 查到的）：模型自己给 write_to_file
@@ -569,21 +572,12 @@ function explainAgyFailure(raw) {
 }
 
 /* 前端的模型选择器按 profile 切换，但对话历史里可能残留另一家的模型名，
-   也可能残留一个 agy 那边已经下线的版本。三种情况分开处理：
-     还在目录里          → 原样用（包括已经从菜单上撤下来的旧版本，选着它就让它继续跑）
-     下线了但同系列有新的 → 顺着升上去（gemini-3.5-flash → gemini-3.8-flash），
-                            比一律退回默认更接近用户当初的选择
-     压根不是 agy 的名字  → 丢掉，传过去只会报 unknown model
-   目录刚启动还没刷新时会短暂偏旧，那时候放行未知名字交给 agy 自己判，
-   不然一次升级会把新模型误判成「不是 agy 的名字」。 */
+   也可能残留一个 agy 那边已经下线的版本。具体怎么分辨在 agyProvider.resolveModel，
+   用不了的名字退回这个账号的默认模型。 */
 function resolveAgyModel(requested, profile) {
   const fallback = profile?.opusModel || agyDefaultModels().opusModel;
   if (typeof requested !== "string" || !requested.trim()) return fallback;
-  const wanted = requested.trim();
-  if (agyProvider.getCatalog().some(entry => entry.model === wanted)) return wanted;
-  const successor = agyProvider.successorFor(wanted);
-  if (successor) return successor;
-  return /^(gemini-\d|claude-(opus|sonnet)-4-6|gpt-oss-)/.test(wanted) ? wanted : fallback;
+  return agyProvider.resolveModel(requested.trim()) ?? fallback;
 }
 
 
@@ -970,7 +964,7 @@ async function runCodexPersistent({
       params: { cwd, approvalPolicy: "never", ...(model ? { model } : {}) },
     });
     if (onThread && ensured.threadId && ensured.threadId !== threadId) onThread(ensured.threadId);
-    /* ensureThread 接不上旧 thread 时会吞掉错误另起一条（见 codex-runtime.js）。
+    /* 旧 thread 确认不存在或历史已损坏时，ensureThread 会另起一条（见 codex-runtime.js）。
        prompt 是按「能续接」算的，只带了它错过的那段甚至什么都没带——发进一条
        空白的新 thread，就等于让它从零开始还以为自己记得。 */
     const text = threadId && !ensured.resumed ? freshPrompt() : prompt;
@@ -1736,13 +1730,15 @@ async function queryCodexSubscriptionLimits() {
      之后   过期就在后台刷一次，刷到新的写回缓存，下次启动就是新的
      失败   （没登录 / 超时 / 输出格式变了）保留上一份，宁可旧也别让菜单空掉
 
-   这一套是为了「模型升级不用改代码」：3.9 上线后第一次刷新就带回来了，菜单、
+   这一套是为了「模型升级不用改代码」：新模型上线后第一次刷新就带回来了，菜单、
    档位表、三档默认值、账号卡片一起变新。provider 里那张兜底表只在从没查成功过
    时用得上。 */
 const AGY_MODELS_CACHE_FILE = join(DATA_DIR, "agy-models.json");
 const AGY_MODELS_QUERY_TIMEOUT_MS = 45_000;
-// 模型不会一天一换，半天刷一次够了；真赶上了还有 learnEffortsFromError 兜底
-const AGY_MODELS_TTL_MS = 6 * 60 * 60_000;
+/* agy 的清单是服务端下发的，不跟 CLI 版本走：2026-11-05 那次，早上 7 点查到的还是旧
+   清单，上午就全换了。查一次只是后台 7 秒，一小时一次不贵，有人看菜单时才会查。
+   真赶上下线了还有 explainAgyFailure 触发的强制刷新兜底。 */
+const AGY_MODELS_TTL_MS = 60 * 60_000;
 
 let _agyModelsFetchedAt = 0;
 let _agyModelsPending = null;
@@ -2670,14 +2666,14 @@ function buildAnthropicClientForWechat(profileData) {
   // 直接 Anthropic API Key
   if (active.provider === "anthropic") {
     const model = active.sonnetModel || active.opusModel || DEFAULT_MODEL;
-    return { client: new Anthropic({ apiKey: active.apiKey }), model };
+    return { client: new Anthropic(anthropicClientOptions(active)), model };
   }
 
   // 第三方兼容接口（DeepSeek / OpenRouter / custom）：Bearer token + 自定义 baseURL
   // 模型名去掉 Claude Code 内部的 ~ 前缀
   const model = (active.sonnetModel || active.opusModel || DEFAULT_MODEL).replace(/^~/, "");
   return {
-    client: new Anthropic({ authToken: active.apiKey, baseURL: active.baseUrl }),
+    client: new Anthropic(anthropicClientOptions(active)),
     model,
   };
 }

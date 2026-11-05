@@ -57,32 +57,30 @@ const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max:
 /* ── 模型目录 ────────────────────────────────────────────────
    有哪些模型、每个认哪些档位，唯一的真相源是 `agy models`。它一行一个组合：
 
-     gemini-3.8-flash-high<TAB>Gemini 3.8 Flash (High)
-     gemini-3.1-pro-low<TAB>Gemini 3.1 Pro (Low)
+     gemini-4-argon-high<TAB>Gemini 4 Argon (High)
+     claude-opus-5-5-low<TAB>Claude Opus 5.5 (Low)
      claude-sonnet-4-6<TAB>Claude Sonnet 4.6 (Thinking)
 
    末尾的 -low/-medium/-high 是「模型 × 档位」的组合，剥掉它就是模型名，剥出
-   来的那几个后缀合起来就是这个模型支持的档位；压根没后缀的（claude-* 那两个）
-   表示它不吃 --effort，传了会报 "effort is not supported"。档位给错 agy 直接
-   拒绝启动，所以这张表必须准。
+   来的那几个后缀合起来就是这个模型支持的档位；压根没后缀的（上面第三行那种，
+   现在的清单里已经没有了，但格式还认）表示它不吃 --effort，传了会报
+   "effort is not supported"。档位给错 agy 直接拒绝启动，所以这张表必须准。
 
    这条命令要起进程走一遍登录，实测 7 秒，不能放在启动路径上。所以 server 侧
    先用磁盘缓存把界面顶起来，再在后台刷新（见 server.js 的 getAgyModelCatalog），
    刷回来的结果调 setCatalog 灌进这里。
 
-   下面这张兜底表是 2026-09-03 那天 `agy models` 的原样输出，只有「装了 agy
-   但一次都没查成功过」时才用得上。模型升级不需要来改它——3.9 出来的时候
-   刷新自己就带回来了，这张表旧一点只影响首次启动那几秒。
+   下面这张兜底表是 2026-11-05 那天 `agy models` 的原样输出，只有「装了 agy
+   但一次都没查成功过」时才用得上。模型升级不需要来改它，刷新自己就带回来了，
+   这张表旧一点只影响首次启动那几秒。
 
    （旧注释说这条命令在管道里会挂住不退出、只能写死一张表——那是早期版本的
    毛病。现在管道和文件重定向都是 7 秒正常退出，已复测。） */
 const FALLBACK_CATALOG = [
+  { model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"] },
   { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.7-flash", label: "Gemini 3.7 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.6-flash", label: "Gemini 3.6 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"] },
-  { model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: [] },
-  { model: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: [] },
+  { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high"] },
+  { model: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high"] },
   { model: "gpt-oss-120b", label: "GPT-OSS 120B", efforts: ["medium"] },
 ];
 
@@ -160,7 +158,7 @@ export function parseModelsList(stdout) {
 }
 
 // agy 拒绝启动时会把真实档位写进错误里，例如
-//   `--model gemini-3.1-pro requires --effort (available: low, high)`
+//   `gpt-oss-120b has no "high" effort (available: medium)`
 //   `effort is not supported for model "claude-opus-4-6-thinking"`
 // 目录哪天跟不上了（比如缓存还没刷新就赶上一次升级），就按它说的改，然后重试一次。
 export function learnEffortsFromError(model, message) {
@@ -215,14 +213,20 @@ export function effortForModel(model, effort) {
    目录里同一个系列会同时挂着好几代（3.8 / 3.7 / 3.6 flash），菜单只放最新那个：
    旧版本留在目录里是为了让还选着它的对话继续能跑，不是让人重新去选。
 
-   系列 key 把版本数字抹掉算——gemini-3.8-flash 和 gemini-3.7-flash 都归到
-   gemini-#-flash，所以 3.9 出来时自动顶掉 3.8，这里不用改。
+   系列 key 把版本号整段抹掉算——gemini-3.8-flash 和 gemini-4-flash 都归到
+   gemini-#-flash，所以新版本出来时自动顶掉旧的，这里不用改。
 
    下面这张表只管排序和一句话说明，认的是「哪一类模型」而不是具体版本，
-   所以模型升级同样不用动它；匹配不上的新家族排在最后，照样进菜单。 */
+   所以模型升级同样不用动它；匹配不上的新家族排在最后，照样进菜单。
+
+   旗舰不认具体名字：Gemini 的旗舰从 3.x 的 -pro 换成过 4 的 -argon，下一代还可能
+   再换。所以 Gemini 里除了 Flash 都算旗舰，这样再改名也不用回来改。 */
+const FLASH = /-flash(?:-|$)/;
+const FLAGSHIP = /^gemini-(?!.*-flash(?:-|$))/;
+
 const MENU_RULES = [
-  [/-pro$/, "旗舰最强"],
-  [/-flash$/, "快速通用"],
+  [FLAGSHIP, "旗舰最强"],
+  [FLASH, "快速通用"],
   [/^claude-opus/, "Claude 旗舰"],
   [/^claude-sonnet/, "Claude 均衡"],
 ];
@@ -231,8 +235,10 @@ const MENU_RULES = [
 // 注意只藏菜单，不动目录：还选着它的对话照常跑，档位选择器也照常认它。
 const MENU_HIDDEN = [/^gpt-/];
 
+// 版本号整段算一个 #：3.8 和 4、5-5 和 5 写法不同，但都是同一个系列的不同版本。
+// -thinking 是旧命名的后缀（claude-opus-4-6-thinking），不代表另一个系列。
 function seriesKey(model) {
-  return model.replace(/\d+/g, "#");
+  return model.replace(/-thinking$/, "").replace(/\d+(?:[.-]\d+)*/g, "#");
 }
 
 function versionOf(model) {
@@ -277,6 +283,20 @@ export function menuModels() {
 }
 
 /**
+ * 三档默认模型。opus 给旗舰（派发默认用它），sonnet/haiku 给 Flash（前端新对话默认用
+ * sonnet 档）——Pro 计划下 Argon 是单独的周额度，不该让每条新对话都去烧它。
+ * 跟着目录走，别在外面写死型号：写死的那个迟早会下线，agy 会直接拒绝启动。
+ */
+export function defaultModels() {
+  const menu = menuModels();
+  const flash = menu.find(item => FLASH.test(item.model))?.model;
+  const flagship = menu.find(item => FLAGSHIP.test(item.model))?.model
+    ?? menu[0]?.model
+    ?? getCatalog()[0]?.model;
+  return { opusModel: flagship, sonnetModel: flash ?? flagship, haikuModel: flash ?? flagship };
+}
+
+/**
  * 这个模型下线之后该顶上来的是谁——同系列里最新的那个，没有就 null。
  * 用在两处：用户之前选的模型从目录里消失了（gemini-3.5-flash 那样），以及
  * 对话历史里存着旧模型名。比一律退回默认更接近他当初的选择。
@@ -293,6 +313,40 @@ export function successorFor(model) {
   // 只往上换。目录还没刷新就赶上一次升级时，请求里的版本会比目录里的都新，
   // 那种情况要原样放行让 agy 自己判，绝不能把用户选的新模型悄悄降回旧的。
   return best && isNewer(best, model) ? best : null;
+}
+
+// 看着像 agy 的模型名。目录里找不到时用它分辨「还没收录的新模型」和「别家的名字」。
+const AGY_MODEL_NAME = /^(gemini-\d|claude-(opus|sonnet)-\d|gpt-oss-)/;
+
+/* 这个名字确实已经下线了吗。agy 对下线的名字是直接拒绝启动，所以这里要判准：
+   同系列还在目录里，说明它比目录还新（比它新的话 successorFor 早就换走了），要放行；
+   整个系列都没了（gemini-3.1-pro），就看同家族有没有比它新的——有就是下线了，
+   没有就是目录还没跟上（gemini-5-neon）。没查过真目录时不敢断定，一律放行。 */
+function isRetired(model) {
+  if (!hasLiveCatalog()) return false;
+  const catalog = getCatalog();
+  const series = seriesKey(model);
+  if (catalog.some(entry => seriesKey(entry.model) === series)) return false;
+  const family = `${model.split("-")[0]}-`;
+  return catalog.some(entry => entry.model.startsWith(family) && isNewer(entry.model, model));
+}
+
+/**
+ * 界面或对话历史里带来的模型名，这一轮该跑哪个。返回 null 表示这个名字用不了，
+ * 调用方退回默认模型。
+ *   还在目录里           → 原样（包括已经从菜单上撤下来的旧版本，选着它就让它继续跑）
+ *   下线了但同系列有新的  → 顺着升上去，比一律退回默认更接近用户当初的选择
+ *   整个系列都下线了      → null
+ *   不是 agy 的名字       → null，传过去只会报 not recognized
+ *   比目录还新            → 原样，目录刷新前不能把新模型拦下来
+ */
+export function resolveModel(requested) {
+  const base = requested.replace(EFFORT_SUFFIX, "");   // 档位可以直接写在名字里
+  if (getCatalog().some(entry => entry.model === base)) return requested;
+  const successor = successorFor(base);
+  if (successor) return successor;
+  if (!AGY_MODEL_NAME.test(base) || isRetired(base)) return null;
+  return requested;
 }
 
 // agy 的参数名是 PascalCase 的一套（AbsolutePath / TargetFile / …），
@@ -441,8 +495,9 @@ export function createTranslator() {
      bucket = { id: "gemini-weekly", window: "weekly"|"5h",
                 remaining_fraction: 0.87, reset_time: "2026-…Z" }
 
-   两组配额是各自独立的池子：Gemini 那两个模型烧一组，Claude/GPT 那两个烧
-   另一组。所以不能合并成一个数字，前端要分两行显示。 */
+   每组配额是各自独立的池子：Gemini 烧一组，Claude/GPT 烧一组，Pro 计划下
+   Gemini 4 Argon 还单独一组（只有周限额，id 是 gemini-argon-wtu-weekly）。所以不能
+   合并成一个数字，前端按组分行显示。认不出的组就用 agy 自己给的名字。 */
 
 const USAGE_GROUP_LABEL = { gemini: "Gemini", "3p": "Claude/GPT" };
 
@@ -494,7 +549,8 @@ export function parseUsage(stdout) {
     if (!fiveHour && !week) continue;
     groups.push({
       key: key ?? String(group?.name ?? ""),
-      label: USAGE_GROUP_LABEL[key] ?? String(group?.name ?? key ?? ""),
+      // 带型号的组名（"Gemini 4 Argon"）只留最后的名字，太长会把数字那一列挤掉
+      label: USAGE_GROUP_LABEL[key] ?? String(group?.name ?? key ?? "").replace(/^Gemini\s+[\d.]+\s+/i, ""),
       fiveHour,
       week,
     });

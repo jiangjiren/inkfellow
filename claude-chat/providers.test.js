@@ -440,6 +440,11 @@ test("agy: 工具名走别名表，未知名原样透出", () => {
 });
 
 test("agy: effort 按模型能力就近取，medium 缺失时往下走", () => {
+  agy.setCatalog([
+    { model: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"] },
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
+    { model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: [] },
+  ]);
   // gemini-3.1-pro 只有 low/high：要 medium 时不能替用户升到 high（更慢更费额度）
   assert.equal(agy.effortForModel("gemini-3.1-pro", "medium"), "low");
   assert.equal(agy.effortForModel("gemini-3.1-pro", "high"), "high");
@@ -448,6 +453,7 @@ test("agy: effort 按模型能力就近取，medium 缺失时往下走", () => {
   assert.equal(agy.effortForModel("gemini-3.8-flash-high", "low"), null); // 档位已写死在名字里
   assert.equal(agy.effortForModel("never-seen-model", "low"), "low");     // 没见过就照传
   assert.equal(agy.effortForModel(null, "xhigh"), "high");
+  agy._resetCatalog();
 });
 
 test("agy: 按 agy 的报错自我修正档位表", () => {
@@ -571,6 +577,107 @@ test("agy: 下线的模型顺着系列升到最新", () => {
   agy._resetCatalog();
 });
 
+// 2026-11-05 `agy models` 的原样输出：Gemini 4 不再叫 -pro，Claude 也开始认档位了
+const AGY_MODELS_2026_11 = [
+  "Fetching available models...",
+  "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+  "gemini-4-argon-high\tGemini 4 Argon (High)",
+  "gemini-4-argon-low\tGemini 4 Argon (Low)",
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+  "claude-opus-5-5-low\tClaude Opus 5.5 (Low)",
+  "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)",
+  "claude-opus-5-5-high\tClaude Opus 5.5 (High)",
+  "claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)",
+  "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)",
+  "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)",
+  "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+  "",
+].join("\n");
+
+test("agy: 旗舰换了命名也认得出来，菜单和默认模型跟着走", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+  const menu = agy.menuModels();
+  assert.deepEqual(menu.map(item => item.model), ["gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5"]);
+  assert.equal(menu[0].desc, "旗舰最强");
+  assert.equal(menu[0].name, "Gemini 4 Argon");
+  // opus 档给旗舰（派发默认用它），sonnet/haiku 给 Flash（新对话默认用它，别平白烧 Argon 的周额度）
+  assert.deepEqual(agy.defaultModels(), {
+    opusModel: "gemini-4-argon",
+    sonnetModel: "gemini-3.8-flash",
+    haikuModel: "gemini-3.8-flash",
+  });
+  // Claude 现在也认档位了，不能再当成「不吃 --effort」
+  assert.equal(agy.effortForModel("claude-opus-5-5", "medium"), "medium");
+  assert.equal(agy.effortForModel("claude-sonnet-5-5", "max"), "high");
+  assert.equal(agy.effortForModel("gpt-oss-120b", "high"), "medium");
+  agy._resetCatalog();
+});
+
+test("agy: 没有 Gemini 旗舰时默认模型退到菜单第一个，不写死型号", () => {
+  agy.setCatalog([
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low"] },
+    { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low"] },
+  ]);
+  assert.deepEqual(agy.defaultModels(), {
+    opusModel: "gemini-3.8-flash",
+    sonnetModel: "gemini-3.8-flash",
+    haikuModel: "gemini-3.8-flash",
+  });
+  agy._resetCatalog();
+});
+
+test("agy: 版本号写法不同也算同一个系列", () => {
+  agy.setCatalog([
+    { model: "gemini-4-flash", label: "Gemini 4 Flash", efforts: ["low"] },
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low"] },
+    { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low"] },
+    { model: "claude-opus-5", label: "Claude Opus 5", efforts: ["low"] },
+  ]);
+  const models = agy.menuModels().map(item => item.model);
+  // 4 顶掉 3.8、5.5 顶掉 5：不能因为一个带小数点一个不带就并排摆两个
+  assert.deepEqual(models, ["gemini-4-flash", "claude-opus-5-5"]);
+  assert.equal(agy.successorFor("gemini-3.7-flash"), "gemini-4-flash");
+  // -thinking 只是旧命名的后缀，不是另一个系列
+  assert.equal(agy.successorFor("claude-opus-4-6-thinking"), "claude-opus-5-5");
+  agy._resetCatalog();
+});
+
+test("agy: 请求里的模型名这一轮该跑哪个", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+  // 还在目录里：原样。档位写在名字里的也算在
+  assert.equal(agy.resolveModel("gemini-4-argon"), "gemini-4-argon");
+  assert.equal(agy.resolveModel("gemini-4-argon-high"), "gemini-4-argon-high");
+  assert.equal(agy.resolveModel("gpt-oss-120b"), "gpt-oss-120b");
+  // 下线了但同系列有新的：顺着升
+  assert.equal(agy.resolveModel("gemini-3.7-flash"), "gemini-3.8-flash");
+  assert.equal(agy.resolveModel("claude-sonnet-4-6"), "claude-sonnet-5-5");
+  assert.equal(agy.resolveModel("claude-opus-4-6-thinking"), "claude-opus-5-5");
+  // 整个系列都没了（3.1 Pro）：agy 会直接拒绝启动，只能交给调用方退回默认
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), null);
+  // 不是 agy 的名字
+  assert.equal(agy.resolveModel("gpt-6.1-sol"), null);
+  assert.equal(agy.resolveModel("deepseek-v4-pro"), null);
+  // 比目录还新：目录落后于这次升级，绝不能拦下或降级
+  assert.equal(agy.resolveModel("gemini-3.9-flash"), "gemini-3.9-flash");
+  assert.equal(agy.resolveModel("gemini-5-argon"), "gemini-5-argon");
+  assert.equal(agy.resolveModel("gemini-5-neon"), "gemini-5-neon");
+  assert.equal(agy.resolveModel("claude-opus-6"), "claude-opus-6");
+  agy._resetCatalog();
+  // 还没查过真目录时不敢断定下线，放行让 agy 自己判
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-3.1-pro");
+});
+
+test("agy: 前端首帧兜底和 provider 兜底表说的是同一批模型", async () => {
+  const { readFile } = await import("node:fs/promises");
+  agy._resetCatalog();
+  const html = await readFile(new URL("./public/index.html", import.meta.url), "utf8");
+  const literal = name => new Function(`return ${new RegExp(`let ${name} = (\\[[\\s\\S]*?\\]|\\{[\\s\\S]*?\\});`).exec(html)[1]}`)();
+  assert.deepEqual(literal("AGY_MODELS").map(item => item.model), agy.menuModels().map(item => item.model));
+  assert.deepEqual(literal("AGY_EFFORT_LEVELS"), Object.fromEntries(agy.getCatalog().map(entry => [entry.model, entry.efforts])));
+});
+
 test("agy: 没查过目录时用兜底表，不至于菜单空掉", () => {
   agy._resetCatalog();
   const menu = agy.menuModels();
@@ -639,6 +746,21 @@ test("agy 用量: 两组配额各自成行，百分比按剩余算", () => {
 test("agy 用量: 前面掺了日志行也能捞出那行 JSON", () => {
   const noisy = `ERROR: logging before google.Init: I0827 doRefreshQuota\n{"broken":\n${AGY_USAGE_JSON}`;
   assert.equal(agy.parseUsage(noisy)?.length, 2);
+});
+
+test("agy 用量: Pro 计划下 Argon 单独一组，只有周限额", () => {
+  // 2026-11-05 真实回包的这一组，描述原文：For paid Pro plans, Argon quota is separate.
+  const groups = agy.parseUsage(JSON.stringify({ command: { data: { groups: [{
+    name: "Gemini 4 Argon",
+    buckets: [{ id: "gemini-argon-wtu-weekly", name: "Gemini 4 Argon Weekly Limit", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-12T03:25:25Z" }],
+  }] } } }));
+  assert.deepEqual(groups, [{
+    key: "gemini-argon-wtu",
+    // 组名太长会把数字那一列挤掉，带型号的只留最后的名字
+    label: "Argon",
+    fiveHour: null,
+    week: { usedPercent: 0, remainingPercent: 100, resetAt: "2026-11-12T03:25:25Z" },
+  }]);
 });
 
 test("agy 用量: 解析不出配额时返回 null，不返回空壳", () => {

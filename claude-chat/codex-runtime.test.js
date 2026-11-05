@@ -32,6 +32,17 @@ function startRuntime(proc) {
   return runtime;
 }
 
+test("initialization acknowledges the server before starting a thread", async () => {
+  const proc = fakeServer();
+  const runtime = startRuntime(proc);
+  const initialized = runtime.initialize({ name: "test" });
+  assert.equal(proc.sent.length, 1);
+  assert.equal(proc.last().method, "initialize");
+  proc.reply(proc.last().id, {});
+  await initialized;
+  assert.deepEqual(proc.last(), { method: "initialized", params: {} });
+});
+
 /** 起进程 + 握手 + 建 thread，回到「可以跑一轮」的状态。 */
 async function readyRuntime(proc, { threadId = "t-1" } = {}) {
   const runtime = startRuntime(proc);
@@ -155,16 +166,48 @@ test("接同一条 thread 才复用，换一条要 resume", async () => {
   assert.equal((await other).threadId, "t-2");
 });
 
-test("resume 失败就开新的，而不是把错误甩给用户", async () => {
-  const proc = fakeServer();
-  const runtime = await readyRuntime(proc, { threadId: "t-1" });
-  const ensured = runtime.ensureThread({ threadId: "gone", params: {} });
-  proc.replyError(proc.find("thread/resume").id, "thread not found");
-  await new Promise(r => setImmediate(r));
-  const startReq = proc.find("thread/start");
-  proc.reply(proc.sent[proc.sent.length - 1].id, { thread: { id: "fresh" } });
-  assert.ok(startReq, "resume 挂了要退回 thread/start");
-  assert.equal((await ensured).threadId, "fresh");
+/* 下面这些报错原文都取自真实的 codex 0.166（路径已缩短），对照真实二进制的版本见
+   codex-runtime-contract.test.js。同样以 failed to read session metadata 开头，
+   内容坏了要换新 thread，读不了文件（占用、无权限）却只是暂时的，不能一起换掉。 */
+const METADATA_ERROR = "failed to read thread: thread-store internal error: failed to read session metadata C:\\x\\rollout.jsonl:";
+
+test("only a confirmed missing or unreadable thread starts a replacement", async () => {
+  for (const message of [
+    "thread not found",
+    "no rollout found for thread id 11111111-1111-4111-8111-111111111111",
+    "no rollout found for conversation id 11111111-1111-4111-8111-111111111111",
+    `${METADATA_ERROR} rollout at C:\\x\\rollout.jsonl is empty`,
+    `${METADATA_ERROR} stream did not contain valid UTF-8`,
+  ]) {
+    const proc = fakeServer();
+    const runtime = await readyRuntime(proc, { threadId: "t-1" });
+    const ensured = runtime.ensureThread({ threadId: "gone", params: {} });
+    proc.replyError(proc.find("thread/resume").id, message);
+    await new Promise(r => setImmediate(r));
+    assert.equal(proc.last().method, "thread/start");
+    proc.reply(proc.last().id, { thread: { id: "fresh" } });
+    assert.equal((await ensured).threadId, "fresh");
+  }
+});
+
+test("resume errors other than a missing thread preserve the original session", async () => {
+  for (const message of [
+    "model provider does not match saved thread",
+    "thread provider configuration missing",
+    "service temporarily unavailable",
+    `${METADATA_ERROR} 另一个程序正在使用此文件，进程无法访问。 (os error 32)`,
+    `${METADATA_ERROR} 拒绝访问。 (os error 5)`,
+    "error resuming thread: Fatal error: Failed to initialize session: thread-store internal error: failed to resume local thread recorder: 拒绝访问。 (os error 5)",
+  ]) {
+    const proc = fakeServer();
+    const runtime = await readyRuntime(proc, { threadId: "original" });
+    const startCount = proc.sent.filter(frame => frame.method === "thread/start").length;
+    const ensured = runtime.ensureThread({ threadId: "saved", params: {} });
+    proc.replyError(proc.last().id, message);
+    await assert.rejects(ensured, error => error.message === message);
+    assert.equal(runtime.threadId, "original");
+    assert.equal(proc.sent.filter(frame => frame.method === "thread/start").length, startCount);
+  }
 });
 
 test("中断先发 turn/interrupt，把进程和上下文留住", async () => {
@@ -349,7 +392,9 @@ test("missing consumption at turn completion is verified before allowing a safe 
   proc.notify("turn/completed", { turn: { id: "turn-1" } });
   await turn;
   assert.equal(runtime.busy, true, "pending delivery confirmation keeps the writer occupied");
-  proc.reply(proc.find("thread/read").id, { thread: { turns: [{ id: "turn-1", items: [] }] } });
+  const page = proc.find("thread/items/list");
+  assert.equal(page.params.turnId, "turn-1");
+  proc.reply(page.id, { data: [], nextCursor: null });
   assert.equal((await outcome).codexSteerRejected, true);
   assert.equal(runtime.busy, false);
 });
@@ -363,12 +408,60 @@ test("a lost consumption event is recovered from native history without resendin
   await turn;
   proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
   await new Promise(resolve => setImmediate(resolve));
-  proc.reply(proc.find("thread/read").id, { thread: { turns: [
-    { id: "turn-1", items: [{ type: "userMessage", clientId: "client-1" }] },
-  ] } });
+  const firstPage = proc.find("thread/items/list");
+  proc.reply(firstPage.id, { data: [], nextCursor: "older" });
+  await new Promise(resolve => setImmediate(resolve));
+  const secondPage = proc.last();
+  assert.equal(secondPage.params.cursor, "older");
+  proc.reply(secondPage.id, { data: [
+    { turnId: "turn-1", item: { type: "userMessage", clientId: "client-1" } },
+  ], nextCursor: null });
   await steer;
   assert.equal(applied, 1);
   assert.equal(proc.sent.filter(item => item.method === "turn/steer").length, 1);
+});
+
+test("older Codex stores fall back to full history only when item pagination is unsupported", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  const steer = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1" });
+  proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  proc.replyError(proc.find("thread/items/list").id, "item pagination not supported");
+  await new Promise(resolve => setImmediate(resolve));
+  proc.reply(proc.find("thread/read").id, { thread: { turns: [
+    { id: "turn-1", items: [{ type: "userMessage", clientId: "client-1" }] },
+  ] } });
+  assert.equal((await steer).applied, true);
+});
+
+test("an incomplete or failed history lookup leaves steering delivery uncertain", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  const outcome = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1" }).catch(error => error);
+  proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  proc.reply(proc.find("thread/items/list").id, { data: [], nextCursor: "same" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.reply(proc.last().id, { data: [], nextCursor: "same" });
+  assert.equal((await outcome).codexSteerUncertain, true);
+  assert.equal(proc.find("thread/read"), undefined);
+});
+
+test("malformed paginated history cannot be treated as proof of nondelivery", async () => {
+  const proc = fakeServer();
+  const { runtime, turn } = await runningTurn(proc);
+  const outcome = runtime.steerTurn({ input: [], expectedTurnId: "turn-1", clientUserMessageId: "client-1" }).catch(error => error);
+  proc.reply(proc.find("turn/steer").id, { turnId: "turn-1" });
+  await new Promise(resolve => setImmediate(resolve));
+  proc.notify("turn/completed", { turn: { id: "turn-1" } });
+  await turn;
+  proc.reply(proc.find("thread/items/list").id, { data: [{ item: { type: "userMessage", clientId: "client-1" } }], nextCursor: null });
+  assert.equal((await outcome).codexSteerUncertain, true);
 });
 
 test("unknown delivery after a process exit is marked uncertain and must not auto-replay", async () => {

@@ -2443,8 +2443,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .auth-limit-window { display: inline; }
 .auth-limit-label { margin-right: 3px; color: var(--text-dim); }
 
-/* Antigravity 有两组互不相干的配额池（Gemini 那两个模型烧一组，Claude/ChatGPT 那两个
-   烧另一组），四个数字挤不进状态行，所以铺在状态行下面，每组一行。 */
+/* Antigravity 有几组互不相干的配额池（Gemini、Claude/GPT，Pro 计划下 Argon 还单独
+   一组），这些数字挤不进状态行，所以铺在状态行下面，每组一行。 */
 .auth-limit-groups {
   /* 两列的 grid：组名一列、数字一列。写死 min-width 对不齐——组名长短不一，
      一行放得下另一行就被右边的编辑/删除按钮切掉了尾巴。 */
@@ -2464,6 +2464,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 数字那一列放不下就换行，不能截断：额度是这张卡片上最要紧的信息。
+   只在两个窗口之间换，「5小时 97%」本身不拆开。 */
+.auth-limit-group > span:last-child {
+  white-space: normal;
+  overflow: visible;
+}
+.auth-limit-group .auth-limit-window { white-space: nowrap; }
 
 /* 右侧操作按钮组 */
 
@@ -2612,10 +2619,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   justify-content: center;
   gap: 8px;
   padding: 12px;
-  border: 1px dashed var(--border-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 12px;
-  background: transparent;
-  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--accent);
   font: inherit;
   font-size: 13px;
   font-weight: 500;
@@ -2623,14 +2630,33 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   transition: all 0.15s ease;
 }
 .auth-add-btn:hover {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-  background: color-mix(in srgb, var(--accent) 2%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
 }
 .auth-add-btn .add-icon {
   display: grid; place-items: center;
   color: inherit;
 }
+/* 再加一个 Claude 会员账号很少用到，给一行文字链接就够了，主按钮留给 API 账号 */
+.auth-add-link {
+  align-self: center;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.auth-add-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.auth-add-btn:focus-visible,
+.auth-add-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 表单视图 */
 #auth-add-form {
@@ -3027,18 +3053,13 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 
       <!-- 底部添加区域 -->
       <div id="auth-add-section">
-        <button id="auth-add-claude" class="auth-add-btn" type="button">
-          <span class="add-icon" aria-hidden="true">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1V9M1 5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </span>
-          添加 Claude 会员账号
-        </button>
         <button id="auth-add-toggle" class="auth-add-btn" type="button" aria-expanded="false">
           <span class="add-icon" aria-hidden="true">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1V9M1 5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           </span>
           添加 API 账号
         </button>
+        <button id="auth-add-claude" class="auth-add-link" type="button">添加 Claude 会员账号</button>
       </div>
       
       <!-- ── 接入渠道分组（微信等） ── -->
@@ -3578,33 +3599,35 @@ const CLAUDE_MODELS = [
 
    模型名都不带 -high/-medium/-low 后缀：那是「模型 × 推理档位」的组合，档位
    交给 effort 选择器。agy 只有 low/medium/high 三档，界面上的 xhigh/max 对它
-   一律不存在；Claude 那两个干脆不吃 --effort，档位给空数组，选择器直接藏掉——
-   选了不生效比不给选更让人困惑。 */
+   一律不存在；档位给空数组的模型不吃 --effort，选择器直接藏掉——选了不生效
+   比不给选更让人困惑。 */
 let AGY_MODELS = [
-  { model: "gemini-3.8-flash",          label: "Gemini 3.8 Flash", name: "Gemini 3.8 Flash", desc: "快速通用" },
-  { model: "gemini-3.1-pro",            label: "Gemini 3.1 Pro",   name: "Gemini 3.1 Pro",   desc: "旗舰最强" },
-  { model: "claude-opus-4-6-thinking",  label: "Opus 4.6",         name: "Opus 4.6",         desc: "Claude 旗舰" },
-  { model: "claude-sonnet-4-6",         label: "Sonnet 4.6",       name: "Sonnet 4.6",       desc: "Claude 均衡" },
+  { model: "gemini-4-argon",    label: "Gemini 4 Argon",   name: "Gemini 4 Argon",   desc: "旗舰最强" },
+  { model: "gemini-3.8-flash",  label: "Gemini 3.8 Flash", name: "Gemini 3.8 Flash", desc: "快速通用" },
+  { model: "claude-opus-5-5",   label: "Opus 5.5",         name: "Opus 5.5",         desc: "Claude 旗舰" },
+  { model: "claude-sonnet-5-5", label: "Sonnet 5.5",       name: "Sonnet 5.5",       desc: "Claude 均衡" },
 ];
 
 // 全目录，含已经从菜单上撤下来但还能跑的旧版本——还选着它的对话要照常显示档位
 let AGY_EFFORT_LEVELS = {
+  "gemini-4-argon": ["low", "medium", "high"],
   "gemini-3.8-flash": ["low", "medium", "high"],
-  "gemini-3.7-flash": ["low", "medium", "high"],
-  "gemini-3.6-flash": ["low", "medium", "high"],
-  "gemini-3.1-pro": ["low", "high"],
+  "claude-opus-5-5": ["low", "medium", "high"],
+  "claude-sonnet-5-5": ["low", "medium", "high"],
   "gpt-oss-120b": ["medium"],
-  "claude-opus-4-6-thinking": [],
-  "claude-sonnet-4-6": [],
 };
 
 /* 拉一次真目录。wait=1 让服务端等它查完（首次要起 agy 进程，约 7 秒），这里不
    挡渲染：先用兜底表把界面撑起来，回来了再把菜单换掉。只在这个通道真的装了
-   agy 时才拉，没装的话服务端也只会把兜底表原样退回来。 */
-let _agyModelsLoaded = false;
+   agy 时才拉，没装的话服务端也只会把兜底表原样退回来。
+
+   桌面端一开就是好几天，只拉一次的话新模型要等重启才看得到，所以隔一小时再拉，
+   跟服务端的目录 TTL 对齐（没过期时服务端立刻回，不起进程）。 */
+const AGY_MODELS_RELOAD_MS = 60 * 60_000;
+let _agyModelsLoadedAt = 0;
 async function loadAgyModelCatalog() {
-  if (_agyModelsLoaded) return;
-  _agyModelsLoaded = true;
+  if (Date.now() - _agyModelsLoadedAt < AGY_MODELS_RELOAD_MS) return;
+  _agyModelsLoadedAt = Date.now();
   try {
     const res = await fetch("api/agy/models?wait=1", { cache: "no-store" });
     if (!res.ok) return;
@@ -3615,7 +3638,7 @@ async function loadAgyModelCatalog() {
     // 目录换了，当前选中的可能已经不在菜单里（版本下线），重渲染会把它落回默认
     renderModelOptions(getActiveProfile());
   } catch {
-    _agyModelsLoaded = false;   // 网络抖一下就放开，下次切到这个账号还能再试
+    _agyModelsLoadedAt = 0;   // 网络抖一下就放开，下次切到这个账号还能再试
   }
 }
 
@@ -4310,7 +4333,7 @@ function renderProviderUsageLimit(p) {
   return windows ? `<span class="auth-limit-summary" aria-label="额度剩余"><span class="auth-limit-summary-label">额度剩余：</span>${windows}</span>` : "";
 }
 
-// Antigravity 专用：状态行下面每组配额一行。两组是各自独立的池子，
+// Antigravity 专用：状态行下面每组配额一行。每组是各自独立的池子，
 // 合成一个数字会骗人——Gemini 烧光了不影响 Claude/GPT 那组。
 function renderProviderUsageGroups(provider) {
   if (provider !== "antigravity") return "";

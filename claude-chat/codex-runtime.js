@@ -91,6 +91,25 @@ function isAlive(proc) {
   return Boolean(proc) && proc.exitCode === null && proc.signalCode === null;
 }
 
+/* thread/resume 的失败没有结构化的错误码（-32600/-32603 什么都装），只能认报错原文。
+   原文归上游所有，所以 codex-runtime-contract.test.js 拿真实二进制钉着：
+   升级 codex 时要是改了措辞，那边当场会红。 */
+
+/** 服务端确认这条 thread 不存在。 */
+const THREAD_GONE = /\b(?:session|thread|conversation)(?:\s+id)?(?:\s+['"]?[\w:.-]+['"]?)?\s+(?:(?:is\s+)?(?:not found|missing)|does not exist)\b|\b(?:no|unknown|missing)\s+(?:such\s+)?(?:session|thread|conversation)\b|\bno\s+rollout\s+(?:found\s+)?for\s+(?:session|thread|conversation)\b/i;
+
+/* 会话文件还在，但内容坏了，重试多少次都一样。同一段前缀后面也可能跟 (os error 32)
+   这种——文件被占用、没权限，那只是暂时读不了，不算在内。锚定结尾是因为前面带着
+   文件路径，路径里什么字都可能有。 */
+const THREAD_HISTORY_DAMAGED = /\bfailed to read session metadata\b[\s\S]*(?:\bis empty|\bdid not contain valid UTF-8)\s*$/i;
+
+/** 这条 thread 救不回来了，只能换新的。其余的失败一律不算，见 ensureThread。 */
+function isUnrecoverableThread(error) {
+  if (!error?.codexRpcError) return false;
+  const message = String(error.message || "");
+  return THREAD_GONE.test(message) || THREAD_HISTORY_DAMAGED.test(message);
+}
+
 export class PersistentCodexRuntime {
   /**
    * @param {object} [options]
@@ -147,11 +166,13 @@ export class PersistentCodexRuntime {
   /** 握手。不做这一步后面所有请求都会被拒。 */
   async initialize(clientInfo) {
     await this._request("initialize", { clientInfo });
+    this._send({ method: "initialized", params: {} });
   }
 
   /**
    * 确保手上有一条可用的 thread。
-   * 给了 threadId 就接上那条，给不了（或接不上）就开一条新的。
+   * 给了 threadId 就接上那条，没给就开一条新的。接不上时看原因：确认救不回来才换新的
+   * （调用方看 resumed:false 补上整段对话记录），其余的把错误抛出去，原 thread 留着。
    *
    * @returns {Promise<{threadId: string, resumed: boolean}>}
    */
@@ -167,9 +188,9 @@ export class PersistentCodexRuntime {
         const res = await this._request("thread/resume", { ...params, threadId });
         this.threadId = res?.thread?.id ?? res?.threadId ?? threadId;
         return { threadId: this.threadId, resumed: true };
-      } catch {
-        /* 接不上就开新的：那条 thread 可能已经被删了、或是别的版本写的。
-           这里吞掉错误是刻意的——用户要的是「能接着聊」，不是一条报错。 */
+      } catch (error) {
+        // 超时、文件被占用这类暂时的失败不能换：换了就丢掉 codex 那边的完整上下文。
+        if (!isUnrecoverableThread(error)) throw error;
       }
     }
     const res = await this._request("thread/start", params);
@@ -260,10 +281,8 @@ export class PersistentCodexRuntime {
       if (op.applied || op.verifying || !op.accepted) return;
       op.verifying = true;
       try {
-        const snapshot = await this._request("thread/read", { threadId, includeTurns: true });
-        const turns = snapshot?.thread?.turns;
-        if (!Array.isArray(turns)) throw new Error("Codex did not return delivery history");
-        if (turns.some(entry => entry.items?.some(item => item.type === "userMessage" && item.clientId === clientUserMessageId))) {
+        const consumed = await this._hasSteeredMessage(threadId, expectedTurnId, clientUserMessageId);
+        if (consumed) {
           op.apply();
         } else {
           op.fail(Object.assign(new Error("Codex finished before consuming the follow-up"), { codexSteerRejected: true }));
@@ -303,6 +322,41 @@ export class PersistentCodexRuntime {
     const err = new Error("Codex 请求已取消");
     err.name = "AbortError";
     return err;
+  }
+
+  async _hasSteeredMessage(threadId, turnId, clientUserMessageId) {
+    try {
+      let cursor = null;
+      const seenCursors = new Set();
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        const page = await this._request("thread/items/list", {
+          threadId, turnId, limit: 100, sortDirection: "desc", ...(cursor ? { cursor } : {}),
+        });
+        if (!Array.isArray(page?.data)) throw new Error("Codex did not return delivery history");
+        for (const entry of page.data) {
+          if (entry?.turnId !== turnId || typeof entry.item?.type !== "string") {
+            throw new Error("Codex returned incomplete delivery history");
+          }
+          if (entry.item.type === "userMessage" && entry.item.clientId === clientUserMessageId) return true;
+        }
+        if (page.nextCursor == null) return false;
+        if (typeof page.nextCursor !== "string" || !page.nextCursor || seenCursors.has(page.nextCursor)) {
+          throw new Error("Codex returned an invalid delivery-history cursor");
+        }
+        cursor = page.nextCursor;
+        seenCursors.add(cursor);
+      }
+      throw new Error("Codex delivery history exceeded the verification limit");
+    } catch (error) {
+      // Older runtimes or non-paginated stores may not support this method.
+      if (!error?.codexRpcError || !(error.code === -32601 || /unsupported|not supported|method not found/i.test(error.message))) throw error;
+      const snapshot = await this._request("thread/read", { threadId, includeTurns: true });
+      const turns = snapshot?.thread?.turns;
+      if (!Array.isArray(turns)) throw new Error("Codex did not return delivery history");
+      const turn = turns.find(entry => entry.id === turnId);
+      if (!turn || !Array.isArray(turn.items)) throw new Error("Codex did not return the delivery turn");
+      return turn.items.some(item => item.type === "userMessage" && item.clientId === clientUserMessageId);
+    }
   }
 
   _interruptAbortedTurn() {

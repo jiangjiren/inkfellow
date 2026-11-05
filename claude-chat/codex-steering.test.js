@@ -76,14 +76,17 @@ async function boot() {
               if (!turnId) return;
               const item = { type: 'userMessage', id: 'native-' + m.params.clientUserMessageId,
                 clientId: m.params.clientUserMessageId, content: m.params.input };
-              items.push(item); notify('item/started', { item });
+              items.push({ turnId, item }); notify('item/started', { item });
               notify('item/completed', { item: { type: 'agentMessage', id: 'continued-' + item.id,
                 text: 'continued: ' + m.params.input.find(i => i.type === 'text')?.text } });
             };
             if (text.includes('[delay-consumption]')) timers.push(setTimeout(consume, 200));
             else consume();
           }
-          if (m.method === 'thread/read') reply(m.id, { thread: { turns: [{ id: 'finished', items }] } });
+          if (m.method === 'thread/items/list') reply(m.id, {
+            data: items.filter(entry => entry.turnId === m.params.turnId), nextCursor: null,
+          });
+          if (m.method === 'thread/read') reply(m.id, { thread: { turns: items.map(entry => ({ id: entry.turnId, items: [entry.item] })) } });
           if (m.method === 'turn/interrupt') { clearTimeout(timer); reply(m.id, {}); complete(); }
         });
       } };

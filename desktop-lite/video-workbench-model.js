@@ -43,6 +43,42 @@
     return cut > 0 ? text.slice(0, cut) : "";
   }
 
+  /* edl 里的 src 是原文：可能是正斜杠、带 ..、相对工程目录；清单和时间表里是引擎解析过的绝对路径。
+     比较前统一成同一种写法，否则同一个文件会被当成两个 */
+  function isAbsolutePath(path) {
+    return /^[a-zA-Z]:[\\/]/.test(path) || /^[\\/]/.test(path);
+  }
+
+  function normalizePath(path) {
+    const text = String(path || "").trim();
+    if (!text) return "";
+    const sep = text.includes("\\") || /^[a-zA-Z]:/.test(text) ? "\\" : "/";
+    const lead = /^[\\/]{2}/.test(text) ? sep + sep : (/^[\\/]/.test(text) ? sep : "");
+    const out = [];
+    for (const part of text.split(/[\\/]+/)) {
+      if (!part || part === ".") continue;
+      if (part === ".." && out.length && out[out.length - 1] !== ".." && !/^[a-zA-Z]:$/.test(out[out.length - 1])) out.pop();
+      else out.push(part);
+    }
+    return lead + out.join(sep);
+  }
+
+  function joinPath(dir, ref) {
+    const base = String(dir || "");
+    if (!base || isAbsolutePath(ref)) return normalizePath(ref);
+    const sep = base.includes("\\") ? "\\" : "/";
+    return normalizePath(`${base}${sep}${ref}`);
+  }
+
+  /* 比较用的键：Windows 路径不分大小写，斜杠方向无所谓 */
+  function pathKey(path) {
+    return normalizePath(path).replace(/\\/g, "/").toLowerCase();
+  }
+
+  function samePath(a, b) {
+    return Boolean(a) && Boolean(b) && pathKey(a) === pathKey(b);
+  }
+
   function normalizeDoc(doc) {
     return {
       version: 1,
@@ -84,7 +120,8 @@
       (merged.op === "set_say" && merged.value?.say === merged.base?.say && !merged.value?.say_tts) ||
       (merged.op === "set_say_tts" && (merged.value?.say_tts ?? "") === (merged.base?.say_tts ?? "")) ||
       (merged.op === "replace_shot"
-        && merged.value?.src === merged.base?.src
+        // base.src 是 edl 原文（可能是正斜杠），value.src 是清单里的路径，写法不同也是同一个文件
+        && (merged.value?.src === merged.base?.src || samePath(merged.value?.src, merged.base?.src))
         && (merged.value?.in ?? null) === (merged.base?.in ?? null));
     next.edits = backToBase ? others : [...others, merged];
     return next;
@@ -145,8 +182,9 @@
     return baseName(shot?.src || "");
   }
 
-  /* 把 edl、plan、edits 合成脚本视图的行。edl 决定有哪些段，plan 提供时间。 */
-  function buildRows({ edl, plan, edits }) {
+  /* 把 edl、plan、edits 合成脚本视图的行。edl 决定有哪些段，plan 提供时间。
+     reverted：已经进了这版成片、又被用户撤掉的改动（见 revertedEdits），成片画面和下次生成的结果对不上 */
+  function buildRows({ edl, plan, edits, reverted = [] }) {
     const doc = normalizeDoc(edits);
     const beats = Array.isArray(edl?.beats) ? edl.beats : [];
     const planBeats = Array.isArray(plan?.beats) ? plan.beats : [];
@@ -170,6 +208,9 @@
       const shots = rawShots.map((raw, idx) => {
         const planned = shotsInPlan.find((shot) => shot.idx === idx) || null;
         const replace = beatEdits.find((edit) => edit.op === "replace_shot" && edit.shot === idx) || null;
+        const revert = replace
+          ? null
+          : ((reverted || []).find((edit) => edit.op === "replace_shot" && edit.beat === id && edit.shot === idx) || null);
         return {
           idx,
           raw,
@@ -182,6 +223,9 @@
           end: planned ? (planned.start + planned.frames) / fps : null,
           planIndex: planned ? planShots.indexOf(planned) : -1,
           replace,
+          revert,
+          // 时间表里这个镜头已经不是 edl 原来的素材了（换过且出了片），它的 path/in 不能当原镜头用
+          planReplaced: Boolean(revert) || Boolean(replace && planIncludesEdit(plan, replace)),
           notes: doc.notes.filter((note) => note.beat === id && note.shot === idx),
         };
       });
@@ -461,6 +505,70 @@
     return (edit.createdAt || 0) < plan.renderedAt;
   }
 
+  /* 这份成片用过这条改动吗（哪怕之后又改了值）。upsertEdit 会沿用 id、刷新 createdAt，
+     所以「成片里的样子已经不是 edl 原样」只能看 id，不能用 isEditInPlan 的时间判断 */
+  function planIncludesEdit(plan, edit) {
+    if (!plan?.renderedAt || !edit) return false;
+    if (Array.isArray(plan.editsApplied)) return plan.editsApplied.includes(edit.id);
+    return isEditInPlan(plan, edit);
+  }
+
+  /* edl 在这条改动的目标处还是改动前的样子吗。AI 已经把改动写进 edl（吸收）时就不是了 */
+  function editTargetAtBase(edl, edit) {
+    const base = edit?.base || {};
+    if (edit?.op === "set_voice") {
+      const voice = edl?.voice && typeof edl.voice === "object" ? edl.voice : {};
+      return Object.keys(edit.value || {}).every((key) => sameValue(voice[key], base[key]));
+    }
+    const beats = Array.isArray(edl?.beats) ? edl.beats : [];
+    const beat = beats.find((item, index) => beatIdOf(item, index) === edit?.beat);
+    if (!beat) return false;
+    if (edit.op === "set_say" || edit.op === "delete_beat") return beat.say === base.say;
+    if (edit.op === "set_say_tts") return (beat.say_tts ?? "") === (base.say_tts ?? "");
+    if (edit.op === "replace_shot") {
+      const shot = Array.isArray(beat.shots) ? beat.shots[edit.shot] : null;
+      if (!shot) return false;
+      return ["src", "in", "scene"].every((key) => (shot[key] ?? null) === (base[key] ?? null));
+    }
+    return false;
+  }
+
+  /* 已经进了这版成片、又被用户撤掉的改动：成片画面还是改过的样子，下次生成才会回到原样，
+     所以它们也算待生成。removed 是前端记下的被删改动（文件里已经没有了，只能靠内存） */
+  function revertedEdits({ plan, edl, doc, removed }) {
+    const current = normalizeDoc(doc).edits;
+    const ids = new Set(current.map((edit) => edit.id));
+    const keys = new Set(current.map(editKey));
+    const seen = new Set();
+    const out = [];
+    for (const edit of removed || []) {
+      if (!edit || ids.has(edit.id) || keys.has(editKey(edit)) || seen.has(editKey(edit))) continue;
+      if (!planIncludesEdit(plan, edit) || !editTargetAtBase(edl, edit)) continue;
+      seen.add(editKey(edit));
+      out.push(edit);
+    }
+    return out;
+  }
+
+  /* 撤销「撤掉」：把原来那条改动原样放回去（id、createdAt 不变，成片里就是它） */
+  function restoreEdit(doc, edit) {
+    const next = normalizeDoc(doc);
+    const key = editKey(edit);
+    next.edits = [...next.edits.filter((item) => editKey(item) !== key), edit];
+    return next;
+  }
+
+  function describeRevert(edit, rows) {
+    const row = rows.find((item) => item.id === edit.beat);
+    const where = row ? `第 ${row.index + 1} 句` : (edit.beat || "");
+    if (edit.op === "replace_shot") return `${where}第 ${(edit.shot ?? 0) + 1} 个镜头恢复原镜头`;
+    if (edit.op === "set_say") return `${where}恢复原文`;
+    if (edit.op === "set_say_tts") return `${where}恢复原读音`;
+    if (edit.op === "delete_beat") return `${where}恢复这句`;
+    if (edit.op === "set_voice") return "语速恢复原样";
+    return where;
+  }
+
   /* 只有进了正式版才算生效。AI 只出了预览时改动还不算完成，否则「应用修改」消失，用户就没法生成正式版了 */
   function isEditInFinal({ versions, latest, plan }, edit) {
     const list = Array.isArray(versions) ? versions : [];
@@ -502,16 +610,80 @@
     return PHOTO_RE.test(String(path || ""));
   }
 
-  /* 还没生成的换镜头，播放时就地盖在成片上预览。返回此刻应该显示什么 */
-  function overlayAt(rows, seconds, isPending = () => true) {
+  /* 还没生成的换镜头，播放时就地盖在成片上预览。返回此刻应该显示什么。
+     撤掉了已出片的换镜头时，成片里还是换上的素材，要盖回原镜头；原素材路径由 resolveOriginal 给 */
+  function overlayAt(rows, seconds, isPending = () => true, resolveOriginal = null) {
     const row = rowAtTime(rows, seconds);
     const shot = shotAtTime(row, seconds);
+    if (shot?.revert && !shot.replace) {
+      const orig = resolveOriginal ? resolveOriginal(shot) : null;
+      if (!orig?.path || orig.kind === "scene") return null;
+      if (isPhotoPath(orig.path)) return { kind: "photo", src: orig.path, shot };
+      const from = typeof orig.inSec === "number" ? orig.inSec : 0;
+      return { kind: "video", src: orig.path, shot, sourceTime: from + (seconds - shot.start) };
+    }
     if (!shot?.replace || !isPending(shot.replace)) return null;
     const src = shot.replace.value?.src;
     if (!src) return null;
     if (isPhotoPath(src)) return { kind: "photo", src, shot };
     const from = typeof shot.replace.value?.in === "number" ? shot.replace.value.in : 0;
     return { kind: "video", src, shot, sourceTime: from + (seconds - shot.start) };
+  }
+
+  /* 画面上能点的地方：字幕、字卡、当前镜头。位置照引擎排版（assgen.py）的比例估，
+     竖屏字幕底边在 1 - 400/1920，字卡按 pos 落在固定高度 */
+  const CAPTION_BANDS = {
+    portrait: { bottom: [0.66, 0.82], middle: [0.43, 0.57], top: [0.14, 0.28] },
+    landscape: { bottom: [0.75, 0.93], middle: [0.43, 0.57], top: [0.13, 0.27] },
+  };
+  const TEXT_Y = {
+    portrait: { top: 0.16, upper: 0.25, center: 0.45, lower: 0.62, "above-caption": 0.655 },
+    landscape: { top: 0.14, upper: 0.24, center: 0.46, lower: 0.62, "above-caption": 0.68 },
+  };
+
+  function frameHotspots({ plan, rows, time, landscape = false }) {
+    const orient = landscape ? "landscape" : "portrait";
+    const row = rowAtTime(rows, time);
+    if (!plan || !row || row.deleted) return [];
+    const clamp01 = (value) => Math.min(1, Math.max(0, value));
+    const spots = [];
+    const cue = (plan.cues || []).find((item) => time >= item.start && time < item.end && item.text);
+    const band = CAPTION_BANDS[orient][plan.captions_cfg?.position || "bottom"];
+    if (cue && band) spots.push({ kind: "caption", beat: row.id, text: cue.text, top: band[0], bottom: band[1] });
+    // 字卡画在字幕上面，排在后面才能盖住重叠的部分
+    for (const text of plan.texts || []) {
+      if (!(time >= text.start && time < text.end) || !text.text) continue;
+      const y = typeof text.pos === "number" ? (text.pos <= 1 ? text.pos : null) : TEXT_Y[orient][text.pos || "upper"];
+      if (typeof y !== "number") continue;
+      const half = text.style === "title" ? 0.075 : 0.05;
+      spots.push({ kind: "text", beat: row.id, text: text.text, top: clamp01(y - half), bottom: clamp01(y + half) });
+    }
+    const shot = shotAtTime(row, time);
+    if (shot) spots.push({ kind: "shot", beat: row.id, shot: shot.idx });
+    return spots;
+  }
+
+  /* 常用意见：点一下就交给 AI，不用自己组织语言。label 是按钮上的字，text 是写进意见的话 */
+  const QUICK_NOTES = [
+    { key: "shot", label: "换个画面", text: "这句的画面不太贴合内容，换个更合适的" },
+    { key: "slow", label: "节奏拖了", text: "这句节奏有点拖，紧凑一点" },
+    { key: "choppy", label: "镜头太碎", text: "这句镜头切得太碎，少切几次" },
+    { key: "card", label: "加个字卡", text: "这句可以加个字卡，把重点突出出来" },
+    { key: "nocard", label: "去掉字卡", text: "这句的字卡去掉", needsText: true },
+  ];
+
+  function quickNotesFor(row) {
+    if (!row || row.deleted) return [];
+    const hasText = Array.isArray(row.texts) && row.texts.length > 0;
+    return QUICK_NOTES.filter((item) => (item.needsText ? hasText : !(item.key === "card" && hasText)));
+  }
+
+  /* 帧条上悬停时的提示：时间 + 这一句的开头 */
+  function stripLabel(rows, time, max = 14) {
+    const row = rowAtTime(rows, time);
+    const say = String(row?.say || "").trim();
+    const head = say.length > max ? `${say.slice(0, max)}…` : say;
+    return head ? `${fmtTime(time)} · ${head}` : fmtTime(time);
   }
 
   /* 删掉的句子预览时直接跳过 */
@@ -639,6 +811,74 @@
     return Math.max(0, shot.end - shot.start);
   }
 
+  /* 按 edl 里的引用原文在素材清单里找素材，规则和引擎一致：编号（不分大小写）→ 文件名 → 路径 */
+  function findSourceItem(items, ref, projectDir = "") {
+    if (!items || !ref) return null;
+    const lower = String(ref).toLowerCase();
+    const key = pathKey(joinPath(projectDir, ref));
+    let byName = null;
+    let byPath = null;
+    for (const item of typeof items.values === "function" ? items.values() : items) {
+      if (!item) continue;
+      if (item.id && String(item.id).toLowerCase() === lower) return item;
+      if (!byName && item.name === ref) byName = item;
+      if (!byPath && item.path && pathKey(item.path) === key) byPath = item;
+    }
+    return byName || byPath;
+  }
+
+  function looksLikePath(ref) {
+    return /[\\/]/.test(ref) || /\.[a-z0-9]{2,5}$/i.test(ref);
+  }
+
+  /* 找出这个镜头最初配的素材（edl 原样，没被换镜头覆盖前），供面板标「原镜头」、恢复后回显和盖预览。
+     优先按 edl 引用在清单里找；时间表的 path 是引擎解析好的，但只有没被换过（planReplaced 为假）时才可信 */
+  function resolveOriginalShot(shot, { items = null, projectDir = "" } = {}) {
+    const none = { kind: null, path: null, rawSrc: null, inSec: null };
+    if (!shot) return none;
+    const raw = shot.raw || {};
+    if (raw.scene) return { ...none, kind: "scene" };
+    const rawSrc = typeof raw.src === "string" && raw.src ? raw.src : null;
+    const planOriginal = !shot.planReplaced;
+    const item = findSourceItem(items, rawSrc, projectDir);
+    let path = item?.path || null;
+    if (!path && planOriginal && shot.path) path = shot.path;
+    if (!path && rawSrc && looksLikePath(rawSrc) && (isAbsolutePath(rawSrc) || projectDir)) path = joinPath(projectDir, rawSrc);
+    const inSec = typeof raw.in === "number"
+      ? raw.in
+      : (planOriginal && typeof shot.inSec === "number" ? shot.inSec : null);
+    return {
+      kind: item?.kind || (path ? (isPhotoPath(path) ? "photo" : "video") : null),
+      path,
+      rawSrc,
+      inSec,
+    };
+  }
+
+  /* 片子里用到的素材（按改动后的样子算：换上的算、换下的不算、要删的句子不算），返回 pathKey 集合。
+     resolveOriginal 给没换过的镜头找文件路径，不给就用时间表里的 path */
+  function usedSourceKeys(rows, resolveOriginal = null) {
+    const keys = new Set();
+    for (const row of rows || []) {
+      if (row.deleted) continue;
+      for (const shot of row.shots || []) {
+        let path = null;
+        if (shot.replace) path = shot.replace.value?.src || null;
+        else if (!shot.raw?.scene) path = (resolveOriginal ? resolveOriginal(shot)?.path : null) || shot.path || null;
+        if (path) keys.add(pathKey(path));
+      }
+    }
+    return keys;
+  }
+
+  function isOriginalShotSource(shot, item, options) {
+    if (!shot || !item || shot.raw?.scene) return false;
+    const orig = options?.original || resolveOriginalShot(shot, options);
+    if (orig.path && samePath(item.path, orig.path)) return true;
+    if (orig.rawSrc && item.id && String(item.id).toLowerCase() === orig.rawSrc.toLowerCase()) return true;
+    return false;
+  }
+
   root.InkfellowVideoModel = {
     STEP_DEFS,
     fmtTime,
@@ -677,6 +917,10 @@
     pickStatus,
     isPhotoPath,
     overlayAt,
+    frameHotspots,
+    QUICK_NOTES,
+    quickNotesFor,
+    stripLabel,
     skipDeleted,
     cueAt,
     skimInfo,
@@ -691,6 +935,18 @@
     pendingCounts,
     mergeSource,
     shotDuration,
+    resolveOriginalShot,
+    isOriginalShotSource,
+    findSourceItem,
+    usedSourceKeys,
+    normalizePath,
+    pathKey,
+    samePath,
+    planIncludesEdit,
+    editTargetAtBase,
+    revertedEdits,
+    restoreEdit,
+    describeRevert,
     humanDuration,
     resolveResume,
   };

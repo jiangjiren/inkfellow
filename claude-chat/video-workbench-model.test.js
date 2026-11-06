@@ -476,3 +476,217 @@ test("回到工作台：还是那条视频就接着看，出了新版本就从�
     tab: "script", time: 0, scrollTop: 0, picker: null,
   }, "存坏的数据当没有");
 });
+
+test("路径比较不管斜杠方向、大小写和 ..", () => {
+  assert.equal(Model.normalizePath("D:/jiang/a/../b/./c.mp4"), "D:\\jiang\\b\\c.mp4");
+  assert.equal(Model.normalizePath("/Users/x/../y.mp4"), "/Users/y.mp4");
+  assert.equal(Model.samePath("D:/Jiang/视频/a.MP4", "d:\\jiang\\视频\\a.mp4"), true);
+  assert.equal(Model.samePath("D:\\a\\b.mp4", "D:\\a\\c.mp4"), false);
+  assert.equal(Model.samePath("", ""), false);
+});
+
+test("按 edl 引用原文找素材：编号不分大小写、文件名、正斜杠或带 .. 的路径、相对工程目录", () => {
+  const items = new Map([
+    ["D:\\素材\\001.mp4", { id: "V01", name: "001.mp4", path: "D:\\素材\\001.mp4", kind: "video" }],
+    ["D:\\素材\\002.jpg", { id: "P02", name: "002.jpg", path: "D:\\素材\\002.jpg", kind: "photo" }],
+    ["D:\\proj\\work\\card.png", { id: "P03", name: "card.png", path: "D:\\proj\\work\\card.png", kind: "photo" }],
+  ]);
+  assert.equal(Model.findSourceItem(items, "v01")?.id, "V01");
+  assert.equal(Model.findSourceItem(items, "002.jpg")?.id, "P02");
+  assert.equal(Model.findSourceItem(items, "D:/素材/001.mp4")?.id, "V01");
+  assert.equal(Model.findSourceItem(items, "D:\\proj\\..\\素材\\002.jpg")?.id, "P02");
+  assert.equal(Model.findSourceItem(items, "work/card.png", "D:\\proj")?.id, "P03");
+  assert.equal(Model.findSourceItem(items, "V99"), null);
+  assert.equal(Model.findSourceItem(null, "V01"), null);
+});
+
+test("原镜头：没换过时用时间表里引擎解析好的路径", () => {
+  const rows = Model.buildRows({ edl, plan, edits: null });
+  const shot = rows[0].shots[0];
+  assert.equal(shot.planReplaced, false);
+  assert.deepEqual(plain(Model.resolveOriginalShot(shot)), {
+    kind: "video", path: "D:\\素材\\a.mp4", rawSrc: "D:\\素材\\a.mp4", inSec: 2,
+  });
+  assert.equal(Model.resolveOriginalShot(rows[1].shots[0]).kind, "scene");
+});
+
+test("原镜头：换过并出了片后，时间表里是换上的素材，要按 edl 原文找回最初那个", () => {
+  // edl 用正斜杠写路径（真实工程里有），清单里是反斜杠
+  const fwd = plain(edl);
+  fwd.beats[0].shots[0].src = "D:/素材/a.mp4";
+  const items = new Map([
+    ["D:\\素材\\a.mp4", { path: "D:\\素材\\a.mp4", kind: "video" }],
+    ["D:\\素材\\x.mp4", { path: "D:\\素材\\x.mp4", kind: "video" }],
+    ["D:\\素材\\y.mp4", { path: "D:\\素材\\y.mp4", kind: "video" }],
+  ]);
+  const replaced = plain(plan);
+  replaced.shots[0] = { ...replaced.shots[0], path: "D:\\素材\\x.mp4", in: 1 };
+  replaced.renderedAt = 2000;
+  replaced.editsApplied = ["e1"];
+
+  // 出片后又点了 y：upsertEdit 沿用 e1、刷新 createdAt，按时间看「没出片」，但成片里已经是 x 了
+  const repicked = { edits: [{ id: "e1", op: "replace_shot", beat: "b01", shot: 0, createdAt: 3000,
+    base: { src: "D:/素材/a.mp4", in: 2 }, value: { src: "D:\\素材\\y.mp4", in: 0.5 } }] };
+  const shot = Model.buildRows({ edl: fwd, plan: replaced, edits: repicked })[0].shots[0];
+  assert.equal(Model.isEditInPlan(replaced, shot.replace), false);
+  assert.equal(shot.planReplaced, true);
+
+  const orig = Model.resolveOriginalShot(shot, { items });
+  assert.equal(orig.path, "D:\\素材\\a.mp4");
+  assert.equal(orig.inSec, 2);
+  assert.equal(Model.isOriginalShotSource(shot, items.get("D:\\素材\\a.mp4"), { items }), true);
+  assert.equal(Model.isOriginalShotSource(shot, items.get("D:\\素材\\x.mp4"), { items }), false, "上一次换上的 x 不是原镜头");
+  assert.equal(Model.isOriginalShotSource(shot, items.get("D:\\素材\\y.mp4"), { items }), false);
+
+  // 清单还没读到时也不能把 x 当原镜头：退回 edl 原文
+  const early = Model.resolveOriginalShot(shot);
+  assert.equal(Model.samePath(early.path, "D:\\素材\\a.mp4"), true);
+
+  // 编号引用、清单里没有对应项时找不到就是找不到，不拿时间表里的 x 顶替
+  const byId = plain(fwd);
+  byId.beats[0].shots[0].src = "V01";
+  const idShot = Model.buildRows({ edl: byId, plan: replaced, edits: repicked })[0].shots[0];
+  assert.equal(Model.resolveOriginalShot(idShot, { items }).path, null);
+  const withId = new Map([...items, ["D:\\素材\\a.mp4", { id: "V01", path: "D:\\素材\\a.mp4", kind: "video" }]]);
+  assert.equal(Model.resolveOriginalShot(idShot, { items: withId }).path, "D:\\素材\\a.mp4");
+});
+
+test("撤掉已出片的改动：算待生成，AI 吸收了的、又改成别的、成片里没有的都不算", () => {
+  const rendered = plain(plan);
+  rendered.shots[0] = { ...rendered.shots[0], path: "D:\\素材\\x.mp4", in: 1 };
+  rendered.renderedAt = 2000;
+  rendered.editsApplied = ["e1", "e2"];
+  const e1 = { id: "e1", op: "replace_shot", beat: "b01", shot: 0, createdAt: 1000,
+    base: { src: "D:\\素材\\a.mp4", in: 2 }, value: { src: "D:\\素材\\x.mp4", in: 1 } };
+  const e2 = { id: "e2", op: "set_say", beat: "b02", createdAt: 1000, base: { say: "第二句" }, value: { say: "改过的第二句" } };
+  const e3 = { id: "e3", op: "set_say", beat: "b03", createdAt: 2500, base: { say: "第三句" }, value: { say: "还没出片" } };
+
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [e1, e2, e3] });
+  assert.deepEqual(plain(reverted.map((edit) => edit.id)), ["e1", "e2"], "e3 没进过成片，删了就是删了");
+
+  // 用户又换了别的素材：新改动本身就是待生成，不重复算
+  const again = { id: "e9", op: "replace_shot", beat: "b01", shot: 0, createdAt: 3000, base: e1.base, value: { src: "D:\\素材\\y.mp4" } };
+  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [again] }, removed: [e1] }).length, 0);
+  // 放回去了
+  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [e1] }, removed: [e1] }).length, 0);
+  // AI 已经把换镜头写进 edl：再生成也还是 x，不算撤回
+  const absorbed = plain(edl);
+  absorbed.beats[0].shots[0] = { src: "D:\\素材\\x.mp4", in: 1 };
+  assert.equal(Model.revertedEdits({ plan: rendered, edl: absorbed, doc: { edits: [] }, removed: [e1] }).length, 0);
+
+  // 撤销「恢复」：原样放回，成片里就是它
+  const restored = Model.restoreEdit({ edits: [] }, e1);
+  assert.deepEqual(plain(restored.edits), [e1]);
+  assert.equal(Model.describeRevert(e1, Model.buildRows({ edl, plan, edits: null })), "第 1 句第 1 个镜头恢复原镜头");
+  assert.equal(Model.describeRevert(e2, Model.buildRows({ edl, plan, edits: null })), "第 2 句恢复原文");
+});
+
+test("撤掉已出片的换镜头后，预览盖回原镜头，原镜头标记也跟着回到 edl 原样", () => {
+  const rendered = plain(plan);
+  rendered.shots[0] = { ...rendered.shots[0], path: "D:\\素材\\x.mp4", in: 1 };
+  rendered.renderedAt = 2000;
+  rendered.editsApplied = ["e1"];
+  const e1 = { id: "e1", op: "replace_shot", beat: "b01", shot: 0, createdAt: 1000,
+    base: { src: "D:\\素材\\a.mp4", in: 2 }, value: { src: "D:\\素材\\x.mp4", in: 1 } };
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [e1] });
+  const rows = Model.buildRows({ edl, plan: rendered, edits: { edits: [] }, reverted });
+  const shot = rows[0].shots[0];
+  assert.equal(shot.replace, null);
+  assert.equal(shot.revert.id, "e1");
+  assert.equal(shot.planReplaced, true);
+  assert.equal(Model.resolveOriginalShot(shot).path, "D:\\素材\\a.mp4", "时间表里的 x 不能当原镜头");
+
+  const resolve = (item) => Model.resolveOriginalShot(item);
+  assert.deepEqual(plain(Model.overlayAt(rows, 1, () => true, resolve)), {
+    kind: "video", src: "D:\\素材\\a.mp4", shot: plain(shot), sourceTime: 3,
+  });
+  assert.equal(Model.overlayAt(rows, 1, () => true), null, "没有原素材路径就不盖");
+  assert.equal(Model.overlayAt(rows, 3.5, () => true, resolve), null, "其他镜头不受影响");
+
+  // 没撤掉时照常：已出片的换镜头不盖预览
+  const kept = Model.buildRows({ edl, plan: rendered, edits: { edits: [e1] } });
+  assert.equal(Model.overlayAt(kept, 1, (edit) => !Model.isEditInPlan(rendered, edit), resolve), null);
+});
+
+test("换回 edl 原来的素材就撤销这条改动，edl 用正斜杠写路径也认", () => {
+  const fwd = plain(edl);
+  fwd.beats[0].shots[0].src = "D:/素材/a.mp4";
+  const shot = Model.buildRows({ edl: fwd, plan, edits: null })[0].shots[0];
+  let doc = Model.upsertEdit(null, Model.makeReplaceShot(shot, { src: "D:\\素材\\x.mp4", inSec: 1, kind: "video" }));
+  assert.equal(doc.edits.length, 1);
+  doc = Model.upsertEdit(doc, Model.makeReplaceShot(shot, { src: "D:\\素材\\a.mp4", inSec: 2, kind: "video" }));
+  assert.equal(doc.edits.length, 0, "换回原素材原起点 = 没改");
+  doc = Model.upsertEdit(doc, Model.makeReplaceShot(shot, { src: "D:\\素材\\a.mp4", inSec: 4, kind: "video" }));
+  assert.equal(doc.edits.length, 1, "同一个素材换了起点还是改动");
+});
+
+test("「已用」按改动后的样子算：换上的算、换下的不算、要删的句子不算、路径写法不同也是同一个", () => {
+  const e1 = { id: "e1", op: "replace_shot", beat: "b01", shot: 0, createdAt: 1, base: { src: "D:\\素材\\a.mp4", in: 2 }, value: { src: "D:/素材/X.mp4" } };
+  const del = { id: "e2", op: "delete_beat", beat: "b03", createdAt: 1, base: { say: "第三句" } };
+  const rows = Model.buildRows({ edl, plan, edits: { edits: [e1, del] } });
+  const used = Model.usedSourceKeys(rows);
+  assert.equal(used.has(Model.pathKey("D:\\素材\\x.mp4")), true, "换上的 x");
+  assert.equal(used.has(Model.pathKey("D:\\素材\\a.mp4")), false, "被换下的 a");
+  assert.equal(used.has(Model.pathKey("D:\\素材\\b.jpg")), true);
+  assert.equal(used.has(Model.pathKey("D:\\素材\\c.mp4")), false, "第三句要删掉");
+  assert.equal(used.size, 2, "动画镜头不占素材");
+
+  // 撤掉已出片的换镜头后，用的是 resolveOriginal 找回的原素材，不是时间表里的
+  const rendered = plain(plan);
+  rendered.shots[0] = { ...rendered.shots[0], path: "D:\\素材\\x.mp4" };
+  rendered.renderedAt = 2000;
+  rendered.editsApplied = ["e1"];
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [{ ...e1, value: { src: "D:\\素材\\x.mp4" } }] });
+  const revRows = Model.buildRows({ edl, plan: rendered, edits: null, reverted });
+  const revUsed = Model.usedSourceKeys(revRows, (shot) => Model.resolveOriginalShot(shot));
+  assert.equal(revUsed.has(Model.pathKey("D:\\素材\\a.mp4")), true);
+  assert.equal(revUsed.has(Model.pathKey("D:\\素材\\x.mp4")), false);
+});
+
+test("画面上能点的地方：字幕、当时在屏上的字卡、当前镜头；横竖屏位置不同", () => {
+  const withCues = {
+    ...plain(plan),
+    cues: [{ start: 0.1, end: 2, text: "第一句", beat: 0 }, { start: 5.2, end: 8, text: "二", beat: 1 }],
+    texts: [
+      { style: "title", text: "钩子", pos: "upper", start: 0, end: 1.5, beat: null },
+      { style: "loc", text: "地点", pos: "lower", start: 1, end: 3, beat: 0 },
+      { style: "tag", text: "坏位置", pos: 640, start: 0, end: 3, beat: 0 },
+    ],
+    captions_cfg: { position: "bottom" },
+  };
+  const rows = Model.buildRows({ edl, plan: withCues, edits: null });
+  const spots = plain(Model.frameHotspots({ plan: withCues, rows, time: 1.2 }));
+  assert.deepEqual(spots.map((spot) => spot.kind), ["caption", "text", "text", "shot"], "字卡排在字幕后面，盖得住");
+  assert.deepEqual(spots[0], { kind: "caption", beat: "b01", text: "第一句", top: 0.66, bottom: 0.82 });
+  assert.equal(spots[1].text, "钩子");
+  assert.ok(Math.abs(spots[1].top - 0.175) < 1e-9 && Math.abs(spots[1].bottom - 0.325) < 1e-9, "标题字卡更高");
+  assert.equal(spots[2].text, "地点");
+  assert.deepEqual(spots[3], { kind: "shot", beat: "b01", shot: 0 });
+
+  const later = plain(Model.frameHotspots({ plan: withCues, rows, time: 3.5 }));
+  assert.deepEqual(later.map((spot) => spot.kind), ["shot"], "没字幕的空档只剩换镜头");
+  assert.equal(later[0].shot, 1);
+
+  const wide = plain(Model.frameHotspots({ plan: { ...withCues, captions_cfg: { position: "bottom" } }, rows, time: 1.2, landscape: true }));
+  assert.deepEqual([wide[0].top, wide[0].bottom], [0.75, 0.93]);
+
+  // 要删掉的句子、没有时间表时不给点
+  const deleted = Model.buildRows({ edl, plan: withCues, edits: { edits: [{ id: "d", op: "delete_beat", beat: "b01", base: { say: "第一句" } }] } });
+  assert.equal(Model.frameHotspots({ plan: withCues, rows: deleted, time: 1.2 }).length, 0);
+  assert.equal(Model.frameHotspots({ plan: null, rows, time: 1.2 }).length, 0);
+});
+
+test("一键意见：有字卡的句子给「去掉字卡」，没有的给「加个字卡」", () => {
+  const keys = (row) => Model.quickNotesFor(row).map((item) => item.key).join(",");
+  assert.equal(keys({ id: "b", texts: [] }), "shot,slow,choppy,card");
+  assert.equal(keys({ id: "b", texts: [{ text: "地点" }] }), "shot,slow,choppy,nocard");
+  assert.equal(keys({ id: "b", texts: [], deleted: true }), "");
+  for (const item of Model.QUICK_NOTES) assert.ok(item.text.length > item.label.length, "写进意见的话要比按钮上的字具体");
+});
+
+test("帧条悬停提示：时间加这一句开头，太长截断", () => {
+  const rows = Model.buildRows({ edl, plan, edits: null });
+  assert.equal(Model.stripLabel(rows, 1), "00:01 · 第一句");
+  assert.equal(Model.stripLabel([{ ...rows[0], say: "一二三四五六七八九十甲乙丙丁戊己" }], 1), "00:01 · 一二三四五六七八九十甲乙丙丁…");
+  assert.equal(Model.stripLabel(rows, 99), "01:39", "超出范围只给时间");
+});

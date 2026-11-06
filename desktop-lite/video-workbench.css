@@ -162,6 +162,58 @@
   pointer-events: none;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
 }
+/* 暂停时画面上能点的地方：平时看不见，鼠标移上去才露出虚线框和说明 */
+.vwHotspots { position: absolute; inset: 0; pointer-events: none; }
+.vw[data-playing="true"] .vwHotspots { display: none; }
+.vwHot {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  padding: 0;
+  border: 1.5px dashed transparent;
+  border-radius: 6px;
+  background: none;
+  pointer-events: auto;
+  cursor: text;
+}
+.vwHotText { cursor: pointer; }
+.vwHot:hover, .vwHot:focus-visible { border-color: rgba(255, 255, 255, 0.92); background: rgba(255, 255, 255, 0.08); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); outline: none; }
+/* 说明放在框里的左上角：放框外会压住上面的字卡 */
+.vwHotTip {
+  position: absolute;
+  left: 6px;
+  top: 5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.vwHot:hover .vwHotTip, .vwHot:focus-visible .vwHotTip { opacity: 1; }
+.vwHotChip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.vwFrame:hover .vwHotChip, .vwHotChip:focus-visible { opacity: 1; }
+.vwHotChip:hover { background: rgba(0, 0, 0, 0.78); }
 .vwPreviewTag {
   position: absolute;
   top: 8px;
@@ -213,7 +265,35 @@
 .vwSampleTag[hidden] { display: none; }
 
 /* ── 右侧面板 ── */
-.vwPanel { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.vwPanel { position: relative; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+
+/* 改完一处的「撤销」：浮在面板底部几秒，不占布局 */
+.vwUndo {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 6px 6px 6px 14px;
+  border-radius: 999px;
+  background: rgba(29, 29, 31, 0.92);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  animation: vwUndoIn 0.18s ease-out;
+}
+.vwUndo[hidden] { display: none; }
+.vwUndoText { overflow: hidden; text-overflow: ellipsis; }
+.vwUndoBtn { flex: none; padding: 3px 10px; border: 0; border-radius: 999px; background: none; color: #64b5ff; font: inherit; font-weight: 600; cursor: pointer; }
+.vwUndoBtn:hover { background: rgba(255, 255, 255, 0.12); }
+/* 换镜头面板底部是「告诉 AI」输入框，别盖住它 */
+.vwPanel:has(.vwPicker) .vwUndo { bottom: 52px; }
+@keyframes vwUndoIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .vwTabs { display: flex; gap: 18px; flex-shrink: 0; border-bottom: 1px solid var(--notes-border); }
 .vwTabs[hidden] { display: none; }
 .vwTab {
@@ -277,6 +357,24 @@
 /* 当前句的操作只在暂停时出现，播放时界面保持安静 */
 .vwRowBar { display: none; align-items: center; gap: 4px; }
 .vw[data-playing="false"] .vwRowActive:not(.vwRowDeleted) .vwRowBar, .vwRowActive:focus-within .vwRowBar { display: flex; }
+
+/* 一键告诉 AI：和操作条一起出现，点亮表示已加进意见 */
+.vwQuick { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.vw[data-playing="false"] .vwRowActive:not(.vwRowDeleted) .vwQuick, .vwRowActive:focus-within .vwQuick { display: flex; }
+.vwChip {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 999px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vwChip:hover { color: var(--notes-text-primary); border-color: var(--notes-text-muted); }
+.vwChipOn, .vwChipOn:hover { border-color: var(--notes-accent); background: var(--notes-accent-bg-hover); color: var(--notes-accent); }
 .vwBarBtn {
   height: 28px;
   padding: 0 9px;
@@ -482,6 +580,18 @@
   background: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55) 3px, rgba(0, 0, 0, 0.2) 3px, rgba(0, 0, 0, 0.2) 6px);
   pointer-events: none;
 }
+/* 句子：句间缝比镜头间宽，选中的句子框起来（跟着播放走） */
+.vwStripBeat { position: absolute; top: 0; bottom: 0; box-shadow: inset 3px 0 0 var(--notes-bg-reader); pointer-events: none; }
+.vwStripBeatFirst { box-shadow: none; }
+.vwStripBeatActive::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 3px;
+  border: 2px solid var(--notes-text-primary);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
+.vwStripBeatFirst.vwStripBeatActive::after { left: 0; }
 .vwPlayhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45); pointer-events: none; }
 .vwStripTrack .vwSkimLine { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.85); pointer-events: none; }
 .vwSkimTime {
@@ -495,14 +605,43 @@
   font-size: 10px;
   line-height: 14px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   pointer-events: none;
 }
 .vwStripTrack [hidden] { display: none; }
 
 /* ── 换镜头面板 ── */
 .vwPicker { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 8px; outline: none; }
-.vwPickerHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.vwPickerTitle { display: flex; align-items: baseline; gap: 8px; }
+.vwPickerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--notes-border);
+}
+.vwPickerHead [hidden] { display: none; }
+.vwPickerTitle { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.vwPickerBack {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 7px 0 5px;
+  margin-left: -5px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--notes-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vwPickerBack svg { width: 14px; height: 14px; flex: none; }
+.vwPickerBack:hover { background: var(--notes-bg-subtle); color: var(--notes-text-primary); }
+.vwPickerSep { color: var(--notes-border-strong); font-size: 13px; user-select: none; }
+.vwPickerRestore { flex: none; }
 .vwPickerSay { margin: 0; font-size: 13px; color: var(--notes-text-secondary); line-height: 1.5; }
 .vwPickerControls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
 .vwFolderSelect {
@@ -541,6 +680,7 @@
 .vwSourceThumb .vwSkimLine { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5); pointer-events: none; }
 .vwSourceThumb [hidden] { display: none; }
 .vwSourceUsed { position: absolute; top: 3px; left: 3px; padding: 0 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 10px; line-height: 14px; }
+.vwSourceOriginal { background: rgba(0, 0, 0, 0.75); font-weight: 600; }
 .vwSourceIn { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 3px; background: var(--notes-accent); color: #fff; font-size: 10px; line-height: 14px; text-align: center; }
 .vwSourceName { font-size: 11px; color: var(--notes-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

@@ -16,8 +16,9 @@ const REASON_RULES = [
   // 那个绝不能重试，所以这里不靠 error.name 判断。
   ["timeout", [/\brequest (?:timed out|timeout)\b/i, /\b(?:gateway|read) timeout\b/i, /响应超时/, /请求超时/]],
   ["model", [
-    /model[^\n]*(?:not found|does not exist|unknown|unsupported|unavailable|not available|deprecated|retired)/i,
-    /(?:not found|does not exist|unknown|unsupported|unavailable|not available)[^\n]*model/i,
+    /model[^\n]*(?:not[ _-]found|does not exist|unknown|unsupported|not supported|unavailable|not[ _-]available|deprecated|retired)/i,
+    /(?:not[ _-]found|does not exist|unknown|unsupported|not supported|unavailable|not[ _-]available)[^\n]*model/i,
+    /\bmodel[ _-]not[ _-]found\b/i,
     /(?:do not|don['’]t|does not|doesn['’]t) have access to[^\n]*model/i,
     /(?:access|permission) (?:denied|required)[^\n]*model/i,
     /model[^\n]*(?:access|permission) (?:denied|required)/i,

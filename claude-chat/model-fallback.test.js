@@ -96,6 +96,8 @@ test("failures are classified into channel / model / task", () => {
   // 生产上抓到的原文，2026-09-07：这两条以前一个被判成 task 直接终止链条
   assert.equal(kindOf("You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:51 PM."), "channel");
   assert.equal(kindOf("Claude Code returned an error result: Failed to authenticate: OAuth session expired and could not be refreshed"), "channel");
+  // 生产上抓到的原文，2026-11-08：Codex 不支持当前模型报 model_not_found / is not supported
+  assert.equal(kindOf('{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-6.1-sol\' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}'), "model");
   assert.equal(classifyCandidateError(Object.assign(new Error("x"), { code: "MODEL_FALLBACK_TIMEOUT" })).kind, "timeout");
   // 用户主动中断也是 AbortError，绝不能被当成可降级错误
   assert.equal(classifyCandidateError(Object.assign(new Error("aborted"), { name: "AbortError" })).kind, "task");

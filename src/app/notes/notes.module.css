@@ -880,11 +880,23 @@
   gap: 7px;
 }
 
+.shareSettings {
+  display: grid;
+  gap: 14px;
+}
+
 .shareLinkField span {
   color: #687260;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+.shareLinkField small {
+  margin-inline-start: 6px;
+  font-size: inherit;
+  font-weight: 400;
+  letter-spacing: normal;
 }
 
 .shareLinkField input {

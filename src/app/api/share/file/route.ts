@@ -9,7 +9,10 @@ export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get("token");
 
   if (!token) {
-    return NextResponse.json({ error: "Missing share token." }, { status: 400 });
+    return NextResponse.json({ error: "Missing share token." }, {
+      status: 400,
+      headers: { "cache-control": "no-store" },
+    });
   }
 
   try {
@@ -30,6 +33,9 @@ export async function GET(request: NextRequest) {
     );
   } catch (error) {
     const mappedError = error instanceof VaultAccessError ? mapVaultError(error) : mapSharedNoteError(error);
-    return NextResponse.json({ error: mappedError.message }, { status: mappedError.status });
+    return NextResponse.json({ error: mappedError.message }, {
+      status: mappedError.status,
+      headers: { "cache-control": "no-store" },
+    });
   }
 }

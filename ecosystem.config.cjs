@@ -2,7 +2,7 @@
  * PM2 ecosystem — inkfellow
  *
  * Single-user template. For multi-user setups, duplicate the two entries
- * below and adjust PORT, VAULT_PATH, and credentials for each user.
+ * below and assign each user a unique PORT, VAULT_PATH, SHARED_NOTES_PATH, and credentials.
  * See README → "Multi-User Setup" for step-by-step instructions.
  *
  * 启动：  pm2 start ecosystem.config.cjs
@@ -22,6 +22,7 @@ module.exports = {
       env: {
         PORT: "3000",
         NODE_ENV: "production",
+        SHARED_NOTES_PATH: `${BASE}/.share-data/inkfellow.json`,
       },
       autorestart: true,
       watch: false,

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import NotesHtml from "@/app/notes/NotesHtml";
 import { VaultAccessError } from "@/lib/notesVault";
+import { describeSharedNote, isHtmlShare, prepareSharedHtml } from "@/lib/sharedNoteAssets";
 import { readSharedNote, SharedNoteAccessError } from "@/lib/sharedNotes";
 import SharedNoteContent from "./SharedNoteContent";
 import PcTocSidebar from "./PcTocSidebar";
@@ -26,11 +27,22 @@ export async function generateMetadata({ params }: SharePageProps): Promise<Meta
 
   try {
     const { note, share } = await readSharedNote(token);
-    const title = share.title?.trim() || stripNoteExtension(note.name);
+    const document = describeSharedNote(note, token);
+    const title = share.title?.trim() || document.title || stripNoteExtension(note.name);
+    const description = document.description || title;
     const noindex = share.noindex !== false;
+    const site = process.env.SITE_URL?.trim();
 
     return {
       title: `${title} | ${process.env.NEXT_PUBLIC_APP_NAME?.trim() || "inkfellow"}`,
+      description,
+      metadataBase: site ? new URL(site) : undefined,
+      openGraph: {
+        type: "article",
+        title,
+        description,
+        ...(document.cover ? { images: [document.cover] } : {}),
+      },
       robots: noindex
         ? {
             index: false,
@@ -59,7 +71,7 @@ export default async function SharePage({ params }: SharePageProps) {
 
   try {
     const { note } = await readSharedNote(token);
-    const isHtml = /\.html?$/i.test(note.path);
+    const isHtml = isHtmlShare(note.path);
     const headings = isHtml ? [] : extractHeadings(note.content);
 
     return (
@@ -70,7 +82,10 @@ export default async function SharePage({ params }: SharePageProps) {
 
             <article className={`${styles.document} ${isHtml ? styles.htmlDocument : ""}`}>
               {isHtml ? (
-                <NotesHtml html={note.content} />
+                <NotesHtml
+                  html={prepareSharedHtml(note, token)}
+                  publicSharePath={`/share/${token}`}
+                />
               ) : (
                 <SharedNoteContent
                   markdown={note.content}

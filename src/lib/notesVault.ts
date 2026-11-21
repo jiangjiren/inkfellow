@@ -1,4 +1,4 @@
-import { promises as fs, readFileSync, existsSync } from "fs";
+import { constants, promises as fs, readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import path from "path";
 import type {
@@ -9,16 +9,11 @@ import type {
   NotesSearchHit,
   NotesTreeNode,
 } from "@/lib/notesTypes";
+import { EXCLUDED_VAULT_DIRECTORIES, shareNoteId } from "./shareRegistry.mjs";
 
 const DEFAULT_VAULT_PATH = path.join(process.cwd(), "vault");
 
-const EXCLUDED_DIRECTORY_NAMES = new Set([
-  ".git",
-  ".obsidian",
-  ".claude",
-  ".claudian",
-  "node_modules",
-]);
+const EXCLUDED_DIRECTORY_NAMES = EXCLUDED_VAULT_DIRECTORIES;
 
 const IMAGE_EXTENSIONS = new Set([
   ".avif",
@@ -162,7 +157,7 @@ const sanitizeRelativePath = (input: string, { allowEmpty = false } = {}) => {
   return normalized;
 };
 
-const getVaultRoot = async () => {
+export const getVaultRoot = async () => {
   const configuredPath = path.resolve(getConfiguredVaultPath());
   try {
     return await fs.realpath(configuredPath);
@@ -316,8 +311,16 @@ export const readVaultDocument = async (relativePath: string) => {
 
 // HTML 预览的相对资源（CSS、脚本、字体、图片、音视频等）。路径仍统一经过
 // resolveExistingVaultPath，沿用 vault 边界、排除目录和符号链接校验。
-export const readVaultHtmlAsset = async (relativePath: string) => {
+export const isShareableHtmlAsset = (relativePath: string) => {
+  const extension = path.extname(relativePath).toLowerCase();
+  return Object.hasOwn(MIME_TYPES, extension) && ![".html", ".htm", ".md"].includes(extension);
+};
+
+export const readVaultHtmlAsset = async (relativePath: string, publicShare = false) => {
   const resolved = await resolveExistingVaultPath(relativePath);
+  if (publicShare && !isShareableHtmlAsset(resolved.relativePath)) {
+    throw new VaultAccessError("Unsupported share asset.", 415);
+  }
   const stat = await fs.stat(resolved.absolutePath);
   if (!stat.isFile()) {
     throw new VaultAccessError("HTML preview asset not found.", 404);
@@ -329,6 +332,7 @@ export const readVaultHtmlAsset = async (relativePath: string) => {
     contentType: MIME_TYPES[ext] ?? "application/octet-stream",
     size: stat.size,
     updatedAt: stat.mtime.toUTCString(),
+    fileName: path.basename(resolved.relativePath),
   };
 };
 
@@ -475,25 +479,65 @@ export const statMarkdownNote = async (relativePath: string) => {
   };
 };
 
-export const readMarkdownNote = async (relativePath: string) => {
+export const readShareableNote = async (relativePath: string, expectedId?: string) => {
   const resolved = await resolveExistingVaultPath(relativePath);
   if (!isMarkdownPath(resolved.relativePath) && !isHtmlPath(resolved.relativePath)) {
     throw new VaultAccessError("Only Markdown and HTML files can be read.", 415);
   }
 
-  const stat = await fs.stat(resolved.absolutePath);
-  if (!stat.isFile()) {
-    throw new VaultAccessError("File not found.", 404);
-  }
+  const handle = await fs.open(resolved.absolutePath, constants.O_RDONLY | constants.O_NONBLOCK).catch((error) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+      throw new VaultAccessError("File not found.", 404);
+    }
+    throw error;
+  });
+  try {
+    const stat = await handle.stat({ bigint: true });
+    const noteId = shareNoteId(stat);
+    if (!stat.isFile() || (expectedId !== undefined && expectedId !== noteId)) {
+      throw new VaultAccessError("File not found.", 404);
+    }
 
-  const content = await fs.readFile(resolved.absolutePath, "utf8");
-  return {
-    name: path.basename(resolved.relativePath),
-    path: resolved.relativePath,
-    content,
-    size: stat.size,
-    updatedAt: stat.mtime.toISOString(),
+    return {
+      noteId,
+      note: {
+        name: path.basename(resolved.relativePath),
+        path: resolved.relativePath,
+        content: await handle.readFile("utf8"),
+        size: Number(stat.size),
+        updatedAt: new Date(Number(stat.mtimeMs)).toISOString(),
+      },
+    };
+  } finally {
+    await handle.close();
+  }
+};
+
+export const readMarkdownNote = async (relativePath: string) =>
+  (await readShareableNote(relativePath)).note;
+
+// A rename or move within the vault preserves file identity. A different file at
+// the original path must never inherit a previously issued share.
+export const findShareableNoteById = async (vaultRoot: string, noteId: string) => {
+  const search = async (folder: string): Promise<string | null> => {
+    for (const entry of await fs.readdir(path.join(vaultRoot, folder), { withFileTypes: true })) {
+      if (EXCLUDED_DIRECTORY_NAMES.has(entry.name)) continue;
+      const candidate = path.posix.join(folder, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          const match = await search(candidate);
+          if (match) return match;
+        } else if (entry.isFile() && (isMarkdownPath(candidate) || isHtmlPath(candidate))) {
+          const stat = await fs.lstat(path.join(vaultRoot, candidate), { bigint: true });
+          if (stat.isFile() && shareNoteId(stat) === noteId) return candidate;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return null;
   };
+  return search("");
 };
 
 const stripFragmentAndQuery = (value: string) => value.split("#", 1)[0].split("?", 1)[0];
@@ -606,43 +650,6 @@ export const readVaultImage = async (assetPath: string, fromPath?: string | null
   const stat = await fs.stat(resolved.absolutePath);
   const extension = path.extname(resolved.relativePath).toLowerCase();
 
-  return {
-    body: await fs.readFile(resolved.absolutePath),
-    contentType: MIME_TYPES[extension] ?? "application/octet-stream",
-    size: stat.size,
-    updatedAt: stat.mtime.toUTCString(),
-  };
-};
-
-export const readVaultImageFromNoteDirectory = async (assetPath: string, notePath: string) => {
-  const rawAssetPath = decodeLoose(stripFragmentAndQuery(assetPath).split("|", 1)[0])
-    .replace(/\\/g, "/")
-    .trim();
-
-  if (!rawAssetPath || rawAssetPath.includes("\0")) {
-    throw new VaultAccessError("Missing asset path.");
-  }
-
-  const cleanNotePath = sanitizeRelativePath(notePath);
-  const noteDirectory = path.posix.dirname(cleanNotePath);
-  const assetPathWithoutLeadingSlash = rawAssetPath.replace(/^\/+/, "");
-  const candidate = sanitizeRelativePath(
-    path.posix.normalize(
-      path.posix.join(noteDirectory === "." ? "" : noteDirectory, assetPathWithoutLeadingSlash),
-    ),
-  );
-  const resolved = await resolveExistingVaultPath(candidate);
-
-  if (!isImagePath(resolved.relativePath)) {
-    throw new VaultAccessError("Only image assets can be read.", 415);
-  }
-
-  const stat = await fs.stat(resolved.absolutePath);
-  if (!stat.isFile()) {
-    throw new VaultAccessError("Image not found.", 404);
-  }
-
-  const extension = path.extname(resolved.relativePath).toLowerCase();
   return {
     body: await fs.readFile(resolved.absolutePath),
     contentType: MIME_TYPES[extension] ?? "application/octet-stream",

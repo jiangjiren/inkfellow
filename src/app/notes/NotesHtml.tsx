@@ -30,6 +30,8 @@ type NotesHtmlProps = {
   html: string;
   /** Vault-relative path, used to resolve CSS/scripts/images referenced by the HTML file. */
   notePath?: string;
+  /** Public note path. Shared HTML runs in an origin isolated from the reader. */
+  publicSharePath?: string;
   /** Hash to restore after a new HTML document finishes loading. */
   initialHash?: string | null;
   /** Open an Obsidian-style link inside inkfellow. */
@@ -58,8 +60,7 @@ const escapeAttribute = (value: string) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-const injectPreviewBase = (html: string, notePath?: string): string => {
-  const baseHref = htmlAssetBaseHref(notePath);
+const injectPreviewBase = (html: string, baseHref: string): string => {
   if (!baseHref) return html;
 
   const existingBase = /(<base\b[^>]*\bhref\s*=\s*)(["'])([^"']*)\2/i;
@@ -98,7 +99,7 @@ const injectPreviewBase = (html: string, notePath?: string): string => {
 
 // The preview bridge reports intrinsic height/headings, routes links back to the
 // application, and accepts fragment-scroll commands from the outer reader.
-const injectPreviewBridge = (html: string): string => {
+const injectPreviewBridge = (html: string, publicSharePath?: string): string => {
   const script = `<script>(function(){
     var resizeObserver;
     var mutationObserver;
@@ -108,6 +109,8 @@ const injectPreviewBridge = (html: string): string => {
     var suppressedHeight = null;
     var forceReport = false;
     var lastHeadingSignature = "";
+    var sharePath = ${JSON.stringify(publicSharePath || "").replace(/</g, "\\u003c")};
+    var shareOrigin = "";
 
     function saveStyle(element, property) {
       return [element.style.getPropertyValue(property), element.style.getPropertyPriority(property)];
@@ -349,6 +352,14 @@ const injectPreviewBridge = (html: string): string => {
       if (event.data.type === "iframeMeasure") {
         forceReport = true;
         scheduleHeightReport();
+      } else if (event.data.type === "iframeViewport") {
+        var style = document.documentElement.style;
+        style.setProperty("--inkfellow-viewport-top", event.data.top + "px");
+        style.setProperty("--inkfellow-viewport-height", event.data.height + "px");
+        if (sharePath && event.origin !== "null") {
+          shareOrigin = event.origin;
+          document.documentElement.dataset.inkfellowShareUrl = new URL(sharePath, shareOrigin).href;
+        }
       } else if (
         event.data.type === "iframeScrollToFragment" &&
         typeof event.data.fragment === "string"
@@ -375,6 +386,27 @@ const injectPreviewBridge = (html: string): string => {
         : event.target && event.target.parentElement;
       var link = target && target.closest ? target.closest("a") : null;
       if (!link) return;
+      if (link.hasAttribute("download")) {
+        // The shared iframe has an opaque origin. Attachment headers preserve
+        // file names and downloads for its otherwise cross-origin image links.
+        if (sharePath && shareOrigin) {
+          var url;
+          try { url = new URL(link.href, document.baseURI); } catch (error) { return; }
+          var token = sharePath.split("/").pop();
+          if (url.origin === shareOrigin && url.pathname.indexOf("/api/share/asset/" + token + "/") === 0 &&
+            !url.searchParams.has("download")) {
+            event.preventDefault();
+            url.searchParams.set("download", link.download);
+            var download = document.createElement("a");
+            download.href = url.href;
+            download.download = link.download;
+            document.body.appendChild(download);
+            download.click();
+            download.remove();
+          }
+        }
+        return;
+      }
       var href = (link.getAttribute("href") || "").trim();
       if (!href || href.indexOf("inkwell-wiki:") === 0) return;
 
@@ -436,11 +468,32 @@ const injectPreviewBridge = (html: string): string => {
   return html + script;
 };
 
-const buildPreviewHtml = (html: string, notePath?: string) =>
-  injectPreviewBridge(injectPreviewBase(html, notePath));
+const buildPreviewHtml = (html: string, baseHref: string, publicSharePath?: string) =>
+  injectPreviewBridge(injectPreviewBase(html, baseHref), publicSharePath);
 
 const requestHeightMeasurement = (iframe: HTMLIFrameElement | null) => {
   iframe?.contentWindow?.postMessage({ type: "iframeMeasure" }, "*");
+};
+
+const reportIframeViewport = (iframe: HTMLIFrameElement) => {
+  const bounds = iframe.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const reader = iframe.closest<HTMLElement>("[data-notes-reader]");
+  const readerBounds = reader && window.getComputedStyle(reader).overflowY !== "visible"
+    ? reader.getBoundingClientRect()
+    : null;
+  const top = Math.max(viewportTop, bounds.top, readerBounds?.top ?? -Infinity);
+  const bottom = Math.min(
+    viewportTop + (viewport?.height ?? window.innerHeight),
+    bounds.bottom,
+    readerBounds?.bottom ?? Infinity,
+  );
+  iframe.contentWindow?.postMessage({
+    type: "iframeViewport",
+    top: Math.max(0, top - bounds.top),
+    height: Math.max(0, bottom - top),
+  }, "*");
 };
 
 const normalizeFragment = (value: string) => {
@@ -470,6 +523,7 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
   {
     html,
     notePath = "",
+    publicSharePath,
     initialHash = null,
     onNavigate,
     onLinkNavigate,
@@ -515,7 +569,10 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
     onNavigate,
   ]);
 
-  const previewHtml = useMemo(() => buildPreviewHtml(html, notePath), [html, notePath]);
+  const previewHtml = useMemo(
+    () => buildPreviewHtml(html, htmlAssetBaseHref(notePath), publicSharePath),
+    [html, notePath, publicSharePath],
+  );
 
   const requestFragmentScroll = (
     fragment: string,
@@ -676,7 +733,9 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
       } else if (event.data?.type === "note-link" && typeof event.data.href === "string") {
         onLinkNavigateRef.current?.(event.data.href);
       } else if (event.data?.type === "open-external" && typeof event.data.url === "string") {
-        window.open(event.data.url, "_blank", "noopener,noreferrer");
+        if (/^https?:\/\//i.test(event.data.url)) {
+          window.open(event.data.url, "_blank", "noopener,noreferrer");
+        }
       }
     };
 
@@ -687,6 +746,35 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
 
   useEffect(() => () => {
     onHeadingsChangeRef.current?.(notePathRef.current, []);
+  }, []);
+
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    let frame = 0;
+    const update = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        reportIframeViewport(iframe);
+      });
+    };
+    const viewport = window.visualViewport;
+    const observer = new ResizeObserver(update);
+    observer.observe(iframe);
+    window.addEventListener("scroll", update, { capture: true, passive: true });
+    window.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    viewport?.addEventListener("resize", update);
+    update();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      viewport?.removeEventListener("resize", update);
+      window.cancelAnimationFrame(frame);
+    };
   }, []);
 
   useEffect(() => {
@@ -734,10 +822,11 @@ const NotesHtml = forwardRef<NotesHtmlHandle, NotesHtmlProps>(function NotesHtml
       ref={iframeRef}
       className={styles.htmlFrame}
       srcDoc={previewHtml}
-      sandbox="allow-scripts allow-same-origin"
-      allow="clipboard-write"
+      sandbox={publicSharePath ? "allow-scripts allow-downloads" : "allow-scripts allow-same-origin allow-downloads"}
+      allow={publicSharePath ? "clipboard-write *; web-share *" : "clipboard-write"}
       onLoad={(event) => {
         requestHeightMeasurement(event.currentTarget);
+        reportIframeViewport(event.currentTarget);
         const hash = initialHashRef.current;
         if (hash) {
           window.setTimeout(() => {

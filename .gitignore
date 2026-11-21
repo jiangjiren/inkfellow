@@ -36,6 +36,8 @@ yarn-error.log*
 .env*
 !.env.example
 shared-notes.json
+shared-notes.json.*
+/.share-data/
 .codex
 .codex/
 public/downloads/
@@ -46,6 +48,8 @@ public/workbox-*.js
 public/workbox-*.js.map
 public/swe-worker-*.js
 public/swe-worker-*.js.map
+public/worker-*.js
+public/worker-*.js.map
 
 # Tauri desktop app (local build only)
 /src-tauri/

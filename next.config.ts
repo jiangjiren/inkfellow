@@ -24,7 +24,18 @@ const nextConfig: NextConfig = {
       'vault/**/*',
       'src-tauri/**/*',
       '.git/**/*',
+      '.share-data/**/*',
+      'shared-notes.json*',
     ],
+  },
+  async headers() {
+    return [{
+      source: '/share/:token*',
+      headers: [
+        { key: 'Cache-Control', value: 'private, no-store, max-age=0' },
+        { key: 'Referrer-Policy', value: 'no-referrer' },
+      ],
+    }];
   },
   async rewrites() {
     const port = process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT || '8082';
@@ -54,11 +65,19 @@ const nextConfig: NextConfig = {
 
 export default withPWA({
   dest: 'public',
-  cacheOnFrontEndNav: true,
-  aggressiveFrontEndNavCaching: true,
+  extendDefaultRuntimeCaching: true,
   reloadOnOnline: true,
   disable: process.env.NODE_ENV === 'development' || process.env.DISABLE_PWA === '1',
   workboxOptions: {
     disableDevLogs: true,
+    runtimeCaching: [{
+      urlPattern: ({ url, sameOrigin }) => sameOrigin && (
+        url.pathname.startsWith('/share/') ||
+        url.pathname.startsWith('/api/share/') ||
+        url.pathname === '/api/notes/share'
+      ),
+      handler: 'NetworkOnly',
+      options: { fetchOptions: { cache: 'no-store' } },
+    }],
   },
 })(nextConfig);

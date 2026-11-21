@@ -7,6 +7,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { slugifyHeading } from "@/lib/noteToc";
+import { splitObsidianTarget, WIKI_IMAGE_EXT_RE } from "@/lib/obsidianTargets";
 import { partLineOffset, rehypeSourceLines, sourceLineProps } from "./readingAnchor";
 import styles from "./notes.module.css";
 
@@ -202,21 +203,6 @@ const textFromChildren = (children: ReactNode): string => {
 
 const escapeMarkdownLabel = (value: string) => value.replace(/([\\[\]])/g, "\\$1");
 
-const splitObsidianTarget = (rawTarget: string) => {
-  const [targetWithHeading, alias] = rawTarget.split("|");
-  const hashIndex = targetWithHeading.indexOf("#");
-  const target = hashIndex >= 0 ? targetWithHeading.slice(0, hashIndex).trim() : targetWithHeading.trim();
-  const fragment = hashIndex >= 0 ? targetWithHeading.slice(hashIndex + 1).trim() : "";
-
-  return {
-    target,
-    fragment,
-    heading: fragment.startsWith("^") ? "" : fragment,
-    blockId: fragment.startsWith("^") ? fragment.slice(1) : "",
-    alias: alias?.trim() || "",
-  };
-};
-
 const resolveNotePath = (
   target: string,
   currentPath: string,
@@ -346,7 +332,6 @@ const substituteLatexMath = (text: string) =>
     return replaced.includes("\\") ? match : replaced;
   });
 
-const WIKI_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
 const WIKI_ATTACHMENT_EXT_RE = /\.(mp4|webm|mov|m4v|mp3|wav|ogg|flac|pdf)$/i;
 const EMBED_MARKER_RE = /@@INKFELLOW_NOTE_EMBED_(\d+)@@/g;
 

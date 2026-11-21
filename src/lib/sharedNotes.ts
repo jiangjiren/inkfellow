@@ -1,218 +1,128 @@
-import { promises as fs } from "fs";
-import { randomBytes } from "crypto";
-import path from "path";
-import { readMarkdownNote, readVaultImageFromNoteDirectory } from "@/lib/notesVault";
+import {
+  findShareableNoteById,
+  getVaultRoot,
+  readShareableNote,
+  VaultAccessError,
+} from "@/lib/notesVault";
+import {
+  findShareByTarget,
+  getShareRegistryPath,
+  isActiveShare,
+  isSameShareTarget,
+  isShareToken,
+  readShareRecord,
+  readShareRegistry,
+  saveShareRecord,
+  SharedNoteAccessError,
+  shareVaultId,
+  updateShareRegistry,
+} from "@/lib/shareRegistry.mjs";
 
-export type SharedNoteConfig = {
-  path: string;
-  enabled?: boolean;
-  expiresAt?: string | null;
-  noindex?: boolean;
-  title?: string;
-};
-
-export class SharedNoteAccessError extends Error {
-  status: number;
-
-  constructor(message: string, status = 404) {
-    super(message);
-    this.name = "SharedNoteAccessError";
-    this.status = status;
-  }
-}
-
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]{6,128}$/;
-
-const getSharedNotesPath = () =>
-  process.env.SHARED_NOTES_PATH?.trim() || path.join(process.cwd(), "shared-notes.json");
+export { SharedNoteAccessError };
 
 const assertValidToken = (token: string) => {
-  if (!TOKEN_PATTERN.test(token)) {
-    throw new SharedNoteAccessError("Shared note not found.", 404);
-  }
+  if (!isShareToken(token)) throw new SharedNoteAccessError("Shared note not found.");
 };
 
-const readSharedNotesConfig = async () => {
-  try {
-    const raw = await fs.readFile(getSharedNotesPath(), "utf8");
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return {};
-    }
-
-    throw error;
-  }
-};
-
-const writeSharedNotesConfig = async (config: Record<string, unknown>) => {
-  const configPath = getSharedNotesPath();
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-};
-
-const normalizeSharedNoteConfig = (value: unknown): SharedNoteConfig | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (typeof record.path !== "string" || !record.path.trim()) {
-    return null;
-  }
-
-  return {
-    path: record.path,
-    enabled: typeof record.enabled === "boolean" ? record.enabled : undefined,
-    expiresAt:
-      typeof record.expiresAt === "string" || record.expiresAt === null
-        ? record.expiresAt
-        : undefined,
-    noindex: typeof record.noindex === "boolean" ? record.noindex : undefined,
-    title: typeof record.title === "string" ? record.title : undefined,
-  };
-};
-
-const isSharedNoteActive = (sharedNote: SharedNoteConfig) => {
-  if (sharedNote.enabled === false) {
-    return false;
-  }
-
-  if (!sharedNote.expiresAt) {
-    return true;
-  }
-
-  const expiresAt = new Date(sharedNote.expiresAt);
-  return !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() > Date.now();
-};
-
-export const getSharedNoteConfig = async (token: string) => {
+const getSharedNoteConfig = async (token: string) => {
   assertValidToken(token);
-  const config = await readSharedNotesConfig();
-  const sharedNote = normalizeSharedNoteConfig(config[token]);
+  const vaultRoot = await getVaultRoot();
+  const share = readShareRecord((await readShareRegistry())[token]);
 
-  if (!sharedNote) {
-    throw new SharedNoteAccessError("Shared note not found.", 404);
+  if (!share || share.vaultId !== shareVaultId(vaultRoot)) {
+    throw new SharedNoteAccessError("Shared note not found.");
   }
-
-  if (sharedNote.enabled === false) {
-    throw new SharedNoteAccessError("Shared note is disabled.", 410);
+  if (!isActiveShare(share)) {
+    throw new SharedNoteAccessError("Shared note is disabled or has expired.", 410);
   }
-
-  if (sharedNote.expiresAt) {
-    const expiresAt = new Date(sharedNote.expiresAt);
-    if (Number.isNaN(expiresAt.getTime())) {
-      throw new SharedNoteAccessError("Shared note has an invalid expiration.", 500);
-    }
-
-    if (expiresAt.getTime() <= Date.now()) {
-      throw new SharedNoteAccessError("Shared note has expired.", 410);
-    }
-  }
-
-  return sharedNote;
+  return { share, vaultRoot };
 };
 
 export const readSharedNote = async (token: string) => {
-  const sharedNote = await getSharedNoteConfig(token);
-  const note = await readMarkdownNote(sharedNote.path);
+  const { share, vaultRoot } = await getSharedNoteConfig(token);
+  try {
+    const { note } = await readShareableNote(encodeURIComponent(share.path), share.noteId);
+    return { note, share };
+  } catch (error) {
+    if (!(error instanceof VaultAccessError && error.status === 404)) throw error;
+  }
 
-  return {
-    note,
-    share: sharedNote,
-  };
+  const relocatedPath = await findShareableNoteById(vaultRoot, share.noteId);
+  if (!relocatedPath) throw new SharedNoteAccessError("Shared note not found.");
+
+  const { note } = await readShareableNote(encodeURIComponent(relocatedPath), share.noteId);
+  // The lookup above remains valid even when the service temporarily cannot
+  // save the new path. The stored file identity is still authoritative.
+  await updateShareRegistry(getShareRegistryPath(), (registry) => {
+    const latest = readShareRecord(registry[token]);
+    if (!latest || !isSameShareTarget(share, latest) || latest.path === note.path) {
+      return { changed: false, value: undefined };
+    }
+    registry[token] = { ...latest, path: note.path };
+    return { changed: true, value: undefined };
+  }).catch((error: unknown) => console.error("Could not update relocated share path.", error));
+
+  return { note, share };
 };
 
-export const readSharedNoteAsset = async (token: string, assetPath: string) => {
-  const sharedNote = await getSharedNoteConfig(token);
-  return readVaultImageFromNoteDirectory(assetPath, sharedNote.path);
+const getShareTarget = async (notePath: string) => {
+  const vaultRoot = await getVaultRoot();
+  const { noteId, note } = await readShareableNote(notePath);
+  return { path: note.path, vaultId: shareVaultId(vaultRoot), noteId };
 };
 
 export const findActiveSharedNoteByPath = async (notePath: string) => {
-  const note = await readMarkdownNote(notePath);
-  const config = await readSharedNotesConfig();
-
-  for (const [token, value] of Object.entries(config)) {
-    const sharedNote = normalizeSharedNoteConfig(value);
-    if (!sharedNote || sharedNote.path !== note.path || !isSharedNoteActive(sharedNote)) {
-      continue;
-    }
-
-    return {
-      token,
-      note,
-      share: sharedNote,
-    };
-  }
-
-  return {
-    token: null,
-    note,
-    share: null,
-  };
+  const target = await getShareTarget(notePath);
+  return findShareByTarget(await readShareRegistry(), target);
 };
 
 export const createSharedNote = async ({
   notePath,
   title,
-  expiresAt = null,
+  expiresAt,
 }: {
   notePath: string;
   title?: string | null;
   expiresAt?: string | null;
 }) => {
-  const note = await readMarkdownNote(notePath);
-  const config = await readSharedNotesConfig();
-  let token = randomBytes(12).toString("base64url");
-
-  while (config[token]) {
-    token = randomBytes(12).toString("base64url");
-  }
-
-  config[token] = {
-    path: note.path,
-    enabled: true,
-    expiresAt,
-    noindex: true,
-    ...(title?.trim() ? { title: title.trim() } : {}),
-  } satisfies SharedNoteConfig;
-
-  await writeSharedNotesConfig(config);
-
-  return {
-    token,
-    note,
-  };
+  const target = await getShareTarget(notePath);
+  return updateShareRegistry(getShareRegistryPath(), (registry) => {
+    const value = saveShareRecord(registry, target, { title, expiresAt });
+    return { changed: true, value };
+  });
 };
 
-export const revokeSharedNote = async (token: string) => {
+export const revokeSharedNote = async (token: string, notePath?: string) => {
   assertValidToken(token);
-  const config = await readSharedNotesConfig();
-  const sharedNote = normalizeSharedNoteConfig(config[token]);
+  const vaultId = shareVaultId(await getVaultRoot());
+  const target = notePath === undefined ? null : await getShareTarget(notePath);
 
-  if (!sharedNote) {
-    throw new SharedNoteAccessError("Shared note not found.", 404);
-  }
+  await updateShareRegistry(getShareRegistryPath(), (registry) => {
+    const share = readShareRecord(registry[token]);
+    if (!share || share.vaultId !== vaultId || (target && !isSameShareTarget(share, target))) {
+      throw new SharedNoteAccessError("Shared note not found.");
+    }
 
-  config[token] = {
-    ...sharedNote,
-    enabled: false,
-  } satisfies SharedNoteConfig;
-
-  await writeSharedNotesConfig(config);
+    let changed = false;
+    for (const [entryToken, value] of Object.entries(registry)) {
+      const entry = readShareRecord(value);
+      if (entry?.enabled && isSameShareTarget(share, entry)) {
+        registry[entryToken] = { ...entry, enabled: false };
+        changed = true;
+      }
+    }
+    return { changed, value: undefined };
+  });
 };
 
 export const mapSharedNoteError = (error: unknown) => {
   if (error instanceof SharedNoteAccessError) {
-    return {
-      message: error.message,
-      status: error.status,
-    };
+    return { message: error.message, status: error.status };
+  }
+  if ((error as NodeJS.ErrnoException | null)?.code === "ELOCKED") {
+    return { message: "分享服务正在保存其他操作，请稍后重试。", status: 503 };
   }
 
   console.error(error);
-  return {
-    message: "Unexpected shared note error.",
-    status: 500,
-  };
+  return { message: "Unexpected shared note error.", status: 500 };
 };

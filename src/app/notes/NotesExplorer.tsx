@@ -15,6 +15,7 @@ import { extractHeadings, type TocEntry } from "@/lib/noteToc";
 import dynamic from "next/dynamic";
 import NotesHtml, { type NotesHtmlHandle } from "./NotesHtml";
 import NotesMarkdown from "./NotesMarkdown";
+import ShareDialog from "./ShareDialog";
 import { NoteTabs, useNoteTabs } from "./NoteTabs";
 import NotesGit from "./NotesGit";
 import NotesDashboard from "./NotesDashboard";
@@ -93,12 +94,6 @@ const renderSheetAtTop = (el: HTMLElement, top: number, d: SheetDrag) => {
   }
 };
 
-type ShareInfo = {
-  token: string | null;
-  url: string | null;
-};
-
-type ShareState = "idle" | "loading" | "ready" | "creating" | "copying" | "revoking" | "error";
 type ScrollSnapshot =
   | { target: "reader"; top: number; left: number }
   | { target: "window"; top: number; left: number };
@@ -729,9 +724,6 @@ export default function NotesExplorer() {
   // 按下拖杆时，光标距离那条分界线的偏移；两个拖杆不会同时被按住，共用一个即可
   const resizeGrabOffsetRef = useRef(0);
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareState, setShareState] = useState<ShareState>("idle");
-  const [shareToken, setShareToken] = useState<string | null>(null);
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
 
   useEffect(() => {
@@ -753,7 +745,6 @@ export default function NotesExplorer() {
     document.addEventListener("selectionchange", handleSelectionChange);
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
   }, []);
-  const [shareMessage, setShareMessage] = useState<string | null>(null);
   const [globalCreateMenuOpen, setGlobalCreateMenuOpen] = useState(false);
   const globalCreateMenuRef = useRef<HTMLDivElement>(null);
   const globalCreateButtonRef = useRef<HTMLButtonElement>(null);
@@ -949,10 +940,6 @@ export default function NotesExplorer() {
 
   useEffect(() => {
     setShareModalOpen(false);
-    setShareState("idle");
-    setShareToken(null);
-    setShareUrl(null);
-    setShareMessage(null);
   }, [note?.path]);
 
   const files = useMemo(() => (tree ? collectFiles(tree) : []), [tree]);
@@ -3422,131 +3409,6 @@ export default function NotesExplorer() {
     }
   }, [isMobileViewport, sidebarVisible, tocSectionOpen]);
 
-  const loadShareInfo = useCallback(async () => {
-    if (!note) {
-      return;
-    }
-
-    setShareState("loading");
-    setShareMessage(null);
-
-    try {
-      const params = new URLSearchParams({ path: note.path });
-      const response = await fetch(`/api/notes/share?${params.toString()}`, {
-        cache: "no-store",
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `读取分享状态失败：${response.status}`);
-      }
-
-      const payload = (await response.json()) as ShareInfo;
-      setShareToken(payload.token);
-      setShareUrl(payload.url);
-      setShareState("ready");
-    } catch (shareError) {
-      setShareState("error");
-      setShareMessage(shareError instanceof Error ? shareError.message : "读取分享状态失败");
-    }
-  }, [note]);
-
-  const handleOpenShareDialog = useCallback(() => {
-    if (!note) {
-      return;
-    }
-
-    setShareModalOpen(true);
-    void loadShareInfo();
-  }, [loadShareInfo, note]);
-
-  const handleCreateShare = useCallback(async () => {
-    if (!note) {
-      return;
-    }
-
-    setShareState("creating");
-    setShareMessage(null);
-
-    try {
-      const response = await fetch("/api/notes/share", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          path: note.path,
-        }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `创建分享失败：${response.status}`);
-      }
-
-      const payload = (await response.json()) as { token: string; url: string };
-      setShareToken(payload.token);
-      setShareUrl(payload.url);
-      setShareState("ready");
-      setShareMessage("分享链接已生成");
-    } catch (shareError) {
-      setShareState("error");
-      setShareMessage(shareError instanceof Error ? shareError.message : "创建分享失败");
-    }
-  }, [note]);
-
-  const handleCopyShare = useCallback(async () => {
-    if (!shareUrl) {
-      return;
-    }
-
-    setShareState("copying");
-    setShareMessage(null);
-
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setShareState("ready");
-      setShareMessage("链接已复制");
-    } catch {
-      setShareState("error");
-      setShareMessage("复制失败，请手动复制链接");
-    }
-  }, [shareUrl]);
-
-  const handleRevokeShare = useCallback(async () => {
-    if (!shareToken) {
-      return;
-    }
-
-    setShareState("revoking");
-    setShareMessage(null);
-
-    try {
-      const response = await fetch("/api/notes/share", {
-        method: "DELETE",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          token: shareToken,
-        }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `取消分享失败：${response.status}`);
-      }
-
-      setShareToken(null);
-      setShareUrl(null);
-      setShareState("ready");
-      setShareMessage("已取消分享");
-    } catch (shareError) {
-      setShareState("error");
-      setShareMessage(shareError instanceof Error ? shareError.message : "取消分享失败");
-    }
-  }, [shareToken]);
-
   // ── ⋯ 菜单：点外部关闭 ────────────────────────────────
   useEffect(() => {
     if (!moreMenuOpen) return;
@@ -4296,7 +4158,7 @@ export default function NotesExplorer() {
                           type="button"
                           className={styles.moreMenuItem}
                           role="menuitem"
-                          onClick={() => { setMoreMenuOpen(false); handleOpenShareDialog(); }}
+                          onClick={() => { setMoreMenuOpen(false); setShareModalOpen(true); }}
                         >
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                             <path d="M7.2 11.2 12 6.4l4.8 4.8" /><path d="M12 6.4v11.2" />
@@ -4743,92 +4605,9 @@ export default function NotesExplorer() {
         </div>
       ) : null}
 
-      {shareModalOpen ? (
-        <div className={styles.shareOverlay} role="presentation" onMouseDown={() => setShareModalOpen(false)}>
-          <section
-            className={styles.shareDialog}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="share-dialog-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <header className={styles.shareDialogHeader}>
-              <div>
-                <p className={styles.shareDialogEyebrow}>公开分享</p>
-                <h2 id="share-dialog-title" className={styles.shareDialogTitle}>
-                  当前文章
-                </h2>
-              </div>
-              <button
-                type="button"
-                className={styles.shareDialogClose}
-                onClick={() => setShareModalOpen(false)}
-                aria-label="关闭分享窗口"
-                title="关闭分享窗口"
-              >
-                <span aria-hidden="true">×</span>
-              </button>
-            </header>
-
-            <div className={styles.shareDialogBody}>
-              <p className={styles.shareDialogNote}>{note?.path ?? "未选择文件"}</p>
-
-              {shareState === "loading" ? (
-                <div className={styles.shareDialogState}>正在读取分享状态...</div>
-              ) : null}
-
-              {shareState !== "loading" && shareUrl ? (
-                <label className={styles.shareLinkField}>
-                  <span>分享链接</span>
-                  <input value={shareUrl} readOnly onFocus={(event) => event.currentTarget.select()} />
-                </label>
-              ) : null}
-
-              {shareState !== "loading" && !shareUrl ? (
-                <div className={styles.shareDialogEmpty}>当前文章还没有公开分享链接。</div>
-              ) : null}
-
-              {shareMessage ? (
-                <p className={`${styles.shareDialogMessage} ${shareState === "error" ? styles.shareDialogError : ""}`}>
-                  {shareMessage}
-                </p>
-              ) : null}
-            </div>
-
-            <footer className={styles.shareDialogActions}>
-              {shareUrl ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.shareSecondaryButton}
-                    onClick={handleCopyShare}
-                    disabled={shareState === "copying" || shareState === "revoking"}
-                  >
-                    {shareState === "copying" ? "复制中" : "复制链接"}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.shareDangerButton}
-                    onClick={handleRevokeShare}
-                    disabled={shareState === "revoking" || shareState === "copying"}
-                  >
-                    {shareState === "revoking" ? "取消中" : "取消分享"}
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.sharePrimaryButton}
-                  onClick={handleCreateShare}
-                  disabled={shareState === "creating" || shareState === "loading"}
-                >
-                  {shareState === "creating" ? "生成中" : "生成分享链接"}
-                </button>
-              )}
-            </footer>
-          </section>
-        </div>
-      ) : null}
+      {shareModalOpen && note && (
+        <ShareDialog key={note.path} notePath={note.path} onClose={() => setShareModalOpen(false)} />
+      )}
 
       <aside
         ref={assistantPanelRef}

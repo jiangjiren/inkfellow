@@ -117,7 +117,7 @@ See [claude-chat/README.md](./claude-chat/README.md) for provider behavior, data
 | --- | --- | --- |
 | `NEXT_PUBLIC_APP_NAME` | `inkfellow` | Name shown in the UI, page titles, and auth realm. |
 | `VAULT_PATH` | `./vault` | Absolute or process-relative path to the notes vault. |
-| `SITE_URL` | `http://localhost:3000` | Public origin used when creating share links. |
+| `SITE_URL` | Request origin on web, `http://localhost:3000` in the CLI | Public origin used when creating share links. |
 | `SHARED_NOTES_PATH` | `./shared-notes.json` | Share-token database. |
 | `NOTES_BASIC_AUTH_USERNAME` | `notes` | Username for remote web and notes API access. |
 | `NOTES_BASIC_AUTH_PASSWORD` | empty | Remote access is denied while empty. |
@@ -181,6 +181,22 @@ The repository provides:
 Before enabling the examples, replace every placeholder and make both services use the same vault. Run the AI service as the same Unix user that owns the Claude/Codex subscription credentials. Keep `claude-chat` bound to loopback and expose it only through Next.js or a trusted reverse proxy.
 
 For multiple users, run one isolated web process and one isolated AI process per vault, with unique ports, credentials, share-token files, and AI data directories. The repository does not provide multi-tenant authorization inside a single process.
+
+### Public note links
+
+The share dialog offers a public title and an optional expiration date. Moving or renaming a shared file within its vault preserves its link. The link expires or stops serving content when it is revoked or the original file is removed. A file later created at the same path has its own share settings. An editor that replaces a file with a new filesystem identity requires a new link.
+
+Public pages support referenced Markdown images and local HTML images, stylesheets, scripts, and their static dependencies. For an HTML script that constructs an asset URL at runtime, include a `<meta name="inkfellow-share-asset" content="relative/path.ext">` declaration for the file. Shared HTML runs in a sandbox on an opaque origin.
+
+To upgrade a legacy `shared-notes.json`, back up the file and bind its entries to the vaults before switching the running instances. Pass one pair of vault and registry paths for each instance:
+
+```bash
+node scripts/migrate-share-links.mjs /path/to/legacy-shares.json \
+  /path/to/vault-a /path/to/share-data/a.json \
+  /path/to/vault-b /path/to/share-data/b.json
+```
+
+Set `SHARED_NOTES_PATH` for each instance to its target registry. Existing tokens keep their URLs when a note resolves in exactly one vault. The migration reports entries with missing or ambiguous source files and preserves them in the legacy backup. The CLI uses the same vault and registry settings as the corresponding web instance.
 
 ### Vercel demo
 

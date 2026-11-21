@@ -113,6 +113,7 @@ const REASON_TEXT = {
   upstream: "服务端异常",
   network: "网络不通",
   model: "模型不可用",
+  empty: "没有返回内容",
   timeout: "响应超时",
   task: "执行失败",
 };
@@ -145,6 +146,9 @@ function errorText(error) {
 export function classifyCandidateError(error) {
   if (error?.code === "MODEL_FALLBACK_TIMEOUT" || error?.timeout === true) {
     return { kind: "timeout", reason: "timeout" };
+  }
+  if (error?.code === "MODEL_FALLBACK_EMPTY_RESPONSE") {
+    return { kind: "model", reason: "empty" };
   }
   // 调用方主动取消（用户撤回、进程退出）绝不重试
   if (error?.name === "AbortError") return { kind: "task", reason: "task" };
@@ -289,13 +293,14 @@ function configuredModels(profile, providerModels) {
  * runWithModelFallback 依赖这个分组来实现「通道级错误跳组、模型级错误组内下移」。
  *
  * @param providerModels 覆盖某个 provider 的模型清单，例如
- *   `{ antigravity: ["gemini-3.8-flash", "gemini-3.1-pro"] }`——这类通道的模型
+ *   `{ antigravity: ["gemini-4-hydrogen", "gemini-3.8-flash"] }`——这类通道的模型
  *   来自运行时目录，不在 profile 的三个档位字段里。
  */
 export function buildModelCandidates(profileData, {
   defaultModel = CHANNEL_DEFAULT_MODEL,
   excludedProviders = [],
   providerModels = {},
+  providerOrder = [],
 } = {}) {
   const profiles = Array.isArray(profileData?.profiles) ? profileData.profiles : [];
   const excluded = new Set(excludedProviders);
@@ -320,9 +325,14 @@ export function buildModelCandidates(profileData, {
     for (const model of configuredModels(profile, providerModels)) add(profile, model);
   }
 
+  const orderedProviderRank = provider => {
+    const preferredIndex = providerOrder.indexOf(provider);
+    return preferredIndex >= 0 ? preferredIndex : providerOrder.length + providerRank(provider);
+  };
+
   return [...groups.values()]
     .map((group, order) => ({ ...group, order }))
-    .sort((a, b) => providerRank(a.profile.provider) - providerRank(b.profile.provider) || a.order - b.order)
+    .sort((a, b) => orderedProviderRank(a.profile.provider) - orderedProviderRank(b.profile.provider) || a.order - b.order)
     .flatMap(group => group.models.map((model, depth) => ({
       profileId: group.profile.id,
       profileName: group.profile.name || group.profile.provider,

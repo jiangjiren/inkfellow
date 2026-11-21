@@ -8,29 +8,13 @@ const EXPECTED_CODEX_MODELS = {
   sonnetModel: "gpt-6.1-sol",
   haikuModel: "gpt-6-luna",
 };
-const EXPECTED_CODEX_PICKER_MODELS = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"];
 
-test("Codex 服务端三档使用 GPT-6 模型", async () => {
+test("Codex 模型目录不可用时仍配置三档备用模型", async () => {
   const serverSource = await readFile(new URL("server.js", HERE), "utf8");
 
   for (const [tier, model] of Object.entries(EXPECTED_CODEX_MODELS)) {
     assert.match(serverSource, new RegExp(`${tier}: "${model.replaceAll(".", "\\.")}"`));
   }
-});
-
-test("Codex 模型下拉直接列全量可选模型，不再从三档字段反推", async () => {
-  const frontendSource = await readFile(new URL("public/index.html", HERE), "utf8");
-
-  assert.match(frontendSource, /const CODEX_MODELS = \[/);
-  assert.match(frontendSource, /provider === "codex"\) \{\s*\n\s*options = CODEX_MODELS;/);
-  for (const model of EXPECTED_CODEX_PICKER_MODELS) {
-    assert.match(frontendSource, new RegExp(`model: "${model.replaceAll(".", "\\.")}"`));
-  }
-});
-
-test("Codex 没有可用的历史选择时默认回落到均衡档", async () => {
-  const frontendSource = await readFile(new URL("public/index.html", HERE), "utf8");
-  assert.match(frontendSource, /activeProfile\?\.sonnetModel \|\| options\[0\]\.model/);
 });
 
 test("额度展示只渲染接口实际返回的窗口", async () => {

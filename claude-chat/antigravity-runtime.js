@@ -77,7 +77,8 @@ export function getUsage() {
 }
 
 export function resolveModel(requested) {
-  const fallback = provider.menuModels()[0]?.model;
+  const models = provider.menuModels();
+  const fallback = models.find(entry => entry.model === provider.DEFAULT_MODEL)?.model || models[0]?.model;
   if (provider.getCatalog().some(entry => entry.model === requested)) return requested;
   return provider.successorFor(requested || "") || fallback;
 }

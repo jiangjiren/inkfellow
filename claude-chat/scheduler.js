@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import cron from "node-cron";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Codex } from "@openai/codex-sdk";
+import { resolveCodexEffort } from "./providers/codex-models.js";
 import { buildModelCandidates, runWithModelFallback } from "./model-fallback.js";
 
 // Injected server context
@@ -395,11 +396,25 @@ async function _runAgent(job) {
   const cwd = ctx.resolveAllowedCwd("");
   const profileData = ctx.readProfiles();
   const candidates = buildModelCandidates(profileData, {
-    providerModels: { antigravity: ctx.antigravityFallbackModels?.() ?? [] },
+    providerModels: {
+      antigravity: ctx.antigravityFallbackModels?.() ?? [],
+      codex: await ctx.codexFallbackModels?.() ?? [],
+    },
+    // 定时任务与普通微信对话使用相同的偏好顺序。无人值守任务不需要
+    // 微信对话里的临时 scheduler MCP，因此三个通道都可以参与降级。
+    providerOrder: ["antigravity", "codex", "claude"],
   });
   return await runWithModelFallback(
     candidates,
-    candidate => _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd),
+    async candidate => {
+      const result = await _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd);
+      if (typeof result !== "string" || !result.trim()) {
+        const error = new Error(`${candidate.profileName}/${candidate.model} 没有返回内容`);
+        error.code = "MODEL_FALLBACK_EMPTY_RESPONSE";
+        throw error;
+      }
+      return result;
+    },
     // 没人在等结果，所以预算给得宽：最多够两个候选各卡满一次，
     // 再往后就该让这次任务失败、等下一个触发点，而不是无限往下试。
     { logPrefix: `Scheduler ${job.id.slice(0, 8)}`, budgetMs: 2 * AGENT_RUN_TIMEOUT_MS },
@@ -478,7 +493,7 @@ async function _runCodexCandidate(candidate, fullPrompt, cwd, signal) {
     skipGitRepoCheck: true,
     approvalPolicy: "never",
     sandboxMode: "danger-full-access",
-    modelReasoningEffort: "medium",
+    modelReasoningEffort: resolveCodexEffort("medium", candidate.model),
     model: candidate.model,
     networkAccessEnabled: true,
     webSearchMode: "live",

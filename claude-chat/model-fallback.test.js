@@ -60,10 +60,10 @@ test("Antigravity joins the chain only when the runtime supplies its catalog", (
   const data = { ...profiles, profiles: [...profiles.profiles, { id: "agy", name: "Antigravity", provider: "antigravity", apiKey: "legacy", baseUrl: "https://example.test", sonnetModel: "gemini-3.1-pro" }] };
   // agy 没装／没登录时调用方不传目录，这条通道就不该出现（legacy 字段也不算数）
   assert.ok(buildModelCandidates(data).every(candidate => candidate.provider !== "antigravity"));
-  const chain = buildModelCandidates(data, { providerModels: { antigravity: ["gemini-3.8-flash", "gemini-3.1-pro"] } });
+  const chain = buildModelCandidates(data, { providerModels: { antigravity: ["gemini-4-hydrogen", "gemini-3.8-flash"] } });
   assert.deepEqual(
     names(chain.filter(candidate => candidate.provider === "antigravity")),
-    ["agy/gemini-3.8-flash", "agy/gemini-3.1-pro"],
+    ["agy/gemini-4-hydrogen", "agy/gemini-3.8-flash"],
   );
   // 会员制的 Antigravity 排在按量计费的 DeepSeek 前面
   assert.ok(chain.findIndex(c => c.provider === "antigravity") < chain.findIndex(c => c.provider === "deepseek"));

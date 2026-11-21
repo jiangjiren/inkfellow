@@ -16,6 +16,7 @@ import { join, delimiter } from "node:path";
 import * as wire from "./wire.js";
 
 export const PROVIDER_ID = "antigravity";
+export const DEFAULT_MODEL = "gemini-4-hydrogen";
 
 const TOOL_OUTPUT_LIMIT = 20000;
 
@@ -52,43 +53,38 @@ export function modeFlag(permissionMode) {
   return "accept-edits";
 }
 
-// agy 只认三档，界面上的 xhigh/max 都压到 high
-const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+// 实际支持的档位以模型目录为准；max 映射到 xhigh，不支持时再向下降档。
+const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
 
 /* ── 模型目录 ────────────────────────────────────────────────
    有哪些模型、每个认哪些档位，唯一的真相源是 `agy models`。它一行一个组合：
 
-     gemini-3.8-flash-high<TAB>Gemini 3.8 Flash (High)
-     gemini-3.1-pro-low<TAB>Gemini 3.1 Pro (Low)
-     claude-sonnet-4-6<TAB>Claude Sonnet 4.6 (Thinking)
+     gemini-4-hydrogen-xhigh<TAB>Gemini 4 Hydrogen (XHigh)
+     gemini-4-hydrogen-low<TAB>Gemini 4 Hydrogen (Low)
+     gemini-4-argon-high<TAB>Gemini 4 Argon (High)
 
-   末尾的 -low/-medium/-high 是「模型 × 档位」的组合，剥掉它就是模型名，剥出
-   来的那几个后缀合起来就是这个模型支持的档位；压根没后缀的（claude-* 那两个）
+   末尾的 -low/-medium/-high/-xhigh 是「模型 × 档位」的组合，剥掉它就是模型名，剥出
+   来的那几个后缀合起来就是这个模型支持的档位；压根没后缀的
    表示它不吃 --effort，传了会报 "effort is not supported"。档位给错 agy 直接
    拒绝启动，所以这张表必须准。
 
-   这条命令要起进程走一遍登录，实测 7 秒，不能放在启动路径上。所以 server 侧
-   先用磁盘缓存把界面顶起来，再在后台刷新（见 server.js 的 getAgyModelCatalog），
-   刷回来的结果调 setCatalog 灌进这里。
+   这条命令要起进程走一遍登录，不能放在启动路径上。先用兜底表展示菜单，
+   antigravity-runtime.js 再在后台查询目录，调 setCatalog 完整替换兜底表。
 
-   下面这张兜底表是 2026-09-03 那天 `agy models` 的原样输出，只有「装了 agy
-   但一次都没查成功过」时才用得上。模型升级不需要来改它——3.9 出来的时候
-   刷新自己就带回来了，这张表旧一点只影响首次启动那几秒。
-
-   （旧注释说这条命令在管道里会挂住不退出、只能写死一张表——那是早期版本的
-   毛病。现在管道和文件重定向都是 7 秒正常退出，已复测。） */
+   下面这张兜底表来自 2026-11-17 的 `agy models`，只有还没查成功过时才使用。
+   实时目录优先，已下线的型号不会从兜底表重新加回去。 */
 const FALLBACK_CATALOG = [
+  { model: DEFAULT_MODEL, label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high", "xhigh"] },
+  { model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"] },
+  { model: "gemini-pro-orchestrator-g1-pro", label: "Orchestrator (Argon)", efforts: [] },
   { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.7-flash", label: "Gemini 3.7 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.6-flash", label: "Gemini 3.6 Flash", efforts: ["low", "medium", "high"] },
-  { model: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"] },
-  { model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: [] },
-  { model: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: [] },
+  { model: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high"] },
+  { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high"] },
   { model: "gpt-oss-120b", label: "GPT-OSS 120B", efforts: ["medium"] },
 ];
 
-const EFFORT_SUFFIX = /-(low|medium|high)$/;
-const EFFORT_ORDER = ["low", "medium", "high"];
+const EFFORT_SUFFIX = /-(low|medium|high|xhigh)$/;
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh"];
 
 let _catalog = null;                  // setCatalog 灌进来的那份，null = 还没查过
 const _effortOverrides = new Map();   // learnEffortsFromError 从报错里学到的修正
@@ -161,7 +157,7 @@ export function parseModelsList(stdout) {
 }
 
 // agy 拒绝启动时会把真实档位写进错误里，例如
-//   `--model gemini-3.1-pro requires --effort (available: low, high)`
+//   `--model gemini-4-hydrogen requires --effort (available: low, medium, high, xhigh)`
 //   `effort is not supported for model "claude-opus-4-6-thinking"`
 // 目录哪天跟不上了（比如缓存还没刷新就赶上一次升级），就按它说的改，然后重试一次。
 export function learnEffortsFromError(model, message) {
@@ -201,27 +197,29 @@ export function effortForModel(model, effort) {
   if (EFFORT_SUFFIX.test(model)) return null;
   const supported = supportedEfforts(model);
   if (!supported) return wanted;          // 没见过的模型，照传让 agy 自己判
-  if (supported.length === 0) return null; // claude-* 这类不接受档位
+  if (supported.length === 0) return null;
   if (supported.includes(wanted)) return wanted;
   // 就近取。medium 缺失时优先往下走：high 更慢更费额度，不该由我们替用户升上去
-  const order = wanted === "high"
-    ? ["high", "medium", "low"]
+  const order = wanted === "xhigh"
+    ? ["xhigh", "high", "medium", "low"]
+    : wanted === "high"
+    ? ["high", "medium", "low", "xhigh"]
     : wanted === "low"
-    ? ["low", "medium", "high"]
-    : ["low", "high", "medium"];
+    ? ["low", "medium", "high", "xhigh"]
+    : ["low", "high", "medium", "xhigh"];
   return order.find(level => supported.includes(level)) ?? null;
 }
 
 /* ── 模型菜单 ────────────────────────────────────────────────
-   目录里同一个系列会同时挂着好几代（3.8 / 3.7 / 3.6 flash），菜单只放最新那个：
+   目录里同一个系列可能同时挂着好几代，菜单只放最新那个：
    旧版本留在目录里是为了让还选着它的对话继续能跑，不是让人重新去选。
 
-   系列 key 把版本数字抹掉算——gemini-3.8-flash 和 gemini-3.7-flash 都归到
-   gemini-#-flash，所以 3.9 出来时自动顶掉 3.8，这里不用改。
+   系列 key 把版本数字抹掉算，所以同一系列升级时不用改这里。
 
    下面这张表只管排序和一句话说明，认的是「哪一类模型」而不是具体版本，
    所以模型升级同样不用动它；匹配不上的新家族排在最后，照样进菜单。 */
 const MENU_RULES = [
+  [/^gemini-.*-hydrogen$/, "默认模型"],
   [/-pro$/, "旗舰最强"],
   [/-flash$/, "快速通用"],
   [/^claude-opus/, "Claude 旗舰"],
@@ -279,7 +277,7 @@ export function menuModels() {
 
 /**
  * 这个模型下线之后该顶上来的是谁——同系列里最新的那个，没有就 null。
- * 用在两处：用户之前选的模型从目录里消失了（gemini-3.5-flash 那样），以及
+ * 用在两处：用户之前选的模型从目录里消失了，以及
  * 对话历史里存着旧模型名。比一律退回默认更接近他当初的选择。
  */
 export function successorFor(model) {

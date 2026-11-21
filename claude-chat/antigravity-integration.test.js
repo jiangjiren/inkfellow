@@ -17,7 +17,7 @@ test("Antigravity WebSocket turns persist, resume by conversation, recover, and 
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if(args.includes('--help')) {console.log('--output-format --mode --effort');process.exit(0);}
-if(args[0]==='models') {console.log('gemini-3.1-pro-low\\tGemini Pro (Low)');process.exit(0);}
+if(args[0]==='models') {console.log('gemini-4-hydrogen-low\\tGemini 4 Hydrogen (Low)');process.exit(0);}
 fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
 const prompt=args[args.indexOf('-p')+1];
 const emit=e=>console.log(JSON.stringify(e));
@@ -71,7 +71,7 @@ emit({event:'result',result:{status:'SUCCESS',response:'Reply '+prompt}});
     assert.equal((await (await fetch(base + "/api/agy/models")).json()).ready, true);
     const ws = await connect();
     let n = 0;
-    const turn = (conversationId, prompt) => ({ conversationId, prompt, profileId: "p_antigravity", model: "gemini-3.1-pro", permissionMode: "plan", userMessageId: `user-${++n}` });
+    const turn = (conversationId, prompt) => ({ conversationId, prompt, profileId: "p_antigravity", model: "gemini-4-hydrogen", permissionMode: "plan", userMessageId: `user-${++n}` });
     const first = await sendUntil(ws, turn("conv-a", "first"), "done");
     assert.ok(!first.some(e => e.type === "error"), JSON.stringify(first));
     assert.ok(first.some(e => e.type === "assistant"));

@@ -15,7 +15,7 @@ function functionSource(name) {
 }
 const profiles = [
   { id: "claude", provider: "claude", name: "Claude" },
-  { id: "codex", provider: "codex", name: "Codex", sonnetModel: "gpt-6.1-sol" },
+  { id: "codex", provider: "codex", name: "Codex", opusModel: "gpt-6-astra", sonnetModel: "gpt-6.1-sol", haikuModel: "gpt-6-luna" },
   { id: "custom", provider: "custom", name: "Custom", sonnetModel: "custom-model" },
   { id: "agy", provider: "antigravity", name: "Antigravity" },
 ];
@@ -65,14 +65,24 @@ test("Antigravity conversation preferences survive polling and retain supported 
   h.loadProfiles();
   h.run('currentConvId="agy-conv";selectConversationProfile("agy");selectedEffort="max";rememberConvModelPrefs()');
   h.loadProfiles();
-  assert.deepEqual(h.state(), { profile: "agy", model: "gemini-3.1-pro", effort: "max" });
-  h.run('_agyStatus.efforts={"gemini-3.7-flash":["low","high"]};selectedModel="gemini-3.7-flash";rememberConvModelPrefs()');
+  assert.deepEqual(h.state(), { profile: "agy", model: "gemini-4-hydrogen", effort: "max" });
+  h.run('_agyStatus.efforts={"gemini-3.8-flash":["low","high"]};selectedModel="gemini-3.8-flash";rememberConvModelPrefs()');
   h.loadProfiles();
-  assert.equal(h.state().model, "gemini-3.7-flash");
+  assert.equal(h.state().model, "gemini-3.8-flash");
   h.run('currentConvId="claude-conv";applyConvModelPrefs({profileId:"claude"})');
   assert.equal(h.state().profile, "claude");
   h.run('currentConvId="agy-conv";applyConvModelPrefs({profileId:"agy",sessionProvider:"antigravity"})');
-  assert.equal(h.state().model, "gemini-3.7-flash");
+  assert.equal(h.state().model, "gemini-3.8-flash");
+});
+
+test("retired Antigravity selections fall back to Hydrogen after a catalog refresh", () => {
+  const h = harness({ "model:agy": "gemini-3.1-pro" });
+  h.loadProfiles();
+  h.run('selectConversationProfile("agy")');
+  assert.equal(h.state().model, "gemini-4-hydrogen");
+  h.run('selectedModel="gemini-3.1-pro";rememberConvModelPrefs();AGY_MODELS=[{model:"gemini-4-argon",label:"Argon",efforts:["low","high"]},{model:"gemini-4-hydrogen",label:"Hydrogen",efforts:["low","medium","high","xhigh"]}]');
+  h.loadProfiles();
+  assert.equal(h.state().model, "gemini-4-hydrogen");
 });
 
 test("conversation choices survive switching, polling and a fresh page without rewriting defaults", () => {
@@ -109,6 +119,7 @@ test("旧会员型号映射到新菜单，非法偏好数据仍被忽略", () =>
     for (const [oldModel, newModel] of [["gpt-5.6-sol", "gpt-6.1-sol"], ["gpt-5.6-terra", "gpt-6.1-sol"], ["gpt-5.6-luna", "gpt-6-luna"], ["gpt-6-sol", "gpt-6.1-sol"]]) {
       const h = harness({ "convModelPrefs-v1": saved });
       h.loadProfiles();
+      h.run('codexCatalog={defaultModel:"gpt-6.1-sol",models:[{model:"gpt-6.1-sol"},{model:"gpt-6-luna"}]}');
       h.run(`currentConvId="old";applyConvModelPrefs({sessionProvider:"codex",model:"${oldModel}",effort:"high"})`);
       assert.deepEqual(h.state(), { profile: "codex", model: newModel, effort: "high" });
     }

@@ -96,8 +96,10 @@ async function getAiMessage(files) {
       modelName = "deepseek-chat";
     } else if (profile.provider === "openrouter") {
       endpoint  = "https://openrouter.ai/api/v1/chat/completions";
-      const raw = profile.haikuModel || profile.sonnetModel || "";
-      modelName = raw.replace(/^~/, "") || "google/gemini-2.5-flash";
+      modelName = [profile.haikuModel, profile.sonnetModel, profile.opusModel]
+        .map(model => typeof model === "string" ? model.replace(/^~/, "").trim() : "")
+        .find(Boolean);
+      if (!modelName) return null;
     } else {
       return null;
     }

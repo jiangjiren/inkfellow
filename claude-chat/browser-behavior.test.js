@@ -72,6 +72,39 @@ test("Ultra is offered only on supported Codex models and falls back when switch
   } finally { await h.close(); }
 });
 
+test("Codex refresh uses the account catalog and preserves selections that remain available", async () => {
+  const h = browser();
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    h.run('_profileData={activeProfileId:"p_codex",profiles:[{id:"p_codex",provider:"codex",sonnetModel:"gpt-6.1-sol"}]};selectConversationProfile("p_codex")');
+    const existing = { model: "gpt-6-sol", label: "GPT-6 Sol", efforts: ["medium", "ultra"], defaultEffort: "medium" };
+    const added = { model: "gpt-6.2-sol", label: "GPT-6.2 Sol", efforts: ["low"], defaultEffort: "low" };
+    let catalog = { defaultModel: added.model, models: [added, existing] };
+    h.w.fetch = async url => {
+      assert.equal(url, "api/codex/models");
+      return { ok: true, json: async () => catalog };
+    };
+    await h.run("refreshCodexModels()");
+    const button = model => h.w.document.querySelector(`.model-option[data-model="${model}"]`);
+    const ultra = h.w.document.querySelector('.effort-option[data-effort="ultra"]');
+    assert.equal(button(added.model).getAttribute("aria-selected"), "true");
+    assert.equal(h.run("effectiveEffort()"), "low");
+    assert.equal(ultra.hidden, true);
+
+    button(existing.model).dispatchEvent(new h.w.MouseEvent("mousedown", { bubbles: true }));
+    assert.equal(ultra.hidden, false);
+    catalog = { ...catalog, models: [...catalog.models, { ...added, model: "next-model" }] };
+    await h.run("refreshCodexModels()");
+    assert.ok(button("next-model"));
+    assert.equal(button(existing.model).getAttribute("aria-selected"), "true");
+
+    catalog = { defaultModel: added.model, models: [added] };
+    await h.run("refreshCodexModels()");
+    assert.equal(button(existing.model), null);
+    assert.equal(button(added.model).getAttribute("aria-selected"), "true");
+  } finally { await h.close(); }
+});
+
 test("stopping a stream preserves visible text in messageLog", async () => {
   const h = browser();
   try {
@@ -84,6 +117,24 @@ test("stopping a stream preserves visible text in messageLog", async () => {
     assert.equal(h.run('messageLog[0].text'), "保留半截回复");
     assert.equal(h.run('messageLog[0].status'), "stopped");
     assert.equal(h.run('isGenerating'), false);
+  } finally { await h.close(); }
+});
+
+test("Hydrogen exposes xhigh and sends it without downgrading to high", async () => {
+  const h = browser();
+  try {
+    h.run('_profileData={activeProfileId:"p_antigravity",profiles:[{id:"p_antigravity",provider:"antigravity"}]};_agyStatus={ready:true,efforts:{"gemini-4-hydrogen":["low","medium","high","xhigh"],"gemini-4-argon":["low","medium","high"]}};renderModelOptions(getActiveProfile())');
+    const xhigh = h.w.document.querySelector('.effort-option[data-effort="xhigh"]');
+    assert.equal(xhigh.hidden, false);
+    xhigh.dispatchEvent(new h.w.MouseEvent("mousedown", { bubbles: true }));
+    assert.equal(h.run("effectiveEffort()"), "xhigh");
+    assert.equal(h.w.document.getElementById("effort-label-inline").textContent, "超高");
+    h.run('ws = new WebSocket(); promptEl.value = "测试 Hydrogen"; send()');
+    assert.equal(h.sent.at(-1).model, "gemini-4-hydrogen");
+    assert.equal(h.sent.at(-1).effort, "xhigh");
+    h.run('selectedModel="gemini-4-argon";updateEffortDisplay()');
+    assert.equal(xhigh.hidden, true);
+    assert.equal(h.run("effectiveEffort()"), "high");
   } finally { await h.close(); }
 });
 

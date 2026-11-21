@@ -4,17 +4,42 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as provider from "./providers/antigravity.js";
-import { getCatalog, runAntigravity } from "./antigravity-runtime.js";
+import { getCatalog, resolveModel, runAntigravity } from "./antigravity-runtime.js";
 
 test("model catalog merges efforts, keeps the latest menu version and maps effort safely", () => {
-  const catalog = provider.parseModelsList("Fetching...\ngemini-3.1-pro-high\tGemini Pro (High)\ngemini-3.1-pro-low\tGemini Pro (Low)\nclaude-sonnet-4-6\tClaude Sonnet\n");
+  const catalog = provider.parseModelsList("Fetching...\ngemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\ngemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)\ngemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)\ngemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)\ngemini-4-argon-high\tGemini 4 Argon (High)\ngemini-4-argon-low\tGemini 4 Argon (Low)\ngemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)\n");
   provider.setCatalog(catalog);
-  assert.equal(catalog.length, 2);
-  assert.equal(provider.effortForModel("gemini-3.1-pro", "medium"), "low");
-  assert.equal(provider.effortForModel("gemini-3.1-pro", "max"), "high");
-  assert.equal(provider.effortForModel("claude-sonnet-4-6", "high"), null);
+  assert.equal(catalog.length, 3);
+  assert.deepEqual(catalog[0].efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(provider.effortForModel("gemini-4-hydrogen", "medium"), "medium");
+  assert.equal(provider.effortForModel("gemini-4-hydrogen", "xhigh"), "xhigh");
+  assert.equal(provider.effortForModel("gemini-4-hydrogen", "max"), "xhigh");
+  assert.equal(provider.effortForModel("gemini-4-hydrogen-xhigh", "high"), null);
+  assert.equal(provider.effortForModel("gemini-4-argon", "medium"), "low");
+  assert.equal(provider.effortForModel("gemini-4-argon", "max"), "high");
+  assert.equal(provider.effortForModel("gemini-pro-orchestrator-g1-pro", "high"), null);
   assert.equal(provider.parseModelsList("Login required"), null);
   provider._resetCatalog();
+});
+
+test("defaults and retired selections prefer Hydrogen while respecting the live catalog", () => {
+  provider._resetCatalog();
+  try {
+    assert.equal(resolveModel(), "gemini-4-hydrogen");
+    assert.ok(!provider.getCatalog().some(entry => entry.model === "gemini-3.1-pro"));
+    provider.setCatalog([
+      { model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"] },
+      { model: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high", "xhigh"] },
+      { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
+    ]);
+    assert.equal(resolveModel(), "gemini-4-hydrogen");
+    assert.equal(resolveModel("gemini-3.1-pro"), "gemini-4-hydrogen");
+    assert.equal(resolveModel("gemini-3.8-flash"), "gemini-3.8-flash");
+    provider.setCatalog([{ model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["high"] }]);
+    assert.equal(resolveModel("gemini-3.1-pro"), "gemini-4-argon");
+  } finally {
+    provider._resetCatalog();
+  }
 });
 
 test("text and tool steps produce persistent messages and settle the matching tool", () => {
@@ -52,7 +77,7 @@ test("CLI runner resumes explicitly, parses final lines, rejects incomplete runs
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if(args.includes('--help')) { console.log('--output-format --mode --effort'); process.exit(0); }
-if(args[0]==='models') { console.log('gemini-3.1-pro-low\\tGemini Pro (Low)'); process.exit(0); }
+if(args[0]==='models') { console.log('gemini-4-hydrogen-low\\tGemini 4 Hydrogen (Low)\\ngemini-4-hydrogen-xhigh\\tGemini 4 Hydrogen (XHigh)'); process.exit(0); }
 fs.writeFileSync(${JSON.stringify(join(dir, "args.json"))}, JSON.stringify(args));
 const prompt=args[args.indexOf('-p')+1];
 if(prompt==='hang') {setInterval(()=>{},1000);}
@@ -64,7 +89,7 @@ else { console.log(JSON.stringify({event:'init',init:{conversation_id:'session-o
   provider._resetBinaryCache();
   try {
     assert.equal((await getCatalog({ force: true })).ready, true);
-    const options = { prompt: "hello", cwd: dir, model: "gemini-3.1-pro", effort: "medium", permissionMode: "plan", resumeConversationId: "old-session" };
+    const options = { prompt: "hello", cwd: dir, model: provider.DEFAULT_MODEL, effort: "medium", permissionMode: "plan", resumeConversationId: "old-session" };
     const sessions = [];
     assert.equal((await runAntigravity({ ...options, onSession: id => sessions.push(id) })).text, "OK");
     assert.deepEqual(sessions, ["session-one"]);
@@ -73,6 +98,10 @@ else { console.log(JSON.stringify({event:'init',init:{conversation_id:'session-o
     assert.ok(args.includes("--sandbox"));
     assert.ok(!args.includes("--dangerously-skip-permissions"));
     assert.equal(args[args.indexOf("--effort") + 1], "low");
+    assert.equal(args[args.indexOf("--model") + 1], "gemini-4-hydrogen");
+    await runAntigravity({ ...options, effort: "max" });
+    const highArgs = JSON.parse(readFileSync(join(dir, "args.json")));
+    assert.equal(highArgs[highArgs.indexOf("--effort") + 1], "xhigh");
     await assert.rejects(runAntigravity({ ...options, prompt: "empty" }), /未正常完成/);
     await assert.rejects(runAntigravity({ ...options, prompt: "fail" }), /quota exhausted/);
     await assert.rejects(runAntigravity({ ...options, prompt: "hang", signal: AbortSignal.timeout(150) }), { name: "AbortError" });

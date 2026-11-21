@@ -21,6 +21,7 @@ import { BackgroundTaskTurnGate, PersistentQueryRuntime } from "./agent-session.
 import * as eventLog from "./core/event-log.js";
 import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
 import * as agyProvider from "./providers/antigravity.js";
+import { codexAuthFile, getCodexCatalog, resolveCodexEffort } from "./providers/codex-models.js";
 import { getCatalog as getAgyCatalog, getUsage as getAgyUsage, runAntigravity, resolveModel as resolveAgyModel } from "./antigravity-runtime.js";
 import { z } from "zod";
 
@@ -30,10 +31,10 @@ const HOST = process.env.HOST || "127.0.0.1";
 const DEFAULT_CWD = resolve(process.env.VAULT_PATH || process.cwd());
 const PERMISSION_MODES = new Set(["plan", "acceptEdits", "auto", "bypassPermissions"]);
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
-const CODEX_ULTRA_MODELS = new Set(["gpt-6-astra", "gpt-6.1-sol"]);
 function normalizeEffort(value, provider, model) {
   const effort = EFFORT_LEVELS.has(value) ? value : "medium";
-  return effort === "ultra" && (provider !== "codex" || !CODEX_ULTRA_MODELS.has(model)) ? "max" : effort;
+  if (provider === "codex") return resolveCodexEffort(effort, model);
+  return effort === "ultra" ? "max" : effort;
 }
 const DEFAULT_PERMISSION_MODE = PERMISSION_MODES.has(process.env.CLAUDE_PERMISSION_MODE)
   ? process.env.CLAUDE_PERMISSION_MODE
@@ -305,7 +306,7 @@ function setProviderSession(provider, id, model = null) {
 
 function isPersistedCodexThread(id) {
   if (!id) return false;
-  const sessionsDir = join(homedir(), ".codex", "sessions");
+  const sessionsDir = join(dirname(codexAuthFile), "sessions");
   try {
     return readdirSync(sessionsDir, { recursive: true })
       .some(entry => {
@@ -323,10 +324,8 @@ function resolveSessionProvider(provider, id) {
 }
 
 function isCodexAuthAvailable() {
-  const authFile = join(homedir(), ".codex", "auth.json");
-  if (!existsSync(authFile)) return false;
   try {
-    const auth = JSON.parse(readFileSync(authFile, "utf8"));
+    const auth = JSON.parse(readFileSync(codexAuthFile, "utf8"));
     return !!(auth.tokens?.access_token || auth.OPENAI_API_KEY);
   } catch { return false; }
 }
@@ -548,7 +547,7 @@ function migrateOldFormat(old) {
   if (isCodexAuthAvailable()) {
     profiles.push({ id: "p_codex", name: "ChatGPT 会员", provider: "codex", apiKey: "", baseUrl: "", ...CODEX_DEFAULT_MODELS });
   }
-  let activeProfileId = "p_claude";
+  let activeProfileId = "p_antigravity";
   if (old.provider === "deepseek") {
     const match = profiles.find(p => p.provider === "deepseek" &&
       (old.deepseek?.selectedKeyId ? p.id === old.deepseek.selectedKeyId : true));
@@ -588,7 +587,7 @@ function normalizeProfiles(raw) {
   profiles.sort((a, b) => (providerRank[a.provider] ?? 3) - (providerRank[b.provider] ?? 3));
   const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
     ? data.activeProfileId
-    : profiles[0].id;
+    : profiles.find(p => p.provider === "antigravity")?.id ?? profiles[0].id;
   return { activeProfileId, profiles };
 }
 
@@ -778,12 +777,11 @@ async function getClaudeSubscriptionLimits() {
 }
 
 function readCodexSubscriptionAuth() {
-  const authFile = join(homedir(), ".codex", "auth.json");
-  if (!existsSync(authFile)) {
+  if (!existsSync(codexAuthFile)) {
     return { ok: false, status: "unauthenticated", message: "Codex 未登录" };
   }
   try {
-    const auth = JSON.parse(readFileSync(authFile, "utf8"));
+    const auth = JSON.parse(readFileSync(codexAuthFile, "utf8"));
     if (auth.auth_mode && auth.auth_mode !== "chatgpt") {
       return { ok: false, status: "unavailable", message: "Codex 当前不是 ChatGPT OAuth 登录模式" };
     }
@@ -2069,6 +2067,8 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
  */
 export async function runAntigravityText({ prompt, images = [], cwd, model, effort = "medium", signal, stallMs = STREAM_STALL_MS }) {
   const controller = new AbortController();
+  const responseTextByStep = new Map();
+  let lastStreamedResponse = "";
   let stalled = false;
   let stallTimer = null;
   const onAbort = () => controller.abort();
@@ -2090,9 +2090,26 @@ export async function runAntigravityText({ prompt, images = [], cwd, model, effo
       effort,
       permissionMode: "acceptEdits",
       signal: controller.signal,
-      onEvent: resetStall,
+      onEvent: event => {
+        resetStall();
+        const step = event?.step_update;
+        if (step?.step_type !== "agent_response") return;
+        const index = step.step_index ?? 0;
+        const text = `${responseTextByStep.get(index) || ""}${typeof step.text_delta === "string" ? step.text_delta : ""}`;
+        if (step.state === "DONE") {
+          if (text.trim()) lastStreamedResponse = text;
+          responseTextByStep.delete(index);
+        } else if (text) {
+          responseTextByStep.set(index, text);
+        }
+      },
     });
-    return result.text || "";
+    if (result.text?.trim()) return result.text;
+    if (lastStreamedResponse.trim()) {
+      console.warn("[Antigravity] Final response was empty; recovered text from the event stream.");
+      return lastStreamedResponse;
+    }
+    return "";
   } catch (error) {
     if (stalled) {
       const stallError = new Error("AI 响应超时，请稍后重试。", { cause: error });
@@ -2108,12 +2125,22 @@ export async function runAntigravityText({ prompt, images = [], cwd, model, effo
 }
 
 // Antigravity 的模型不在 profile 那三个档位字段里，唯一真相源是 agy 自己的目录。
-// 无人值守渠道排两档就够：快的那个当通道代表，旗舰留作同通道内的下一手。
+// 无人值守渠道优先 Hydrogen，再从实时目录中选择一个备用 Gemini 模型。
 // 没装二进制／没登录时返回空数组，这条通道就整条不进链。
 export function antigravityFallbackModels() {
   if (!agyProvider.isAuthAvailable()) return [];
   const gemini = agyProvider.menuModels().map(entry => entry.model).filter(model => model.startsWith("gemini-"));
-  return [...gemini.filter(m => m.endsWith("-flash")), ...gemini.filter(m => !m.endsWith("-flash"))].slice(0, 2);
+  return [
+    ...gemini.filter(model => model === agyProvider.DEFAULT_MODEL),
+    ...gemini.filter(model => model.endsWith("-flash")),
+    ...gemini.filter(model => model !== agyProvider.DEFAULT_MODEL && !model.endsWith("-flash")),
+  ].slice(0, 2);
+}
+
+async function codexFallbackModels() {
+  const catalog = isCodexAuthAvailable() ? await getCodexCatalog() : null;
+  if (!catalog) return [];
+  return [catalog.defaultModel, ...catalog.models.map(entry => entry.model).filter(model => model !== catalog.defaultModel)];
 }
 
 async function runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs }) {
@@ -2230,7 +2257,7 @@ async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wech
     skipGitRepoCheck: true,
     approvalPolicy: "never",
     sandboxMode: "workspace-write",
-    modelReasoningEffort: "medium",
+    modelReasoningEffort: resolveCodexEffort("medium", candidate.model),
     model: candidate.model,
     networkAccessEnabled: true,
     webSearchMode: "live",
@@ -2335,33 +2362,45 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
       // Codex SDK 和 agy 都注入不了这个进程内的 scheduler MCP，涉及定时任务时把
       // 两条通道都跳过——不跳的话定时任务会在这些通道上静默失效。
       // 其余场景仍按动态配置把它们排进降级链。
+      // 普通微信对话优先 Antigravity（Gemini 4 Hydrogen），再尝试 Codex 和 Claude。
       const candidates = buildModelCandidates(profileData, {
         excludedProviders: hasScheduler ? ["codex", "antigravity"] : [],
-        providerModels: { antigravity: antigravityFallbackModels() },
+        providerModels: {
+          antigravity: antigravityFallbackModels(),
+          codex: hasScheduler ? [] : await codexFallbackModels(),
+        },
+        providerOrder: ["antigravity", "codex", "claude"],
       });
       finalResponse = await runWithModelFallback(
         candidates,
-        (candidate, info) => {
+        async (candidate, info) => {
           answeredBy = candidate;
           const stallMs = wechatStallMs(info.remainingMs);
+          let response;
           if (candidate.provider === "codex") {
-            return runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+            response = await runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+          } else if (candidate.provider === "antigravity") {
+            response = await runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+          } else {
+            response = await runWechatClaudeCandidate({
+              candidate,
+              profileData,
+              fullPrompt,
+              mediaFiles,
+              wechatCwd,
+              abortSignal,
+              extraMcpServers,
+              wechatSystemPrompt,
+              hasScheduler,
+              stallMs,
+            });
           }
-          if (candidate.provider === "antigravity") {
-            return runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
+          if (typeof response !== "string" || !response.trim()) {
+            const error = new Error(`${candidate.profileName}/${candidate.model} 没有返回内容`);
+            error.code = "MODEL_FALLBACK_EMPTY_RESPONSE";
+            throw error;
           }
-          return runWechatClaudeCandidate({
-            candidate,
-            profileData,
-            fullPrompt,
-            mediaFiles,
-            wechatCwd,
-            abortSignal,
-            extraMcpServers,
-            wechatSystemPrompt,
-            hasScheduler,
-            stallMs,
-          });
+          return response;
         },
         {
           logPrefix: "WeChat Agent",
@@ -2454,6 +2493,7 @@ scheduler.init({
   buildAgentEnv,
   runAntigravityText,
   antigravityFallbackModels,
+  codexFallbackModels,
   getActiveProfile,
   readProfiles,
   appendChatHistoryEntry,
@@ -2702,6 +2742,17 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (url === "/api/codex/models" && method === "GET") {
+    (isCodexAuthAvailable() ? getCodexCatalog() : Promise.resolve(null)).then(catalog => {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(catalog));
+    }).catch(() => {
+      res.writeHead(503, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end("null");
+    });
+    return;
+  }
+
   if (url === "/api/health/claude-auth" && method === "GET") {
     let stdout = "";
     let stderr = "";
@@ -2806,7 +2857,7 @@ const http = createServer((req, res) => {
           }
           const profiles = current.profiles.filter(p => p.id !== id);
           const activeProfileId = current.activeProfileId === id
-            ? (profiles[0]?.id ?? "p_claude")
+            ? (profiles.find(p => p.provider === "antigravity")?.id ?? profiles[0]?.id ?? "p_antigravity")
             : current.activeProfileId;
           next = { profiles, activeProfileId };
 

@@ -35,6 +35,7 @@ interface Profile {
   apiKey?: string;
   haikuModel?: string;
   sonnetModel?: string;
+  opusModel?: string;
   [key: string]: unknown;
 }
 
@@ -157,8 +158,17 @@ export async function POST() {
     } else if (activeProfile.provider === "openrouter") {
       endpoint = "https://openrouter.ai/api/v1/chat/completions";
       // Determine openrouter model (strip out local proxy prefix "~")
-      const rawModel = activeProfile.haikuModel || activeProfile.sonnetModel || "";
-      modelName = rawModel.replace(/^~/, "") || "google/gemini-2.5-flash";
+      modelName = [activeProfile.haikuModel, activeProfile.sonnetModel, activeProfile.opusModel]
+        .map(model => typeof model === "string" ? model.replace(/^~/, "").trim() : "")
+        .find(Boolean) || "";
+      if (!modelName) {
+        return NextResponse.json({
+          ok: true,
+          message: generateFallbackMessage(changedFiles),
+          fallback: generateFallbackMessage(changedFiles),
+          isAi: false
+        });
+      }
       bodyPayload = {
         model: modelName,
         messages: [

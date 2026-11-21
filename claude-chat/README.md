@@ -63,7 +63,7 @@ Log in through Codex Desktop or the CLI as the service user:
 codex login
 ```
 
-The service exposes the Codex profile only when `~/.codex/auth.json` contains usable login data. Codex conversations use persistent thread IDs and map inkfellow permission modes to Codex sandbox modes.
+The service exposes the Codex profile when `auth.json` in `CODEX_HOME` (default `~/.codex`) contains usable login data. The model picker and fallback chains use the account's Codex model catalog. Successful catalog lookups are cached for five minutes, and the service reuses the last successful catalog during temporary failures. Codex conversations use persistent thread IDs and map inkfellow permission modes to Codex sandbox modes.
 
 ### API providers
 
@@ -106,9 +106,9 @@ The chat agent receives scheduler tools when the request looks like a reminder o
 
 Cron time zones are stored per job and default to `Asia/Shanghai`. One-off times use a future Unix timestamp in milliseconds. Schedules, state, and run logs live in `CLAUDE_CHAT_DATA_DIR`.
 
-WeChat conversations and scheduled jobs start with `claude-sonnet-5-5`. If a candidate cannot run at all — the model was removed, renamed, or requires unavailable usage credits, or its credentials expired or were rejected — the service falls back to the next candidate in a chain rebuilt from the currently configured provider profiles and model fields for that run. This applies to the first candidate too, so an expired subscription on an unattended channel does not fail the whole run. Errors from the task itself are never retried on another model. Codex candidates are skipped only for WeChat requests that need the in-process scheduler tools, because the Codex SDK cannot receive that ephemeral MCP server.
+Regular WeChat conversations and scheduled jobs prefer Antigravity when its Gemini models are available, with `gemini-4-hydrogen` first when listed. Codex and Claude follow in that order. WeChat requests that need the in-process scheduler tools still skip Antigravity and Codex because neither can receive that ephemeral MCP server. Each run rebuilds its candidate chain from the currently configured provider profiles and model fields. If a candidate is unavailable, returns no content, or its credentials are rejected, the service tries the next candidate; errors from the task itself are never retried on another model.
 
-Each candidate in a scheduled job gets its own five-minute budget rather than sharing one across the chain. Hitting it aborts the run and stops the chain, so the total stays bounded.
+Each scheduled-job candidate gets up to five minutes. A timeout aborts that candidate and moves to the next provider; the chain has a ten-minute total budget, so it will not keep trying indefinitely.
 
 At present, WeChat is the only registered external delivery adapter. References in source comments to Feishu or Telegram are extension points, not implemented channels.
 
@@ -126,7 +126,7 @@ Account settings group subscriptions and API accounts, display reported plan nam
 
 Antigravity is available as a managed account in the web chat account picker. Install and log in to `agy` as the same operating-system user that runs this service. The CLI must expose `--output-format`, `--mode`, and `--effort` in `agy --help`; upgrade older installations with `agy update`. `GET /api/agy/models` checks compatibility and discovers models and supported reasoning levels. A readable model catalog indicates CLI availability, not a guarantee that a model request will succeed.
 
-Antigravity supports streaming text, tool cards, image attachments, per-conversation continuation, persistent history, reconnect recovery, and cancellation. Account settings show separate Gemini and Claude/GPT quota pools from the CLI's `/usage` command. Catalog results are cached for six hours and quota results for four minutes; failed catalog checks retry after a minute. It is currently a web-chat provider; scheduled jobs and WeChat retain their existing execution channels.
+Antigravity supports streaming text, tool cards, image attachments, per-conversation continuation, persistent history, reconnect recovery, and cancellation. Account settings show separate Gemini and Claude/GPT quota pools from the CLI's `/usage` command. Catalog results are cached for six hours and quota results for four minutes; failed catalog checks retry after a minute. It also participates in the WeChat and scheduled-job fallback chains. The default is `gemini-4-hydrogen` when available; selections for retired models such as `gemini-3.1-pro` fall back to the current catalog, preferring Hydrogen. Supported reasoning levels, including `xhigh`, come from that catalog.
 
 For Antigravity, plan mode uses the CLI's `plan` mode; other modes use `accept-edits`. The CLI sandbox remains enabled unless the user selects `bypassPermissions`, which explicitly auto-approves tools. Operations requiring interactive approval may be refused by the CLI in headless mode. Images and long prompts use private temporary files, deleted after the turn. Stopping a turn terminates its process group; disconnecting the browser keeps the turn running and records events for recovery.
 
@@ -178,6 +178,7 @@ The service exposes the panel and a small local API:
 | `/` and static files | Embedded chat UI. |
 | `/api/health/claude-auth` | Claude CLI login status. |
 | `/api/health/codex-auth` | Codex login status. |
+| `/api/codex/models` | Available Codex models, default model, and supported reasoning efforts. |
 | `/api/usage-limits` | Best-effort Claude/Codex subscription usage windows. |
 | `/api/auth-profile` | Read and manage provider profiles. Secret values are masked in GET responses. |
 | `/api/history` | List and manage local conversation history. |

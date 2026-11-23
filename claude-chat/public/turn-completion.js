@@ -39,15 +39,19 @@
       // Replayed history and reconnect snapshots must not produce old alerts.
       if (!request || request.settled) return;
       if (["error", "stopped", "stopping"].includes(event.type)) request.failed = true;
+      if (event.type === "request_ack" && event.state === "partial") {
+        request.settled = true;
+        return;
+      }
       if (event.type === "result" && (event.is_error === true
           || String(event.subtype || "").startsWith("error")
-          || ["failed", "error", "cancelled", "canceled", "stopped"].includes(event.status))) {
+          || ["failed", "error", "cancelled", "canceled", "stopped", "partial"].includes(event.status))) {
         request.failed = true;
       }
       if (event.type === "stopped") request.settled = true;
       if (event.type !== "done") return;
       request.settled = true;
-      if (!request.failed) this.onComplete({ conversationId, userMessageId });
+      if (!request.failed && event.status !== "partial") this.onComplete({ conversationId, userMessageId });
     }
   }
   root.InkfellowTurnCompletionTracker = TurnCompletionTracker;

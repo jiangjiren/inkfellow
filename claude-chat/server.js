@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" };
 import { WebSocketServer } from "ws";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { agentProviderCompatibilityEnv } from "./agent-provider-compat.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClientOptions } from "./anthropic-client-options.js";
 import { Codex } from "@openai/codex-sdk";
@@ -59,6 +60,18 @@ import {
   nativeSessionFamily,
   withConversationContext,
 } from "./conversation-context.js";
+import { canonicalPath, isSystemProtectedPath, pathWithin } from "./write-scope-lock.js";
+import { createTicketStore, TICKET_ID_PATTERN } from "./ticket-store.js";
+import { READ_ONLY_TOOLS, WORKER_TOOLS, workerAllowedTools, workerToolDecision, workerToolEvents } from "./worker-watchdog.js";
+import {
+  STRATEGIST_CONVERSATION_ID,
+  STRATEGIST_DISALLOWED_TOOLS,
+  STRATEGIST_SYSTEM_PROMPT,
+  appendStrategistMemory,
+  buildWorkerSystemPrompt,
+  createOrchestrator,
+  loadSpecialists,
+} from "./orchestrator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -185,14 +198,22 @@ const WECHAT_OUTPUT_PROMPT = `【微信通道输出规则】
 
 你正在通过微信 bot 和用户对话，用户只能看到你发到微信里的内容。
 
-当用户要求你生成、编辑、制作、发送图片，或要求把文件/图片“发给我/发到微信”时：
-- 如果你生成了本地图片，最终回复必须单独包含一行 Markdown 图片引用，格式严格为：![图片](/absolute/path/to/image.png)
-- 图片路径必须是真实存在的本地文件路径，支持 .png/.jpg/.jpeg/.webp/.gif。
-- 系统会自动读取这个 Markdown 图片引用，把本地图片上传并发送到微信。
-- 不要只描述图片效果，也不要只说“已经发了”；没有写出 Markdown 图片引用就等于没有发到微信。
-- 如果你已经知道图片文件路径，直接在最终回复中引用它，不要让用户再问一次。
+当用户要求你生成、编辑、制作、发送图片/视频/文档，或要求把产物“发给我/发到微信”时：
+- 发送本地图片：单独一行写出 \`![图片](/absolute/path/to/image.png)\`（支持 .png/.jpg/.jpeg/.webp/.gif）。
+- 发送本地视频：单独一行写出 \`[视频](/absolute/path/to/video.mp4)\`（支持 .mp4/.mov/.webm；超过 25MB 会自动压缩手机预览版发送）。
+- 发送本地文档/文件：单独一行写出 \`[文件](/absolute/path/to/doc.pdf)\`（支持 .pdf/.docx/.xlsx/.pptx/.md/.txt/.csv/.zip/.mp3/.wav/.m4a 等）。
+- 路径必须是真实存在的本地绝对路径；系统会自动上传并发送到微信。
+- 不要只口头说“已经发了”；没有写出对应 Markdown 引用就不会触发附件发送。
 
-当用户引用之前发过的图片时，优先查看对话历史里的附件本地路径。`;
+当用户引用之前发过的图片/附件时，优先查看对话历史里的附件本地路径。`;
+
+const WECHAT_FELLOW_PROMPT = `${WECHAT_OUTPUT_PROMPT}
+
+【微信端 Fellow 协同补充】
+- 本轮消息来自用户的手机微信，与桌面端 ✦ Fellow 共享同一段对话、长期记忆和后台工单。
+- 手机屏幕窄：回复尽量简短清晰、分点编号，避免宽 Markdown 表格和冗长代码块。
+- 需要写稿、改文件、剪视频、写代码、操作电脑、小红书/抖音网页发布等具体工作时，直接调用 dispatch_task 异步派发后台任务（必要时指定任意目录 cwd 并开启 allowBash: true），立刻给用户简短确认，不要在前台长时间干等。
+- 查询进度用 list_tickets / inspect_ticket，转达用户拍板或补充要求用 message_ticket，中止用 stop_ticket；建定时晨报或提醒直接用 create_schedule / list_schedules。`;
 
 // per-PORT 运行时文件统一放在 data/ 子目录，一条 gitignore 收口，备份运维清晰。
 // activeProfileId 完全由前端 localStorage 管理（与 model/effort/permission 同一机制），
@@ -283,6 +304,8 @@ const WECHAT_IMAGE_MIME_BY_EXT = {
   ".webp": "image/webp",
 };
 
+const ALLOW_MACHINE_ACCESS = process.env.INKFELLOW_MACHINE_ACCESS !== "0";
+const WECHAT_DEBOUNCE_MS = Math.max(0, Number.parseInt(process.env.WECHAT_DEBOUNCE_MS ?? "3000", 10) || 0);
 const WECHAT_MIME_BY_EXT = {
   ...WECHAT_IMAGE_MIME_BY_EXT,
   ".bmp": "image/bmp",
@@ -292,12 +315,22 @@ const WECHAT_MIME_BY_EXT = {
   ".mkv": "video/x-matroska",
   ".avi": "video/x-msvideo",
   ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
   ".ogg": "audio/ogg",
   ".wav": "audio/wav",
   ".pdf": "application/pdf",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".txt": "text/plain",
   ".md": "text/markdown",
+  ".markdown": "text/markdown",
   ".csv": "text/csv",
+  ".json": "application/json",
+  ".html": "text/html",
   ".zip": "application/zip",
 };
 
@@ -344,8 +377,14 @@ const CODEX_CLIENT_OPTIONS = { config: { suppress_unstable_features_warning: tru
    同时写一条 thread 撞了 active writer 冲突。这个开关是「二选一」，不是并联。 */
 const CODEX_USE_PERSISTENT = process.env.CODEX_PERSISTENT !== "0";
 
-// 界面上的五档推理强度 → codex 认识的四档。max 压到 xhigh，它没有更高的。
-const CODEX_EFFORT_TO_REASONING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+function reasoningEffort(value, provider) {
+  if (provider === "codex" && (value === "ultra" || value === null)) return value;
+  return EFFORT_LEVELS.has(value) ? value : "medium";
+}
+
+function codexServiceTier(speed) {
+  return speed === "fast" ? "priority" : "default";
+}
 
 const CODEX_PROFILE_NAME = "ChatGPT 会员";
 const LEGACY_CODEX_PROFILE_NAMES = new Set([
@@ -483,19 +522,6 @@ const agyToolInput = agyProvider.toolInput;
 const agyToolOutput = agyProvider.toolOutput;
 const agyToolName = agyProvider.toolName;
 
-/**
- * 把 agy 的 step_update 翻成前端认识的事件。
- *
- * 文本走 stream_event（agy 给的是真增量，打字机效果和 Claude 那条路一致），
- * 工具沿用 Codex 那套顶层事件形态。每段文本收尾时再补一条完整的 assistant
- * 消息，历史是从那条积累的（persistOutboundAgentEvent 不认 stream_event）。
- * 状态机实现见 providers/antigravity.js。
- */
-function createAgyEventSender(send) {
-  const translate = agyProvider.createTranslator();
-  return (ev) => { for (const out of translate(ev)) send(out); };
-}
-
 // ── Antigravity CLI（agy）────────────────────────────────
 // 官方没出 Node SDK（只有 Python 版，而且那个不认 CLI 的登录、只认 API key），
 // 所以这里走官方文档化的 headless 模式：起子进程，读 stream-json。
@@ -575,7 +601,7 @@ function explainAgyFailure(raw) {
    也可能残留一个 agy 那边已经下线的版本。具体怎么分辨在 agyProvider.resolveModel，
    用不了的名字退回这个账号的默认模型。 */
 function resolveAgyModel(requested, profile) {
-  const fallback = profile?.opusModel || agyDefaultModels().opusModel;
+  const fallback = profile?.sonnetModel || agyDefaultModels().sonnetModel;
   if (typeof requested !== "string" || !requested.trim()) return fallback;
   return agyProvider.resolveModel(requested.trim()) ?? fallback;
 }
@@ -649,13 +675,19 @@ function killAllCliProcesses() {
    taskkill /T 把整棵树收掉。 */
 function killProcessTree(proc) {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  const killDirectly = () => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try { proc.kill("SIGTERM"); } catch { /* 已退出 */ }
+  };
   if (process.platform === "win32") {
     try {
-      spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      const taskkill = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      taskkill.once("error", killDirectly);
+      taskkill.once("close", code => { if (code !== 0) killDirectly(); });
       return;
-    } catch { /* taskkill 不在就退回普通 kill */ }
+    } catch { /* taskkill 不可用时结束直接持有的进程 */ }
   }
-  try { proc.kill("SIGTERM"); } catch { /* 已经退了 */ }
+  killDirectly();
 }
 
 /* ── 常驻 agy 进程 ──────────────────────────────────────────
@@ -671,7 +703,7 @@ function killAgyRuntime() {
 }
 
 /**
- * 用常驻进程跑一轮。返回值同 runAgy，调用方不用关心进程是新起的还是接着用的。
+ * 用常驻进程跑一轮，把 CLI 的结束状态交给调用方处理。
  *
  * 两种情况会自动重起再试一次，都只在「这一轮一个字都还没吐出来」时才做，
  * 免得把已经执行过的工具调用重放一遍：
@@ -679,6 +711,52 @@ function killAgyRuntime() {
  *   2. 进程在写完 stdin 后立刻没了——常驻进程可能是上一轮之后被外力收掉的，
  *      这种情况下重起一个是对的，不该让用户看到一条莫名其妙的报错
  */
+const ORCHESTRATOR_BRIDGE_PATH = join(__dirname, "orchestrator-mcp-bridge.js");
+
+function orchestratorBridgeEnv(cwd) {
+  const apiHost = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
+  const livePort = (typeof http?.address === "function" && http.address()?.port) || PORT;
+  return {
+    INKFELLOW_API_BASE: `http://${apiHost}:${livePort}`,
+    ...(DESKTOP_AGENT_TOKEN ? { INKFELLOW_DESKTOP_TOKEN: DESKTOP_AGENT_TOKEN } : {}),
+    INKFELLOW_PARENT_CONV_ID: STRATEGIST_CONVERSATION_ID,
+    ...(cwd ? { INKFELLOW_VAULT_CWD: cwd } : {}),
+  };
+}
+
+/**
+ * 为 Antigravity (agy) 的 Fellow 主对话生成临时插件目录（放 DATA_DIR 下，不污染 Vault），
+ * 仅在 Fellow 主对话通过 --add-dir 挂载，让 Gemini/agy 原生拥有 dispatch_task 等工单工具。
+ */
+function ensureAgyStrategistPluginDir(cwd) {
+  const root = join(DATA_DIR, "agy-strategist-plugin");
+  const pluginDir = join(root, ".agents", "plugins", "inkfellow-orchestrator");
+  mkdirSync(pluginDir, { recursive: true });
+  writeFileSync(join(pluginDir, "plugin.json"), JSON.stringify({ name: "inkfellow-orchestrator" }, null, 2), "utf8");
+  writeFileSync(join(pluginDir, "mcp_config.json"), JSON.stringify({
+    mcpServers: {
+      orchestrator: {
+        command: process.execPath,
+        args: [ORCHESTRATOR_BRIDGE_PATH],
+        env: orchestratorBridgeEnv(cwd),
+      },
+    },
+  }, null, 2), "utf8");
+  return root;
+}
+
+/** 为 Codex app-server 的 Fellow 主对话构造 -c MCP 参数，仅挂载给 Fellow 主对话。 */
+function codexStrategistMcpArgs(cwd) {
+  const envObj = orchestratorBridgeEnv(cwd);
+  const tomlStr = (v) => JSON.stringify(String(v));
+  const envEntries = Object.entries(envObj).map(([k, v]) => `${k}=${tomlStr(v)}`).join(", ");
+  return [
+    "-c", `mcp_servers.orchestrator.command=${tomlStr(process.execPath)}`,
+    "-c", `mcp_servers.orchestrator.args=[${tomlStr(ORCHESTRATOR_BRIDGE_PATH)}]`,
+    "-c", `mcp_servers.orchestrator.env={${envEntries}}`,
+  ];
+}
+
 async function runAgyPersistent({
   prompt,
   images = [],
@@ -686,6 +764,7 @@ async function runAgyPersistent({
   model,
   effort = "medium",
   permissionMode = DEFAULT_PERMISSION_MODE,
+  extraAddDirs = [],
   signal = null,
   onEvent = null,
   onSession = null,
@@ -709,14 +788,14 @@ async function runAgyPersistent({
   const attempt = async () => {
     const runtime = session.agyRuntime;
     const resumeConversationId = session.agyConversationId;
-    const signature = agyRuntimeSignature({ bin, cwd, model, effort, permissionMode });
+    const signature = agyRuntimeSignature({ bin, cwd, model, effort, permissionMode, extraAddDirs });
     const reusable = runtime.started && agyRuntimeReusable(runtime, signature, resumeConversationId);
     if (runtime.proc && !reusable) await stopRuntime(runtime);
     /* 每轮记一句「接着用」还是「重起」。常驻这条路一旦悄悄失效，用户只会觉得
        「怎么又变慢了」，没有别的信号能看出来。 */
     console.log(`[agy] ${reusable ? "复用常驻进程" : "起新进程"}（会话 ${resumeConversationId ?? "新建"}）`);
     if (!runtime.started) {
-      const args = agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId });
+      const args = agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId, extraAddDirs });
       try {
         runtime.start({
           signature,
@@ -750,9 +829,8 @@ async function runAgyPersistent({
   };
 
   try {
-    let run;
     try {
-      run = await attempt();
+      return await attempt();
     } catch (err) {
       /* 只有「进程在这一轮里没了、而且一个字都没吐出来」才重来一次。
          这涵盖两种真实情况：档位表过期（agy 在启动阶段就拒绝，learnEfforts
@@ -766,15 +844,8 @@ async function runAgyPersistent({
         console.log(`agy 常驻进程这轮没能起来，重起一个再试：${message.slice(0, 200)}`);
       }
       killAgyRuntime();
-      run = await attempt();
+      return await attempt();
     }
-    if (run.status && run.status !== "SUCCESS") {
-      const raw = run.error || run.text || `Antigravity 请求失败（${run.status}）`;
-      // 失败原样记一条，不然出了问题只能翻 agy 自己的 cli.log
-      console.error(`[agy] ${run.status}: ${String(raw).slice(0, 300)}`);
-      throw new Error(explainAgyFailure(raw));
-    }
-    return { conversationId: run.conversationId, text: run.text, usage: run.usage };
   } finally {
     for (const path of temps) {
       try { unlinkSync(path); } catch { /* 已经不在就算了 */ }
@@ -904,7 +975,9 @@ async function runCodexPersistent({
   cwd,
   model = null,
   effort = "medium",
+  serviceTierForTurn = "default",
   permissionMode = DEFAULT_PERMISSION_MODE,
+  extraArgs = [],
   threadId = null,
   signal = null,
   onEvent = null,
@@ -933,7 +1006,7 @@ async function runCodexPersistent({
 
   const attempt = async () => {
     const runtime = session.codexRuntime;
-    const signature = codexRuntimeSignature({ bin: found.bin, cwd, permissionMode });
+    const signature = codexRuntimeSignature({ bin: found.bin, cwd, permissionMode, extraArgs });
     const reusable = codexRuntimeReusable(runtime, signature);
     if (runtime.proc && !reusable) await stopRuntime(runtime);
     /* 每轮记一句「接着用」还是「重起」。常驻这条路一旦悄悄失效，用户只会觉得
@@ -945,7 +1018,7 @@ async function runCodexPersistent({
         spawn: () => {
           const env = { ...process.env, NO_COLOR: "1" };
           if (found.pathDirs.length) env.PATH = `${found.pathDirs.join(";")};${env.PATH ?? ""}`;
-          const proc = spawn(found.bin, ["app-server"], {
+          const proc = spawn(found.bin, ["app-server", ...extraArgs], {
             cwd: cwd || undefined,
             env,
             stdio: ["pipe", "pipe", "pipe"],
@@ -976,7 +1049,7 @@ async function runCodexPersistent({
          一个请求都不发，对话中途换的模型就落不下去——turn/start 也认 model
          （TurnStartParams：Override the model for this turn and subsequent turns），
          每轮带上，换模型才真的生效。 */
-      params: { effort, sandboxPolicy, ...(model ? { model } : {}) },
+      params: { effort, serviceTierForTurn, sandboxPolicy, ...(model ? { model } : {}) },
       signal,
       onEvent: (method, params) => {
         produced = true;
@@ -1441,6 +1514,7 @@ export function buildAgentEnv(profileData, effort, requestedModel, overrideProfi
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
 
   const active = overrideProfile || getActiveProfile(profileData);
+  Object.assign(env, agentProviderCompatibilityEnv(active));
   if (!active || active.provider === "claude") return withClaudeAccountEnv(env, active);
   if (!active.apiKey) return env;
   // anthropic provider uses the default Anthropic base URL — no baseUrl required
@@ -2184,7 +2258,7 @@ function shouldAcceptIncomingMessages(currentMessages, incomingMessages) {
   return true;
 }
 
-function upsertHistoryConversation(conv, options = {}) {
+function upsertHistoryConversation(conv) {
   if (!conv || typeof conv !== "object" || !conv.id) return null;
   const id = normalizeHistoryId(conv.id);
   const history = readHistory();
@@ -2197,12 +2271,20 @@ function upsertHistoryConversation(conv, options = {}) {
     date: conv.date || new Date().toISOString(),
   };
 
+  // Ordinary saves may arrive after a rename, including from an older window.
+  // Only the explicit title PATCH may change an existing conversation's title.
+  if (current?.title) next.title = current.title;
+
   if (current) {
-    if ("messages" in conv) {
-      next.messages = shouldAcceptIncomingMessages(current.messages, conv.messages)
-        ? conv.messages
-        : current.messages;
-    } else if (current.messages) {
+    if ("messages" in conv && shouldAcceptIncomingMessages(current.messages, conv.messages)) {
+      const retryDrafts = new Map((current.messages || [])
+        .filter(message => message?.role === "user" && message.retryDraft)
+        .map(message => [message.id, message.retryDraft]));
+      next.messages = retryDrafts.size ? conv.messages.map(message => {
+        const retryDraft = message?.role === "user" && retryDrafts.get(message.id);
+        return retryDraft ? { ...message, retryDraft } : message;
+      }) : conv.messages;
+    } else if (current.messages || "messages" in conv) {
       next.messages = current.messages;
     }
     history[idx] = next;
@@ -2213,7 +2295,7 @@ function upsertHistoryConversation(conv, options = {}) {
   }
 
   dirtyConversationIds.add(next.id);
-  writeHistory(history, options);
+  writeHistory(history);
   return next;
 }
 
@@ -2329,6 +2411,27 @@ function beginServerConversationFromClient(msg) {
   session.activeHistoryRoute = route;
 
   const conv = ensureHistoryConversation(conversationId, { userText: displayText });
+  if (conversationId === STRATEGIST_CONVERSATION_ID || msg.conversationRole === "strategist") {
+    conv.role = "strategist";
+    if (!conv.title || conv.title === "新对话" || conv.title === "军师" || conv.title === displayText.slice(0, 60)) {
+      conv.title = "Fellow";
+    }
+  } else if (msg.conversationRole === "worker" || msg.ticketId) {
+    conv.role = "worker";
+    if (msg.ticketId) conv.ticketId = String(msg.ticketId);
+    if (msg.ticketTitle && (!conv.title || conv.title === "新对话")) conv.title = String(msg.ticketTitle).slice(0, 60);
+  } else if (!conv.role) {
+    conv.role = "normal";
+  }
+  if (conv.role === "worker") {
+    conv.profileId = msg.profileId || null;
+    conv.model = msg.model || null;
+    conv.effort = msg.effort || null;
+  } else if (conv.role === "strategist" && !msg[INTERNAL_AGENT_MESSAGE] && msg.profileId) {
+    conv.profileId = msg.profileId;
+    conv.model = msg.model || null;
+    conv.effort = msg.effort || null;
+  }
   const existing = conv.messages.find(m => m.id === userMessageId);
   if (existing) {
     // 同一条消息换了个模型重试：它现在是发给新的那家的
@@ -2340,12 +2443,42 @@ function beginServerConversationFromClient(msg) {
       text: displayText,
       cost: null,
       createdAt: new Date().toISOString(),
+      ...(msg.sourceChannel ? { sourceChannel: msg.sourceChannel } : {}),
       ...(route ? { via: route } : {}),
     });
   }
   conv.date = new Date().toISOString();
   persistHistoryImmediate();
   return conversationId;
+}
+
+function rememberAgyRetryDraft(msg, requestId, { conversationId, model, effort, permissionMode, profileId }) {
+  const draft = msg.retryDraft;
+  const composerText = typeof msg.composerText === "string" ? msg.composerText : draft?.composerText;
+  if (!draft || typeof composerText !== "string" || !composerText.trim()) return;
+  const conversation = readHistory().find(item => item.id === conversationId);
+  const userMessage = conversation?.messages?.find(item => item?.role === "user" && item.id === requestId);
+  if (!userMessage) return;
+
+  const stringOrNull = value => typeof value === "string" ? value : null;
+  const notes = Array.isArray(draft.mentionedNotes) ? draft.mentionedNotes : [];
+  const quote = draft.quote;
+  const images = Array.isArray(msg.images) ? msg.images : (msg.image ? [msg.image] : []);
+  userMessage.retryDraft = {
+    composerText,
+    mentionedNotes: notes.filter(note => typeof note?.path === "string" && typeof note?.title === "string")
+      .map(({ path, title }) => ({ path, title })),
+    quote: typeof quote?.text === "string" ? {
+      text: quote.text, section: stringOrNull(quote.section),
+      prefix: stringOrNull(quote.prefix), suffix: stringOrNull(quote.suffix),
+    } : null,
+    noteFile: stringOrNull(draft.noteFile),
+    images: images.filter(image => typeof image?.mediaType === "string" && /^image\/[\w.+-]+$/i.test(image.mediaType)
+        && typeof image.data === "string" && /^[A-Za-z0-9+/]+={0,2}$/.test(image.data))
+      .map(({ data, mediaType }) => ({ data, mediaType })),
+    model, effort, permissionMode, profileId,
+  };
+  dirtyConversationIds.add(conversationId);
 }
 
 function clearActiveHistoryConversation() {
@@ -2371,6 +2504,7 @@ function ensureActiveAssistantHistoryMessage() {
   const msg = {
     id: makeHistoryMessageId("assistant"),
     role: "assistant",
+    ...(session.activeForegroundRequestId ? { requestId: session.activeForegroundRequestId } : {}),
     text: "",
     blocks: [],
     raw: [],
@@ -2506,6 +2640,16 @@ function persistOutboundAgentEvent(ev) {
     appendTaskLifecycleHistoryEvent(ev);
     return;
   }
+  if (ev.type === "user") {
+    const results = ev.message?.content ?? ev.content;
+    if (Array.isArray(results)) {
+      const dispatchIds = new Set((session.activeAssistantHistoryMessage?.blocks || [])
+        .filter(block => /(?:^|__|:|_|\/)dispatch_task$/.test(block.name || "")).map(block => block.id));
+      const receipts = results.filter(block => block?.type === "tool_result" && dispatchIds.has(block.tool_use_id));
+      appendAssistantHistoryBlocks(receipts, ev);
+    }
+    return;
+  }
   if (ev.type === "assistant") {
     const content = ev.message?.content ?? ev.content ?? [];
     const blocks = normalizeAssistantHistoryBlocks(content);
@@ -2535,12 +2679,24 @@ function persistOutboundAgentEvent(ev) {
     appendAssistantHistoryBlocks([{
       type: "codex_error",
       message: ev.text || ev.message || "Assistant error",
+      ...(ev.provider === "antigravity" ? {
+        provider: ev.provider, retryable: ev.retryable === true, details: ev.details, userMessageId: ev.userMessageId,
+      } : {}),
       raw: cloneHistoryJson(ev),
     }], ev);
     finalizeActiveAssistantHistory("error");
     return;
   }
   if (ev.type === "result") {
+    if (ev.provider === "antigravity" && ev.status === "partial") {
+      appendAssistantHistoryBlocks([{
+        type: "antigravity_partial",
+        message: ev.text,
+        details: ev.details,
+      }], ev);
+      finalizeActiveAssistantHistory("partial");
+      return;
+    }
     finalizeActiveAssistantHistory(ev.subtype === "success" || !ev.is_error ? "complete" : "error", ev.total_cost_usd ?? null);
     return;
   }
@@ -2559,9 +2715,12 @@ function addSkillSlugsFromDir(slugs, dir) {
     for (const entry of readdirSync(dir)) {
       if (!entry || entry.startsWith(".")) continue;
       try {
-        // Use lstatSync so broken symlinks are counted (symlink = installed skill)
+        // 只认真正装好的 skill：目录（或软链/junction 指向的目录）里得有 SKILL.md。
+        // 断掉的 junction、synced 这种容器目录、空目录都不是能调用的 skill，
+        // 列出来只会让 SDK 上报的列表和磁盘列表对不上。
         const st = lstatSync(join(dir, entry));
-        if (st.isDirectory() || st.isSymbolicLink()) slugs.add(entry);
+        if (!st.isDirectory() && !st.isSymbolicLink()) continue;
+        if (existsSync(join(dir, entry, "SKILL.md"))) slugs.add(entry);
       } catch { /* skip */ }
     }
   } catch { /* dir not found */ }
@@ -2613,9 +2772,45 @@ const cachedSkillsByProvider = {
 };
 console.log(`Loaded ${cachedSkillsByProvider.claude.length} Claude, ${cachedSkillsByProvider.codex.length} Codex and ${cachedSkillsByProvider.antigravity.length} Antigravity skills from disk`);
 
+/* 磁盘扫描只看得到 ~/.claude/skills 下的目录；插件技能（obsidian:*、chatcut:*）、
+   synced 技能（anthropic-skills:*）、CLI 自带技能（code-review、loop…）和插件命令
+   （multivendor:dispatch）只有 SDK 在 init 里才报得出来。以前每次 WS 重连 / 切账号
+   都拿磁盘结果把 SDK 列表整个覆盖掉，于是「/」菜单时全时缺——发过一条消息之后
+   才补齐。这里把 SDK 报过的单独存一份（落盘，重启也在），始终跟磁盘结果取并集。 */
+const SDK_SKILLS_CACHE_FILE = join(DATA_DIR, "sdk-skills.json");
+const sdkSkillsByProvider = { claude: [] };
+try {
+  if (existsSync(SDK_SKILLS_CACHE_FILE)) {
+    const cached = JSON.parse(readFileSync(SDK_SKILLS_CACHE_FILE, "utf8"));
+    if (Array.isArray(cached?.claude)) sdkSkillsByProvider.claude = cached.claude.filter((s) => typeof s === "string");
+  }
+} catch { /* 缓存坏了就当没有 */ }
+
+function rememberSdkSkills(provider, ev) {
+  const key = normalizeSkillProvider(provider);
+  const skills = Array.isArray(ev?.skills) ? ev.skills : [];
+  // slash_commands 里带命名空间的是插件提供的命令（如 multivendor:dispatch），
+  // 用户同样是用「/」调用；不带命名空间的是 compact/init 这类 CLI 内置命令，前端另有内置清单。
+  const pluginCommands = (Array.isArray(ev?.slash_commands) ? ev.slash_commands : [])
+    .filter((name) => typeof name === "string" && name.includes(":"));
+  const next = [...new Set([...skills, ...pluginCommands])].filter((s) => typeof s === "string" && s).sort();
+  // An explicit empty discovery is authoritative. Older init events may omit
+  // both fields, so those still fall back to the last known list.
+  if (!Array.isArray(ev?.skills) && !Array.isArray(ev?.slash_commands)) return;
+  // 每开一个 Claude 会话都会来一次 init，列表多半没变，没变就别重写文件
+  const prev = sdkSkillsByProvider[key] ?? [];
+  if (prev.length === next.length && prev.every((s, i) => s === next[i])) return;
+  sdkSkillsByProvider[key] = next;
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(SDK_SKILLS_CACHE_FILE, JSON.stringify(sdkSkillsByProvider, null, 2));
+  } catch { /* 写不了只影响重启后的首屏 */ }
+}
+
 function skillsForProvider(provider) {
   const key = normalizeSkillProvider(provider);
-  cachedSkillsByProvider[key] = loadSkillsFromDisk(key);
+  const merged = new Set([...loadSkillsFromDisk(key), ...(sdkSkillsByProvider[key] ?? [])]);
+  cachedSkillsByProvider[key] = [...merged].sort();
   return cachedSkillsByProvider[key];
 }
 
@@ -2629,6 +2824,59 @@ function sendSkillInit(send, provider) {
 // ── WeChat Bot In-Memory Session & Live Poller Loop ──────────
 const activeWechatLogins = new Map();
 let wechatPollingController = null;
+const WECHAT_NOTIFY_MODES = new Set(["wechat", "all", "off"]);
+const DEFAULT_WECHAT_NOTIFY_MODE = "wechat";
+const wechatPeerContextTokens = new Map();
+
+function normalizeWechatNotifyMode(value) {
+  return WECHAT_NOTIFY_MODES.has(value) ? value : DEFAULT_WECHAT_NOTIFY_MODE;
+}
+
+function readWechatConfig() {
+  if (!existsSync(WECHAT_CONFIG_FILE)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      ...raw,
+      notifyTicketsMode: normalizeWechatNotifyMode(raw.notifyTicketsMode),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function updateWechatConfig(patch) {
+  const current = readWechatConfig();
+  if (!current) return null;
+  const next = {
+    ...current,
+    ...patch,
+    notifyTicketsMode: normalizeWechatNotifyMode(patch?.notifyTicketsMode ?? current.notifyTicketsMode),
+  };
+  writeFileSync(WECHAT_CONFIG_FILE, JSON.stringify(next, null, 2), "utf8");
+  return next;
+}
+
+function rememberWechatPeerContext(sender, contextToken) {
+  if (!sender) return;
+  if (contextToken) wechatPeerContextTokens.set(sender, contextToken);
+  try {
+    const current = readWechatConfig();
+    if (!current) return;
+    const nextToken = resolveWechatPeerContextToken(sender, current);
+    if (current.lastPeer === sender && current.lastContextToken === nextToken) return;
+    updateWechatConfig({
+      lastPeer: sender,
+      lastContextToken: nextToken,
+    });
+  } catch { /* non-critical persistence */ }
+}
+
+function resolveWechatPeerContextToken(peer, config = readWechatConfig()) {
+  if (peer && wechatPeerContextTokens.has(peer)) return wechatPeerContextTokens.get(peer);
+  return peer && config?.lastPeer === peer ? config.lastContextToken || undefined : undefined;
+}
 
 // 每个微信 sender 的对话历史（多轮上下文）
 // 结构 Map<sender, { turns: [{role, content}], lastAt: number }>
@@ -2950,16 +3198,19 @@ async function sendWechatMessage(baseUrl, token, toUser, text, contextToken = un
   }, contextToken);
 }
 
+const WECHAT_OUTBOUND_EXT_PATTERN = "(?:png|jpe?g|webp|gif|mp4|mov|webm|pdf|docx?|xlsx?|pptx?|md|markdown|txt|csv|json|zip|mp3|wav|m4a)";
+
 function extractWechatOutboundMediaRefs(text) {
   const refs = [];
   const seen = new Set();
+  const extRe = new RegExp(`\\.${WECHAT_OUTBOUND_EXT_PATTERN}(?:[?#].*)?$`, "i");
   const addRef = (raw, target) => {
     const clean = String(target || "")
       .trim()
       .replace(/^<(.+)>$/, "$1")
       .replace(/^["'](.+)["']$/, "$1");
     if (!clean || seen.has(clean)) return;
-    if (!/\.(png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(clean)) return;
+    if (!extRe.test(clean)) return;
     seen.add(clean);
     refs.push({ raw, target: clean });
   };
@@ -2975,19 +3226,29 @@ function extractWechatOutboundMediaRefs(text) {
     addRef(match[0], match[1]);
   }
 
-  const pathRe = /(`?)(file:\/\/\/[^`'")\s<>]+\.(?:png|jpe?g|webp|gif)|\/[^`'")\s<>]+\.(?:png|jpe?g|webp|gif)|(?:\.{1,2}\/|claude-chat\/data\/|data\/|wechat-media-\d+\/)[^`'")\s<>]+\.(?:png|jpe?g|webp|gif))\1/gi;
+  const pathRe = new RegExp(
+    "(`?)(file:\\/\\/\\/[^`'\")\\s<>]+\\." + WECHAT_OUTBOUND_EXT_PATTERN
+    + "|[A-Za-z]:[\\\\/][^`'\")\\s<>]+\\." + WECHAT_OUTBOUND_EXT_PATTERN
+    + "|\\/[^`'\")\\s<>]+\\." + WECHAT_OUTBOUND_EXT_PATTERN
+    + "|(?:\\.{1,2}\\/|claude-chat\\/data\\/|data\\/|wechat-media-\\d+\\/)[^`'\")\\s<>]+\\." + WECHAT_OUTBOUND_EXT_PATTERN
+    + ")\\1",
+    "gi",
+  );
   while ((match = pathRe.exec(text)) !== null) {
     addRef(match[0], match[2]);
   }
 
-  return refs.slice(0, 5);
+  return refs.slice(0, 9);
 }
 
 function resolveWechatOutboundLocalPath(target) {
-  const clean = String(target || "")
+  let clean = String(target || "")
     .trim()
-    .replace(/^file:\/\//, "")
+    .replace(/^file:\/\//i, "")
     .replace(/[?#].*$/, "");
+  if (process.platform === "win32" && /^\/[A-Za-z]:[\\/]/.test(clean)) {
+    clean = clean.slice(1);
+  }
   if (!clean || /^https?:\/\//i.test(clean)) return null;
   const candidates = [
     isAbsolute(clean) ? clean : resolve(DEFAULT_CWD, clean),
@@ -3001,6 +3262,31 @@ function resolveWechatOutboundLocalPath(target) {
     } catch { }
   }
   return null;
+}
+
+/** 超过微信上传上限的视频自动用 ffmpeg 压一份 720p 手机预览版，原片保留在电脑上。 */
+function prepareWechatOutboundVideo(localPath) {
+  const mime = getMimeFromFileName(localPath);
+  if (!mime.startsWith("video/")) return { uploadPath: localPath, compressed: false };
+  const st = statSync(localPath, { throwIfNoEntry: false });
+  if (!st || st.size <= WECHAT_MAX_MEDIA_BYTES) return { uploadPath: localPath, compressed: false };
+  const previewPath = join(WECHAT_MEDIA_DIR, `preview-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.mp4`);
+  const res = spawnSync("ffmpeg", [
+    "-y", "-i", localPath,
+    "-vf", "scale='min(720,iw)':-2",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+    "-c:a", "aac", "-b:a", "96k",
+    "-movflags", "+faststart",
+    previewPath,
+  ], { windowsHide: true, timeout: 120_000 });
+  if (res.status === 0 && existsSync(previewPath)) {
+    const outStat = statSync(previewPath, { throwIfNoEntry: false });
+    if (outStat && outStat.size <= WECHAT_MAX_MEDIA_BYTES) {
+      return { uploadPath: previewPath, compressed: true, cleanupPath: previewPath };
+    }
+    try { unlinkSync(previewPath); } catch {}
+  }
+  return { uploadPath: localPath, compressed: false };
 }
 
 async function downloadOutboundRemoteMedia(target) {
@@ -3047,15 +3333,23 @@ async function sendWechatResponseWithMedia(baseUrl, token, toUser, text, context
   }
 
   for (const ref of refs) {
+    let cleanupPath = null;
     try {
       const localPath = resolveWechatOutboundLocalPath(ref.target) || await downloadOutboundRemoteMedia(ref.target);
       if (!localPath) continue;
-      const item = await uploadWechatMediaFile(baseUrl, token, toUser, localPath);
+      const prepared = prepareWechatOutboundVideo(localPath);
+      cleanupPath = prepared.cleanupPath || null;
+      const item = await uploadWechatMediaFile(baseUrl, token, toUser, prepared.uploadPath);
       await sendWechatItem(baseUrl, token, toUser, item, contextToken);
-      console.log(`[WeChat Media] Sent outbound media: ${localPath}`);
+      if (prepared.compressed) {
+        await sendWechatMessage(baseUrl, token, toUser, `（已发送手机预览版，原片已保存在电脑：${localPath}）`, contextToken).catch(() => {});
+      }
+      console.log(`[WeChat Media] Sent outbound media: ${prepared.uploadPath}`);
     } catch (err) {
       console.warn(`[WeChat Media] Failed to send outbound media ${ref.target}: ${err.message}`);
-      await sendWechatMessage(baseUrl, token, toUser, `图片发送失败：${ref.target}`, contextToken).catch(() => {});
+      await sendWechatMessage(baseUrl, token, toUser, `附件发送失败（${basename(ref.target)}）：${err.message}`, contextToken).catch(() => {});
+    } finally {
+      if (cleanupPath) try { unlinkSync(cleanupPath); } catch {}
     }
   }
 }
@@ -3082,8 +3376,9 @@ function extractWechatTextParts(msg) {
     if (item.type === WECHAT_MESSAGE_ITEM_TYPE.TEXT && item.text_item?.text) {
       parts.push(String(item.text_item.text));
     }
-    if (item.type === WECHAT_MESSAGE_ITEM_TYPE.VOICE && item.voice_item?.voice_to_text) {
-      parts.push(String(item.voice_item.voice_to_text));
+    if (item.type === WECHAT_MESSAGE_ITEM_TYPE.VOICE) {
+      const spoken = item.voice_item?.voice_to_text || item.voice_item?.text;
+      if (spoken) parts.push(String(spoken));
     }
   }
   return parts.map(t => t.trim()).filter(Boolean);
@@ -3135,10 +3430,50 @@ function summarizeWechatHistoryPrompt(prompt, mediaFiles) {
   return summary ? `${prompt}\n\n附件：\n${summary}` : prompt;
 }
 
+const wechatInboundBuffers = new Map();
+
+function formatWechatQuickStatus() {
+  const cfg = resolveStrategistRuntimeConfig();
+  const profiles = readProfiles();
+  const prof = profiles.profiles.find(p => p.id === cfg.profileId) || getActiveProfile(profiles);
+  const modelLabel = [prof?.name || prof?.provider, cfg.model].filter(Boolean).join(" / ") || "默认模型";
+  const all = ticketStore.list({ limit: 40 });
+  const attention = all.filter(t => t.status === "needs_attention");
+  const running = all.filter(t => t.status === "running");
+  const queued = all.filter(t => t.status === "queued");
+  const lines = [
+    `🟢 电脑在线 · ✦ Fellow（${modelLabel}）`,
+    `后台任务：需拍板 ${attention.length} · 执行中 ${running.length} · 排队中 ${queued.length}`,
+  ];
+  const describe = (t, icon) => {
+    const step = t.execution?.lastStepLabel ? `（${t.execution.lastStepLabel}）` : "";
+    const reason = t.result?.attentionReason ? ` — ${t.result.attentionReason}` : "";
+    return `${icon} ${t.title}${step}${reason}`;
+  };
+  for (const t of attention.slice(0, 5)) lines.push(describe(t, "⚠️"));
+  for (const t of running.slice(0, 5)) lines.push(describe(t, "⏳"));
+  for (const t of queued.slice(0, 3)) lines.push(describe(t, "🕒"));
+  if (!attention.length && !running.length && !queued.length) {
+    lines.push("当前没有运行中的后台任务，随时可以派活。");
+  }
+  return lines.join("\n");
+}
+
+function flushWechatInboundBuffer(sender) {
+  const buf = wechatInboundBuffers.get(sender);
+  if (!buf) return;
+  wechatInboundBuffers.delete(sender);
+  if (buf.timer) clearTimeout(buf.timer);
+  const prompt = buildWechatPrompt(buf.textParts, buf.mediaFiles);
+  if (!prompt) return;
+  processWechatQuery(buf.baseUrl, buf.token, sender, prompt, buf.contextToken, buf.abortSignal, buf.mediaFiles);
+}
+
 async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   const sender = msg.from_user_id;
   const contextToken = msg.context_token;
   if (!sender) return;
+  rememberWechatPeerContext(sender, contextToken);
 
   const textParts = extractWechatTextParts(msg);
   const mediaItems = (msg.item_list || []).filter(item =>
@@ -3164,14 +3499,52 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
 
   console.log(`[WeChat Inbound] message from ${sender}: "${prompt}" media=${mediaFiles.length}`);
 
-  // 用户主动开启新对话
-  if (mediaFiles.length === 0 && /^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
-    wechatSenderSessions.delete(sender);
-    sendWechatMessage(baseUrl, token, sender, "已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
+  // 极速状态指令：0 延迟不消耗模型额度，直接回报电脑在线状态与后台任务盘面
+  if (mediaFiles.length === 0 && /^(状态|进度|\/status|在吗)$/i.test(prompt)) {
+    sendWechatMessage(baseUrl, token, sender, formatWechatQuickStatus(), contextToken).catch(() => {});
     return;
   }
 
-  processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles);
+  // 微信端快捷指令：与桌面端 ✦ Fellow 的「整理记忆」对齐（不丢长期记忆与运行中的后台任务）
+  if (mediaFiles.length === 0 && /^(整理记忆|新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
+    flushWechatInboundBuffer(sender);
+    const result = compactStrategistMemory();
+    const reply = result.ok
+      ? "已整理记忆并开启干净上下文（长期记忆和正在运行的后台任务均已保留）。"
+      : (result.error || "Fellow 正在回复中，请稍后再试。");
+    sendWechatMessage(baseUrl, token, sender, reply, contextToken).catch(() => {});
+    return;
+  }
+
+  // 3 秒防抖聚合：手机微信连发 2~3 条碎消息/语音时合并为一条完整指令交给 Fellow
+  if (WECHAT_DEBOUNCE_MS <= 0) {
+    processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles);
+    return;
+  }
+  const existing = wechatInboundBuffers.get(sender);
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.textParts.push(...textParts);
+    existing.mediaFiles.push(...mediaFiles);
+    existing.contextToken = contextToken || existing.contextToken;
+    existing.baseUrl = baseUrl;
+    existing.token = token;
+    existing.abortSignal = abortSignal;
+    existing.timer = setTimeout(() => flushWechatInboundBuffer(sender), WECHAT_DEBOUNCE_MS);
+    existing.timer.unref?.();
+    return;
+  }
+  const entry = {
+    baseUrl,
+    token,
+    contextToken,
+    abortSignal,
+    textParts: [...textParts],
+    mediaFiles: [...mediaFiles],
+    timer: setTimeout(() => flushWechatInboundBuffer(sender), WECHAT_DEBOUNCE_MS),
+  };
+  entry.timer.unref?.();
+  wechatInboundBuffers.set(sender, entry);
 }
 
 async function startWechatPolling(baseUrl, token, initialBuf = "") {
@@ -3204,7 +3577,7 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
         if (resp.get_updates_buf) {
           getUpdatesBuf = resp.get_updates_buf;
           try {
-            writeFileSync(WECHAT_SYNC_FILE, JSON.stringify({ get_updates_buf }), "utf8");
+            writeFileSync(WECHAT_SYNC_FILE, JSON.stringify({ get_updates_buf: getUpdatesBuf }), "utf8");
           } catch {}
         }
 
@@ -3658,12 +4031,15 @@ async function executeProviderDispatch({
     noteSession(resumeSessionId || thread.id || null);
     const { events } = await thread.runStreamed(task, { signal: controller.signal });
     const answerParts = [];
+    const reportedSteps = new Set();
     for await (const event of events) {
       // 新建线程唯一能拿到 id 的时机，错过它中断就白跑一趟。
       // 收到这个事件也说明对方认了这条会话（续接时同理）
       if (event.type === "thread.started") noteSession(event.thread_id, { fromVendor: true });
       // 工具动作实时抛给前端，否则卡片只能一直显示"等待子任务的第一个动作"
-      if (onStep && event.type === "item.started" && event.item && event.item.type !== "agent_message") {
+      if (onStep && ["item.started", "item.completed"].includes(event.type) && event.item && event.item.type !== "agent_message"
+          && (event.item.id == null || !reportedSteps.has(event.item.id))) {
+        if (event.item.id != null) reportedSteps.add(event.item.id);
         try { onStep(codexToolName(event.item) || event.item.type, codexToolInput(event.item)); } catch { /* 步骤上报失败不该影响主流程 */ }
       }
       if (event.type === "item.completed" && event.item?.type === "agent_message") {
@@ -3692,10 +4068,10 @@ async function executeProviderDispatch({
       onEvent: (ev) => {
         if (!onStep) return;
         const step = ev?.step_update;
-        if (ev.event !== "step_update" || step?.step_type !== "tool" || step.state !== "ACTIVE") return;
-        const key = step.step_index ?? -1;
-        if (reportedSteps.has(key)) return;
-        reportedSteps.add(key);
+        if (ev.event !== "step_update" || step?.step_type !== "tool" || !["ACTIVE", "DONE"].includes(step.state)) return;
+        const key = step.step_index;
+        if (key != null && reportedSteps.has(key)) return;
+        if (key != null) reportedSteps.add(key);
         try { onStep(agyToolName(step), agyToolInput(step.tool_info)); } catch { /* 步骤上报失败不该影响主流程 */ }
       },
     });
@@ -3786,16 +4162,34 @@ function subtaskIdOrNull(value) {
   return raw && raw.length <= SUBTASK_ID_MAX_CHARS && !["__proto__", "constructor", "prototype"].includes(raw) && /^[\w:.-]+$/.test(raw) ? raw : null;
 }
 
+function defaultAgySubtaskFollowupModel(conversation, subtaskId, profile) {
+  let state;
+  for (const saved of Object.values(conversation?.subtaskSnapshots ?? {})) {
+    const entries = saved?.snapshot?.state;
+    if (!Array.isArray(entries)) continue;
+    state = entries.find(entry => Array.isArray(entry) && entry[0] === subtaskId
+      && (entry[1]?.profileId || entry[1]?.origin?.profileId) === profile.id)?.[1];
+    if (state) break;
+  }
+  if (typeof state?.followupModel === "string" && state.followupModel.trim()) return state.followupModel.trim();
+  const lastReply = conversation?.messages?.findLast(message => message?.role === "assistant"
+    && message.subtask?.id === subtaskId && message.via?.profileId === profile.id && message.via.model);
+  const originalModel = state?.origin?.model || state?.model || lastReply?.via?.model || dispatchModelForProfile(profile);
+  return /^gemini(?:-|$)/i.test(originalModel) ? "gemini-4-hydrogen" : originalModel;
+}
+
 function sendSubtaskStatus(conversationId, subtaskId, requestId) {
   const running = SUBTASK_FOLLOWUPS.get(requestId);
   if (running?.conversationId === conversationId && running.subtaskId === subtaskId) {
-    deliver({ type: "subtask_started", conversationId, subtaskId, requestId });
+    deliver({ type: "subtask_started", conversationId, subtaskId, requestId,
+      steps: running.steps || [], model: running.model || null, resumed: running.resumed });
     return;
   }
   const conversation = readHistory().find(item => item.id === conversationId);
   const result = conversation?.messages?.find(item => item.id === `${requestId}_reply` && item.subtask?.id === subtaskId);
   const type = result?.status === "complete" ? "subtask_done" : result?.status === "stopped" ? "subtask_stopped" : "subtask_error";
   deliver({ type, conversationId, subtaskId, requestId, output: result?.text || "", model: result?.via?.model || null,
+    steps: result?.dispatchSteps || [],
     text: result?.blocks?.find(block => block.type === "codex_error")?.message || "连接中断，无法确认追问是否送达，请检查后重试。" });
 }
 
@@ -3821,8 +4215,9 @@ async function runSubtaskFollowup(msg) {
     return;
   }
   if (deletedHistoryConversationIds.has(conversationId)) return;
+  const conversation = readHistory().find(item => item.id === conversationId);
   // 断线重连后前端可能把同一条再发一次
-  if (SUBTASK_FOLLOWUPS.has(requestId) || readHistory().find(item => item.id === conversationId)?.messages?.some(item => item.id === requestId)) {
+  if (SUBTASK_FOLLOWUPS.has(requestId) || conversation?.messages?.some(item => item.id === requestId)) {
     sendSubtaskStatus(conversationId, subtaskId, requestId);
     return;
   }
@@ -3833,7 +4228,8 @@ async function runSubtaskFollowup(msg) {
     reply({ type: "subtask_error", text: unavailableProviderMessage(profileData, msg.profileId) });
     return;
   }
-  const requestedModel = typeof msg.model === "string" && msg.model.trim() ? msg.model.trim().slice(0, 200) : null;
+  const requestedModel = typeof msg.model === "string" && msg.model.trim() ? msg.model.trim().slice(0, 200)
+    : (profile.provider === "antigravity" ? defaultAgySubtaskFollowupModel(conversation, subtaskId, profile) : null);
   const permissionMode = PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE;
   const label = typeof msg.label === "string" ? msg.label.trim().slice(0, 120) : "";
   const subtask = { id: subtaskId, ...(label ? { label } : {}) };
@@ -3847,7 +4243,9 @@ async function runSubtaskFollowup(msg) {
   const releaseInflight = markDispatchInflight(scope, profile.id);
   const generation = dispatchGenerationOf(conversationId);
   const controller = new AbortController();
-  SUBTASK_FOLLOWUPS.set(requestId, { conversationId, subtaskId, controller });
+  const steps = [];
+  const runState = { conversationId, subtaskId, controller, steps, resumed: Boolean(resumeSessionId) };
+  SUBTASK_FOLLOWUPS.set(requestId, runState);
   const route = historyRoute({
     provider: profile.provider,
     profileId: profile.id,
@@ -3855,6 +4253,7 @@ async function runSubtaskFollowup(msg) {
     model: requestedModel || dispatchModelForProfile(profile),
     subtask: subtaskId,
   });
+  runState.model = route.model;
   const stillOwned = () => !deletedHistoryConversationIds.has(conversationId)
     && dispatchGenerationOf(conversationId) === generation;
 
@@ -3874,7 +4273,6 @@ async function runSubtaskFollowup(msg) {
   }
   reply({ type: "subtask_started", resumed: Boolean(resumeSessionId), model: route.model ?? null });
 
-  const steps = [];
   const recordReply = (fields) => {
     if (!stillOwned()) return;
     const target = ensureHistoryConversation(conversationId);
@@ -3914,9 +4312,10 @@ async function runSubtaskFollowup(msg) {
         rememberSubtaskSession(conversationId, subtaskId, profile.id, id);
       },
       onStep: (name, input) => {
+        if (!stillOwned()) return;
         const compact = compactToolInput(input);
-        if (steps.length < 200) steps.push({ name: String(name || "tool"), input: compact });
-        reply({ type: "subtask_step", name: String(name || "tool"), input: compact });
+        steps.push({ name: String(name || "tool"), input: compact });
+        reply({ type: "subtask_step", name: String(name || "tool"), input: compact, stepIndex: steps.length - 1 });
       },
     });
     let result;
@@ -3930,6 +4329,7 @@ async function runSubtaskFollowup(msg) {
       dropDispatchSession(scope, profile.id, resumeSessionId);
       forgetPersistedSubtaskSession(conversationId, subtaskId, resumeSessionId);
       resumeSessionId = null;
+      runState.resumed = false;
       reply({ type: "subtask_started", resumed: false, model: route.model ?? null });
       result = await execute();
     }
@@ -3946,6 +4346,7 @@ async function runSubtaskFollowup(msg) {
       profileId: result.profileId,
       model: result.model,
       resumed: result.resumed,
+      steps,
     });
   } catch (error) {
     if (resumeSessionId
@@ -3959,13 +4360,13 @@ async function runSubtaskFollowup(msg) {
       recordReply({ text: "", blocks: [], status: "stopped" });
       SUBTASK_FOLLOWUPS.delete(requestId);
       releaseInflight();
-      reply({ type: "subtask_stopped" });
+      reply({ type: "subtask_stopped", steps });
     } else {
       const errorText = String(error?.message || error);
       recordReply({ text: "", blocks: [{ type: "codex_error", message: errorText }], status: "error" });
       SUBTASK_FOLLOWUPS.delete(requestId);
       releaseInflight();
-      reply({ type: "subtask_error", text: errorText });
+      reply({ type: "subtask_error", text: errorText, steps });
     }
   } finally {
     SUBTASK_FOLLOWUPS.delete(requestId);
@@ -4093,6 +4494,128 @@ function _buildDispatchMcpServer({ cwd, permissionMode, profileData, sendStep = 
   });
 }
 
+function _buildOrchestratorMcpServer({ parentConversationId = STRATEGIST_CONVERSATION_ID, cwd = DEFAULT_CWD, profileData = null }) {
+  const dispatchTaskTool = tool(
+    "dispatch_task",
+    "异步派发一个后台执行工单给独立的执行专员（Worker）。调用后会立即返回 ticketId，不阻塞主对话；执行专员会在后台独立完成并自动回报结果。",
+    {
+      title: z.string().describe("简短任务标题（8~24字），展示在任务卡片上"),
+      goal: z.string().describe("清晰的一句话核心目标"),
+      brief: z.string().describe("给执行专员的完整、自包含任务说明（背景、具体步骤、约束与风格要求）"),
+      contextFiles: z.array(z.string()).optional().describe("建议执行专员先阅读的笔记或文件路径列表"),
+      writeScope: z.array(z.string()).optional().describe("可选：允许修改或新建的目录/文件路径（不填则默认允许写入非系统保护目录）"),
+      cwd: z.string().optional().describe("可选：任务工作目录的绝对路径（如其他代码仓库、桌面或视频素材目录；不填则默认当前 Vault）"),
+      acceptanceCriteria: z.array(z.string()).optional().describe("可核对的验收标准清单"),
+      provider: z.string().optional().describe("可选：指定厂商、账号名称或 profile id（可先调 list_providers 查看）"),
+      model: z.string().optional().describe("可选：指定模型名称"),
+      specialistId: z.string().optional().describe("可选：指派给 .inkfellow/agents/ 下的常驻专岗 ID"),
+      allowBash: z.boolean().optional().describe("可选：是否允许执行命令行（写代码、剪视频、操作电脑、网页发布、跑脚本时设为 true）"),
+      allowExternalAction: z.boolean().optional().describe("可选：是否允许调用已配置的外部 MCP 工具（默认 false）"),
+      maxTurns: z.number().int().min(1).max(100).optional().describe("工具执行回合上限"),
+    },
+    async (args) => {
+      try {
+        const result = await dispatchConfiguredTicket(args, { parentConversationId, cwd, profiles: profileData });
+        return { isError: !result.ok, content: [{ type: "text", text: JSON.stringify(result) }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text", text: String(error?.message || error) }] };
+      }
+    },
+  );
+
+  const listTicketsTool = tool(
+    "list_tickets",
+    "查看当前所有后台工单的精简状态盘面（含需拍板、进行中、排队中、已完成）以及可用常驻专岗。",
+    {
+      status: z.string().optional().describe("可选按状态过滤：queued / running / needs_attention / completed / failed / stopped / interrupted"),
+      limit: z.number().optional().describe("最多返回条数，默认 20"),
+    },
+    async ({ status, limit }) => {
+      const result = orchestrator.listTickets({
+        status: status || null,
+        parentConversationId,
+        limit: limit || 20,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  const inspectTicketTool = tool(
+    "inspect_ticket",
+    "查看某张工单的压缩状态报告、改动文件清单与最近执行步骤（不会灌入全量原始日志）。",
+    {
+      ticketId: z.string().describe("工单编号（tk_...）"),
+    },
+    async ({ ticketId }) => {
+      const result = orchestrator.inspectTicket(ticketId);
+      return { isError: !result.ok, content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  const recallTicketDetailTool = tool(
+    "recall_ticket_detail",
+    "链式召回（Chain of Recall）：仅当需要核对某张工单的具体过程细节时，按工单 ID 分页读取执行专员的对话片段。",
+    {
+      ticketId: z.string().describe("工单编号（tk_...）"),
+      offset: z.number().optional().describe("消息起始偏移，默认 0"),
+      limit: z.number().optional().describe("读取条数，默认 6，最多 12"),
+    },
+    async ({ ticketId, offset, limit }) => {
+      const result = orchestrator.recallTicketDetail(ticketId, { offset, limit });
+      return { isError: !result.ok, content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  const messageTicketTool = tool(
+    "message_ticket",
+    "向指定工单的执行专员发送补充要求、方向纠偏或返工指令（运行中直接插话，已完成则续接返工）。",
+    {
+      ticketId: z.string().describe("工单编号（tk_...）"),
+      instruction: z.string().describe("给执行专员的新指令或返工要求"),
+    },
+    async ({ ticketId, instruction }) => {
+      const result = await orchestrator.messageTicket(ticketId, instruction, { fromUser: false });
+      return { isError: !result.ok, content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  const stopTicketTool = tool(
+    "stop_ticket",
+    "立即中止某张正在运行或排队的后台工单。",
+    {
+      ticketId: z.string().describe("工单编号（tk_...）"),
+    },
+    async ({ ticketId }) => {
+      const result = await orchestrator.stopTicket(ticketId);
+      return { isError: !result.ok, content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  const listProvidersTool = tool(
+    "list_providers",
+    "查看当前所有已配置的 AI 账号、模型与擅长领域，便于派单时择优分配。",
+    {},
+    async () => ({
+      content: [{ type: "text", text: JSON.stringify(listDispatchProviders(readProfiles())) }],
+    }),
+  );
+
+  return createSdkMcpServer({
+    name: "orchestrator",
+    instructions: STRATEGIST_SYSTEM_PROMPT,
+    tools: [
+      dispatchTaskTool,
+      listTicketsTool,
+      inspectTicketTool,
+      recallTicketDetailTool,
+      messageTicketTool,
+      stopTicketTool,
+      listProvidersTool,
+    ],
+    alwaysLoad: true,
+  });
+}
+
 function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
@@ -4184,159 +4707,138 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
   });
 }
 
+function buildWechatInlineImages(mediaFiles = []) {
+  const images = [];
+  for (const file of mediaFiles) {
+    if (file?.kind !== "image" || !file.path) continue;
+    try {
+      const buf = readFileSync(file.path);
+      if (buf.length > WECHAT_MAX_INLINE_IMAGE_BYTES) continue;
+      images.push({
+        data: buf.toString("base64"),
+        mediaType: file.mime || "image/jpeg",
+      });
+    } catch { /* fallback to path summary in prompt */ }
+  }
+  return images;
+}
+
+function formatDispatchedTicketsForWechat(dispatched = []) {
+  if (!dispatched.length) return "";
+  const lines = [`已派出 ${dispatched.length} 个后台任务：`];
+  dispatched.forEach((item, idx) => {
+    lines.push(`${idx + 1}. ${item.title || item.ticketId}${item.status === "queued" ? "（排队中）" : "（执行中）"}`);
+  });
+  lines.push("完成后会自动在微信汇报进度。");
+  return lines.join("\n");
+}
+
+function resolveStrategistRuntimeConfig() {
+  const strategistConv = readHistory().find((c) => c.id === STRATEGIST_CONVERSATION_ID);
+  const profiles = readProfiles();
+  const active = getActiveProfile(profiles);
+  const savedProfile = strategistConv?.profileId
+    ? profiles.profiles.find((p) => p.id === strategistConv.profileId)
+    : null;
+  const chosen = savedProfile || active;
+  return {
+    profileId: chosen?.id,
+    model: savedProfile ? (strategistConv?.model || undefined) : undefined,
+    effort: savedProfile ? (strategistConv?.effort || undefined) : undefined,
+  };
+}
+
+function compactStrategistMemory({ note } = {}) {
+  const target = sessions.peek(STRATEGIST_CONVERSATION_ID);
+  if (foregroundActiveFor(target)) {
+    return { ok: false, statusCode: 409, error: "请等 Fellow 当前回复完成后再整理记忆" };
+  }
+  const conv = readHistory().find(item => item.id === STRATEGIST_CONVERSATION_ID);
+  const recent = (conv?.messages || []).slice(-8)
+    .map(m => `- ${m.role === "user" ? "用户" : "Fellow"}：${String(m.text || "").replace(/\s+/g, " ").slice(0, 180)}`)
+    .join("\n");
+  const file = appendStrategistMemory(DEFAULT_CWD, note || recent || "手动整理记忆，承接活跃任务。");
+  dispatchInternalAgentMessage({ reset: true, preserveMessages: true, conversationId: STRATEGIST_CONVERSATION_ID });
+  return { ok: true, memoryFile: file };
+}
+
 async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles = []) {
-  console.log(`[WeChat Agent] processWechatQuery starting for ${sender}...`);
+  console.log(`[WeChat -> Fellow] routing message from ${sender} to ${STRATEGIST_CONVERSATION_ID}...`);
+  const typingInterval = setInterval(() => {
+    sendWechatTyping(baseUrl, token, sender, 1, contextToken).catch(() => {});
+  }, 6000);
+  typingInterval.unref?.();
   try {
     await sendWechatTyping(baseUrl, token, sender, 1, contextToken);
+    const runtimeConfig = resolveStrategistRuntimeConfig();
+    const images = buildWechatInlineImages(mediaFiles);
+    const requestId = `wx_${crypto.randomUUID()}`;
 
-    const profileData = readProfiles();
-    const active = getActiveProfile(profileData);
-    console.log(`[WeChat Agent] Active profile: ${active ? active.name : "none"} (provider: ${active ? active.provider : "none"})`);
-
-    // 取出该 sender 的对话历史，超时则清除重新开始
-    const sessionEntry = wechatSenderSessions.get(sender);
-    const isExpired = sessionEntry && (Date.now() - sessionEntry.lastAt >= WECHAT_SESSION_TTL_MS);
-    if (isExpired) wechatSenderSessions.delete(sender);
-    const history = (!isExpired && sessionEntry?.turns) ? sessionEntry.turns : [];
-
-    const hasScheduler = hasSchedulerIntent(prompt);
-    const sdkClient = buildAnthropicClientForWechat(profileData);
-    const includeImageBlocks = !sdkClient || active?.provider !== "deepseek";
-    const userContent = buildWechatUserContent(prompt, mediaFiles, { includeImageBlocks });
-    const historyPrompt = summarizeWechatHistoryPrompt(prompt, mediaFiles);
-    const wechatSystemPrompt = hasScheduler
-      ? `${WECHAT_OUTPUT_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`
-      : WECHAT_OUTPUT_PROMPT;
-
-    const typingInterval = setInterval(() => {
-      sendWechatTyping(baseUrl, token, sender, 1, contextToken);
-    }, 6000);
-
-    let finalResponse = "";
-    let wechatStallTimer = null;
-    let isWechatStall = false;
-    try {
-      if (sdkClient && !hasScheduler) {
-        // ── 有独立 API Key 的 provider（anthropic / deepseek / openrouter）──
-        // 用 Anthropic SDK messages.create()，传结构化消息数组
-        const { client, model } = sdkClient;
-        const messages = [
-          ...history.map(t => ({ role: t.role, content: t.content })),
-          { role: "user", content: userContent },
-        ];
-        console.log(`[WeChat Agent] messages.create (model: ${model}, history: ${history.length} turns)`);
-        const response = await client.messages.create({ model, max_tokens: 4096, system: WECHAT_OUTPUT_PROMPT, messages });
-        // 只取 text 块，过滤掉 thinking / redacted_thinking（不存 signature，不会报错）
-        finalResponse = response.content.filter(b => b.type === "text").map(b => b.text).join("");
-      } else {
-        // ── claude 会员，或需要工具能力的请求：走 Agent SDK query() ──
-        // 不使用 resume（thinking signature 问题），改用文本注入历史
-        const agentEnv = buildAgentEnv(profileData, "medium", null);
-        const wechatCwd = resolveAllowedCwd("");
-        agentEnv.PWD = wechatCwd; // 工作目录与实际 cwd 一致，避免误报为启动目录
-        let fullPrompt = prompt;
-        if (history.length > 0) {
-          const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
-          fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
-        }
-        const agentUserContent = buildWechatUserContent(fullPrompt, mediaFiles, { includeImageBlocks });
-        const extraMcpServers = {
-          ...(DISPATCH_AUTO_ENABLED ? {
-            dispatch: _buildDispatchMcpServer({
-              cwd: wechatCwd,
-              permissionMode: "auto",
-              profileData,
-              // 微信链路按发信人隔离会话，跟 Web 那边的对话 id 是两套命名空间
-              conversationId: sender ? `wechat_${String(sender).replace(/[^A-Za-z0-9_-]/g, "")}` : null,
-              getAbortSignal: () => queryAbortController.signal,
-            }),
-          } : {}),
-          ...(hasScheduler
-            ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
-            : {}),
-        };
-        console.log(`[WeChat Agent] query() via Agent SDK (history: ${history.length} turns, scheduler: ${hasScheduler})`);
-        const userMsg = {
-          type: "user",
-          message: { role: "user", content: agentUserContent },
-          parent_tool_use_id: null,
-        };
-        const queryAbortController = new AbortController();
-        const resetWechatStall = () => {
-          clearTimeout(wechatStallTimer);
-          wechatStallTimer = setTimeout(() => {
-            isWechatStall = true;
-            queryAbortController.abort();
-          }, STREAM_STALL_MS);
-        };
-        if (abortSignal.aborted) {
-          queryAbortController.abort();
-        } else {
-          abortSignal.addEventListener("abort", () => queryAbortController.abort(), { once: true });
-        }
-        const generator = query({
-          prompt: (async function* () { yield userMsg; })(),
-          options: {
-            cwd: wechatCwd,
-            permissionMode: "auto",
-            allowDangerouslySkipPermissions: true,
-            includePartialMessages: false,
-            env: agentEnv,
-            abortController: queryAbortController,
-            mcpServers: extraMcpServers,
-            systemPrompt: { type: "preset", preset: "claude_code", append: wechatSystemPrompt },
-            ...(hasScheduler ? {
-              disallowedTools: ["Bash"],
-            } : {}),
-          },
-        });
-        resetWechatStall();
-        for await (const ev of generator) {
-          resetWechatStall();
-          if (ev.type === "assistant") {
-            const text = (ev.message?.content || ev.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-            if (text) finalResponse = text;
-          }
-          if (ev.type === "result" && ev.subtype === "success" && ev.result) finalResponse = ev.result;
-        }
-        clearTimeout(wechatStallTimer);
+    const turnResult = await new Promise((resolve) => {
+      let settled = false;
+      const done = (payload) => {
+        if (settled) return;
+        settled = true;
+        abortSignal?.removeEventListener("abort", onAbort);
+        resolve(payload);
+      };
+      const onAbort = () => done({ state: "aborted", output: "", error: null, dispatchedTickets: [] });
+      if (abortSignal?.aborted) {
+        onAbort();
+        return;
       }
-    } catch (err) {
-      if (abortSignal.aborted) { console.warn(`[WeChat Agent] Aborted.`); return; }
-      if (err?.name === "AbortError" && isWechatStall) {
-        console.warn(`[WeChat Agent] Stream emitted no events for ${STREAM_STALL_MS / 60_000} min; aborted as frozen.`);
-        finalResponse = "⚠️ AI 响应超时，请稍后重试。";
-      } else {
-        console.error("[WeChat Agent] Error:", err);
-        finalResponse = `⚠️ 助手发生错误: ${err.message}`;
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+      const receipt = dispatchInternalAgentMessage({
+        conversationId: STRATEGIST_CONVERSATION_ID,
+        conversationRole: "strategist",
+        sourceChannel: "wechat",
+        sourcePeer: sender,
+        wechatContextToken: contextToken,
+        userMessageId: requestId,
+        prompt,
+        displayText: prompt,
+        ...(images.length ? { images } : {}),
+        profileId: runtimeConfig.profileId,
+        model: runtimeConfig.model,
+        effort: runtimeConfig.effort,
+        permissionMode: "auto",
+        cwd: resolveAllowedCwd(""),
+        turnComplete: done,
+      });
+
+      if (receipt?.state === "rejected") {
+        done({ state: "error", output: "", error: receipt.error || "无法启动 Fellow，请检查模型账号配置。", dispatchedTickets: [] });
       }
-    } finally {
-      clearTimeout(wechatStallTimer);
-      clearInterval(typingInterval);
-      await sendWechatTyping(baseUrl, token, sender, 2, contextToken);
+    });
+
+    if (abortSignal?.aborted || turnResult.state === "aborted") {
+      console.warn("[WeChat -> Fellow] Aborted.");
+      return;
     }
 
-    console.log(`[WeChat Agent] Response (length: ${finalResponse.length}): "${finalResponse.slice(0, 60)}..."`);
+    let finalResponse = String(turnResult.output || "").trim();
+    if (!finalResponse && turnResult.dispatchedTickets?.length) {
+      finalResponse = formatDispatchedTicketsForWechat(turnResult.dispatchedTickets);
+    }
+    if (!finalResponse && turnResult.state === "error") {
+      finalResponse = `⚠️ ${turnResult.error || "助手发生错误，请稍后重试。"}`;
+    } else if (!finalResponse && turnResult.state === "stopped") {
+      finalResponse = "本轮回复已停止。";
+    }
 
-    if (!abortSignal.aborted && finalResponse.trim()) {
-      try {
-        await sendWechatResponseWithMedia(baseUrl, token, sender, finalResponse.trim(), contextToken);
-        console.log(`[WeChat Agent] Message sent to ${sender}.`);
-
-        // 追加本轮到历史，只存文本，超限时丢弃最早一轮
-        const newTurns = [...history,
-          { role: "user", content: historyPrompt },
-          { role: "assistant", content: finalResponse.trim() },
-        ];
-        if (newTurns.length > WECHAT_MAX_HISTORY_TURNS * 2) newTurns.splice(0, 2);
-        wechatSenderSessions.set(sender, { turns: newTurns, lastAt: Date.now() });
-        saveWechatHistory();
-      } catch (err) {
-        console.error("[WeChat Agent] Failed to send message to WeChat:", err.message);
-      }
+    if (finalResponse) {
+      await sendWechatResponseWithMedia(baseUrl, token, sender, finalResponse, contextToken);
+      console.log(`[WeChat -> Fellow] Replied to ${sender} (${finalResponse.length} chars).`);
     }
   } catch (outerErr) {
-    console.error("[WeChat Agent] Outer execution crash:", outerErr);
+    console.error("[WeChat -> Fellow] Execution crash:", outerErr);
+    if (!abortSignal?.aborted) {
+      await sendWechatMessage(baseUrl, token, sender, `⚠️ 助手发生错误：${outerErr.message || outerErr}`, contextToken).catch(() => {});
+    }
+  } finally {
+    clearInterval(typingInterval);
+    await sendWechatTyping(baseUrl, token, sender, 2, contextToken).catch(() => {});
   }
 }
 
@@ -4358,12 +4860,45 @@ if (existsSync(WECHAT_CONFIG_FILE)) {
 
 
 // ── Scheduler init ────────────────────────────────────────
+async function runScheduledPrompt(job, fullPrompt) {
+  const runtimeConfig = resolveStrategistRuntimeConfig();
+  const convId = `cron_run_${crypto.randomBytes(6).toString("hex")}`;
+  const requestId = `cron_${crypto.randomUUID()}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("定时任务执行超时")), 5 * 60 * 1000);
+    timer.unref?.();
+    const receipt = dispatchInternalAgentMessage({
+      conversationId: convId,
+      userMessageId: requestId,
+      prompt: fullPrompt,
+      displayText: `📅 定时任务：${job.description}`,
+      profileId: runtimeConfig.profileId,
+      model: runtimeConfig.model,
+      effort: runtimeConfig.effort,
+      permissionMode: "bypassPermissions",
+      cwd: resolveAllowedCwd(""),
+      turnComplete: (info) => {
+        clearTimeout(timer);
+        if (info?.state === "error") reject(new Error(info.error || "定时任务执行失败"));
+        else resolve(String(info?.output || "").trim());
+      },
+    });
+    if (receipt?.state === "rejected") {
+      clearTimeout(timer);
+      reject(new Error(receipt.error || "无法启动定时任务"));
+    }
+  });
+}
+
 scheduler.init({
   PORT,
   DATA_DIR,
   VAULT_PATH: DEFAULT_CWD,
   WECHAT_CONFIG_FILE,
   sendWechatMessage,
+  sendWechatResponseWithMedia,
+  resolveWechatPeerContextToken,
+  runScheduledPrompt,
   buildAgentEnv,
   getActiveProfile,
   readProfiles,
@@ -4371,6 +4906,258 @@ scheduler.init({
   writeHistory,
   resolveAllowedCwd,
 });
+
+// ── Orchestrator init (军师 + 后台工单控制面) ───────────────
+const ticketStore = createTicketStore({ dir: join(DATA_DIR, "tickets"), vault: DEFAULT_CWD });
+const INTERNAL_AGENT_MESSAGE = Symbol("internalAgentMessage");
+const ticketText = z.string().trim().min(1).max(32_000);
+const ticketSelector = z.string().trim().min(1).max(250);
+const ticketCwd = z.string().trim().min(1).max(2048);
+const dispatchTicketSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+  goal: ticketText.optional(),
+  brief: ticketText.optional(),
+  contextFiles: z.array(ticketCwd).max(30).optional(),
+  writeScope: z.array(ticketCwd).max(20).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(2048)).max(15).optional(),
+  specialistId: ticketSelector.optional(),
+  provider: ticketSelector.optional(),
+  profileId: ticketSelector.optional(),
+  model: ticketSelector.optional(),
+  effort: ticketSelector.optional(),
+  cwd: ticketCwd.optional(),
+  allowBash: z.boolean().optional(),
+  allowExternalAction: z.boolean().optional(),
+  maxTurns: z.number().int().min(1).max(100).optional(),
+}).strict().refine(input => input.goal || input.brief, "创建工单需要目标或任务说明");
+
+function validateWorkerExecution(config) {
+  const profiles = readProfiles();
+  const profile = profiles.profiles.find(item => item.id === config.profileId);
+  if (!profile || profile.provider !== config.provider) throw new Error("工单执行账号已失效，请在现场选择可用账号");
+  if (!isSubscriptionProvider(profile.provider) && !profile.apiKey) {
+    throw new Error(`${profile.name || profile.provider} 缺少 API Key，请先在账号设置里保存`);
+  }
+  if (profile.provider === "codex" && !isCodexAuthAvailable()) {
+    throw new Error("Codex 尚未登录，请先打开 Codex 客户端或运行 codex login");
+  }
+  if (profile.provider === "antigravity" && !isAgyAuthAvailable()) {
+    throw new Error("Antigravity CLI 尚未就绪，请先安装并登录 agy");
+  }
+}
+
+function workerConfiguration(args) {
+  const profiles = readProfiles();
+  const profile = args.dispatchProvider ? resolveDispatchProfile(profiles, args.dispatchProvider)
+    : profiles.profiles.find(item => item.id === args.profileId);
+  if (!profile) throw new Error("找不到工单执行账号");
+  return {
+    profileId: profile.id, profileName: profile.name, provider: profile.provider,
+    model: args.dispatchProvider || !args.model ? dispatchModelForProfile(profile) : ticketSelector.parse(args.model),
+    effort: reasoningEffort(args.effort, profile.provider),
+  };
+}
+
+async function dispatchConfiguredTicket(input, { parentConversationId = STRATEGIST_CONVERSATION_ID, cwd, profiles = readProfiles(), sourceChannel, sourcePeer } = {}) {
+  const args = dispatchTicketSchema.parse(input);
+  const requestedCwd = args.cwd || cwd || DEFAULT_CWD;
+  const specialist = args.specialistId && loadSpecialists(DEFAULT_CWD).find(item => item.id === args.specialistId);
+  const selector = args.provider || specialist?.provider;
+  const profile = args.profileId ? profiles.profiles.find(item => item.id === args.profileId)
+    : selector ? resolveDispatchProfile(profiles, selector) : getActiveProfile(profiles);
+  if (!profile || (args.profileId && selector && resolveDispatchProfile(profiles, selector)?.id !== profile.id)) {
+    throw new Error("找不到指定的工单执行账号");
+  }
+  const parentCtx = sessions.peek(parentConversationId)?.activeForegroundDeliveryContext || null;
+  const resolvedSourceChannel = sourceChannel || parentCtx?.sourceChannel || "desktop";
+  const resolvedSourcePeer = sourcePeer || parentCtx?.sourcePeer || null;
+  const result = await orchestrator.dispatchTask({
+    ...args,
+    parentConversationId, cwd: requestedCwd,
+    sourceChannel: resolvedSourceChannel,
+    sourcePeer: resolvedSourcePeer,
+    provider: profile.provider, profileId: profile.id, profileName: profile.name,
+    model: args.model || specialist?.model || dispatchModelForProfile(profile),
+    effort: reasoningEffort(args.effort, profile.provider),
+  });
+  if (result?.ok && parentCtx && Array.isArray(parentCtx.dispatchedTickets)) {
+    parentCtx.dispatchedTickets.push({
+      ticketId: result.ticketId,
+      title: args.title || args.goal || result.ticketId,
+      status: result.status,
+    });
+  }
+  return result;
+}
+
+const orchestrator = createOrchestrator({
+  ticketStore,
+  defaultCwd: DEFAULT_CWD,
+  allowOutsideVault: ALLOW_MACHINE_ACCESS,
+  validateExecution: validateWorkerExecution,
+  launchWorker: async (ticket, { workerSystemPrompt }) => {
+    const m = ticket.mandate || {};
+    const promptLines = [
+      `【工单任务】${ticket.title}`,
+      m.goal ? `目标：${m.goal}` : "",
+      m.brief ? `\n详细要求：\n${m.brief}` : "",
+      m.contextFiles?.length ? `\n参考文件：${m.contextFiles.join("、")}` : "",
+      m.writeScope?.length ? `\n允许写入范围：${m.writeScope.join("、")}` : "",
+      m.acceptanceCriteria?.length
+        ? `\n验收标准：\n${m.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+        : "",
+    ].filter(Boolean);
+    return dispatchInternalAgentMessage({
+      conversationId: ticket.workerConversationId,
+      conversationRole: "worker",
+      ticketId: ticket.id,
+      workerAttempt: ticket.execution.attempt,
+      ticketTitle: ticket.title,
+      workerSystemPrompt,
+      userMessageId: `wrk_init_${ticket.id}_${ticket.execution?.attempt || 1}`,
+      prompt: promptLines.join("\n"),
+      displayText: `【Fellow 派发】${ticket.title}\n\n${m.brief || m.goal || ""}`,
+      profileId: ticket.execution?.profileId || undefined,
+      model: ticket.execution?.model || undefined,
+      effort: ticket.execution?.effort || undefined,
+      cwd: ticket.execution?.cwd || DEFAULT_CWD,
+    });
+  },
+  messageWorker: async (ticket, instruction, { fromUser, requestId, images, displayText, workerSystemPrompt }) => {
+    return dispatchInternalAgentMessage({
+      conversationId: ticket.workerConversationId,
+      conversationRole: "worker",
+      ticketId: ticket.id,
+      workerAttempt: ticket.execution.attempt,
+      ticketTitle: ticket.title,
+      userMessageId: requestId || `wrk_msg_${crypto.randomUUID()}`,
+      images,
+      workerSystemPrompt,
+      prompt: fromUser ? instruction : `【Fellow 补充指令】\n${instruction}`,
+      displayText: fromUser ? (displayText || instruction) : `【Fellow 补充指令】${instruction}`,
+      profileId: ticket.execution?.profileId || undefined,
+      model: ticket.execution?.model || undefined,
+      effort: ticket.execution?.effort || undefined,
+      cwd: ticket.execution?.cwd || DEFAULT_CWD,
+    });
+  },
+  stopWorker: async (ticket) => {
+    return dispatchInternalAgentMessage({
+      stop: true,
+      workerAttempt: ticket.execution.attempt,
+      conversationId: ticket.workerConversationId,
+    });
+  },
+  readWorkerMessages: (workerConversationId) => (
+    readHistory().find((c) => c.id === workerConversationId)?.messages || []
+  ),
+  listProviders: () => listDispatchProviders(readProfiles()),
+  notifyClient: (event) => deliver(event),
+  wakeStrategist: (parentConversationId, reports, promptText) => {
+    if (!promptText) return;
+    const runtimeConfig = resolveStrategistRuntimeConfig();
+    let strategistSummary = "";
+    return new Promise(resolve => {
+      const receipt = dispatchInternalAgentMessage({
+        conversationId: parentConversationId || STRATEGIST_CONVERSATION_ID,
+        conversationRole: "strategist",
+        reportReceipt: resolve,
+        turnComplete: (info) => {
+          if (info?.output) strategistSummary = String(info.output).trim();
+        },
+        userMessageId: `report_${crypto.randomUUID()}`,
+        prompt: promptText,
+        displayText: `📌 后台任务汇报（${reports.map(r => r.title).join("、")}）`,
+        profileId: runtimeConfig.profileId,
+        model: runtimeConfig.model,
+        effort: runtimeConfig.effort,
+        permissionMode: "auto",
+        cwd: DEFAULT_CWD,
+      });
+      if (receipt?.state !== "started") resolve(false);
+    }).then(confirmed => {
+      if (!confirmed) return confirmed;
+      const wechatConfig = readWechatConfig();
+      if (!wechatConfig?.baseUrl || !wechatConfig?.token) return confirmed;
+      const notifyMode = wechatConfig.notifyTicketsMode || DEFAULT_WECHAT_NOTIFY_MODE;
+      if (notifyMode === "off") return confirmed;
+      try {
+        const byPeer = new Map();
+        for (const report of reports) {
+          const ticket = ticketStore.get(report.ticketId);
+          if (!ticket) continue;
+          const isWechatOrigin = ticket.sourceChannel === "wechat";
+          if (notifyMode === "wechat" && !isWechatOrigin) continue;
+          const peer = ticket?.sourcePeer || wechatConfig.lastPeer || wechatConfig.userId;
+          if (!peer) continue;
+          if (!byPeer.has(peer)) byPeer.set(peer, []);
+          byPeer.get(peer).push(report);
+        }
+        const statusIcon = (s) => (
+          s === "completed" ? "✅"
+            : s === "needs_attention" ? "⚠️"
+              : s === "failed" || s === "interrupted" ? "❌"
+                : "📌"
+        );
+        for (const [peer, peerReports] of byPeer.entries()) {
+          const useStrategistText = byPeer.size === 1 && peerReports.length === reports.length && strategistSummary;
+          const fallbackText = peerReports.map((r) => [
+            `${statusIcon(r.status)} ${r.title}`,
+            r.attentionReason ? `需要你确认：${r.attentionReason}` : "",
+            r.summary || "",
+            r.error ? `错误：${r.error}` : "",
+            r.changedFiles?.length ? `文件：${r.changedFiles.slice(0, 5).join("、")}` : "",
+          ].filter(Boolean).join("\n")).join("\n\n");
+          const message = useStrategistText ? strategistSummary : fallbackText;
+          if (!message) continue;
+          const ctxToken = resolveWechatPeerContextToken(peer, wechatConfig);
+          void sendWechatResponseWithMedia(wechatConfig.baseUrl, wechatConfig.token, peer, message, ctxToken)
+            .catch(error => console.warn("[Orchestrator] WeChat report failed:", error));
+        }
+      } catch (error) {
+        console.warn("[Orchestrator] WeChat report configuration failed:", error);
+      }
+      return confirmed;
+    });
+  },
+});
+orchestrator.start();
+
+// 长任务轻量心跳：后台任务运行超过 3 分钟后每 4 分钟向微信发一条进度播报，避免远程等待焦虑
+const TICKET_HEARTBEAT_INITIAL_MS = Math.max(30_000, Number.parseInt(process.env.TICKET_HEARTBEAT_INITIAL_MS || String(3 * 60_000), 10) || (3 * 60_000));
+const TICKET_HEARTBEAT_REPEAT_MS = Math.max(60_000, Number.parseInt(process.env.TICKET_HEARTBEAT_REPEAT_MS || String(4 * 60_000), 10) || (4 * 60_000));
+const ticketHeartbeatSentAt = new Map();
+const ticketHeartbeatTimer = setInterval(() => {
+  const wechatConfig = readWechatConfig();
+  if (!wechatConfig?.baseUrl || !wechatConfig?.token) return;
+  const notifyMode = wechatConfig.notifyTicketsMode || DEFAULT_WECHAT_NOTIFY_MODE;
+  if (notifyMode === "off") return;
+  const nowMs = Date.now();
+  const running = ticketStore.list({ status: "running", limit: 30 });
+  const activeKeys = new Set();
+  for (const ticket of running) {
+    const key = `${ticket.id}:${ticket.execution?.attempt || 1}`;
+    activeKeys.add(key);
+    if (notifyMode === "wechat" && ticket.sourceChannel !== "wechat") continue;
+    const peer = ticket.sourcePeer || wechatConfig.lastPeer || wechatConfig.userId;
+    if (!peer) continue;
+    const startedMs = Date.parse(ticket.execution?.startedAt || ticket.createdAt || "") || nowMs;
+    const elapsedMs = nowMs - startedMs;
+    if (elapsedMs < TICKET_HEARTBEAT_INITIAL_MS) continue;
+    const lastSent = ticketHeartbeatSentAt.get(key) || 0;
+    if (lastSent && (nowMs - lastSent) < TICKET_HEARTBEAT_REPEAT_MS) continue;
+    ticketHeartbeatSentAt.set(key, nowMs);
+    const mins = Math.max(1, Math.round(elapsedMs / 60_000));
+    const step = ticket.execution?.lastStepLabel ? `，当前：${ticket.execution.lastStepLabel}` : "";
+    const msg = `⏳「${ticket.title}」正在后台执行中（已运行约 ${mins} 分钟${step}）`;
+    const ctxToken = resolveWechatPeerContextToken(peer, wechatConfig);
+    void sendWechatMessage(wechatConfig.baseUrl, wechatConfig.token, peer, msg, ctxToken).catch(() => {});
+  }
+  for (const key of ticketHeartbeatSentAt.keys()) {
+    if (!activeKeys.has(key)) ticketHeartbeatSentAt.delete(key);
+  }
+}, 60_000);
+ticketHeartbeatTimer.unref?.();
 
 // ── HTTP ──────────────────────────────────────────────────
 /* 这一页是被 Tauri 主窗口用 iframe 加载的，而 CSP 不会跨源继承给子框架——
@@ -4397,6 +5184,127 @@ const CHAT_PAGE_CSP = [
   "base-uri 'none'",
   "form-action 'none'",
 ].join("; ");
+
+function hasDesktopApiAccess(req, queryParams) {
+  return !DESKTOP_AGENT_TOKEN || req.headers.authorization === `Bearer ${DESKTOP_AGENT_TOKEN}`
+    || queryParams.get("token") === DESKTOP_AGENT_TOKEN;
+}
+
+function sendTicketJson(res, status, payload) {
+  if (res.destroyed || res.writableEnded) return;
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(payload));
+}
+
+function readTicketJson(req) {
+  const maxBytes = 128 * 1024;
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let chunks = [];
+    req.on("error", reject);
+    req.on("aborted", () => reject(new Error("请求已中断")));
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        chunks = [];
+        reject(Object.assign(new Error("工单请求体过大"), { statusCode: 413 }));
+      } else chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (size > maxBytes) return;
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")); }
+      catch { reject(Object.assign(new Error("无效的 JSON 请求体"), { statusCode: 400 })); }
+    });
+  });
+}
+
+function launchLocalFile(target) {
+  const opener = process.platform === "win32" ? "explorer.exe"
+    : process.platform === "darwin" ? "open" : "xdg-open";
+  const child = spawn(opener, [target], { windowsHide: true, stdio: "ignore" });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
+}
+
+async function handleTicketHttp(req, res, url, method, query) {
+  const reply = (status, value) => sendTicketJson(res, status, value);
+  if (url === "/api/orchestrator/tickets") {
+    if (method === "GET") return reply(200, orchestrator.listTickets({
+      status: query.get("status"), parentConversationId: query.get("parentConversationId"), limit: 80,
+    }));
+    if (method === "POST") {
+      const args = dispatchTicketSchema.parse(await readTicketJson(req));
+      try {
+        const result = await dispatchConfiguredTicket(args);
+        return reply(result.ok ? 200 : 409, result);
+      } catch (error) {
+        return reply(400, { ok: false, error: error.message });
+      }
+    }
+  }
+
+  if (url === "/api/orchestrator/tickets/clear-completed" && method === "POST") {
+    return reply(200, orchestrator.clearCompletedTickets());
+  }
+
+  if (url === "/api/orchestrator/artifact/open" && method === "POST") {
+    const args = z.object({ path: ticketCwd }).strict().parse(await readTicketJson(req));
+    const root = canonicalPath(DEFAULT_CWD);
+    let target;
+    try { target = canonicalPath(args.path, root); } catch { /* invalid path */ }
+    const supported = /\.(?:md|markdown|txt|csv|json|png|jpe?g|gif|webp|bmp|avif|pdf|docx|xlsx|pptx|mp4|mov|mkv|webm|mp3|wav|m4a|flac)$/i;
+    const allowedPath = target && !isSystemProtectedPath(target) && (ALLOW_MACHINE_ACCESS || pathWithin(target, root));
+    if (!allowedPath || !supported.test(target) || !statSync(target, { throwIfNoEntry: false })?.isFile()) {
+      return reply(404, { ok: false, error: "产物不存在、路径受保护或文件类型不支持打开" });
+    }
+    await launchLocalFile(target);
+    return reply(200, { ok: true });
+  }
+
+  const match = url.match(/^\/api\/orchestrator\/tickets\/([^/]+)(?:\/(message|stop|retry|recall|config))?$/);
+  if (match) {
+    let id;
+    try { id = decodeURIComponent(match[1]); } catch { /* Rejected by the format check below. */ }
+    if (!id || !TICKET_ID_PATTERN.test(id)) return reply(400, { ok: false, error: "无效的工单 ID" });
+    if (!ticketStore.get(id)) return reply(404, { ok: false, error: "未找到工单" });
+    const action = match[2];
+    if (method === "GET" && !action) return reply(200, orchestrator.inspectTicket(id));
+    if (method === "GET" && action === "recall") return reply(200, orchestrator.recallTicketDetail(id, {
+      offset: query.get("offset"), limit: query.get("limit"),
+    }));
+    if (method === "POST") {
+      let result;
+      if (action === "message") {
+        const args = z.object({ instruction: ticketText.optional(), prompt: ticketText.optional() }).strict()
+          .refine(value => Boolean(value.instruction) !== Boolean(value.prompt), "请提供一条补充指令")
+          .parse(await readTicketJson(req));
+        result = await orchestrator.messageTicket(id, args.instruction || args.prompt, { fromUser: true });
+      } else if (action === "config") {
+        const args = z.object({ profileId: ticketSelector, model: ticketSelector.nullish(), effort: ticketSelector.nullish() })
+          .strict().parse(await readTicketJson(req));
+        try {
+          result = orchestrator.configureTicket(id, workerConfiguration(args));
+        } catch (error) {
+          result = { ok: false, error: error.message };
+        }
+      } else if (action === "stop") result = await orchestrator.stopTicket(id);
+      else if (action === "retry") result = await orchestrator.retryTicket(id);
+      if (result) return reply(result.ok ? 200 : 409, result);
+    }
+  }
+
+  if (url === "/api/orchestrator/strategist/compact-memory" && method === "POST") {
+    const args = z.object({ conversationId: z.literal(STRATEGIST_CONVERSATION_ID).optional(),
+      note: z.string().trim().max(3960).optional() }).strict().parse(await readTicketJson(req));
+    const result = compactStrategistMemory({ note: args.note });
+    if (!result.ok) return reply(result.statusCode || 409, { ok: false, error: result.error });
+    return reply(200, { ok: true, memoryFile: result.memoryFile });
+  }
+
+  return reply(404, { ok: false, error: "未知的工单接口" });
+}
 
 const http = createServer((req, res) => {
   const url = (req.url ?? "/").split("?")[0];
@@ -4454,14 +5362,37 @@ const http = createServer((req, res) => {
   // ── WeChat Settings API ──
   if (url === "/api/wechat/status" && method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (existsSync(WECHAT_CONFIG_FILE)) {
-      try {
-        const creds = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8"));
-        res.end(JSON.stringify({ connected: true, botId: creds.botId ?? "微信助手" }));
-        return;
-      } catch {}
+    const creds = readWechatConfig();
+    if (creds) {
+      res.end(JSON.stringify({
+        connected: true,
+        botId: creds.botId ?? "微信助手",
+        notifyTicketsMode: creds.notifyTicketsMode,
+        hasLastPeer: Boolean(creds.lastPeer || creds.userId),
+      }));
+      return;
     }
     res.end(JSON.stringify({ connected: false }));
+    return;
+  }
+
+  if (url === "/api/wechat/settings" && method === "PATCH") {
+    if (!hasDesktopApiAccess(req, queryParams)) {
+      sendTicketJson(res, 403, { ok: false, error: "需要桌面访问令牌" });
+      return;
+    }
+    void readTicketJson(req).then((body) => {
+      const parsed = z.object({
+        notifyTicketsMode: z.enum(["wechat", "all", "off"]),
+      }).strict().parse(body);
+      const updated = updateWechatConfig({ notifyTicketsMode: parsed.notifyTicketsMode });
+      if (!updated) return sendTicketJson(res, 404, { ok: false, error: "微信尚未连接" });
+      return sendTicketJson(res, 200, { ok: true, notifyTicketsMode: updated.notifyTicketsMode });
+    }).catch((error) => {
+      sendTicketJson(res, error.statusCode || (error instanceof z.ZodError ? 400 : 500), {
+        ok: false, error: String(error?.message || error),
+      });
+    });
     return;
   }
 
@@ -4532,6 +5463,7 @@ const http = createServer((req, res) => {
             botId: data.ilink_bot_id
           };
           writeFileSync(WECHAT_CONFIG_FILE, JSON.stringify(configData, null, 2), "utf8");
+          wechatPeerContextTokens.clear();
           activeWechatLogins.delete(sessionKey);
 
           // Start WeChat Listener background loop automatically
@@ -4553,6 +5485,9 @@ const http = createServer((req, res) => {
       wechatPollingController.abort();
       wechatPollingController = null;
     }
+    for (const buf of wechatInboundBuffers.values()) clearTimeout(buf.timer);
+    wechatInboundBuffers.clear();
+    wechatPeerContextTokens.clear();
     if (existsSync(WECHAT_CONFIG_FILE)) unlinkSync(WECHAT_CONFIG_FILE);
     if (existsSync(WECHAT_SYNC_FILE)) unlinkSync(WECHAT_SYNC_FILE);
 
@@ -4568,12 +5503,37 @@ const http = createServer((req, res) => {
     return;
   }
 
+  const enrichCronPayload = (payload) => {
+    const out = { ...payload };
+    const strategistCtx = sessions.peek(STRATEGIST_CONVERSATION_ID)?.activeForegroundDeliveryContext || null;
+    const wechatConfig = readWechatConfig();
+    if (!out.sourceChannel && strategistCtx?.sourceChannel) out.sourceChannel = strategistCtx.sourceChannel;
+    if (!out.sourcePeer && strategistCtx?.sourcePeer) out.sourcePeer = strategistCtx.sourcePeer;
+    if (!out.sourceChannel && Array.isArray(out.outputs) && out.outputs.includes("wechat")) {
+      out.sourceChannel = "wechat";
+    }
+    if (out.sourceChannel === "wechat" && !out.sourcePeer && wechatConfig) {
+      out.sourcePeer = wechatConfig.lastPeer || wechatConfig.userId || null;
+    }
+    if (!out.outputs || out.outputs.length === 0) {
+      if (out.sourceChannel === "wechat") out.outputs = ["wechat", "chat_history"];
+      else if (wechatConfig?.notifyTicketsMode === "all" && (wechatConfig.lastPeer || wechatConfig.userId)) {
+        out.sourceChannel = "wechat";
+        out.sourcePeer = wechatConfig.lastPeer || wechatConfig.userId;
+        out.outputs = ["wechat", "chat_history"];
+      } else {
+        out.outputs = ["chat_history"];
+      }
+    }
+    return out;
+  };
+
   if (url === "/api/cron/jobs" && method === "POST") {
     let body = "";
     req.on("data", c => { body += c; });
     req.on("end", () => {
       try {
-        const payload = JSON.parse(body || "{}");
+        const payload = enrichCronPayload(JSON.parse(body || "{}"));
         const job = scheduler.createJob(payload);
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(job));
@@ -4590,7 +5550,7 @@ const http = createServer((req, res) => {
     req.on("data", c => { body += c; });
     req.on("end", () => {
       try {
-        const payload = JSON.parse(body || "{}");
+        const payload = enrichCronPayload(JSON.parse(body || "{}"));
         const job = scheduler.createOnceJob(payload);
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(job));
@@ -4630,16 +5590,35 @@ const http = createServer((req, res) => {
     }
   }
 
+  if (url === "/api/orchestrator" || url.startsWith("/api/orchestrator/")) {
+    if (!hasDesktopApiAccess(req, queryParams)) {
+      sendTicketJson(res, 403, { ok: false, error: "需要桌面访问令牌" });
+      return;
+    }
+    void handleTicketHttp(req, res, url, method, queryParams).catch(error => {
+      sendTicketJson(res, error.statusCode || (error instanceof z.ZodError ? 400 : 500), {
+        ok: false, error: String(error?.message || error),
+      });
+    });
+    return;
+  }
+
   // ── REST API: history ─────────────────────────────────────
   if (url === "/api/history" && method === "GET") {
-    const history = readHistory();
+    const authorized = hasDesktopApiAccess(req, queryParams);
+    const history = readHistory().filter(item => (
+      !item.id.startsWith("wrk_") || ticketStore.findByWorkerConversationId(item.id)
+    ) && (authorized || (item.id !== STRATEGIST_CONVERSATION_ID && !item.id.startsWith("wrk_"))));
     /* 列表只返回摘要，不带消息内容，避免传输几MB JSON。
        model/effort/profileId 是这条对话上次用的那套选择：前端的 localStorage
        只存最近 60 条、且换台机器或清一次缓存就没了，而历史能存很久——从历史
        里翻出一条旧对话时，还原模型只能靠这里这份。 */
-    const summaries = history.map(({ id, title, date, sessionId, sessionProvider, model, effort, profileId, messages }) => ({
+    const summaries = history.map(({ id, title, date, sessionId, sessionProvider, model, effort, codexSpeed, profileId, role, ticketId, messages }) => ({
       id, title, date, sessionId: sessionId ?? null, sessionProvider: sessionProvider ?? null,
       model: model ?? null, effort: effort ?? null, profileId: profileId ?? null,
+      ...(codexSpeed ? { codexSpeed } : {}),
+      ...(role ? { role } : {}),
+      ...(ticketId ? { ticketId } : {}),
       messageCount: messages ? messages.length : 0,
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -4980,6 +5959,42 @@ const http = createServer((req, res) => {
   const historyItemRe = url.match(/^\/api\/history\/([^/]+)$/);
   if (historyItemRe) {
     const id = historyItemRe[1];
+    const workerId = id.startsWith("wrk_");
+    const managedRole = workerId || id === STRATEGIST_CONVERSATION_ID;
+    if (managedRole && !hasDesktopApiAccess(req, queryParams)) {
+      return sendTicketJson(res, 403, { ok: false, error: "需要桌面访问令牌" });
+    }
+    if (workerId && !ticketStore.findByWorkerConversationId(id)) {
+      return sendTicketJson(res, 404, { ok: false, error: "工单不在当前 Vault" });
+    }
+    if (method === "PATCH") {
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        const reply = (status, data) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(data));
+        };
+        try {
+          if (deletedHistoryConversationIds.has(id)) return reply(410, { error: "conversation deleted" });
+          const current = readHistory().find(h => h.id === id);
+          if (!current) return reply(404, { error: "not found" });
+          const payload = JSON.parse(body || "{}");
+          const title = typeof payload.title === "string" ? payload.title.trim() : "";
+          if (!title || title.length > 120 || /[\r\n]/.test(title)) {
+            return reply(400, { error: "invalid title" });
+          }
+          // Save only this conversation and publish the title after the write succeeds.
+          shardStore.save({ ...current, title });
+          current.title = title;
+          dirtyConversationIds.delete(id);
+          reply(200, { ok: true, title });
+        } catch {
+          reply(400, { error: "could not save title" });
+        }
+      });
+      return;
+    }
     if (method === "GET") {
       const conv = readHistory().find(h => h.id === id);
       if (conv) {
@@ -5003,12 +6018,15 @@ const http = createServer((req, res) => {
             return;
           }
           const payload = JSON.parse(body || "{}");
-          // 这些字段只由服务端维护，旧页面的延迟保存不能覆盖较新的子任务记录或会话。
-          const { subtaskSessions, subtaskSnapshots, subtaskServerBootId, ...safePayload } = payload;
+          // 这些字段只由服务端维护，旧页面的延迟保存不能覆盖较新的子任务记录、会话或军师/工单角色。
+          const { subtaskSessions, subtaskSnapshots, subtaskServerBootId, role, ticketId, contextResetIndex, ...safePayload } = payload;
+          if (workerId) {
+            for (const key of ["profileId", "model", "effort", "codexSpeed", "sessionId", "sessionProvider"]) delete safePayload[key];
+          }
           const saved = upsertHistoryConversation({ ...safePayload, id });
           if (!saved) throw new Error("invalid conversation");
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, title: saved.title }));
         } catch {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "bad request" }));
@@ -5017,6 +6035,17 @@ const http = createServer((req, res) => {
       return;
     }
     if (method === "DELETE") {
+      if (workerId) {
+        const ticket = ticketStore.findByWorkerConversationId(id);
+        void orchestrator.resetTicket(ticket.id, () => {
+          shardStore.remove(id);
+          writeHistory(readHistory().filter(item => item.id !== id));
+          disposeConversationState(id);
+        }).then(result => sendTicketJson(res, result.ok ? 200 : 409, result))
+          .catch(error => sendTicketJson(res, 500, { ok: false, error: error.message }));
+        return;
+      }
+      if (managedRole) return sendTicketJson(res, 409, { ok: false, error: "Fellow 主对话可通过「整理记忆」开启干净上下文。" });
       deletedHistoryConversationIds.add(id);
       const history = readHistory().filter(h => h.id !== id);
       // 磁盘上的删除只从这里发生——flush 不再按内存全集去删
@@ -5317,6 +6346,9 @@ const CONNECTION_LEVEL_EVENTS = new Set([
   "sessions_snapshot",
   "steering_snapshot",
   "reset_complete",
+  "tickets_snapshot",
+  "ticket_updated",
+  "ticket_action_error",
 ]);
 
 const deliver = (obj) => {
@@ -5351,10 +6383,37 @@ const deliver = (obj) => {
   }
 };
 
+function observeOrchestratorEvent(tagged, context) {
+  if (!context?.workerAttempt || tagged.userMessageId !== context.requestId) return;
+  const convId = context.conversationId;
+  const attempt = context.workerAttempt;
+  if (tagged.type === "ask_user_question") {
+    orchestrator.onWorkerNeedsAttention(convId, {
+      reason: "执行专员向你提问，等你拍板确认。",
+      question: tagged.questions || null, attempt,
+    });
+  }
+  orchestrator.onWorkerActivity(convId, attempt);
+  for (const event of workerToolEvents(tagged)) {
+    orchestrator.recordWorkerStep(convId, event.name, event.input, { ...event, attempt });
+  }
+}
+
 const send = (obj) => {
   if (deletedHistoryConversationIds.has(agentContext.getStore()?.conversationId)) return;
   const tagged = tagAgentEvent(obj);
-  persistOutboundAgentEvent(tagged);
+  const context = session.activeForegroundDeliveryContext;
+  if (tagged?.type === "error" && context && tagged.userMessageId === context.requestId) {
+    context.turnError = String(tagged.text || tagged.message || "执行失败");
+  }
+  try {
+    persistOutboundAgentEvent(tagged);
+  } catch (error) {
+    if (!context?.workerAttempt && !context?.reportReceipt) throw error;
+    context.historyError = String(error?.message || error);
+    deliver({ type: "ticket_action_error", error: context.historyError });
+  }
+  observeOrchestratorEvent(tagged, context);
   deliver(tagged);
 };
 
@@ -5427,25 +6486,59 @@ function deliverSessionsSnapshot() {
   });
 }
 
-function startClientRequest(requestId, conversationId) {
+function startClientRequest(requestId, conversationId, meta = null) {
   session.activeForegroundRequestId = requestId;
   session.activeForegroundConversationId = conversationId;
   rememberClientRequest(requestId, "running");
   acknowledgeClientRequest(requestId, "running");
-  deliver({ type: "request_started", userMessageId: requestId, conversationId });
+  deliver({
+    type: "request_started",
+    userMessageId: requestId,
+    conversationId,
+    ...(meta?.displayText ? { displayText: meta.displayText } : {}),
+    ...(meta?.sourceChannel ? { sourceChannel: meta.sourceChannel } : {}),
+  });
   deliverSessionsSnapshot();
 }
 
+function handleOrchestratorTurnCompleted(state, context) {
+  if (!context) return;
+  const { conversationId, requestId } = context;
+  let output = "";
+  if (context.turnComplete || context.workerAttempt) {
+    const conv = readHistory().find(item => item.id === conversationId);
+    output = (conv?.messages || []).filter(item => item.role === "assistant" && item.requestId === requestId)
+      .map(item => item.text).filter(Boolean).join("\n");
+  }
+  const errText = context.historyError || context.turnError || null;
+  context.turnComplete?.({
+    state,
+    output,
+    error: errText,
+    dispatchedTickets: context.dispatchedTickets || [],
+  });
+  context.reportReceipt?.(state === "complete" && !context.historyError);
+  if (!context.workerAttempt) return;
+  const status = state === "stopped" ? "stopped"
+    : state === "partial" || context.historyError ? "partial"
+    : state === "complete" ? "completed" : "failed";
+  orchestrator.onWorkerSettled(conversationId, {
+    attempt: context.workerAttempt, status, output,
+    error: errText || (status === "failed" ? "执行失败，请进入现场查看详情。" : null),
+  });
+}
+
 function completeClientRequest(state, requestId = session.activeForegroundRequestId) {
+  const completedDeliveryContext = session.activeForegroundDeliveryContext?.requestId === requestId
+    ? session.activeForegroundDeliveryContext : null;
   if (requestId) rememberClientRequest(requestId, state);
   if (session.activeForegroundRequestId === requestId) {
     session.activeForegroundRequestId = null;
     session.activeForegroundConversationId = null;
   }
-  if (session.activeForegroundDeliveryContext?.requestId === requestId) {
-    session.activeForegroundDeliveryContext = null;
-  }
+  if (completedDeliveryContext) session.activeForegroundDeliveryContext = null;
   deliverSessionsSnapshot();
+  handleOrchestratorTurnCompleted(state, completedDeliveryContext);
 }
 
 const FORWARDED_CLAUDE_SYSTEM_EVENTS = new Set([
@@ -5558,7 +6651,8 @@ function clientRuntimeKey(msg, provider, profile) {
     haikuModel: profile?.haikuModel ?? null,
     cwd: resolveAllowedCwd(msg.cwd),
     permissionMode: PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE,
-    effort: EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium",
+    effort: reasoningEffort(msg.effort, provider),
+    ...(provider === "codex" ? { codexSpeed: codexServiceTier(msg.codexSpeed) } : {}),
     model: msg.model ?? null,
     schedulerRequest: hasSchedulerIntentForMessage(msg),
   })).digest("hex");
@@ -5753,7 +6847,7 @@ function armTurnIdleWatchdog() {
   session.turnIdleWatchdog.unref?.();
 }
 
-function finishClaudeTurn() {
+function finishClaudeTurn(state = null) {
   clearTurnIdleWatchdog();
   if (!session.claudeTurnCompletionPending) return;
   const wasStopped = session.claudeStopRequested;
@@ -5765,7 +6859,8 @@ function finishClaudeTurn() {
   // desktop WebView buffers it and cannot reconnect stuck in generating state.
   clearPendingAskUserQuestion("request finished");
   send({ type: wasStopped ? "stopped" : "done" });
-  completeClientRequest(wasStopped ? "stopped" : "complete", completedRequestId);
+  const context = session.activeForegroundDeliveryContext;
+  completeClientRequest(wasStopped ? "stopped" : (state || (context?.turnError ? "error" : "complete")), completedRequestId);
   session.claudeTurnCompletionPending = false;
   session.claudeStopRequested = false;
   session.claudeRecoveryContext = null;
@@ -5773,7 +6868,13 @@ function finishClaudeTurn() {
   scheduleQueuedClientPromptDrain();
 }
 
+function currentClaudePump() {
+  const attempt = agentContext.getStore()?.workerAttempt;
+  return !attempt || attempt === session.activeForegroundDeliveryContext?.workerAttempt;
+}
+
 async function handlePersistentClaudeEvent(ev) {
+  if (!currentClaudePump()) return;
   const taskOwner = ensureTaskEventOwner(ev);
   const terminalTaskUpdate = ev.type === "system"
     && ev.subtype === "task_updated"
@@ -5785,15 +6886,15 @@ async function handlePersistentClaudeEvent(ev) {
     if (session.claudeRuntimeConversationId) session.activeHistoryConversationId = session.claudeRuntimeConversationId;
     saveSession(ev.session_id, session.claudeRuntimeRoute?.profileId ?? null);
     send({ type: "session", sessionId: ev.session_id, provider: "claude" });
-    const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
-      ? ev.skills
-      : (Array.isArray(ev.slash_commands) ? ev.slash_commands : []);
-    if (skillsFromSdk.length > 0) cachedSkillsByProvider["claude"] = skillsFromSdk;
+    rememberSdkSkills("claude", ev);
+    // 发给前端的是磁盘 ∪ SDK 的完整列表，跟 sendSkillInit 一致，避免菜单内容来回跳。
+    const skills = skillsForProvider("claude");
     send({
       type: "system",
       subtype: "init",
-      slash_commands: skillsFromSdk,
-      skills: skillsFromSdk,
+      provider: "claude",
+      slash_commands: skills,
+      skills,
     });
     return;
   }
@@ -5827,6 +6928,10 @@ async function handlePersistentClaudeEvent(ev) {
     return;
   }
 
+  if (ev.type === "result" && !ev.origin && (ev.is_error || ev.subtype?.startsWith("error_"))) {
+    const context = session.activeForegroundDeliveryContext;
+    if (context) context.turnError = (ev.errors || []).join("\n") || ev.result || "Claude 回合执行失败";
+  }
   send(ev);
   if (isClaudeToolResultEvent(ev)) applyNextClaudeSteering("tool_result");
   // origin 非空表示这条 result 来自后台任务的自动续写，不是用户轮的收尾，
@@ -5835,10 +6940,12 @@ async function handlePersistentClaudeEvent(ev) {
 }
 
 async function handlePersistentClaudeError(error) {
+  if (!currentClaudePump()) return;
   const recovery = session.claudeRecoveryContext;
   if (
     session.claudeTurnCompletionPending
     && !session.claudeStopRequested
+    && !session.activeForegroundDeliveryContext?.workerAttempt
     && recovery
     && !recovery.attempted
     && isThinkingSignatureError(error)
@@ -5867,10 +6974,11 @@ async function handlePersistentClaudeError(error) {
   } else {
     send({ type: "error", text: String(error) });
   }
-  finishClaudeTurn();
+  if (!session.activeForegroundDeliveryContext?.workerAttempt) finishClaudeTurn("error");
 }
 
-async function handlePersistentClaudeClose() {
+async function handlePersistentClaudeClose({ error } = {}) {
+  if (!currentClaudePump()) return;
   const recovery = session.claudePendingRecovery;
   session.claudePendingRecovery = null;
   if (recovery) {
@@ -5885,7 +6993,15 @@ async function handlePersistentClaudeClose() {
     }
   }
   forgetClaudeRuntimeBinding();
-  if (session.claudeTurnCompletionPending && !session.claudeErrorHandled) finishClaudeTurn();
+  if (!session.claudeTurnCompletionPending) return;
+  const context = session.activeForegroundDeliveryContext;
+  if (context?.reportReceipt || context?.workerAttempt) {
+    const uncertain = context.workerAttempt && !error && !context.turnError;
+    if (!session.claudeStopRequested && !context.turnError) {
+      send({ type: "error", text: String(error || "运行器在回合确认完成前退出") });
+    }
+    finishClaudeTurn(uncertain ? "partial" : "error");
+  } else if (!session.claudeErrorHandled) finishClaudeTurn();
 }
 
 
@@ -6106,25 +7222,164 @@ wss.on("connection", (ws) => {
   });
   deliver({
     type: "steering_snapshot",
-    items: steeringQueue.snapshot().map(steeringEventItem),
+    items: [
+      ...steeringQueue.snapshot().map(steeringEventItem),
+      ...ticketStore.list({ status: ["queued", "running", "needs_attention", "failed", "partial", "interrupted"], limit: Infinity })
+        .flatMap(ticket => (ticket.execution.pendingInstructions || []).filter(entry => entry.steering)
+          .map((entry, index) => ticketSteeringEvent(ticket, entry, index))),
+    ],
   });
   deliverSessionsSnapshot();
+  orchestrator.pushTicketsSnapshot(null, { replace: true });
 
-  let handleClientMessage;
   const drainThisConnection = (targetSession) => {
-    if (activeWs !== ws || shouldQueueClientPrompt(targetSession) || targetSession.queuedClientPrompts.length === 0) return;
-    const next = targetSession.queuedClientPrompts.shift();
-    handleClientMessage(JSON.stringify(next), true);
-  };
-  handleClientMessage = (raw, fromQueue = false) => {
     if (activeWs !== ws) return;
+    drainQueuedPromptsForSession(targetSession);
+  };
+  ws.on("message", (raw) => {
+    if (activeWs !== ws) return;
+    handleAgentMessage(raw, false);
+  });
+  activeQueuedPromptDrainer = drainThisConnection;
+  for (const id of sessions.runningIds()) {
+    const targetSession = sessions.peek(id);
+    if (targetSession?.queuedClientPrompts.length) scheduleQueuedClientPromptDrain(0, targetSession);
+  }
+  if (sessions.ambient.queuedClientPrompts.length) scheduleQueuedClientPromptDrain(0, sessions.ambient);
+
+  ws.on("close", () => {
+    clearInterval(pingTimer);
+    if (activeWs === ws) {
+      activeWs = null;
+      if (activeQueuedPromptDrainer === drainThisConnection) activeQueuedPromptDrainer = drainQueuedPromptsForSession;
+      // Do NOT abort or clear the pending question: the run keeps going in the
+      // background and reattaches when the client reconnects.
+      if (isAgentRunActive()) {
+        console.log("[Web Agent] Client detached; run continues in background, events buffered until reconnect.");
+      }
+    }
+  });
+});
+
+function drainQueuedPromptsForSession(targetSession) {
+  if (!targetSession || shouldQueueClientPrompt(targetSession) || targetSession.queuedClientPrompts.length === 0) return;
+  const next = targetSession.queuedClientPrompts.shift();
+  handleAgentMessage(next, true);
+}
+
+// 后台任务与军师回报在没有前端 WebSocket 连接时也需要能正常消费队列
+activeQueuedPromptDrainer = drainQueuedPromptsForSession;
+
+function dispatchInternalAgentMessage(msg) {
+  return handleAgentMessage({ ...msg, [INTERNAL_AGENT_MESSAGE]: true }, false);
+}
+
+function ticketAction(action, ticketId, conversationId) {
+  return Promise.resolve().then(action).then(result => {
+    if (!result?.ok) deliver({ type: "ticket_action_error", ticketId, conversationId, error: result?.error || "工单操作失败" });
+    return result;
+  }).catch(error => {
+    deliver({ type: "ticket_action_error", ticketId, conversationId, error: String(error?.message || error) });
+    return { ok: false, error: String(error?.message || error) };
+  });
+}
+
+function ticketSteeringEvent(ticket, entry, index) {
+  return {
+    userMessageId: entry.requestId,
+    conversationId: ticket.workerConversationId,
+    displayText: entry.displayText || entry.prompt,
+    composerText: entry.composerText || entry.displayText || entry.prompt,
+    delivery: "next_turn",
+    position: index + 1,
+  };
+}
+
+function changeTicketSteering(ticket, msg) {
+  const id = getClientRequestId(msg);
+  const type = msg.type;
+  const updated = orchestrator.updatePendingInstructions(ticket.id, entries => {
+    if (type === "steering_reorder") {
+      const order = Array.isArray(msg.order) ? [...new Set(msg.order.map(historyIdOrNull).filter(Boolean))] : [];
+      const byId = new Map(entries.filter(entry => entry.steering).map(entry => [entry.requestId, entry]));
+      if (!order.length || order.some(key => !byId.has(key))) return null;
+      const keys = new Set(order);
+      let index = 0;
+      return entries.map(entry => keys.has(entry.requestId) ? byId.get(order[index++]) : entry);
+    }
+    const entry = entries.find(candidate => candidate.steering && candidate.requestId === id);
+    if (!entry) return null;
+    if (type === "steering_remove") return entries.filter(candidate => candidate !== entry);
+    if (type === "steering_update") {
+      const prompt = ticketText.parse(msg.prompt);
+      const displayText = ticketText.parse(msg.displayText || prompt);
+      const composerText = ticketText.parse(msg.composerText || displayText);
+      return entries.map(candidate => candidate === entry ? { ...entry, prompt, displayText, composerText } : candidate);
+    }
+    return null;
+  });
+  if (!updated) return false;
+  if (type === "steering_remove") {
+    rememberClientRequest(id, "stopped");
+    deliver({ type: "steering_removed", userMessageId: id, reason: "user_removed" });
+  } else if (type === "steering_reorder") {
+    deliver({ type: "steering_reordered", order: updated.execution.pendingInstructions.filter(entry => entry.steering).map(entry => entry.requestId) });
+  } else {
+    const index = updated.execution.pendingInstructions.findIndex(entry => entry.requestId === id);
+    deliver({ type: "steering_updated", ...ticketSteeringEvent(updated, updated.execution.pendingInstructions[index], index) });
+  }
+  return true;
+}
+
+function handleAgentMessage(rawOrMsg, fromQueue = false) {
     let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
+    if (typeof rawOrMsg === "string" || Buffer.isBuffer(rawOrMsg)) {
+      try { msg = JSON.parse(String(rawOrMsg)); } catch { return; }
+    } else if (rawOrMsg && typeof rawOrMsg === "object") {
+      msg = rawOrMsg;
+    } else {
+      return;
+    }
 
     /* 这条消息属于哪个对话，从它自己身上取——之后整段处理都跑在那个对话的
        上下文里，`session` 代理和事件泵才会落到同一个实例上。带不出 conversationId
        的消息（skills 查询之类）落到 ambient，本来就不属于任何对话。 */
     return agentContext.run({ conversationId: historyIdOrNull(msg.conversationId) }, () => {
+    const incomingId = historyIdOrNull(msg.conversationId);
+    const internalMessage = msg[INTERNAL_AGENT_MESSAGE] === true;
+    const workerTicket = ticketStore.findByWorkerConversationId(incomingId);
+    const isStrategistConv = incomingId === STRATEGIST_CONVERSATION_ID;
+    const rejectDelivery = error => ({ state: "rejected", error });
+    if (!internalMessage) {
+      delete msg.workerAttempt;
+      delete msg.reportReceipt;
+      delete msg.turnComplete;
+      delete msg.sourceChannel;
+      delete msg.sourcePeer;
+      delete msg.wechatContextToken;
+      delete msg.workerSystemPrompt;
+      delete msg.conversationRole;
+    }
+
+    if (msg.type === "tickets_list") {
+      orchestrator.pushTicketsSnapshot(null, { replace: true });
+      return;
+    }
+
+    if (msg.type === "ticket_stop" && msg.ticketId) {
+      void ticketAction(() => orchestrator.stopTicket(msg.ticketId), msg.ticketId, incomingId);
+      return;
+    }
+
+    if (msg.type === "ticket_retry" && msg.ticketId) {
+      void ticketAction(() => orchestrator.retryTicket(msg.ticketId), msg.ticketId, incomingId);
+      return;
+    }
+
+    if (msg.type === "ticket_message" && msg.ticketId && msg.prompt) {
+      void ticketAction(() => orchestrator.messageTicket(msg.ticketId, msg.prompt, { fromUser: true }), msg.ticketId, incomingId);
+      return;
+    }
 
     if (msg.type === "skills") {
       const profileData = readProfiles();
@@ -6147,6 +7402,11 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "ask_user_question_cancel") {
       clearPendingAskUserQuestion("user cancelled clarification question");
+      return;
+    }
+
+    if ((incomingId?.startsWith("wrk_") || isStrategistConv) && msg.type === "subtask_followup") {
+      deliver({ type: "subtask_error", requestId: msg.requestId, subtaskId: msg.subtaskId, text: "此会话请通过工单执行任务。" });
       return;
     }
 
@@ -6201,6 +7461,16 @@ wss.on("connection", (ws) => {
       if (entry && entry.conversationId === historyIdOrNull(msg.conversationId)) {
         try { entry.controller.abort(); } catch { /* 已经停了就算了 */ }
       }
+      return;
+    }
+
+    if (workerTicket && typeof msg.type === "string" && msg.type.startsWith("steering_")) {
+      try {
+        if (changeTicketSteering(workerTicket, msg)) return;
+      } catch (error) {
+        console.warn("[Orchestrator] Pending instruction update failed:", String(error));
+      }
+      deliver({ type: "steering_command_error", command: msg.type, userMessageId: getClientRequestId(msg) });
       return;
     }
 
@@ -6308,6 +7578,24 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.reset) {
+      if (workerTicket && !internalMessage) {
+        void ticketAction(() => orchestrator.resetTicket(workerTicket.id, () => {
+          dispatchInternalAgentMessage({ reset: true, conversationId: incomingId, preserveMessages: msg.preserveMessages });
+        }), workerTicket.id, incomingId).then(result => {
+          if (!result.ok) deliver({ type: "ticket_reset_rejected", conversationId: incomingId });
+        });
+        return;
+      }
+      session.activeForegroundDeliveryContext?.turnComplete?.({
+        state: "stopped",
+        output: "",
+        error: null,
+        dispatchedTickets: session.activeForegroundDeliveryContext?.dispatchedTickets || [],
+      });
+      session.activeForegroundDeliveryContext?.reportReceipt?.(false);
+      for (const queued of session.queuedClientPrompts) {
+        queued?.turnComplete?.({ state: "stopped", output: "", error: null, dispatchedTickets: [] });
+      }
       session.claudeTurnEpoch += 1;
       clearPendingAskUserQuestion("session reset");
       finalizeActiveAssistantHistory("stopped");
@@ -6325,6 +7613,7 @@ wss.on("connection", (ws) => {
         if (conv) {
           conv.sessionId = null;
           conv.sessionProvider = null;
+          if (workerTicket || isStrategistConv) conv.contextResetIndex = conv.messages?.length || 0;
           persistHistoryDeferred();
         }
       }
@@ -6362,6 +7651,7 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.setSession != null) {
+      if (workerTicket) return;
       const restoredSessionId = String(msg.setSession);
       const restoredProvider = msg.sessionProvider === "codex" || msg.sessionProvider === "antigravity"
         ? msg.sessionProvider
@@ -6403,6 +7693,29 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.stop) {
+      if (workerTicket) {
+        if (!internalMessage) {
+          void ticketAction(() => orchestrator.stopTicket(workerTicket.id), workerTicket.id, incomingId);
+          return;
+        }
+        if (session.activeForegroundDeliveryContext?.workerAttempt !== msg.workerAttempt) return { pending: false };
+        const { provider } = session.activeForegroundDeliveryContext;
+        if (provider === "codex" || provider === "antigravity") {
+          const controller = session.abortCtrl;
+          controller?.abort();
+          return { pending: Boolean(controller) };
+        }
+        session.claudeStopRequested = true;
+        clearPendingAskUserQuestion("worker stopped");
+        const runtime = session.claudeRuntime;
+        const pump = runtime.pumpPromise;
+        runtime.close();
+        forgetClaudeRuntimeBinding();
+        return Promise.resolve(pump).then(() => {
+          finishClaudeTurn("stopped");
+          return { pending: false };
+        });
+      }
       const requestedStopId = getClientRequestId(msg);
       if (requestedStopId) {
         const steeringItem = steeringItemForConversation(requestedStopId, msg.conversationId);
@@ -6488,17 +7801,75 @@ wss.on("connection", (ws) => {
 
     // The frontend normally queues follow-ups. Keep this server-side guard so a
     // stale or third-party client can never turn a new message into an implicit Stop.
+    if (incomingId?.startsWith("wrk_") && !workerTicket) {
+      const error = "工单不在当前 Vault 或已失效";
+      deliver({ type: "error", text: error, userMessageId: getClientRequestId(msg) });
+      return rejectDelivery(error);
+    }
+    if (workerTicket && !internalMessage) {
+      const id = getClientRequestId(msg) || makeHistoryMessageId("user");
+      const known = clientRequestStates.get(id);
+      if (known?.conversationId === incomingId && known.state !== "rejected") {
+        acknowledgeClientRequest(id, known.state);
+        return;
+      }
+      void ticketAction(async () => {
+        try {
+          const preferred = workerTicket.execution.nextConfig || workerTicket.execution;
+          const config = workerConfiguration({
+            dispatchProvider: msg.dispatchProvider, profileId: msg.profileId || preferred.profileId,
+            model: msg.model || preferred.model, effort: msg.effort ?? preferred.effort,
+          });
+          const images = msg.images ?? (msg.image ? [msg.image] : []);
+          const result = await orchestrator.messageTicket(workerTicket.id, msg.prompt, {
+            fromUser: true, requestId: id, config, steering: msg.deliveryMode === "steer",
+            composerText: typeof msg.composerText === "string" ? msg.composerText.slice(0, 32_000) : null,
+            displayText: typeof msg.displayText === "string" ? msg.displayText.slice(0, 32_000) : null,
+            images: z.array(z.object({ mediaType: z.string().regex(/^image\/[a-z0-9.+-]+$/i),
+              data: z.string().max(4_000_000) })).max(8).parse(images),
+          });
+          if (!result.ok) throw new Error(result.error);
+          if (result.status === "queued" || result.delivery === "queued") {
+            const queuedTicket = ticketStore.get(workerTicket.id);
+            const entries = queuedTicket?.execution.pendingInstructions || [];
+            const index = entries.findIndex(entry => entry.requestId === id);
+            if (index >= 0 && entries[index].steering) {
+              rememberClientRequest(id, "steering_queued");
+              acknowledgeClientRequest(id, "steering_queued");
+              deliver({ type: "steering_queued", ...ticketSteeringEvent(queuedTicket, entries[index], index) });
+            } else if (index >= 0) {
+              rememberClientRequest(id, "queued");
+              acknowledgeClientRequest(id, "queued");
+              deliver({ type: "request_queued", userMessageId: id, reason: "busy" });
+            }
+          }
+          return result;
+        } catch (error) {
+          rememberClientRequest(id, "rejected");
+          acknowledgeClientRequest(id, "rejected");
+          if (msg.deliveryMode === "steer") deliver({ type: "steering_removed", userMessageId: id, reason: "rejected" });
+          deliver({ type: "error", text: String(error?.message || error), userMessageId: id });
+          return { ok: false, error: String(error?.message || error) };
+        }
+      }, workerTicket.id, incomingId);
+      return;
+    }
+    if (workerTicket && !orchestrator.ownsAttempt(workerTicket.id, msg.workerAttempt)) {
+      return rejectDelivery("工单轮次已失效");
+    }
+    if (!internalMessage) delete msg.ticketId;
+
     let requestId = getClientRequestId(msg);
     if (deletedHistoryConversationIds.has(historyIdOrNull(msg.conversationId))) {
       deliver({ type: "error", text: "对话已删除，请新建对话后发送。", userMessageId: requestId });
-      return;
+      return rejectDelivery("对话已删除");
     }
     if (!requestId && msg.deliveryMode === "steer") {
       requestId = normalizeHistoryId(makeHistoryMessageId("user"));
       msg.userMessageId = requestId;
     }
     const knownRequest = requestId ? clientRequestStates.get(requestId) : null;
-    if (!fromQueue && knownRequest) {
+    if (!internalMessage && !fromQueue && knownRequest && knownRequest.conversationId === incomingId) {
       acknowledgeClientRequest(requestId, knownRequest.state);
       if (knownRequest.state === "queued") {
         const position = session.queuedClientPrompts.findIndex(item => getClientRequestId(item) === requestId) + 1;
@@ -6509,7 +7880,7 @@ wss.on("connection", (ws) => {
       } else if (knownRequest.state === "running") {
         deliver({ type: "request_started", userMessageId: requestId });
       }
-      return;
+      return { state: knownRequest.state };
     }
 
     const activeRestartLease = getActiveRestartLease();
@@ -6520,7 +7891,7 @@ wss.on("connection", (ws) => {
         userMessageId: requestId,
         retryAfterMs: Math.max(100, activeRestartLease.expiresAt - Date.now() + 50),
       });
-      return;
+      return rejectDelivery("服务正在重启，请稍后再试");
     }
 
     const incomingProfileData = readProfiles();
@@ -6543,6 +7914,7 @@ wss.on("connection", (ws) => {
     const crossesActiveClaudeTasks = (incomingProvider === "codex" || incomingProvider === "antigravity")
       && session.claudeRuntime.taskIds.size > 0;
     const clientPromptBusy = shouldQueueClientPrompt() || crossesActiveClaudeTasks;
+    if (clientPromptBusy && (workerTicket || msg.reportReceipt)) return rejectDelivery("目标会话正忙");
     if (!fromQueue && msg.deliveryMode === "steer" && clientPromptBusy) {
       const steeringConversationId = msg.conversationId
         ? normalizeHistoryId(msg.conversationId)
@@ -6588,7 +7960,7 @@ wss.on("connection", (ws) => {
       rememberClientRequest(requestId, "steering_queued");
       acknowledgeClientRequest(requestId, "steering_queued");
       deliverSteeringQueued(item);
-      return;
+      return { state: "queued" };
     }
     if (clientPromptBusy) {
       const fallbackSteeringItem = fromQueue ? steeringQueue.get(requestId) : null;
@@ -6597,7 +7969,7 @@ wss.on("connection", (ws) => {
         rememberClientRequest(requestId, "steering_queued");
         acknowledgeClientRequest(requestId, "steering_queued");
         deliverSteeringQueued(fallbackSteeringItem);
-        return;
+        return { state: "queued" };
       }
       if (fromQueue) session.queuedClientPrompts.unshift(msg);
       else session.queuedClientPrompts.push(msg);
@@ -6610,7 +7982,7 @@ wss.on("connection", (ws) => {
         position: position || session.queuedClientPrompts.length,
         userMessageId: requestId,
       });
-      return;
+      return { state: "queued" };
     }
     const requestConversationId = normalizeHistoryId(msg.conversationId);
     msg.conversationId = requestConversationId;
@@ -6626,7 +7998,7 @@ wss.on("connection", (ws) => {
         text: `同时进行的对话已达上限（${MAX_CONCURRENT_CONVERSATIONS} 个）。`
           + `等其中一个跑完，或先停掉一个再发。`,
       });
-      return;
+      return rejectDelivery("并发对话已达上限");
     }
 
     if (fromQueue) {
@@ -6649,7 +8021,13 @@ wss.on("connection", (ws) => {
         }
       }
     }
-    startClientRequest(requestId, requestConversationId);
+    const startMeta = internalMessage ? {
+      displayText: typeof msg.displayText === "string" && msg.displayText.trim()
+        ? msg.displayText.trim()
+        : String(msg.prompt || "").trim(),
+      sourceChannel: msg.sourceChannel || null,
+    } : null;
+    startClientRequest(requestId, requestConversationId, startMeta);
     // 这一轮经由哪条路：历史里的消息照它打标记，换模型时靠它算出谁错过了哪几轮
     const turnRoute = historyRoute({
       provider: incomingProvider,
@@ -6666,12 +8044,21 @@ wss.on("connection", (ws) => {
       provider: incomingProvider,
       profileId: incomingProfileId,
       runtimeKey: incomingRuntimeKey,
+      workerAttempt: msg.workerAttempt,
+      reportReceipt: msg.reportReceipt,
+      turnComplete: msg.turnComplete,
+      sourceChannel: msg.sourceChannel || null,
+      sourcePeer: msg.sourcePeer || null,
+      dispatchedTickets: [],
       route: turnRoute,
     };
     finalizeActiveAssistantHistory("complete");
     /* 本轮之前的记录先拍下来：beginServerConversationFromClient 马上要把这条用户消息
        追加进去，派发那条路又要到更后面才用得上。 */
-    const priorMessages = [...(readHistory().find(conv => conv.id === requestConversationId)?.messages || [])];
+    const priorConversation = readHistory().find(conv => conv.id === requestConversationId);
+    const priorMessages = (priorConversation?.messages || []).slice(
+      workerTicket || isStrategistConv ? priorConversation?.contextResetIndex || 0 : 0
+    );
     releaseForeignNativeSession(turnRoute);
     const nativeSession = incomingProvider === "codex" ? session.codexThreadId
       : incomingProvider === "antigravity" ? session.agyConversationId
@@ -6689,9 +8076,20 @@ wss.on("connection", (ws) => {
       priorMessages,
       { ...contextOptions, resume: false },
     ));
-    beginServerConversationFromClient(msg);
+    try {
+      beginServerConversationFromClient(msg);
+    } catch (error) {
+      if (!workerTicket && !msg.reportReceipt) throw error;
+      send({ type: "error", text: String(error?.message || error) });
+      send({ type: "done" });
+      completeClientRequest("error", requestId);
+      return rejectDelivery(String(error?.message || error));
+    }
 
-    const schedulerRequest = hasSchedulerIntentForMessage(msg);
+    const isWechatTurn = msg.sourceChannel === "wechat";
+    const schedulerRequest = (!internalMessage || isWechatTurn) && !workerTicket && !msg.dispatchProvider
+      && hasSchedulerIntentForMessage(msg)
+      && !(isWechatTurn && incomingProvider !== "claude");
 
     // Build message content — text only, or images + text
     const images = msg.images ?? (msg.image ? [msg.image] : []);
@@ -6702,13 +8100,13 @@ wss.on("connection", (ws) => {
     const permissionMode = PERMISSION_MODES.has(msg.permissionMode)
       ? msg.permissionMode
       : DEFAULT_PERMISSION_MODE;
-    const effort = EFFORT_LEVELS.has(msg.effort) ? msg.effort : "medium";
     const profileData = readProfiles();
     // activeProfileId 由客户端 localStorage 管理，随每条消息传入；服务端直接使用，无需持久化
     if (msg.profileId && profileData.profiles.some(p => p.id === msg.profileId)) {
       profileData.activeProfileId = msg.profileId;
     }
     const activeProfile = getActiveProfile(profileData);
+    const effort = reasoningEffort(msg.effort, activeProfile?.provider);
 
     if (!msg.dispatchProvider && activeProfile && !isSubscriptionProvider(activeProfile.provider) && !activeProfile.apiKey) {
       send({ type: "error", text: `${activeProfile.name} 的 API Key 还没有配置，请先在账号设置里保存。` });
@@ -6716,7 +8114,7 @@ wss.on("connection", (ws) => {
       completeClientRequest("error", requestId);
       session.abortCtrl = null;
       scheduleQueuedClientPromptDrain();
-      return;
+      return rejectDelivery("运行器启动前检查失败");
     }
     if (!msg.dispatchProvider && activeProfile?.provider === "codex" && !isCodexAuthAvailable()) {
       send({ type: "error", text: "Codex 还没有登录，请先打开 Codex 客户端或运行 codex login 完成 ChatGPT 账号登录。" });
@@ -6724,7 +8122,7 @@ wss.on("connection", (ws) => {
       completeClientRequest("error", requestId);
       session.abortCtrl = null;
       scheduleQueuedClientPromptDrain();
-      return;
+      return rejectDelivery("运行器启动前检查失败");
     }
     if (!msg.dispatchProvider && activeProfile?.provider === "antigravity" && !isAgyAuthAvailable()) {
       send({ type: "error", text: "Antigravity CLI 还没准备好，请先安装 agy 并运行一次 agy 完成 Google 账号登录。" });
@@ -6732,19 +8130,59 @@ wss.on("connection", (ws) => {
       completeClientRequest("error", requestId);
       session.abortCtrl = null;
       scheduleQueuedClientPromptDrain();
-      return;
+      return rejectDelivery("运行器启动前检查失败");
     }
-    // scheduler 是通过 agent-sdk 进程内注入的 MCP 工具，另外两家都够不着
-    if (!msg.dispatchProvider && (activeProfile?.provider === "codex" || activeProfile?.provider === "antigravity") && schedulerRequest) {
-      send({ type: "error", text: "定时任务目前需要 Claude 会员通道的 scheduler 工具。请切换到 Claude 会员后再创建、查看或修改提醒任务。" });
+    // 普通对话的 scheduler 是通过 Claude agent-sdk 进程内注入的；
+    // Fellow 主对话在三家模型下都已通过 orchestrator MCP 桥接挂载定时任务工具。
+    if (!msg.dispatchProvider && !isStrategistConv && (activeProfile?.provider === "codex" || activeProfile?.provider === "antigravity") && schedulerRequest) {
+      send({ type: "error", text: "普通直聊的定时任务目前需要 Claude 会员通道，或切换到 ✦ Fellow 主入口使用。" });
       send({ type: "done" });
       completeClientRequest("error", requestId);
       session.abortCtrl = null;
       scheduleQueuedClientPromptDrain();
-      return;
+      return rejectDelivery("运行器启动前检查失败");
     }
 
-    const resolvedCwd = resolveAllowedCwd(msg.cwd);
+    const resolvedCwd = workerTicket ? workerTicket.execution.cwd : resolveAllowedCwd(msg.cwd);
+    const conversationRole = workerTicket ? "worker" : (isStrategistConv ? "strategist" : "normal");
+    const effectivePermissionMode = isStrategistConv
+      ? "plan"
+      : workerTicket
+        ? (ALLOW_MACHINE_ACCESS && workerTicket.mandate?.allowBash ? "bypassPermissions" : "auto")
+        : permissionMode;
+    const strategistContextBlock = isStrategistConv
+      ? orchestrator.buildStrategistContextBlock(requestConversationId, resolvedCwd)
+      : "";
+    const workerSpecialistDoc = workerTicket?.specialistId
+      ? loadSpecialists(DEFAULT_CWD).find(s => s.id === workerTicket.specialistId) || null
+      : null;
+    const workerSystemAddon = workerTicket
+      ? (msg.workerSystemPrompt || buildWorkerSystemPrompt(workerTicket, workerSpecialistDoc))
+      : "";
+
+    if (isStrategistConv && msg.dispatchProvider) {
+      const toolId = `ticket_dispatch_${requestId || crypto.randomUUID()}`;
+      const input = {
+        title: String(msg.displayText || msg.prompt || "").trim().slice(0, 120),
+        goal: msg.prompt, provider: msg.dispatchProvider, writeScope: ["*"],
+      };
+      send({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: toolId, name: "dispatch_task", input }] } });
+      void dispatchConfiguredTicket(input, { cwd: resolvedCwd, profiles: profileData }).catch(error => ({
+        ok: false, error: String(error?.message || error),
+      })).then(result => {
+        if (session.activeForegroundDeliveryContext?.requestId !== requestId) return;
+        send({ type: "user", message: { role: "user", content: [{
+          type: "tool_result", tool_use_id: toolId, is_error: !result.ok,
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        }] } });
+        send({ type: "done" });
+        completeClientRequest(result.ok ? "complete" : "error", requestId);
+      }).catch(error => {
+        completeClientRequest("error", requestId);
+        console.warn("[Orchestrator] Dispatch receipt failed:", error);
+      });
+      return { state: "started" };
+    }
 
     // 用户通过 >厂商 明确指定时，不再让主模型二次判断；直接调用同一派发执行器，
     // 同时合成标准的 tool_use/tool_result 事件，复用现有编队卡与历史链路。
@@ -6928,44 +8366,86 @@ wss.on("connection", (ws) => {
 
     const webEnv = buildAgentEnv(profileData, effort, msg.model);
     webEnv.PWD = resolvedCwd; // 让 agent 报告的工作目录与实际 cwd 一致
+    const systemAppendParts = [];
+    const disallowedToolsSet = new Set();
+    const mcpServers = {};
+    if (isStrategistConv) {
+      mcpServers.orchestrator = _buildOrchestratorMcpServer({
+        parentConversationId: requestConversationId,
+        cwd: resolvedCwd,
+        permissionMode,
+        profileData,
+      });
+      systemAppendParts.push(STRATEGIST_SYSTEM_PROMPT);
+      if (isWechatTurn) systemAppendParts.push(WECHAT_FELLOW_PROMPT);
+      if (strategistContextBlock) systemAppendParts.push(strategistContextBlock);
+      for (const toolName of STRATEGIST_DISALLOWED_TOOLS) disallowedToolsSet.add(toolName);
+    } else if (workerTicket) {
+      if (workerSystemAddon) systemAppendParts.push(workerSystemAddon);
+    } else if (DISPATCH_AUTO_ENABLED) {
+      mcpServers.dispatch = _buildDispatchMcpServer({
+        cwd: resolvedCwd,
+        permissionMode,
+        profileData,
+        conversationId: historyIdOrNull(msg.conversationId) || session.activeHistoryConversationId,
+        // 用户按停止时，派出去的子进程也要跟着停
+        getAbortSignal: () => ac.signal,
+        sendStep: (payload) => { try { send({ type: "dispatch_step", ...payload }); } catch { /* 连接已断则忽略 */ } },
+      });
+    }
+    if (schedulerRequest && !workerTicket) {
+      mcpServers.scheduler = _buildSchedulerMcpServer(isWechatTurn ? {
+        sourceChannel: "wechat",
+        sourcePeer: msg.sourcePeer || null,
+        defaultOutputs: ["wechat"],
+      } : {
+        sourceChannel: "web",
+        sourcePeer: WEB_SCHEDULER_PEER,
+        defaultOutputs: ["chat_history"],
+      });
+      systemAppendParts.push(INKFELLOW_SCHEDULER_PROMPT);
+      disallowedToolsSet.add("Bash");
+    }
     const options = {
       cwd: resolvedCwd,
-      permissionMode,
-      allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
+      permissionMode: isStrategistConv ? "auto" : effectivePermissionMode,
+      allowDangerouslySkipPermissions: effectivePermissionMode === "bypassPermissions",
+      ...(isStrategistConv ? {
+        tools: READ_ONLY_TOOLS,
+        strictMcpConfig: true,
+        settingSources: [],
+      } : workerTicket ? {
+        tools: workerAllowedTools(workerTicket),
+        ...(workerTicket.mandate?.allowExternalAction === true ? {} : { strictMcpConfig: true, settingSources: [] }),
+      } : {}),
+      ...(workerTicket ? { maxTurns: workerTicket.mandate.maxTurns } : {}),
       abortController: ac,
       includePartialMessages: true,
       effort,
       env: webEnv,
-      mcpServers: {
-        ...(DISPATCH_AUTO_ENABLED ? {
-          dispatch: _buildDispatchMcpServer({
-            cwd: resolvedCwd,
-            permissionMode,
-            profileData,
-            conversationId: historyIdOrNull(msg.conversationId) || session.activeHistoryConversationId,
-            // 用户按停止时，派出去的子进程也要跟着停
-            getAbortSignal: () => ac.signal,
-            sendStep: (payload) => { try { send({ type: "dispatch_step", ...payload }); } catch { /* 连接已断则忽略 */ } },
-          }),
-        } : {}),
-      },
+      mcpServers,
+      ...(systemAppendParts.length > 0
+        ? { systemPrompt: { type: "preset", preset: "claude_code", append: systemAppendParts.join("\n\n") } }
+        : {}),
+      ...(disallowedToolsSet.size > 0 ? { disallowedTools: [...disallowedToolsSet] } : {}),
     };
-    if (schedulerRequest) {
-      options.mcpServers = {
-        ...options.mcpServers,
-        scheduler: _buildSchedulerMcpServer({
-          sourceChannel: "web",
-          sourcePeer: WEB_SCHEDULER_PEER,
-          defaultOutputs: ["chat_history"],
-        }),
-      };
-      options.systemPrompt = { type: "preset", preset: "claude_code", append: INKFELLOW_SCHEDULER_PROMPT };
-      options.disallowedTools = ["Bash"];
-    }
     if (session.sessionId) options.resume = session.sessionId;
     if (!activeProfile || activeProfile.provider === "claude") {
       if (msg.model) options.model = msg.model;
     }
+
+    // Fellow 主对话或 Worker 走 Codex / Antigravity 时没有 Claude SDK 的 systemPrompt.append，
+    // 通过首段指令注入契约；Fellow 主对话同时强制只读 plan 沙箱，并挂载原生 orchestrator MCP 桥接工具。
+    const nonClaudeStrategistNote = "\n（你已通过 orchestrator MCP 工具集挂载原生工单与定时工具：dispatch_task、list_tickets、inspect_ticket、recall_ticket_detail、message_ticket、stop_ticket、list_providers、create_schedule、list_schedules、delete_schedule、toggle_schedule。需要派发多个任务时，请直接并行多次调用 dispatch_task，不要让用户手动复制指令。）";
+    const wechatRoleAddon = isWechatTurn ? `\n\n${WECHAT_FELLOW_PROMPT}` : "";
+    const rolePromptPrefix = isStrategistConv
+      ? `${STRATEGIST_SYSTEM_PROMPT}${nonClaudeStrategistNote}${wechatRoleAddon}${strategistContextBlock ? `\n\n${strategistContextBlock}` : ""}\n\n---\n`
+      : (workerTicket && !nativeSession && workerSystemAddon ? `${workerSystemAddon}\n\n---\n` : "");
+    const nonClaudePrompt = rolePromptPrefix ? `${rolePromptPrefix}${providerPrompt}` : providerPrompt;
+    const nonClaudeFreshPrompt = () => {
+      const prefix = workerSystemAddon ? `${workerSystemAddon}\n\n---\n` : rolePromptPrefix;
+      return prefix + freshProviderPrompt();
+    };
 
     // ── Antigravity CLI（agy）路径 ─────────────────────────────
     if (activeProfile?.provider === "antigravity") {
@@ -6984,27 +8464,76 @@ wss.on("connection", (ws) => {
       );
       (async () => {
         try {
-          const emit = createAgyEventSender((ev) => { if (isCurrentAgyTurn()) send(ev); });
+          const translate = agyProvider.createTranslator();
+          const model = resolveAgyModel(msg.model, activeProfile);
           send({ type: "system", subtype: "status", status: "requesting" });
           /* 走常驻进程：起一次 agy 要十几秒，一个对话只该付一次。接哪条会话由
              它自己从 session.agyConversationId 取——这轮结束前那个值还可能被
              下面的 onSession 改写，在这里先取会取到旧的。 */
           const run = await runAgyPersistent({
-            prompt: providerPrompt,
+            prompt: nonClaudePrompt,
             images: msg.images ?? (msg.image ? [msg.image] : []),
             cwd: resolvedCwd,
-            model: resolveAgyModel(msg.model, activeProfile),
+            model,
             effort,
-            permissionMode,
+            permissionMode: effectivePermissionMode,
+            extraAddDirs: isStrategistConv ? [ensureAgyStrategistPluginDir(resolvedCwd)] : [],
             signal: ac.signal,
             // id 在 init 事件里就有，先记下来——中断时这条会话仍然有效
             onSession: (id) => {
               saveAgyConversation(id, activeProfile?.id ?? null);
               if (isCurrentAgyTurn()) send({ type: "session", sessionId: id, provider: "antigravity" });
             },
-            onEvent: emit,
+            onEvent: (ev) => {
+              if (!isCurrentAgyTurn()) return;
+              for (const out of translate(ev)) send(out);
+            },
           });
           if (!isCurrentAgyTurn()) return;
+          if (run.finishedReason === "interrupted") throw makeAbortError("Antigravity 请求已取消");
+          if (run.status !== "SUCCESS" || run.finishedReason) {
+            const diagnostic = typeof run.error === "string" ? run.error.trim() : "";
+            const raw = diagnostic || run.text || `Antigravity 请求失败（${run.finishedReason || run.status || "未返回结束状态"}）`;
+            console.error(`[agy] ${run.status}: ${raw.slice(0, 300)}`);
+            const response = run.response === diagnostic ? "" : run.response;
+            const connectionTimeout = /\b(?:tls handshake timeout|timeout awaiting response headers|stream idle timeout)\b/i.test(diagnostic);
+            const connectionReset = /\b(?:connection reset by peer|existing connection was forcibly closed by the remote host)\b/i.test(diagnostic);
+            const isGeminiConnectionFailure = /^gemini(?:-|$)/i.test(model)
+              && (!run.finishedReason || run.finishedReason === "error")
+              && (connectionTimeout || connectionReset);
+            if (!isGeminiConnectionFailure) throw new Error(explainAgyFailure(raw));
+
+            const connectionIssue = connectionTimeout ? "连接超时" : "连接中断";
+            const partialOutput = translate.finishPartial(response);
+            if (partialOutput === null) {
+              const retryable = !translate.hasToolActivity();
+              if (retryable) {
+                rememberAgyRetryDraft(msg, requestId, {
+                  conversationId: requestConversationId, model, effort, permissionMode, profileId: activeProfile.id,
+                });
+              }
+              send({
+                type: "error", provider: "antigravity", retryable, details: diagnostic,
+                text: retryable
+                  ? `Gemini ${connectionIssue}，本轮没有可用结果。`
+                  : `Gemini ${connectionIssue}，工具执行结果未确认。请先检查已有改动。`,
+              });
+              send({ type: "done" });
+              completeClientRequest(!retryable && workerTicket ? "partial" : "error", requestId);
+              return;
+            }
+
+            for (const out of partialOutput) send(out);
+            send({
+              type: "result", subtype: "partial", status: "partial", provider: "antigravity",
+              text: `已保留本轮输出。${connectionIssue}，完成状态待确认。`,
+              details: diagnostic,
+              usage: run.usage ?? null,
+            });
+            send({ type: "done", status: "partial" });
+            completeClientRequest("partial", requestId);
+            return;
+          }
           send({ type: "result", subtype: "success", usage: run.usage ?? null, provider: "antigravity" });
           send({ type: "done" });
           completeClientRequest("complete", requestId);
@@ -7023,7 +8552,7 @@ wss.on("connection", (ws) => {
           scheduleQueuedClientPromptDrain();
         }
       })();
-      return;
+      return { state: "started" };
     }
 
     // ── Codex SDK 路径 ────────────────────────────────────────
@@ -7051,13 +8580,15 @@ wss.on("connection", (ws) => {
              的进程起停，也不必每轮重新赌一次建连空窗。 */
           if (CODEX_USE_PERSISTENT) {
             const run = await runCodexPersistent({
-              prompt: providerPrompt,
-              freshPrompt: freshProviderPrompt,
+              prompt: nonClaudePrompt,
+              freshPrompt: nonClaudeFreshPrompt,
               images: codexImages,
               cwd: resolvedCwd,
               model: msg.model || null,
-              effort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
-              permissionMode,
+              effort,
+              serviceTierForTurn: codexServiceTier(msg.codexSpeed),
+              permissionMode: effectivePermissionMode,
+              extraArgs: isStrategistConv ? codexStrategistMcpArgs(resolvedCwd) : [],
               threadId: session.codexThreadId,
               signal: ac.signal,
               onThread: (id) => {
@@ -7085,12 +8616,27 @@ wss.on("connection", (ws) => {
 
           // 降级路径（CODEX_PERSISTENT=0）：每轮 spawn 一个 `codex exec`，
           // 文字和图片共用 SDK 生命周期，并续接同一个已保存的 thread ID。
-          const codex = new Codex(CODEX_CLIENT_OPTIONS);
+          const codex = new Codex({
+            ...CODEX_CLIENT_OPTIONS,
+            config: {
+              ...CODEX_CLIENT_OPTIONS.config,
+              service_tier: codexServiceTier(msg.codexSpeed),
+              ...(isStrategistConv ? {
+                mcp_servers: {
+                  orchestrator: {
+                    command: process.execPath,
+                    args: [ORCHESTRATOR_BRIDGE_PATH],
+                    env: orchestratorBridgeEnv(resolvedCwd),
+                  },
+                },
+              } : {}),
+            },
+          });
           const threadOptions = {
             workingDirectory: resolvedCwd,
             approvalPolicy: "never",
-            sandboxMode: codexSandboxMode(permissionMode),
-            modelReasoningEffort: CODEX_EFFORT_TO_REASONING[effort] || "medium",
+            sandboxMode: codexSandboxMode(effectivePermissionMode),
+            ...(effort ? { modelReasoningEffort: effort } : {}),
             ...(msg.model ? { model: msg.model } : {}),
           };
           const thread = session.codexThreadId
@@ -7117,10 +8663,10 @@ wss.on("connection", (ws) => {
               codexTempImagePaths.push(tmpPath);
               parts.push({ type: "local_image", path: tmpPath });
             }
-            parts.push({ type: "text", text: providerPrompt });
+            parts.push({ type: "text", text: nonClaudePrompt });
             input = parts;
           } else {
-            input = providerPrompt;
+            input = nonClaudePrompt;
           }
 
           const { events } = await thread.runStreamed(input, { signal: ac.signal });
@@ -7203,7 +8749,7 @@ wss.on("connection", (ws) => {
           scheduleQueuedClientPromptDrain();
         }
       })();
-      return;
+      return { state: "started" };
     }
 
     const collectAskUserQuestionInput = async (input, context = {}) => {
@@ -7221,6 +8767,31 @@ wss.on("connection", (ws) => {
       ...(options.hooks ?? {}),
       PreToolUse: [
         ...((options.hooks?.PreToolUse) ?? []),
+        ...(isStrategistConv || workerTicket ? [{
+          hooks: [async hookInput => {
+            const name = String(hookInput.tool_name || "");
+            let decision;
+            if (workerTicket) {
+              const current = ticketStore.get(workerTicket.id);
+              const scopes = orchestrator.attemptScopes(workerTicket.id, msg.workerAttempt);
+              decision = !scopes || current?.status === "stopping"
+                ? { reason: "工单执行轮次已终止" }
+                : workerToolDecision(workerTicket, name, hookInput.tool_input, DEFAULT_CWD, scopes, { allowOutsideVault: ALLOW_MACHINE_ACCESS });
+            } else {
+              decision = READ_ONLY_TOOLS.includes(name) || name.startsWith("mcp__orchestrator__")
+                || (schedulerRequest && name.startsWith("mcp__scheduler__"))
+                ? {} : { reason: "Fellow 主对话仅使用只读与任务调度工具" };
+              if (session.activeForegroundDeliveryContext?.reportReceipt && /^mcp__orchestrator__(?:dispatch_task|stop_ticket|message_ticket)$/.test(name)) {
+                decision = { reason: "自动汇报期间不执行工单动作" };
+              }
+            }
+            return { hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              ...(decision.reason ? { permissionDecision: "deny", permissionDecisionReason: decision.reason }
+                : decision.input ? { permissionDecision: "allow", updatedInput: decision.input } : {}),
+            } };
+          }],
+        }] : []),
         {
           matcher: ASK_USER_QUESTION_TOOL,
           hooks: [async (hookInput, toolUseID, hookContext = {}) => {
@@ -7254,6 +8825,14 @@ wss.on("connection", (ws) => {
     };
 
     options.canUseTool = async (toolName, input, context = {}) => {
+      if (workerTicket && toolName !== ASK_USER_QUESTION_TOOL) {
+        const current = ticketStore.get(workerTicket.id);
+        const scopes = orchestrator.attemptScopes(workerTicket.id, msg.workerAttempt);
+        if (!scopes || current?.status === "stopping") return { behavior: "deny", message: "工单执行轮次已终止" };
+        const decision = workerToolDecision(workerTicket, toolName, input, DEFAULT_CWD, scopes, { allowOutsideVault: ALLOW_MACHINE_ACCESS });
+        return decision.reason ? { behavior: "deny", message: decision.reason }
+          : { behavior: "allow", updatedInput: decision.input || input };
+      }
       if (toolName !== ASK_USER_QUESTION_TOOL) {
         console.warn(`[Web Agent] Permission escalation denied for tool: ${toolName} (mode: ${permissionMode})`);
         return {
@@ -7310,8 +8889,10 @@ wss.on("connection", (ws) => {
       opusModel: activeProfile?.opusModel ?? null,
       sonnetModel: activeProfile?.sonnetModel ?? null,
       haikuModel: activeProfile?.haikuModel ?? null,
-      allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
+      allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions,
       schedulerRequest,
+      conversationRole,
+      workerAttempt: msg.workerAttempt || null,
     })).digest("hex");
     const turnConversationId = session.activeHistoryConversationId;
     const turnEpoch = ++session.claudeTurnEpoch;
@@ -7347,7 +8928,7 @@ wss.on("connection", (ws) => {
 
         if (!session.claudeRuntime.started) {
           if (!isCurrentTurn()) return;
-          session.claudeRuntime.start(options, { conversationId: turnConversationId });
+          session.claudeRuntime.start(options, { conversationId: turnConversationId, workerAttempt: msg.workerAttempt });
           noteClaudeRuntimeStarted(runtimeSignature, turnConversationId, options, turnRoute);
         } else {
           // 同一个账号接着用这个进程；模型可能换了，标注跟着更新
@@ -7358,9 +8939,9 @@ wss.on("connection", (ws) => {
 
              赋值放在 await 之后：setter 抛了就不算应用过，下一轮还会重试。 */
           const nextModel = msg.model || undefined;
-          if (session.claudeRuntimeAppliedPermissionMode !== permissionMode) {
-            await session.claudeRuntime.query.setPermissionMode(permissionMode);
-            session.claudeRuntimeAppliedPermissionMode = permissionMode;
+          if (session.claudeRuntimeAppliedPermissionMode !== options.permissionMode) {
+            await session.claudeRuntime.query.setPermissionMode(options.permissionMode);
+            session.claudeRuntimeAppliedPermissionMode = options.permissionMode;
             if (!isCurrentTurn()) return;
           }
           if (session.claudeRuntimeAppliedModel !== nextModel) {
@@ -7378,32 +8959,11 @@ wss.on("connection", (ws) => {
         finishClaudeTurn();
       }
     })();
-    return;
+    return { state: "started" };
 
   
     });
-  };
-  ws.on("message", raw => handleClientMessage(raw, false));
-  activeQueuedPromptDrainer = drainThisConnection;
-  for (const id of sessions.runningIds()) {
-    const targetSession = sessions.peek(id);
-    if (targetSession?.queuedClientPrompts.length) scheduleQueuedClientPromptDrain(0, targetSession);
-  }
-  if (sessions.ambient.queuedClientPrompts.length) scheduleQueuedClientPromptDrain(0, sessions.ambient);
-
-  ws.on("close", () => {
-    clearInterval(pingTimer);
-    if (activeWs === ws) {
-      activeWs = null;
-      if (activeQueuedPromptDrainer === drainThisConnection) activeQueuedPromptDrainer = null;
-      // Do NOT abort or clear the pending question: the run keeps going in the
-      // background and reattaches when the client reconnects.
-      if (isAgentRunActive()) {
-        console.log("[Web Agent] Client detached; run continues in background, events buffered until reconnect.");
-      }
-    }
-  });
-});
+}
 
 http.listen(PORT, HOST, () => {
   console.log(`claude-chat listening on ${HOST}:${PORT}`);

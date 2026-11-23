@@ -264,7 +264,7 @@ test("并发时每条会话事件都带着自己的归属", { timeout: 30_000 },
        连接刚建立、没有任何对话在跑时，它报的就是「没附着任何对话」。
        除此之外一律要带，否则前端没法判断该不该渲染。 */
     const mayLackOwner = new Set([
-      "ping", "sessions_snapshot", "steering_snapshot", "reset_complete", "system", "run_attached",
+      "ping", "sessions_snapshot", "steering_snapshot", "tickets_snapshot", "reset_complete", "system", "run_attached",
     ]);
     const orphans = server.events.filter(e => !mayLackOwner.has(e.type) && !e.conversationId);
     assert.deepEqual(

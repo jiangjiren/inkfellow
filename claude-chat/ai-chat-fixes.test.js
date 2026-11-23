@@ -79,21 +79,42 @@ test("模型输出交给 DOMPurify，标签白名单比它的默认 profile 更�
   assert.equal(config.SANITIZE_NAMED_PROPS, true, "要挡 DOM clobbering");
 });
 
-test("URL 白名单放行相对路径，挡掉 javascript: 和 data:text/html", () => {
+test("URL 白名单放行 Windows 绝对路径和相对路径，挡掉其他协议", () => {
   const c = makeSanitizerContext();
   c.sanitizeRenderedHtml("<p/>");
   const allowlist = c.calls[0].config.ALLOWED_URI_REGEXP;
 
   for (const ok of [
     "https://example.com", "http://127.0.0.1:8080/x", "mailto:a@b.c", "tel:123",
-    "file:///C:/notes/x.md", "/relative", "./relative", "#anchor", "relative/path",
+    "file:///C:/notes/x.md", "D:/notes/x.md", "C:\\notes\\x.md", "C:%5Cnotes%5Cx.md",
+    "/relative", "./relative", "#anchor", "relative/path",
   ]) {
     assert.ok(allowlist.test(ok), `应放行：${ok}`);
   }
   for (const bad of [
     "javascript:alert(1)", "vbscript:msgbox(1)", "data:text/html;base64,PHNjcmlwdD4=",
+    "custom:/notes/x.md", "d:relative",
   ]) {
     assert.ok(!allowlist.test(bad), `应挡掉：${bad}`);
+  }
+});
+
+test("Markdown 本地链接保留 Windows 盘符路径，包括隐藏目录前的分隔符", async () => {
+  const context = vm.createContext({});
+  const markedSource = await readFile(new URL("./public/marked.min.js", import.meta.url), "utf8");
+  vm.runInContext(markedSource, context);
+  vm.runInContext(source("tokenizeMarkdownLink"), context);
+  context.marked.use({ tokenizer: { link: context.tokenizeMarkdownLink } });
+
+  for (const [markdown, expected] of [
+    ["[打开成片](<D:/旅居项目/成片 v4.mp4>)", "D:/旅居项目/成片 v4.mp4"],
+    [String.raw`[打开目录](<C:\Users\lenovo\.codex\sessions\2026\11\18>)`, "C:/Users/lenovo/.codex/sessions/2026/11/18"],
+    [String.raw`[打开目录](C:\.cache "目录")`, "C:/.cache"],
+    ["[打开说明](./说明.md)", "./说明.md"],
+  ]) {
+    const href = context.marked.parse(markdown).match(/href="([^"]+)"/)?.[1];
+    assert.ok(href, markdown);
+    assert.equal(decodeURIComponent(href), expected, markdown);
   }
 });
 
@@ -211,8 +232,8 @@ test("对话页自己发 CSP 头——Tauri 那份管不到跨源 iframe", { tim
     // 主窗口用 iframe 套着这一页，写死祖先就是赌它的源，赌错整页白屏
     assert.ok(!/frame-ancestors/.test(csp), "不该写 frame-ancestors");
     const page = await res.text();
-    assert.match(page, /src="turn-completion\.js\?v=1"/);
-    const completionScript = await fetch(`http://127.0.0.1:${port}/turn-completion.js?token=${encodeURIComponent(token)}`);
+    assert.match(page, /src="turn-completion\.js\?v=2"/);
+    const completionScript = await fetch(`http://127.0.0.1:${port}/turn-completion.js?v=2&token=${encodeURIComponent(token)}`);
     assert.equal(completionScript.status, 200);
     assert.match(completionScript.headers.get("content-type"), /javascript/);
     assert.match(await completionScript.text(), /InkfellowTurnCompletionTracker/);

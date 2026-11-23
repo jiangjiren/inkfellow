@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { WebSocket } from "ws";
+import { fileNameFor } from "./history-store.js";
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -28,6 +29,230 @@ async function waitForMessage(events, predicate, startIndex = 0, timeoutMs = 500
   }
   throw new Error(`Timed out waiting for WebSocket event; received: ${JSON.stringify(events.slice(startIndex))}`);
 }
+
+test("Gemini keeps output from a turn whose final status is a connection timeout", { timeout: 30_000 }, async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-gemini-turn-"));
+  const authFile = join(scratch, "auth-profile.json");
+  const cli = join(scratch, "agy.mjs");
+  const loader = join(scratch, "loader.mjs");
+  const requestsFile = join(scratch, "requests.jsonl");
+  const releaseFile = join(scratch, "release-turn");
+  const port = await reservePort();
+  const token = "gemini-test-token";
+  const hostname = "daily-cloudcode-pa.googleapis.com";
+  const timeout = 'API error (attempt 2): request failed: Post "https://' + hostname
+    + '/v1internal:streamGenerateContent?alt=sse": net/http: TLS handshake timeout';
+  const outputText = "Updated the article card and verified the file.";
+  const conversationId = "gemini-partial-history";
+  const model = "gemini-4-hydrogen";
+  let child;
+  let connection;
+  const connect = async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${token}`);
+    const events = [];
+    ws.on("message", raw => events.push(JSON.parse(raw.toString())));
+    await new Promise((resolve, reject) => ws.once("open", resolve).once("error", reject));
+    return { ws, events };
+  };
+
+  try {
+    await writeFile(authFile, JSON.stringify({
+      activeProfileId: "gemini",
+      profiles: [{ id: "gemini", name: "Gemini probe", provider: "antigravity", sonnetModel: model }],
+    }));
+    await writeFile(cli, `
+      import { appendFile, access } from "node:fs/promises";
+      import { createInterface } from "node:readline";
+      import { setTimeout } from "node:timers/promises";
+      if (process.argv[2] === "models") {
+        console.log(${JSON.stringify(model + "-medium\tGemini 4 Hydrogen (Medium)")});
+        process.exit(0);
+      }
+      const conversation_id = "agy-gemini-test";
+      const emit = (event, data) => console.log(JSON.stringify({ event, [event]: { conversation_id, ...data } }));
+      const step = (step_index, step_type, state, extra) => emit("step_update", { step_index, step_type, state, ...extra });
+      process.stdin.once("end", () => process.exit(0));
+      emit("init", {});
+      for await (const line of createInterface({ input: process.stdin })) {
+        const prompt = JSON.parse(line).message.content[0].text;
+        const scenario = /scenario-([a-z]+)/.exec(prompt)?.[1];
+        await appendFile(${JSON.stringify(requestsFile)}, JSON.stringify(scenario) + "\\n");
+        if (scenario === "hold") {
+          step(1, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+          await setTimeout(15_000);
+        }
+        step(1, "error", "DONE", { error: ${JSON.stringify(timeout)} });
+        if (scenario === "partial" || scenario === "success") {
+          step(2, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+          step(2, "tool", "DONE", { tool_info: { output: "article.html was written" } });
+          step(3, "agent_response", "DONE", { text_delta: ${JSON.stringify(outputText)} });
+        }
+        if (scenario === "nooutput") step(2, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+        if (scenario === "quota") step(2, "agent_response", "DONE", { text_delta: "Work in progress." });
+        if (scenario === "partial") {
+          while (!(await access(${JSON.stringify(releaseFile)}).then(() => true, () => false))) await setTimeout(10);
+        }
+        emit("result", scenario === "success"
+          ? { status: "SUCCESS", response: ${JSON.stringify(outputText)} }
+          : { status: "ERROR", finished_reason: "error", response: "",
+              error: scenario === "quota" ? "Individual quota reached." : ${JSON.stringify(timeout)} });
+      }
+    `);
+    await writeFile(loader, `
+      export async function load(url, context, nextLoad) {
+        if (!url.endsWith("/hidden-console.js")) return nextLoad(url, context);
+        return {
+          format: "module", shortCircuit: true,
+          source: ${JSON.stringify(`
+            import { spawn } from "node:child_process";
+            export function spawnWithHiddenConsole(_bin, args, options) {
+              return spawn(process.execPath, [${JSON.stringify(cli)}, ...args], { ...options, stdio: "pipe" });
+            }
+          `)},
+        };
+      }
+    `);
+    child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
+      cwd: process.env.INKFELLOW_TEST_SIDECAR_DIR || new URL(".", import.meta.url),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: "127.0.0.1",
+        DESKTOP_AGENT_TOKEN: token,
+        VAULT_PATH: scratch,
+        CLAUDE_CHAT_DATA_DIR: scratch,
+        CLAUDE_CHAT_HISTORY_FILE: join(scratch, "history.json"),
+        CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+        AGY_BIN: process.execPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.setEncoding("utf8").on("data", chunk => { output += chunk; });
+    }
+    const deadline = Date.now() + 15_000;
+    while (!output.includes("claude-chat listening")) {
+      if (child.exitCode != null || Date.now() >= deadline) throw new Error(`sidecar did not start: ${output}`);
+      await delay(20);
+    }
+
+    connection = await connect();
+    const retryContext = {
+      composerText: "Original draft before editing",
+      mentionedNotes: [{ path: "Notes/article.md", title: "Article" }],
+      quote: { text: "The excerpt", section: "Intro", prefix: "Before", suffix: "After" },
+      noteFile: "Notes/active.md",
+    };
+    const images = [{ mediaType: "image/png", data: "AQID" }];
+    const request = scenario => ({
+      conversationId, userMessageId: `gemini-${scenario}`, profileId: "gemini", model,
+      prompt: `scenario-${scenario}`, displayText: scenario,
+      ...(scenario === "empty" || scenario === "success" ? {
+        composerText: "Edited request", effort: "high", permissionMode: "plan", retryDraft: retryContext, images,
+      } : {}),
+    });
+    const matches = (scenario, type, fields = {}) => event => event.type === type
+      && event.userMessageId === request(scenario).userMessageId
+      && Object.entries(fields).every(([key, value]) => event[key] === value);
+    const send = scenario => connection.ws.send(JSON.stringify(request(scenario)));
+
+    send("partial");
+    await waitForMessage(connection.events, event => matches("partial", "assistant")(event)
+      && event.message.content.some(block => block.text === outputText));
+    await new Promise(resolve => {
+      connection.ws.once("close", resolve);
+      connection.ws.close();
+    });
+    connection = await connect();
+    await waitForMessage(connection.events, matches("partial", "run_attached", { running: true }));
+    await writeFile(releaseFile, "");
+    const result = await waitForMessage(connection.events, matches("partial", "result", { status: "partial" }));
+    assert.equal(result.provider, "antigravity");
+    assert.match(result.details, /TLS handshake timeout/);
+    await waitForMessage(connection.events, matches("partial", "done", { status: "partial" }));
+    assert.ok(!connection.events.some(matches("partial", "error")));
+
+    const saved = await (await fetch(`http://127.0.0.1:${port}/api/history/${conversationId}?token=${token}`)).json();
+    const assistant = saved.messages.find(message => message.role === "assistant");
+    assert.equal(assistant.status, "partial");
+    assert.equal(assistant.text, outputText);
+    assert.ok(assistant.blocks.some(block => block.type === "tool_result" && block.content === "article.html was written"));
+    assert.deepEqual(assistant.blocks.filter(block => block.type === "antigravity_partial"), [{
+      type: "antigravity_partial", message: result.text, details: result.details,
+    }]);
+    const shard = await readFile(join(scratch, "conversations", fileNameFor(conversationId)), "utf8");
+    const savedOnDisk = shard.trim().split(/\r?\n/).map(JSON.parse).filter(record => record.m?.id === assistant.id).at(-1)?.m;
+    assert.equal(savedOnDisk?.status, "partial");
+    assert.deepEqual(savedOnDisk?.blocks, assistant.blocks);
+
+    const beforeDuplicate = connection.events.length;
+    send("partial");
+    await waitForMessage(connection.events, matches("partial", "request_ack", { state: "partial" }), beforeDuplicate);
+    send("nooutput");
+    const toolStarted = await waitForMessage(connection.events, matches("nooutput", "error"));
+    assert.notEqual(toolStarted.retryable, true, "an unconfirmed tool must not prompt users to rerun the task");
+    await waitForMessage(connection.events, matches("nooutput", "done"));
+    assert.ok(!connection.events.some(matches("nooutput", "result", { status: "partial" })));
+    send("empty");
+    const empty = await waitForMessage(connection.events, matches("empty", "error", { retryable: true }));
+    assert.match(empty.details, /TLS handshake timeout/);
+    await waitForMessage(connection.events, matches("empty", "done"));
+    send("quota");
+    const quota = await waitForMessage(connection.events, matches("quota", "error"));
+    assert.notEqual(quota.retryable, true);
+    await waitForMessage(connection.events, matches("quota", "done"));
+    send("success");
+    await waitForMessage(connection.events, matches("success", "result", { subtype: "success" }));
+    await waitForMessage(connection.events, matches("success", "done"));
+    const historyUrl = `http://127.0.0.1:${port}/api/history/${conversationId}?token=${token}`;
+    const history = await (await fetch(historyUrl)).json();
+    const expectedDraft = {
+      ...retryContext, composerText: "Edited request", images,
+      model, effort: "high", permissionMode: "plan", profileId: "gemini",
+    };
+    const retryUserMessage = history.messages.find(message => message.id === "gemini-empty");
+    assert.deepEqual(retryUserMessage.retryDraft, expectedDraft);
+    assert.ok(history.messages.some(message => message.blocks?.some(block => block.retryable && block.userMessageId === retryUserMessage.id)));
+    assert.equal(history.messages.find(message => message.id === "gemini-success").retryDraft, undefined);
+    const ordinarySave = await fetch(historyUrl, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: history.messages.map(({ retryDraft, ...message }) => message) }),
+    });
+    assert.equal(ordinarySave.status, 200);
+    const refreshed = await (await fetch(historyUrl)).json();
+    assert.deepEqual(refreshed.messages.find(message => message.id === "gemini-empty").retryDraft, expectedDraft);
+    assert.deepEqual((await readFile(requestsFile, "utf8")).trim().split(/\r?\n/).map(JSON.parse),
+      ["partial", "nooutput", "empty", "quota", "success"], "a duplicate turn must never replay completed tool actions");
+
+    const ticketUrl = `http://127.0.0.1:${port}/api/orchestrator/tickets`;
+    const post = (url, body) => fetch(url, { method: "POST", headers: {
+      Authorization: `Bearer ${token}`, "Content-Type": "application/json",
+    }, body: JSON.stringify(body) });
+    const startIndex = connection.events.length;
+    const holding = await (await post(ticketUrl, { goal: "scenario-hold", writeScope: ["article.html"] })).json();
+    const heldRequest = `wrk_init_${holding.ticketId}_1`;
+    await waitForMessage(connection.events, event => event.userMessageId === heldRequest
+      && event.type === "server_tool_use", startIndex);
+    const waiting = await (await post(ticketUrl, { goal: "scenario-success", writeScope: ["article.html"] })).json();
+    assert.equal(waiting.status, "queued");
+    const stopped = await (await post(`${ticketUrl}/${holding.ticketId}/stop`, {})).json();
+    assert.equal(stopped.status, "stopped");
+    const terminal = await waitForMessage(connection.events, event => event.type === "stopped"
+      && event.userMessageId === heldRequest, startIndex);
+    const next = await waitForMessage(connection.events, event => event.type === "request_started"
+      && event.conversationId === waiting.workerConversationId, startIndex);
+    assert.ok(connection.events.indexOf(terminal) < connection.events.indexOf(next));
+  } finally {
+    connection?.ws.close();
+    if (child && child.exitCode == null) {
+      const exited = new Promise(resolve => child.once("exit", resolve));
+      child.kill();
+      await exited;
+    }
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test("WebSocket requests are acknowledged and duplicate IDs are not executed twice", { timeout: 15_000 }, async () => {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-request-ack-"));
@@ -702,9 +927,11 @@ test("buildAgentEnv opts into session_state_changed for every provider", { timeo
         custom: { activeProfileId: "p_custom", profiles: [{ id: "p_custom", provider: "custom", apiKey: "k", baseUrl: "https://x", opusModel: "m" }] },
         codex: { activeProfileId: "p_codex", profiles: [{ id: "p_codex", provider: "codex" }] },
       };
-      const out = { inherited: process.env[KEY], providers: {}, override: {} };
+      const out = { inherited: process.env[KEY], providers: {}, compatibility: {}, override: {} };
       for (const [name, data] of Object.entries(cases)) {
-        out.providers[name] = buildAgentEnv(data, "medium", null)[KEY];
+        const env = buildAgentEnv(data, "medium", null);
+        out.providers[name] = env[KEY];
+        out.compatibility[name] = [env.ENABLE_TOOL_SEARCH, env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS];
       }
       const mixed = {
         activeProfileId: "p_claude",
@@ -715,6 +942,7 @@ test("buildAgentEnv opts into session_state_changed for every provider", { timeo
       };
       const overrideEnv = buildAgentEnv(mixed, "medium", null, mixed.profiles[1]);
       out.override = {
+        compatibility: [overrideEnv.ENABLE_TOOL_SEARCH, overrideEnv.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS],
         baseUrl: overrideEnv.ANTHROPIC_BASE_URL,
         token: overrideEnv.ANTHROPIC_AUTH_TOKEN,
         model: overrideEnv.ANTHROPIC_MODEL,
@@ -818,6 +1046,8 @@ test("buildAgentEnv opts into session_state_changed for every provider", { timeo
         CLAUDE_CHAT_HISTORY_FILE: historyFile,
         CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "0",
+        ENABLE_TOOL_SEARCH: "true",
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -853,7 +1083,14 @@ test("buildAgentEnv opts into session_state_changed for every provider", { timeo
     for (const provider of ["claude", "anthropic", "deepseek", "openrouter", "minimax", "custom", "codex"]) {
       assert.equal(result.providers[provider], "1", `${provider} profile must opt into session state events`);
     }
+    for (const provider of ["deepseek", "openrouter", "minimax", "custom"]) {
+      assert.deepEqual(result.compatibility[provider], ["false", "1"], `${provider} must override inherited experimental tool settings`);
+    }
+    for (const provider of ["claude", "anthropic", "codex"]) {
+      assert.deepEqual(result.compatibility[provider], ["true", "0"], `${provider} must retain its original settings`);
+    }
     assert.deepEqual(result.override, {
+      compatibility: ["false", "1"],
       baseUrl: "https://override.example",
       token: "override-key",
       model: "deepseek-override",

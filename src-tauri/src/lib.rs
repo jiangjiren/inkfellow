@@ -1775,6 +1775,15 @@ fn show_completion_alert(
         .map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn is_app_in_foreground() -> Option<bool> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    let mut process_id = 0;
+    let thread_id = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut process_id)) };
+    (thread_id != 0).then(|| process_id == std::process::id())
+}
+
 #[tauri::command]
 fn notify_ai_completion(
     app: AppHandle,
@@ -1791,13 +1800,17 @@ fn notify_ai_completion(
     } else {
         format!("「{}」的本轮回复已完成。", title.trim())
     };
-    // Query the native window at dispatch time: iframe focus and the selected chat
-    // do not tell us whether the desktop application is in the foreground.
+    // On Windows the WebView can hold keyboard focus while the app is still in
+    // the foreground. Check which app owns the foreground window at dispatch time.
     let activity = app.get_webview_window("main").and_then(|window| {
+        #[cfg(target_os = "windows")]
+        let focused = is_app_in_foreground()?;
+        #[cfg(not(target_os = "windows"))]
+        let focused = window.is_focused().ok()?;
         Some(completion_alert_policy::WindowActivity {
             visible: window.is_visible().ok()?,
             minimized: window.is_minimized().ok()?,
-            focused: window.is_focused().ok()?,
+            focused,
         })
     });
     if !completion_alert_policy::should_notify(activity) {

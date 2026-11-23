@@ -26,7 +26,16 @@ export function init(context) {
       if (!existsSync(ctx.WECHAT_CONFIG_FILE)) throw new Error("WeChat not connected");
       const creds = JSON.parse(readFileSync(ctx.WECHAT_CONFIG_FILE, "utf8"));
       if (!creds.token || !creds.baseUrl) throw new Error("WeChat credentials incomplete");
-      await ctx.sendWechatMessage(creds.baseUrl, creds.token, peer, text);
+      const targetPeer = peer || creds.lastPeer || creds.userId;
+      if (!targetPeer) throw new Error("WeChat target peer unavailable");
+      const ctxToken = typeof ctx.resolveWechatPeerContextToken === "function"
+        ? ctx.resolveWechatPeerContextToken(targetPeer, creds)
+        : targetPeer === creds.lastPeer ? creds.lastContextToken : undefined;
+      if (typeof ctx.sendWechatResponseWithMedia === "function") {
+        await ctx.sendWechatResponseWithMedia(creds.baseUrl, creds.token, targetPeer, text, ctxToken);
+      } else {
+        await ctx.sendWechatMessage(creds.baseUrl, creds.token, targetPeer, text, ctxToken);
+      }
     },
   };
 
@@ -327,6 +336,10 @@ async function _runAgent(job) {
 
   if (job.outputs?.includes("append_note") && job.notePath) {
     fullPrompt += `\n\n请将任务结果以追加方式写入笔记：${job.notePath}，在文件末尾添加分隔线和日期标题后写入内容。`;
+  }
+
+  if (typeof ctx.runScheduledPrompt === "function") {
+    return await ctx.runScheduledPrompt(job, fullPrompt);
   }
 
   const profileData = ctx.readProfiles();

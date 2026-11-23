@@ -53,6 +53,10 @@ Edit 通用字段：`id`、`op`、`createdAt`。`base` 记录改动前 `edl.json
 | `delete_beat` | `beat` | `{say}` | 无 | 删除整段。不允许删光所有段 |
 | `replace_shot` | `beat`,`shot` | `{src?,in?,scene?}` | `{src,in?,fit?,focus?,focus_y?,motion?,speed?}` | 保留旧镜头的 `len`、`cut_at_word`，其余取 value。新素材是照片时去掉 `in`、`speed`；是视频时去掉 `motion`；`audio` 重置为 mute。旧镜头是动画时丢弃全部动画参数 |
 | `set_voice` | 无 | 涉及键的旧值 | `{speed?}` 或 `{rate?}` | 合并进顶层 `voice` |
+| `set_text` | `beat`,`text` | `{text,sub?,badge?,pos?}` | `{text,sub?,badge?,pos?}` | 修改该句第 `text`（0-based）张字卡的文字、副标题、角标或位置 |
+| `delete_text` | `beat`,`text` | `{text}` | 无 | 删除该句第 `text` 张字卡（所有操作处理完后统一剔除，避免同句下标漂移） |
+| `set_hook` | 无 | `{text?,sub?,pos?}` | `{text,sub?,pos?}` | 修改顶层开头钩子大字；`value.text` 为空字符串表示移除钩子 |
+| `set_music` | 无 | `{gain_db?}` | `{gain_db}` | 调整顶层配乐音量（-30 到 12 dB） |
 
 定位和冲突（按顺序判断）：
 
@@ -88,6 +92,12 @@ Edit 通用字段：`id`、`op`、`createdAt`。`base` 记录改动前 `edl.json
 | `vd render <edl>`（已有） | 增加结果行和快照、清理 | `@@VD {"video":"…","preview":false,"duration":72.1,"plan":"…","pruned":["…"]}` |
 | `vd thumbs shots <edl> --video <mp4> --out <dir>` | 按该成片的时间表，从成片取每个镜头中点帧 | 每张 `@@VD {"thumb":"…","shot":3}`；末行 `@@VD {"thumbsDone":true,"count":20}` |
 | `vd thumbs sources <文件夹或文件…> --out <dir>` | 枚举素材（不递归）并生成缩略图 | 每个 `@@VD {"source":{"path","name","kind","w","h","dur","created","sizeMb","thumb"}}`；末行同上 |
+| `vd thumbs clean <edl> --video <mp4> --out <dir>` | 校验所选成片的版本指纹，将同次出片的无字底片和该 MP4 的音轨封装到缓存。配乐分轨随结果一起提供 | `@@VD {"cleanVideo":"…","cached":false,"dialogue":"…","music":"…","gainDb":-4}` |
+| `vd voice <edl> --beat <id> --out <dir>` | 只生成指定句的配音试听和字幕时间 | `@@VD {"voiceSample":"…","beat":"…","say":"…","duration":2.1,"cues":[]}` |
+
+出片快照记录 `appliedEdits`，用于按实际应用的操作和值识别待生成改动。冲突未处理时出片会报错。字卡 `idx` 保留原工程下标，删除同句字卡后其他字卡的下标保持稳定。
+
+每个新版本的无字底片和可选音频分轨存放在 `work/versions`。用成片大小和纳秒修改时间验证版本。没有匹配底片的历史版本可播放原片，并显示相应提示。`video_start_job` 和 `video-job` 原样往返 `args.requestId`，用于忽略已切换版本的异步结果。
 
 `thumbs` 约定：宽 270 的 jpg；低进程优先级（不等待其它出片，靠优先级让路，否则打开选素材会卡住）；已存在则跳过并照常输出；单个文件失败只跳过它，不影响列表。`thumbs shots` 优先用该成片的快照，老工程没有快照时退回 `work/plan.json`。缓存文件名含路径、大小、修改时间的哈希。
 

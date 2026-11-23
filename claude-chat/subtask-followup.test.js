@@ -44,8 +44,9 @@ test("subtask queue waits for original task, serializes replies and reconciles a
     updateBackgroundActivity() {}, refreshSubtaskViewFor() {}, refreshSubtaskRowByKey() {},
     persistSubtaskPending() {},
     subagentToolLabel: name => name,
+    subtaskProfile: () => ({ provider: "codex" }),
   });
-  vm.runInContext([fn(html, "pumpSubtaskThread"), fn(html, "retryOfflineSubtaskFollowups"),
+  vm.runInContext([fn(html, "subtaskCurrentModel"), fn(html, "pumpSubtaskThread"), fn(html, "retryOfflineSubtaskFollowups"),
     'const SUBTASK_TERMINAL_EVENTS = { subtask_done: "done", subtask_error: "failed", subtask_stopped: "stopped" };',
     fn(html, "handleSubtaskEvent")].join("\n"), ctx);
   const thread = { key: "conv1|task1", conversationId: "conv1", itemId: "task1", items: [], queue: [], inflight: null };
@@ -101,8 +102,8 @@ test("backend rejects concurrent same-task runs and releases ownership before te
 test("reconnect status distinguishes running, saved result and unknown delivery", () => {
   const events = [];
   const ctx = vm.createContext({
-    SUBTASK_FOLLOWUPS: new Map([["req_1", { conversationId: "conv1", subtaskId: "task1" }]]),
-    readHistory: () => [{ id: "conv1", messages: [{ id: "req_2_reply", subtask: { id: "task1" }, status: "complete", text: "saved", via: { model: "m2" } }] }],
+    SUBTASK_FOLLOWUPS: new Map([["req_1", { conversationId: "conv1", subtaskId: "task1", model: "m1", resumed: true, steps: [{ name: "Read", input: { file_path: "a.md" } }] }]]),
+    readHistory: () => [{ id: "conv1", messages: [{ id: "req_2_reply", subtask: { id: "task1" }, status: "complete", text: "saved", via: { model: "m2" }, dispatchSteps: [{ name: "Edit", input: {} }] }] }],
     deliver: event => events.push(event),
   });
   vm.runInContext(fn(server, "sendSubtaskStatus"), ctx);
@@ -110,9 +111,13 @@ test("reconnect status distinguishes running, saved result and unknown delivery"
   ctx.sendSubtaskStatus("conv1", "task1", "req_2");
   ctx.sendSubtaskStatus("conv1", "other", "req_2");
   assert.equal(events[0].type, "subtask_started");
+  assert.equal(events[0].steps[0].name, "Read");
+  assert.equal(events[0].model, "m1");
+  assert.equal(events[0].resumed, true);
   assert.equal(events[1].type, "subtask_done");
   assert.equal(events[1].output, "saved");
   assert.equal(events[1].model, "m2");
+  assert.equal(events[1].steps[0].name, "Edit");
   assert.equal(events[2].type, "subtask_error");
   assert.match(events[2].text, /无法确认/);
 });
@@ -174,16 +179,17 @@ test("shared native session has only one writer across dispatch and subtask scop
 
 test("history rebuilds each subtask thread and reconciles an unfinished reply", () => {
   const sent = [];
-  const ctx = vm.createContext({ subtaskThreads: new Map(), wsSend: event => sent.push(event) });
+  const ctx = vm.createContext({ subtaskThreads: new Map(), wsSend: event => sent.push(event), subagentToolLabel: (name, input) => `${name} ${input?.file_path || ""}`.trim() });
   vm.runInContext([fn(html, "subtaskKey"), fn(html, "subtaskThreadFor"), fn(html, "restoreSubtaskThreads")].join("\n"), ctx);
   ctx.restoreSubtaskThreads("conv1", [
     { id: "request_1", role: "user", text: "question", subtask: { id: "task1" } },
-    { id: "request_1_reply", role: "assistant", text: "answer", status: "complete", via: { model: "m2" }, subtask: { id: "task1" } },
+    { id: "request_1_reply", role: "assistant", text: "answer", status: "complete", via: { model: "m2" }, subtask: { id: "task1" }, dispatchSteps: [{ name: "Read", input: { file_path: "a.md" } }, { name: "Edit", input: { file_path: "b.md" } }] },
     { id: "request_2", role: "user", text: "pending", subtask: { id: "task2" } },
   ]);
   const first = ctx.subtaskThreads.get("conv1|task1"), second = ctx.subtaskThreads.get("conv1|task2");
   assert.deepEqual(Array.from(first.items, item => item.text), ["question", "answer"]);
   assert.equal(first.model, "m2");
+  assert.deepEqual(Array.from(first.items[1].steps), ["Read a.md", "Edit b.md"]);
   assert.equal(second.inflight.requestId, "request_2");
   assert.equal(sent[0].type, "subtask_status");
   ctx.restoreSubtaskThreads("conv1", []);
@@ -285,4 +291,129 @@ test("persisted native sessions are bound to the same account credentials", () =
   profile.apiKey = "new-key";
   assert.equal(ctx.recallSubtaskSession("conv1", "task1", "p1"), null);
   assert.equal(ctx.recallSubtaskSession("conv1", "task1", "other"), null);
+});
+
+test("Gemini follow-ups default to Hydrogen and send the displayed selection", () => {
+  const sent = [];
+  const s = { status: "done", kind: "dispatch", profileId: "p1", model: "gemini-3.8-flash" };
+  const card = { state: new Map([["task1", s]]), labels: new Map() };
+  const thread = { key: "conv1|task1", conversationId: "conv1", itemId: "task1", items: [], queue: [], inflight: null, model: "gemini-3.8-flash" };
+  const ctx = vm.createContext({
+    subtaskThreads: new Map([[thread.key, thread]]), subtaskCardRefs: new Map([[thread.key, card]]),
+    subtaskProfile: () => ({ provider: "antigravity" }), subtaskKey: (c, i) => `${c}|${i}`,
+    subtaskItemSettled: () => true, subtaskCanFollowUp: () => true, selectedPermissionMode: "auto",
+    wsSend: event => (sent.push(event), true), persistSubtaskPending() {}, updateBackgroundActivity() {},
+  });
+  vm.runInContext(fn(html, "subtaskCurrentModel") + "\n" + fn(html, "pumpSubtaskThread"), ctx);
+  const send = id => {
+    const item = { id, role: "user", status: "queued", text: id };
+    thread.items.push(item); thread.queue.push(item); thread.inflight = null;
+    ctx.pumpSubtaskThread(thread);
+  };
+  assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "gemini-4-hydrogen");
+  send("req_1");
+  assert.equal(sent[0].model, "gemini-4-hydrogen");
+  s.followupModel = "gemini-4-argon";
+  assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "gemini-4-argon");
+  send("req_2");
+  assert.equal(sent[1].model, "gemini-4-argon", "an explicit saved choice beats a stale thread model");
+  delete s.followupModel;
+  s.origin = { model: "claude-opus-5-5" };
+  thread.model = "gemini-4-hydrogen";
+  assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "claude-opus-5-5");
+  send("req_3");
+  assert.equal(sent[2].model, "claude-opus-5-5", "Antigravity's Claude model survives the Gemini default");
+});
+
+test("reconnect replaces missing steps and duplicate step events do not duplicate the process", () => {
+  const reply = { id: "req_1_reply", role: "assistant", status: "running", steps: ["Read"], text: "" };
+  const thread = { key: "conv1|task1", conversationId: "conv1", itemId: "task1", items: [reply], inflight: { requestId: "req_1", reply } };
+  const ctx = vm.createContext({ subtaskThreads: new Map([[thread.key, thread]]), subtaskKey: (c, i) => `${c}|${i}`,
+    subagentToolLabel: name => name, persistSubtaskPending() {}, pumpSubtaskThread() {}, updateBackgroundActivity() {},
+    refreshSubtaskViewFor() {}, refreshSubtaskRowByKey() {},
+  });
+  vm.runInContext('const SUBTASK_TERMINAL_EVENTS = { subtask_done: "done", subtask_error: "failed", subtask_stopped: "stopped" };\n' + fn(html, "handleSubtaskEvent"), ctx);
+  const event = type => ({ type, conversationId: "conv1", subtaskId: "task1", requestId: "req_1" });
+  ctx.handleSubtaskEvent({ ...event("subtask_started"), steps: [{ name: "Read" }, { name: "Edit" }] });
+  assert.deepEqual(Array.from(reply.steps), ["Read", "Edit"]);
+  ctx.handleSubtaskEvent({ ...event("subtask_step"), stepIndex: 1, name: "Edit" });
+  assert.equal(reply.steps.length, 2);
+  ctx.handleSubtaskEvent({ ...event("subtask_done"), output: "saved", steps: [{ name: "Read" }, { name: "Edit" }, { name: "Bash" }] });
+  assert.deepEqual(Array.from(reply.steps), ["Read", "Edit", "Bash"]);
+  assert.equal(reply.status, "done");
+  assert.equal(thread.inflight, null);
+  ctx.handleSubtaskEvent({ ...event("subtask_done"), output: "duplicate", steps: [] });
+  assert.equal(reply.steps.length, 3);
+  assert.equal(reply.text, "saved");
+});
+
+test("Antigravity fallback respects the saved subtask model family", () => {
+  const profile = { id: "p1", provider: "antigravity" };
+  const state = { profileId: profile.id, origin: { model: "claude-opus-5-5" } };
+  const conversation = { subtaskSnapshots: { squad: { snapshot: { state: [["task1", state]] } } } };
+  const ctx = vm.createContext({ dispatchModelForProfile: () => "gemini-4-argon" });
+  vm.runInContext(fn(server, "defaultAgySubtaskFollowupModel"), ctx);
+  assert.equal(ctx.defaultAgySubtaskFollowupModel(conversation, "task1", profile), "claude-opus-5-5");
+  state.origin.model = "gemini-3.8-flash";
+  assert.equal(ctx.defaultAgySubtaskFollowupModel(conversation, "task1", profile), "gemini-4-hydrogen");
+  state.followupModel = "gemini-4-argon";
+  assert.equal(ctx.defaultAgySubtaskFollowupModel(conversation, "task1", profile), "gemini-4-argon");
+});
+
+test("Gemini backend defaults to Hydrogen and keeps every step through reconnect and completion", async () => {
+  let finish;
+  const events = [], calls = [], messages = [], runs = new Map();
+  const ctx = vm.createContext({
+    historyIdOrNull: v => v || null, subtaskIdOrNull: v => v || null, deliver: e => events.push(e),
+    deletedHistoryConversationIds: new Set(), SUBTASK_FOLLOWUPS: runs, readProfiles: () => ({}),
+    resolveDispatchProfile: () => ({ id: "p1", provider: "antigravity" }),
+    PERMISSION_MODES: new Set(["auto"]), DEFAULT_PERMISSION_MODE: "auto", subtaskSessionScope: () => "scope",
+    recallSubtaskSession: () => "existing-session", markDispatchInflight: () => () => {}, dispatchGenerationOf: () => 0,
+    AbortController, historyRoute: o => o, dispatchModelForProfile: () => "gemini-4-argon",
+    ensureHistoryConversation: () => ({ messages }), readHistory: () => [{ id: "conv1", messages }], persistHistoryImmediate() {},
+    executeProviderDispatch: args => { calls.push(args); return new Promise(resolve => { finish = resolve; }); },
+    subtaskFollowupPrompt: ({ text }) => text, resolveAllowedCwd: () => ".", compactToolInput: x => x,
+  });
+  vm.runInContext([
+    fn(server, "defaultAgySubtaskFollowupModel"), fn(server, "sendSubtaskStatus"), fn(server, "runSubtaskFollowup", true),
+  ].join("\n"), ctx);
+  const run = ctx.runSubtaskFollowup({ conversationId: "conv1", subtaskId: "task1", requestId: "req_1", prompt: "continue", profileId: "p1" });
+  assert.equal(calls[0].model, "gemini-4-hydrogen");
+  assert.equal(calls[0].resumeSessionId, "existing-session");
+  for (let i = 0; i < 205; i++) calls[0].onStep("Read", { file_path: `${i}.md` });
+  assert.equal(events.at(-1).stepIndex, 204);
+  ctx.sendSubtaskStatus("conv1", "task1", "req_1");
+  assert.equal(events.at(-1).steps.length, 205);
+  finish({ output: "answer", model: "gemini-4-hydrogen", provider: "antigravity", resumed: true });
+  await run;
+  assert.equal(events.at(-1).steps.length, 205);
+  assert.equal(messages.at(-1).dispatchSteps.length, 205);
+});
+
+test("dispatch captures completed-only Gemini and Codex tools once", async () => {
+  for (const provider of ["antigravity", "codex"]) {
+    const steps = [];
+    const ctx = vm.createContext({
+      DISPATCH_SESSION_WRITERS: new Set(), resolveDispatchProfile: () => ({ id: "p1", provider, name: provider }),
+      isCodexAuthAvailable: () => true, isAgyAuthAvailable: () => true, isSubscriptionProvider: () => true,
+      dispatchModelForProfile: () => "model", codexSandboxMode: () => "workspace-write", CODEX_CLIENT_OPTIONS: {}, AbortController,
+      codexToolName: item => item.type, codexToolInput: item => item, codexItemText: item => item.text,
+      agyToolName: step => step.tool_name, agyToolInput: input => input,
+      runAgy: async ({ onEvent }) => {
+        for (const [step_index, state] of [[0, "ACTIVE"], [0, "ACTIVE"], [0, "DONE"], [1, "DONE"]]) {
+          onEvent({ event: "step_update", step_update: { step_index, step_type: "tool", state, tool_name: `tool_${step_index}`, tool_info: {} } });
+        }
+        return { text: "done" };
+      },
+      Codex: class { startThread() { return { async runStreamed() { return { events: (async function* () {
+        yield { type: "item.started", item: { id: "a", type: "command_execution" } };
+        yield { type: "item.completed", item: { id: "a", type: "command_execution" } };
+        yield { type: "item.completed", item: { id: "b", type: "file_change" } };
+        yield { type: "item.completed", item: { id: "c", type: "agent_message", text: "done" } };
+      })() }; } }; } },
+    });
+    vm.runInContext(server.slice(server.indexOf("async function executeProviderDispatch("), server.indexOf("/* 正在跑的子任务追问")), ctx);
+    await ctx.executeProviderDispatch({ provider: "p1", profileData: {}, task: "test", cwd: ".", onStep: name => steps.push(name) });
+    assert.equal(steps.length, 2, `${provider} must include completed-only tools without duplicating started tools`);
+  }
 });

@@ -4125,7 +4125,7 @@ function sendSelectionContext() {
 }
 
 async function waitForAgent() {
-  setAgentLoading(true, "正在启动本地 AI 服务...");
+  setAgentLoading(true, "正在连接 AI 服务...");
   for (let i = 0; i < 120; i++) {
     try {
       const ready = await invoke("agent_status");
@@ -5604,6 +5604,19 @@ function wireEvents() {
     if (event.source !== frame.contentWindow || event.origin !== agentOrigin()) return;
     if (!state.agentToken || event.data?.__token !== state.agentToken) return;
     if (handleAgentCompletionMessage(event.data)) return;
+    if (event.data?.type === "agent-open-note") {
+      const rawPath = String(event.data.path || "").trim();
+      if (rawPath) {
+        const normVault = String(state.vaultPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+        let rel = rawPath.replace(/\\/g, "/");
+        if (normVault && rel.toLowerCase().startsWith(normVault.toLowerCase() + "/")) {
+          rel = rel.slice(normVault.length + 1);
+        }
+        rel = rel.replace(/^\.\//, "");
+        if (rel) void loadNote(rel);
+      }
+      return;
+    }
     if (event.data?.type === "agent-open-video") {
       const project = InkfellowVideoOpenPath.projectFromVideoPath(event.data.path, state.vaultPath);
       const known = project && InkfellowVideoWorkbench.listProjects()

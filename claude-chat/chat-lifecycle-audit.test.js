@@ -13,7 +13,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
 
 function fixture(names) {
   const c = vm.createContext({
-    currentConvId: "conv-a", selectedModel: "old-model", selectedEffort: "high",
+    currentConvId: "conv-a", selectedModel: "old-model", selectedEffort: "high", selectedCodexSpeed: null,
     currentSessionId: "old-session", currentSessionProvider: "claude",
     conversationDrafts: new Map(), conversationDeliveryStates: new Map(), convModelPrefs: new Map(),
     deletedConversationIds: new Set(),

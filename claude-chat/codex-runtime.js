@@ -57,9 +57,9 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * 为它们重起一次要再付一遍启动开销（实测 spawn 那条路整轮 15~20 秒，其中约
  * 10 秒是进程起停的固定成本），而 app-server 本来就允许一条 thread 里换模型。
  */
-export function codexRuntimeSignature({ bin, cwd, permissionMode }) {
+export function codexRuntimeSignature({ bin, cwd, permissionMode, extraArgs = [] }) {
   return crypto.createHash("sha256")
-    .update(JSON.stringify({ bin, cwd, permissionMode }))
+    .update(JSON.stringify({ bin, cwd, permissionMode, extraArgs }))
     .digest("hex");
 }
 

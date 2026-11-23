@@ -85,6 +85,7 @@
       revision: Number(doc?.revision) || 0,
       edits: Array.isArray(doc?.edits) ? doc.edits : [],
       notes: Array.isArray(doc?.notes) ? doc.notes : [],
+      removedEdits: Array.isArray(doc?.removedEdits) ? doc.removedEdits : [],
     };
   }
 
@@ -99,13 +100,25 @@
   /* 改动和意见的定位键：同一个目标只留一条 */
   function editKey(edit) {
     if (edit.op === "replace_shot") return `shot:${edit.beat}:${edit.shot}`;
+    if (edit.op === "set_text" || edit.op === "delete_text") return `text:${edit.beat}:${edit.text}`;
     if (edit.op === "set_voice") return "voice";
+    if (edit.op === "set_hook") return "hook";
+    if (edit.op === "set_music") return "music";
     if (edit.op === "delete_beat") return `delete:${edit.beat}`;
     return `${edit.op}:${edit.beat}`;
   }
 
   function sameValue(a, b) {
     return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  }
+
+  function sameFields(a, b, keys) {
+    return keys.every((k) => {
+      const va = a?.[k];
+      const vb = b?.[k];
+      if (typeof va === "string" || typeof vb === "string") return String(va || "").trim() === String(vb || "").trim();
+      return (va ?? null) === (vb ?? null);
+    });
   }
 
   /* 把一条改动并入文档。同目标的旧改动被替换，base 沿用最早那条（它才是 edl 里的原始值）。
@@ -122,7 +135,10 @@
       (merged.op === "replace_shot"
         // base.src 是 edl 原文（可能是正斜杠），value.src 是清单里的路径，写法不同也是同一个文件
         && (merged.value?.src === merged.base?.src || samePath(merged.value?.src, merged.base?.src))
-        && (merged.value?.in ?? null) === (merged.base?.in ?? null));
+        && (merged.value?.in ?? null) === (merged.base?.in ?? null)) ||
+      (merged.op === "set_text" && sameFields(merged.value, { ...merged.base, pos: merged.base?.pos ?? "upper" }, ["text", "sub", "badge", "pos"])) ||
+      (merged.op === "set_hook" && sameFields(merged.value, merged.base, ["text", "sub", "pos"])) ||
+      (merged.op === "set_music" && (merged.value?.gain_db ?? null) === (merged.base?.gain_db ?? null));
     next.edits = backToBase ? others : [...others, merged];
     return next;
   }
@@ -230,6 +246,40 @@
         };
       });
 
+      const rawTexts = Array.isArray(beat.texts) ? beat.texts : [];
+      const beatPlanTexts = planIndex == null || !planTexts.some((text) => text.beat !== undefined)
+        ? []
+        : planTexts.filter((text) => text.beat === planIndex);
+      const cards = rawTexts.map((rawTx, txIdx) => {
+        const indexed = beatPlanTexts.some((item) => Number.isInteger(item.idx));
+        const plannedTx = (indexed ? beatPlanTexts.find((item) => item.idx === txIdx) : beatPlanTexts[txIdx]) || null;
+        const setText = beatEdits.find((edit) => edit.op === "set_text" && edit.text === txIdx) || null;
+        const deleteText = beatEdits.find((edit) => edit.op === "delete_text" && edit.text === txIdx) || null;
+        const origText = rawTx.text || "";
+        const origSub = rawTx.sub || "";
+        const origBadge = rawTx.badge || "";
+        const origPos = rawTx.pos ?? plannedTx?.pos ?? "upper";
+        return {
+          idx: txIdx,
+          beat: id,
+          style: rawTx.style || plannedTx?.style || "tag",
+          text: setText ? (setText.value?.text ?? origText) : origText,
+          originalText: origText,
+          sub: setText && "sub" in (setText.value || {}) ? (setText.value.sub || "") : origSub,
+          originalSub: origSub,
+          badge: setText && "badge" in (setText.value || {}) ? (setText.value.badge || "") : origBadge,
+          originalBadge: origBadge,
+          pos: setText && setText.value?.pos !== undefined ? setText.value.pos : origPos,
+          originalPos: origPos,
+          sourcePos: rawTx.pos,
+          start: typeof plannedTx?.start === "number" ? plannedTx.start : start,
+          end: typeof plannedTx?.end === "number" ? plannedTx.end : end,
+          deleted: Boolean(deleteText),
+          setText,
+          deleteText,
+        };
+      });
+
       return {
         index,
         id,
@@ -245,6 +295,7 @@
         setSay,
         setTts,
         shots,
+        cards,
         // 老工程的 plan.texts 没有 beat 字段，只能取 edl 里写的字卡
         texts: planIndex == null || !planTexts.some((text) => text.beat !== undefined)
           ? (Array.isArray(beat.texts) ? beat.texts.map((text) => ({ text: text.text, style: text.style })) : [])
@@ -252,6 +303,25 @@
         notes: doc.notes.filter((note) => note.beat === id && (note.shot === null || note.shot === undefined)),
       };
     });
+  }
+
+  function buildHook({ edl, plan, edits }) {
+    const doc = normalizeDoc(edits);
+    const raw = edl?.hook && typeof edl.hook === "object" ? edl.hook : null;
+    const planHook = Array.isArray(plan?.texts) ? plan.texts.find((t) => t.hook) : null;
+    const edit = doc.edits.find((item) => item.op === "set_hook") || null;
+    const originalText = raw?.text || "";
+    const originalSub = raw?.sub || "";
+    const originalPos = raw?.pos ?? planHook?.pos ?? "upper";
+    const text = edit?.value?.text ?? originalText;
+    const sub = edit && "sub" in (edit.value || {}) ? (edit.value.sub || "") : originalSub;
+    const pos = edit && edit.value?.pos !== undefined ? edit.value.pos : originalPos;
+    const deleted = Boolean(edit && !String(text).trim());
+    const exists = Boolean(originalText || (edit && String(edit.value?.text || "").trim()));
+    const dur = Number(raw?.dur) || 2.8;
+    const start = typeof planHook?.start === "number" ? planHook.start : 0;
+    const end = typeof planHook?.end === "number" ? planHook.end : Math.min(dur, Number(plan?.duration) || dur);
+    return { exists, text, originalText, sub, originalSub, pos, originalPos, start, end, deleted, edit };
   }
 
   function rowAtTime(rows, seconds) {
@@ -336,6 +406,71 @@
     return { id: newId("e"), op: "set_voice", base, value: change, createdAt: Math.floor(Date.now() / 1000) };
   }
 
+  function makeSetText(row, card, { text, sub, badge, pos }) {
+    const base = { text: card.originalText };
+    if (card.originalSub) base.sub = card.originalSub;
+    if (card.originalBadge) base.badge = card.originalBadge;
+    if (card.sourcePos !== undefined) base.pos = card.sourcePos;
+    const value = { text: String(text || "").trim() };
+    if (sub !== undefined) value.sub = String(sub || "").trim();
+    if (badge !== undefined) value.badge = String(badge || "").trim();
+    if (pos !== undefined) value.pos = pos;
+    return {
+      id: newId("e"),
+      op: "set_text",
+      beat: row.id,
+      text: card.idx,
+      base,
+      value,
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  function makeDeleteText(row, card) {
+    return {
+      id: newId("e"),
+      op: "delete_text",
+      beat: row.id,
+      text: card.idx,
+      base: { text: card.originalText },
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  function makeSetHook(edl, { text, sub, pos }) {
+    const raw = edl?.hook && typeof edl.hook === "object" ? edl.hook : {};
+    const base = {};
+    if (raw.text !== undefined) base.text = raw.text;
+    if (raw.sub !== undefined) base.sub = raw.sub;
+    if (raw.pos !== undefined) base.pos = raw.pos;
+    const value = { text: String(text ?? "").trim() };
+    if (value.text) {
+      if (sub !== undefined) value.sub = String(sub || "").trim();
+      if (pos !== undefined) value.pos = pos;
+    }
+    return {
+      id: newId("e"),
+      op: "set_hook",
+      base,
+      value,
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  function makeSetMusic(edl, gainDb) {
+    const raw = edl?.music && typeof edl.music === "object" ? edl.music : {};
+    const base = {};
+    if (raw.gain_db !== undefined) base.gain_db = raw.gain_db;
+    const clamped = Math.round(Math.min(12, Math.max(-30, Number(gainDb))) * 10) / 10;
+    return {
+      id: newId("e"),
+      op: "set_music",
+      base,
+      value: { gain_db: clamped },
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
   function statusOfEdit(editId, status) {
     const conflicts = Array.isArray(status?.conflicts) ? status.conflicts : [];
     const conflict = conflicts.find((item) => item.id === editId);
@@ -363,6 +498,19 @@
     if (edit.op === "set_voice") {
       const value = edit.value?.speed !== undefined ? `${edit.value.speed} 倍` : (edit.value?.rate || "");
       return `语速改为 ${value}`;
+    }
+    if (edit.op === "set_text") {
+      return `${where}字卡改为「${edit.value?.text || ""}」`;
+    }
+    if (edit.op === "delete_text") {
+      return `${where}删除字卡「${edit.base?.text || ""}」`;
+    }
+    if (edit.op === "set_hook") {
+      return edit.value?.text ? `开头钩子改为「${edit.value.text}」` : "删除开头钩子";
+    }
+    if (edit.op === "set_music") {
+      const g = Number(edit.value?.gain_db ?? 0);
+      return `配乐音量改为 ${g > 0 ? `+${g}` : g} dB`;
     }
     return where;
   }
@@ -501,6 +649,11 @@
   /* 这条改动在这份时间表对应的成片里吗 */
   function isEditInPlan(plan, edit) {
     if (!plan?.renderedAt) return false;
+    if (Array.isArray(plan.appliedEdits)) {
+      const rendered = plan.appliedEdits.find((item) => item.id === edit.id);
+      return Boolean(rendered
+        && sameHistoryValue(rendered, edit));
+    }
     if (Array.isArray(plan.editsApplied) && !plan.editsApplied.includes(edit.id)) return false;
     return (edit.createdAt || 0) < plan.renderedAt;
   }
@@ -520,11 +673,24 @@
       const voice = edl?.voice && typeof edl.voice === "object" ? edl.voice : {};
       return Object.keys(edit.value || {}).every((key) => sameValue(voice[key], base[key]));
     }
+    if (edit?.op === "set_hook") {
+      const hook = edl?.hook && typeof edl.hook === "object" ? edl.hook : {};
+      return Object.keys(base).every((key) => sameValue(hook[key], base[key]));
+    }
+    if (edit?.op === "set_music") {
+      const music = edl?.music && typeof edl.music === "object" ? edl.music : {};
+      return sameValue(music.gain_db, base.gain_db);
+    }
     const beats = Array.isArray(edl?.beats) ? edl.beats : [];
     const beat = beats.find((item, index) => beatIdOf(item, index) === edit?.beat);
     if (!beat) return false;
     if (edit.op === "set_say" || edit.op === "delete_beat") return beat.say === base.say;
     if (edit.op === "set_say_tts") return (beat.say_tts ?? "") === (base.say_tts ?? "");
+    if (edit.op === "set_text" || edit.op === "delete_text") {
+      const tx = Array.isArray(beat.texts) ? beat.texts[edit.text] : null;
+      if (!tx) return false;
+      return Object.keys(base).every((key) => sameValue(tx[key], base[key]));
+    }
     if (edit.op === "replace_shot") {
       const shot = Array.isArray(beat.shots) ? beat.shots[edit.shot] : null;
       if (!shot) return false;
@@ -533,16 +699,25 @@
     return false;
   }
 
-  /* 已经进了这版成片、又被用户撤掉的改动：成片画面还是改过的样子，下次生成才会回到原样，
-     所以它们也算待生成。removed 是前端记下的被删改动（文件里已经没有了，只能靠内存） */
-  function revertedEdits({ plan, edl, doc, removed }) {
-    const current = normalizeDoc(doc).edits;
-    const ids = new Set(current.map((edit) => edit.id));
-    const keys = new Set(current.map(editKey));
+  /* 已经进入成片的改动被撤掉时，把记录和剩余改动一起写入 edits.json。 */
+  function trackRemovedEdits(before, after, plans, renderPending = false) {
+    const active = new Set(after.edits.map((edit) => edit.id));
+    const removed = new Map(before.removedEdits.map((edit) => [edit.id, edit]));
+    for (const edit of before.edits) {
+      if (!active.has(edit.id) && (renderPending || plans.some((plan) => planIncludesEdit(plan, edit)))) removed.set(edit.id, edit);
+    }
+    for (const id of active) removed.delete(id);
+    return { ...after, removedEdits: [...removed.values()] };
+  }
+
+  /* 这版成片里仍然有被撤掉的改动，下次生成才会回到原样。 */
+  function revertedEdits({ plan, edl, doc }) {
+    const current = normalizeDoc(doc);
+    const keys = new Set(current.edits.map(editKey));
     const seen = new Set();
     const out = [];
-    for (const edit of removed || []) {
-      if (!edit || ids.has(edit.id) || keys.has(editKey(edit)) || seen.has(editKey(edit))) continue;
+    for (const edit of current.removedEdits) {
+      if (!edit || keys.has(editKey(edit)) || seen.has(editKey(edit))) continue;
       if (!planIncludesEdit(plan, edit) || !editTargetAtBase(edl, edit)) continue;
       seen.add(editKey(edit));
       out.push(edit);
@@ -566,6 +741,10 @@
     if (edit.op === "set_say_tts") return `${where}恢复原读音`;
     if (edit.op === "delete_beat") return `${where}恢复这句`;
     if (edit.op === "set_voice") return "语速恢复原样";
+    if (edit.op === "set_text") return `${where}字卡恢复原样`;
+    if (edit.op === "delete_text") return `${where}恢复字卡`;
+    if (edit.op === "set_hook") return "开头钩子恢复原样";
+    if (edit.op === "set_music") return "配乐音量恢复原样";
     return where;
   }
 
@@ -641,7 +820,104 @@
     landscape: { top: 0.14, upper: 0.24, center: 0.46, lower: 0.62, "above-caption": 0.68 },
   };
 
-  function frameHotspots({ plan, rows, time, landscape = false }) {
+  const TEXT_POS_OPTIONS = [
+    ["top", "顶部"],
+    ["upper", "偏上"],
+    ["center", "居中"],
+    ["lower", "偏下"],
+    ["above-caption", "字幕上方"],
+  ];
+
+  function resolveTextY(pos, landscape = false) {
+    const orient = landscape ? "landscape" : "portrait";
+    if (typeof pos === "number") return pos >= 0 && pos <= 1 ? pos : null;
+    return TEXT_Y[orient][pos || "upper"] ?? TEXT_Y[orient].upper;
+  }
+
+  /* 改过口播文字但还没重渲时，按标点和 13 字上限切分并线性估算当前显示的字幕句，让改字能秒看 */
+  function liveCaptionFor(row, time, planCues, isPending = () => true) {
+    if (!row || row.deleted) return "";
+    if (row.setSay && isPending(row.setSay) && row.start !== null && row.end !== null && row.end > row.start) {
+      const say = String(row.say || "").trim();
+      if (!say) return "";
+      const rawParts = say.split(/[，。！？、；：,.!?;]+/).map((s) => s.trim()).filter(Boolean);
+      const chunks = [];
+      for (const part of rawParts.length ? rawParts : [say]) {
+        if (part.length <= 13) chunks.push(part);
+        else for (let i = 0; i < part.length; i += 13) chunks.push(part.slice(i, i + 13));
+      }
+      const totalChars = chunks.reduce((sum, s) => sum + s.length, 0) || 1;
+      const ratio = Math.min(0.9999, Math.max(0, (time - row.start) / (row.end - row.start)));
+      let acc = 0;
+      for (const chunk of chunks) {
+        acc += chunk.length / totalChars;
+        if (ratio <= acc) return chunk;
+      }
+      return chunks[chunks.length - 1] || "";
+    }
+    return cueAt(planCues, time);
+  }
+
+  /* 判断是否有未进入当前成片的实时画面改动（字卡、钩子、改字字幕） */
+  function hasPendingLiveVisualEdits({ rows, hook, isPending = () => true }) {
+    if (hook?.edit && isPending(hook.edit)) return true;
+    for (const row of rows || []) {
+      if (row.setSay && isPending(row.setSay)) return true;
+      for (const card of row.cards || []) {
+        if ((card.setText && isPending(card.setText)) || (card.deleteText && isPending(card.deleteText))) return true;
+      }
+    }
+    return false;
+  }
+
+  /* 计算当前时刻应在播放器上实时渲染的字卡、钩子和字幕 */
+  function liveOverlaysAt({ rows, hook, plan, time, landscape = false, isPending = () => true }) {
+    const cards = [];
+    if (hook && hook.exists && !hook.deleted && hook.text && time >= hook.start && time < hook.end) {
+      const y = resolveTextY(hook.pos, landscape);
+      if (typeof y === "number") {
+        cards.push({
+          isHook: true,
+          beat: null,
+          idx: null,
+          text: hook.text,
+          sub: hook.sub || "",
+          badge: "",
+          style: "title",
+          pos: hook.pos,
+          y,
+          changed: Boolean(hook.edit && isPending(hook.edit)),
+        });
+      }
+    }
+    const row = rowAtTime(rows, time);
+    if (row && !row.deleted) {
+      for (const card of row.cards || []) {
+        if (card.deleted || !card.text) continue;
+        if (card.start !== null && card.end !== null && !(time >= card.start && time < card.end)) continue;
+        const y = resolveTextY(card.pos, landscape);
+        if (typeof y !== "number") continue;
+        cards.push({
+          isHook: false,
+          beat: row.id,
+          idx: card.idx,
+          text: card.text,
+          sub: card.sub || "",
+          badge: card.badge || "",
+          style: card.style || "tag",
+          pos: card.pos,
+          y,
+          changed: Boolean(card.setText && isPending(card.setText)),
+        });
+      }
+    }
+    const caption = liveCaptionFor(row, time, plan?.cues, isPending);
+    const captionPos = plan?.captions_cfg?.position || "bottom";
+    const captionChanged = Boolean(row?.setSay && isPending(row.setSay));
+    return { cards, caption, captionPos, captionChanged };
+  }
+
+  function frameHotspots({ plan, rows, hook = null, time, landscape = false }) {
     const orient = landscape ? "landscape" : "portrait";
     const row = rowAtTime(rows, time);
     if (!plan || !row || row.deleted) return [];
@@ -653,29 +929,115 @@
     // 字卡画在字幕上面，排在后面才能盖住重叠的部分
     for (const text of plan.texts || []) {
       if (!(time >= text.start && time < text.end) || !text.text) continue;
-      const y = typeof text.pos === "number" ? (text.pos <= 1 ? text.pos : null) : TEXT_Y[orient][text.pos || "upper"];
+      if (text.hook && hook?.deleted) continue;
+      let liveText = text.text;
+      let livePos = text.pos;
+      let cardIdx = text.idx;
+      if (text.hook && hook?.edit) {
+        liveText = hook.text || text.text;
+        livePos = hook.pos ?? text.pos;
+      } else if (!text.hook && Array.isArray(row.cards)) {
+        const card = Number.isInteger(text.idx)
+          ? row.cards.find((c) => c.idx === text.idx)
+          : row.cards.find((c) => c.originalText === text.text);
+        if (card?.deleted) continue;
+        if (card) {
+          liveText = card.text || text.text;
+          livePos = card.pos ?? text.pos;
+          cardIdx = card.idx;
+        }
+      }
+      const y = typeof livePos === "number" ? (livePos <= 1 ? livePos : null) : TEXT_Y[orient][livePos || "upper"];
       if (typeof y !== "number") continue;
       const half = text.style === "title" ? 0.075 : 0.05;
-      spots.push({ kind: "text", beat: row.id, text: text.text, top: clamp01(y - half), bottom: clamp01(y + half) });
+      const spot = { kind: "text", beat: row.id, text: liveText, top: clamp01(y - half), bottom: clamp01(y + half) };
+      if (text.hook) spot.isHook = true;
+      if (Number.isInteger(cardIdx)) spot.idx = cardIdx;
+      spots.push(spot);
     }
     const shot = shotAtTime(row, time);
     if (shot) spots.push({ kind: "shot", beat: row.id, shot: shot.idx });
     return spots;
   }
 
-  /* 常用意见：点一下就交给 AI，不用自己组织语言。label 是按钮上的字，text 是写进意见的话 */
-  const QUICK_NOTES = [
-    { key: "shot", label: "换个画面", text: "这句的画面不太贴合内容，换个更合适的" },
-    { key: "slow", label: "节奏拖了", text: "这句节奏有点拖，紧凑一点" },
-    { key: "choppy", label: "镜头太碎", text: "这句镜头切得太碎，少切几次" },
-    { key: "card", label: "加个字卡", text: "这句可以加个字卡，把重点突出出来" },
-    { key: "nocard", label: "去掉字卡", text: "这句的字卡去掉", needsText: true },
-  ];
+  /* 只有这句有尚未进入当前成片的本地改动（改字、改读音、换镜头、撤回已出片换镜头或改了全片语速）时，才需要「试看改后效果」 */
+  function rowNeedsSample(row, { isRendered = () => false, voicePending = false } = {}) {
+    if (!row || row.deleted) return false;
+    if (voicePending) return true;
+    if (row.setSay && !isRendered(row.setSay)) return true;
+    if (row.setTts && !isRendered(row.setTts)) return true;
+    return Array.isArray(row.shots) && row.shots.some((shot) =>
+      (shot.replace && !isRendered(shot.replace)) || (shot.revert && !shot.replace));
+  }
 
-  function quickNotesFor(row) {
-    if (!row || row.deleted) return [];
-    const hasText = Array.isArray(row.texts) && row.texts.length > 0;
-    return QUICK_NOTES.filter((item) => (item.needsText ? hasText : !(item.key === "card" && hasText)));
+  const PLAYBACK_RATES = [1, 1.25, 1.5, 2];
+
+  function nextPlaybackRate(current) {
+    const idx = PLAYBACK_RATES.findIndex((rate) => Math.abs(rate - Number(current || 1)) < 0.01);
+    return PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length];
+  }
+
+  function formatPlaybackRate(rate) {
+    const num = Number(rate) || 1;
+    return `${Number.isInteger(num) ? num : num}x`;
+  }
+
+  function applyButtonMeta({ editCount, noteCount }) {
+    const route = routeApply({ editCount, noteCount });
+    const total = (Number(editCount) || 0) + (Number(noteCount) || 0);
+    if (route === "ai") {
+      return {
+        route,
+        total,
+        label: `发给 AI 处理（${total}）`,
+        hint: "你写的意见会交给 AI，它改好后生成新版本",
+      };
+    }
+    if (route === "render") {
+      return {
+        route,
+        total,
+        label: `生成新版本（${total}）`,
+        hint: "按你的改动直接生成新版本，不经过 AI，不花模型额度",
+      };
+    }
+    return { route: "none", total: 0, label: "", hint: "" };
+  }
+
+  function rowHasChanges(row) {
+    if (!row) return false;
+    if (row.setSay || row.setTts || row.deleted) return true;
+    if (Array.isArray(row.cards) && row.cards.some((card) => Boolean(card.setText || card.deleteText))) return true;
+    if (Array.isArray(row.notes) && row.notes.some((note) => !note.sentAt)) return true;
+    return Array.isArray(row.shots) && row.shots.some((shot) => Boolean(shot.replace || shot.revert)
+      || (Array.isArray(shot.notes) && shot.notes.some((note) => !note.sentAt)));
+  }
+
+  function rowMatchesQuery(row, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    const parts = [
+      row?.say,
+      row?.originalSay,
+      ...(Array.isArray(row?.cards) ? row.cards.flatMap((c) => [c.text, c.originalText, c.sub, c.badge]) : []),
+      ...(Array.isArray(row?.texts) ? row.texts.map((t) => t.text) : []),
+      ...(Array.isArray(row?.notes) ? row.notes.map((n) => n.text) : []),
+      ...(Array.isArray(row?.shots) ? row.shots.flatMap((s) => [s.name, ...(s.notes || []).map((n) => n.text)]) : []),
+    ];
+    return parts.some((part) => String(part || "").toLowerCase().includes(q));
+  }
+
+  function filterRows(rows, { query = "", onlyModified = false } = {}) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => {
+      if (onlyModified && !rowHasChanges(row)) return false;
+      return rowMatchesQuery(row, query);
+    });
+  }
+
+  function sourceMatchesQuery(item, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    return [item?.name, item?.notes, item?.id].some((part) => String(part || "").toLowerCase().includes(q));
   }
 
   /* 帧条上悬停时的提示：时间 + 这一句的开头 */
@@ -751,23 +1113,49 @@
     };
   }
 
-  /* 撤销栈只存内容，不存版本号；版本号以写入时为准 */
-  function snapshotDoc(doc) {
-    const normal = normalizeDoc(doc);
-    return { edits: normal.edits, notes: normal.notes };
+  function sameHistoryValue(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((key) => sameHistoryValue(a[key], b[key]));
   }
 
-  function recordHistory(history, doc, label, limit = 100) {
-    const past = [...history.past, { doc: snapshotDoc(doc), label }];
+  function applyHistoryItems(items, expected, desired, keyOf) {
+    const result = new Map(items.map((item) => [keyOf(item), item]));
+    const from = new Map(expected.map((item) => [keyOf(item), item]));
+    const to = new Map(desired.map((item) => [keyOf(item), item]));
+    for (const key of new Set([...from.keys(), ...to.keys()])) {
+      const previous = from.get(key);
+      const next = to.get(key);
+      // 意见发送、清理或外部改动后，保留磁盘上更新过的记录。
+      if (sameHistoryValue(previous, next) || !sameHistoryValue(result.get(key), previous)) continue;
+      if (next) result.set(key, next);
+      else result.delete(key);
+    }
+    return [...result.values()];
+  }
+
+  function applyHistoryChange(current, expected, desired) {
+    return {
+      ...current,
+      edits: applyHistoryItems(current.edits, expected.edits, desired.edits, editKey),
+      notes: applyHistoryItems(current.notes, expected.notes, desired.notes, (note) => note.id),
+    };
+  }
+
+  function recordHistory(history, before, after, label, limit = 100) {
+    const past = [...history.past, { before: normalizeDoc(before), after: normalizeDoc(after), label }];
     return { past: past.slice(-limit), future: [] };
   }
 
   function undoHistory(history, current) {
     if (history.past.length === 0) return null;
     const entry = history.past[history.past.length - 1];
+    current = normalizeDoc(current);
+    const doc = applyHistoryChange(current, entry.after, entry.before);
     return {
-      history: { past: history.past.slice(0, -1), future: [...history.future, { doc: snapshotDoc(current), label: entry.label }] },
-      doc: entry.doc,
+      history: { past: history.past.slice(0, -1), future: [...history.future, { before: doc, after: current, label: entry.label }] },
+      doc,
       label: entry.label,
     };
   }
@@ -775,9 +1163,11 @@
   function redoHistory(history, current) {
     if (history.future.length === 0) return null;
     const entry = history.future[history.future.length - 1];
+    current = normalizeDoc(current);
+    const doc = applyHistoryChange(current, entry.before, entry.after);
     return {
-      history: { past: [...history.past, { doc: snapshotDoc(current), label: entry.label }], future: history.future.slice(0, -1) },
-      doc: entry.doc,
+      history: { past: [...history.past, { before: current, after: doc, label: entry.label }], future: history.future.slice(0, -1) },
+      doc,
       label: entry.label,
     };
   }
@@ -894,6 +1284,7 @@
     markNotesSent,
     pruneSentNotes,
     buildRows,
+    buildHook,
     rowAtTime,
     shotAtTime,
     makeSetSay,
@@ -901,6 +1292,15 @@
     makeDeleteBeat,
     makeReplaceShot,
     makeVoiceEdit,
+    makeSetText,
+    makeDeleteText,
+    makeSetHook,
+    makeSetMusic,
+    TEXT_POS_OPTIONS,
+    resolveTextY,
+    liveCaptionFor,
+    hasPendingLiveVisualEdits,
+    liveOverlaysAt,
     statusOfEdit,
     describeEdit,
     buildAiMessage,
@@ -918,15 +1318,21 @@
     isPhotoPath,
     overlayAt,
     frameHotspots,
-    QUICK_NOTES,
-    quickNotesFor,
+    rowNeedsSample,
+    PLAYBACK_RATES,
+    nextPlaybackRate,
+    formatPlaybackRate,
+    applyButtonMeta,
+    rowHasChanges,
+    rowMatchesQuery,
+    filterRows,
+    sourceMatchesQuery,
     stripLabel,
     skipDeleted,
     cueAt,
     skimInfo,
     clampIn,
     stripCover,
-    snapshotDoc,
     recordHistory,
     undoHistory,
     redoHistory,
@@ -945,6 +1351,7 @@
     planIncludesEdit,
     editTargetAtBase,
     revertedEdits,
+    trackRemovedEdits,
     restoreEdit,
     describeRevert,
     humanDuration,

@@ -22,7 +22,7 @@ function fixture() {
     pendingRequestDraft: null, requestRetryTimer: null, errorCompletionTimer: null,
     activeRequestId: "run-a", stopRequested: false, stopResendPending: false, resetRequested: false,
     isGenerating: true, selectedModel: "model", selectedPermissionMode: "auto", selectedEffort: "high",
-    activeProfileId: () => "profile", conversationDrafts: new Map(),
+    activeProfileId: () => "profile", getActiveProfile: () => ({ provider: "claude" }), conversationDrafts: new Map(),
     followLatestMessage: true, messageLog: [],
     messagesEl: { innerHTML: "a", scrollTop: 0, classList: { add() {}, remove() {} } },
     ws: { readyState: 1, send(payload) { sent.push(JSON.parse(payload)); } }, WebSocket: { OPEN: 1 },
@@ -38,7 +38,7 @@ function fixture() {
     addMessage() { return {}; }, renderAssistantBlocks() {}, scrollBottom() {},
   });
   const names = ["conversationDeliveryState", "saveConversationDeliveryState", "restoreConversationDeliveryState",
-    "handleBackgroundDeliveryEvent", "settleAcknowledgedSteering", "resendConversationRequests", "normalizeSteeringEvent",
+    "handleBackgroundDeliveryEvent", "settleAcknowledgedSteering", "resendConversationRequests", "normalizeSteeringEvent", "requestThinkingSettings",
     "upsertSteeringFromEvent", "applySteeringOrder", "reconcileSteeringSnapshot", "handleSteeringEvent",
     "wsSend", "sendSteeringItem", "flushLocalSteering", "requestPayloadForDraft", "loadConversation", "startNewConversation"];
   vm.runInContext(names.map(source).join("\n"), c);

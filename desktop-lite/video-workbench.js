@@ -16,6 +16,8 @@
   const ICONS = {
     play: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.6 0 0 0 0-1l-8.1-5.2a.6.6 0 0 0-.92.5z"/></svg>`,
     pause: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="2.5" width="3.2" height="11" rx="0.8"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="0.8"/></svg>`,
+    prev: svg('<path d="M4 3.5v9"/><path d="M12 3.8L6.5 8l5.5 4.2V3.8z" fill="currentColor" stroke="none"/>'),
+    next: svg('<path d="M12 3.5v9"/><path d="M4 3.8L9.5 8 4 12.2V3.8z" fill="currentColor" stroke="none"/>'),
     sound: svg('<path d="M3 6v4h2.5L9 13V3L5.5 6H3z"/><path d="M11.5 5.8a3 3 0 0 1 0 4.4"/>'),
     mute: svg('<path d="M3 6v4h2.5L9 13V3L5.5 6H3z"/><path d="M11.5 6.2l3 3.6M14.5 6.2l-3 3.6"/>'),
     fullscreen: svg('<path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>'),
@@ -24,6 +26,20 @@
     scene: svg('<path d="M8 2.2l1.7 3.7 4 .5-3 2.7.9 4L8 11.1l-3.6 2 .9-4-3-2.7 4-.5z"/>'),
     warn: svg('<path d="M8 2.2l6.3 11.3H1.7z"/><path d="M8 6.4v3.2M8 11.6v.1"/>'),
     back: svg('<path d="M12.5 8H3.5M7.5 4L3.5 8l4 4"/>'),
+    edit: svg('<path d="M11.2 2.8l2 2-7.5 7.5-2.7.7.7-2.7 7.5-7.5z"/>'),
+    trash: svg('<path d="M3 4.5h10M6 4.5V3h4v1.5M5 4.5l.6 8.5h4.8l.6-8.5"/>'),
+    undo: svg('<path d="M4.5 6.5H10a3 3 0 1 1 0 6H7.5"/><path d="M6.5 4L4 6.5 6.5 9"/>'),
+    redo: svg('<path d="M11.5 6.5H6a3 3 0 1 0 0 6h2.5"/><path d="M9.5 4L12 6.5 9.5 9"/>'),
+    help: svg('<circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.4-1.7 2.4"/><circle cx="8" cy="11.6" r="0.4" fill="currentColor"/>'),
+    search: svg('<circle cx="7.2" cy="7.2" r="4.5"/><path d="M10.7 10.7L13.5 13.5"/>'),
+    close: svg('<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>'),
+    swap: svg('<path d="M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13"/>'),
+    sparkles: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.5l1.4 3.9 3.9 1.4-3.9 1.4L8 12.1 6.6 8.2 2.7 6.8l3.9-1.4L8 1.5zm4.3 8.4l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"/></svg>`,
+    bolt: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9.2 1.8L3.4 9h4.1l-.7 5.2L12.6 7H8.5l.7-5.2z"/></svg>`,
+    check: svg('<path d="M3.5 8.5l3 3 6-6.5"/>'),
+    doc: svg('<path d="M4.5 2.5h5l3 3v8h-8v-11z"/><path d="M9.5 2.5v3h3"/>'),
+    card: svg('<rect x="2" y="3.5" width="12" height="9" rx="1.8"/><path d="M5 7h6M5 9.5h3.5"/>'),
+    playSmall: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.6v8.8a.5.5 0 0 0 .77.42l6.8-4.4a.5.5 0 0 0 0-.84l-6.8-4.4A.5.5 0 0 0 5 3.6z"/></svg>`,
   };
 
   let deps = null;
@@ -32,9 +48,6 @@
   const projectIndex = new Map();
   /* 很多工程的文件夹就叫「视频」，光看文件夹名分不清是哪条片，优先用方案里写的片名 */
   const projectTitles = new Map();
-  // 用户删掉的改动（工程路径 → id → 改动）。文件里已经没有它们了，但成片里可能还是改过的样子，
-  // 要靠这里记着才知道「撤掉了已出片的改动」也需要重新生成。离开工作台再回来仍在，重启应用才丢
-  const removedEdits = new Map();
   /* 帧条和素材缩略图按路径缓存，关掉面板再打开不用重新等 */
   const stripCache = new Map();
   const sourceThumbs = new Map();
@@ -80,7 +93,7 @@
   function assetUrl(abs, mtime) {
     if (!abs) return "";
     const url = deps.convertFileSrc ? deps.convertFileSrc(abs) : abs;
-    return mtime ? `${url}${url.includes("?") ? "&" : "?"}v=${Math.floor(mtime)}` : url;
+    return mtime ? `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(mtime)}` : url;
   }
 
   async function loadProjects() {
@@ -143,22 +156,33 @@
       doc: Model.normalizeDoc(null),
       history: { past: [], future: [] },
       rows: [],
+      liveRows: [],
+      hook: null,
       plan: null,
       planSource: "none",
       versionName: null,
+      cleanMedia: null,
+      cleanRequest: null,
+      cleanError: false,
+      cleanUnavailable: false,
+      musicAudio: null,
+      voiceRequest: null,
+      usingCleanVideo: false,
+      compareOriginal: false,
       followLatest: true,
       pendingLatest: null,
       tab: "script",
       thumbs: new Map(),
-      thumbsRequested: new Set(),
+      thumbsRequested: new Map(),
       editing: null,
+      editingCard: null,
       playingSample: null,
       stopAt: null,
       skim: null,
       dragging: false,
       pendingSeek: null,
       sampleBusy: new Set(),
-      sampleJobs: new Map(),
+      sampleRequests: new Map(),
       renderBusy: false,
       renderQa: false,
       renderJobId: null,
@@ -172,9 +196,16 @@
       panelDirty: false,
       lastUserScroll: 0,
       activeBeat: null,
+      activeShotKey: null,
+      playbackRate: 1,
+      scriptQuery: "",
+      onlyModified: false,
+      shortcutsOpen: false,
       rafId: 0,
       refreshTimer: null,
       refreshQueued: false,
+      refreshSequence: 0,
+      appliedRefresh: 0,
       statusTimer: null,
       publishHtml: null,
       publishLoadedFor: null,
@@ -190,7 +221,9 @@
     if (!view) return;
     const current = view;
     saveResume(current);
-    if (current.picker?.jobId) deps.invoke("video_cancel_job", { jobId: current.picker.jobId }).catch(() => {});
+    stopMusicPreview();
+    void current.musicAudio?.context.close().catch(() => {});
+    cancelSourceRequest(current.picker);
     view = null;
     cancelAnimationFrame(current.rafId);
     clearTimeout(current.refreshTimer);
@@ -198,7 +231,7 @@
     clearTimeout(current.undoTimer);
     document.removeEventListener("keydown", current.onDocKey);
     for (const observer of current.observers) observer.disconnect();
-    for (const video of current.el.querySelectorAll("video")) {
+    for (const video of current.el.querySelectorAll("video, audio")) {
       try {
         video.pause();
         video.removeAttribute("src");
@@ -218,6 +251,7 @@
         followLatest: current.followLatest,
         time: current.playingSample ? current.playingSample.start : (video?.currentTime || 0),
         tab: current.tab,
+        playbackRate: current.playbackRate || 1,
         scrollTop: current.picker ? 0 : (body?.scrollTop || 0),
         picker: current.picker ? { beat: current.picker.beat, shotIdx: current.picker.shotIdx } : null,
       }));
@@ -237,6 +271,10 @@
     if (!resume) return;
     // 上次看的旧版已经不在了，回到跟随最新版
     if (view.versionName !== saved.version) view.followLatest = true;
+    if (saved && Model.PLAYBACK_RATES.includes(Number(saved.playbackRate))) {
+      view.playbackRate = Number(saved.playbackRate);
+      applyPlaybackRate();
+    }
     if (resume.tab !== view.tab) {
       view.tab = resume.tab;
       renderTabs();
@@ -271,10 +309,13 @@
   async function refresh() {
     const current = view;
     if (!current) return;
+    const sequence = ++current.refreshSequence;
+    const startingDoc = current.doc;
     try {
       const data = await deps.invoke("video_read_project", { path: current.projectPath });
-      if (view !== current) return;
-      await applyData(data);
+      if (view !== current || sequence < current.appliedRefresh) return;
+      current.appliedRefresh = sequence;
+      await applyData(data, startingDoc);
     } catch (err) {
       if (view !== current) return;
       if (!view.data) renderFatal(err);
@@ -282,7 +323,9 @@
     }
   }
 
-  async function applyData(data) {
+  async function applyData(data, startingDoc) {
+    const current = view;
+    const previousMedia = versionMediaKey(currentVersion());
     const previousLatest = view.data?.latest ?? null;
     view.data = data;
     const title = data.edl?.project;
@@ -290,7 +333,8 @@
       projectTitles.set(view.projectPath, title);
       deps.onProjectsChanged?.();
     }
-    view.doc = Model.normalizeDoc(data.edits);
+    const readDoc = Model.normalizeDoc(data.edits);
+    if (view.doc === startingDoc || readDoc.revision >= view.doc.revision) view.doc = readDoc;
     if (data.running) view.renderError = null;
 
     const stillExists = data.versions.some((item) => item.name === view.versionName);
@@ -307,13 +351,17 @@
       view.versionName = target;
       if (previousLatest && target === data.latest) deps.showToast(`新版本已生成：${versionLabel(target)}`);
     }
+    const mediaChanged = previousMedia !== versionMediaKey(currentVersion());
+    if (mediaChanged) resetPreviewMedia();
 
     await loadPlanFor(target);
-    if (!view) return;
+    if (view !== current || view.data !== data || view.versionName !== target) return;
     rebuildRows();
-    if (switched || !videoEl()?.getAttribute("src")) loadCurrentVersion();
+    if (mediaChanged || !videoEl()?.getAttribute("src")) loadCurrentVersion();
+    else syncVideoSource();
     renderAll();
     ensureShotThumbs();
+    ensureCleanPreview();
     if (data.latest) void pruneOldSentNotes();
   }
 
@@ -327,41 +375,37 @@
     const current = view;
     try {
       const res = await deps.invoke("video_read_plan", { path: view.projectPath, version: versionName });
-      if (view !== current) return;
+      if (view !== current || view.data !== data || view.versionName !== versionName) return;
       view.plan = res.plan;
       view.planSource = res.planSource;
     } catch {
-      view.plan = data.plan;
+      if (view !== current || view.data !== data || view.versionName !== versionName) return;
+      view.plan = null;
       view.planSource = "latest";
     }
   }
 
   function rebuildRows() {
-    const reverted = Model.revertedEdits({ plan: view.plan, edl: view.data.edl, doc: view.doc, removed: removedList(view) });
+    const reverted = Model.revertedEdits({ plan: view.plan, edl: view.data.edl, doc: view.doc });
+    view.reverted = reverted;
     view.rows = Model.buildRows({ edl: view.data.edl, plan: view.plan, edits: view.doc, reverted });
-    ensureSourceIndex(reverted);
-  }
-
-  function removedList(current) {
-    return [...(removedEdits.get(current.projectPath)?.values() || [])];
-  }
-
-  /* 用户自己删掉 / 放回改动时记一笔（AI 改文件、读盘刷新不算） */
-  function trackRemoved(current, before, after) {
-    const nextIds = new Set(after.edits.map((edit) => edit.id));
-    let map = removedEdits.get(current.projectPath);
-    for (const edit of before.edits) {
-      if (nextIds.has(edit.id)) continue;
-      if (!map) removedEdits.set(current.projectPath, (map = new Map()));
-      map.set(edit.id, edit);
+    view.hook = Model.buildHook({ edl: view.data.edl, plan: view.plan, edits: view.doc });
+    const conflicts = conflictIds();
+    if (conflicts.size) {
+      const accepted = { ...view.doc, edits: view.doc.edits.filter((edit) => !conflicts.has(edit.id)) };
+      view.liveRows = Model.buildRows({ edl: view.data.edl, plan: view.plan, edits: accepted, reverted });
+      view.liveHook = Model.buildHook({ edl: view.data.edl, plan: view.plan, edits: accepted });
+    } else {
+      view.liveRows = view.rows;
+      view.liveHook = view.hook;
     }
-    if (map) for (const id of nextIds) map.delete(id);
+    ensureSourceIndex(reverted);
   }
 
   /* 撤掉已出片的改动后，最新成片和下次生成的结果对不上，也算待生成 */
   function revertedPending() {
     if (!view.data) return [];
-    return Model.revertedEdits({ plan: view.data.plan, edl: view.data.edl, doc: view.doc, removed: removedList(view) });
+    return Model.revertedEdits({ plan: view.data.plan, edl: view.data.edl, doc: view.doc });
   }
 
   function pendingTotal() {
@@ -395,6 +439,10 @@
     return view.data?.versions.find((item) => item.name === view.versionName) || null;
   }
 
+  function versionMediaKey(version) {
+    return version ? JSON.stringify([version.name, version.mediaRevision ?? version.mtime, version.size]) : "";
+  }
+
   function versionLabel(name) {
     const match = /_v(\d+)\.[^.]+$/.exec(name || "");
     if (match) return `v${match[1]}`;
@@ -425,20 +473,36 @@
                 <video class="vwVideo" preload="metadata" playsinline></video>
                 <video class="vwPreviewVideo" preload="auto" muted playsinline hidden></video>
                 <img class="vwPreviewImage" alt="" hidden />
+                <div class="vwLiveLayer" hidden></div>
                 <div class="vwPreviewCaption" hidden></div>
-                <span class="vwPreviewTag" hidden>预览</span>
+                <span class="vwPreviewTag" hidden>预览新镜头</span>
+                <button type="button" class="vwLiveToggle" data-action="toggle-compare" hidden></button>
+                <span class="vwSampleFrameBadge" hidden></span>
                 <div class="vwHotspots" hidden></div>
                 <button type="button" class="vwBigPlay" data-action="toggle-play" aria-label="播放" tabindex="-1">${ICONS.play}</button>
                 <div class="vwPlayerEmpty" hidden></div>
               </div>
             </div>
             <div class="vwControls">
-              <button type="button" class="vwIconBtn vwPlayBtn" data-action="toggle-play" aria-label="播放">${ICONS.play}</button>
+              <div class="vwControlGroup">
+                <button type="button" class="vwIconBtn" data-action="step-beat" data-delta="-1" aria-label="上一句" title="上一句 (←)">${ICONS.prev}</button>
+                <button type="button" class="vwIconBtn vwPlayBtn" data-action="toggle-play" aria-label="播放" title="播放 / 暂停 (空格)">${ICONS.play}</button>
+                <button type="button" class="vwIconBtn" data-action="step-beat" data-delta="1" aria-label="下一句" title="下一句 (→)">${ICONS.next}</button>
+              </div>
               <span class="vwClock">00:00 / 00:00</span>
               <span class="vwSampleTag" hidden></span>
               <span class="vwControlsSpacer"></span>
-              <button type="button" class="vwIconBtn vwMuteBtn" data-action="toggle-mute" aria-label="静音">${ICONS.sound}</button>
-              <button type="button" class="vwIconBtn" data-action="fullscreen" aria-label="全屏">${ICONS.fullscreen}</button>
+              <div class="vwControlGroup">
+                <button type="button" class="vwRateBtn" data-action="cycle-rate" aria-label="播放倍速" title="切换审片倍速 (1x / 1.25x / 1.5x / 2x)">1x</button>
+                <button type="button" class="vwIconBtn vwMuteBtn" data-action="toggle-mute" aria-label="静音" title="静音 / 取消静音">${ICONS.sound}</button>
+                <button type="button" class="vwIconBtn" data-action="fullscreen" aria-label="全屏" title="全屏预览">${ICONS.fullscreen}</button>
+              </div>
+            </div>
+            <div class="vwVoiceSample" hidden>
+              <strong>新配音试听</strong>
+              <audio controls preload="metadata"></audio>
+              <button type="button" class="vwLink" data-action="close-voice">关闭</button>
+              <output></output>
             </div>
           </section>
           <section class="vwPanel" aria-label="脚本与修改">
@@ -488,7 +552,8 @@
 
   /* ── 顶栏 ───────────────────────────────────────── */
   function conflictIds() {
-    const list = view.data?.editsStatus?.conflicts;
+    const status = view.data?.editsStatus;
+    const list = status && status.revision === view.doc.revision ? status.conflicts : [];
     return new Set(Array.isArray(list) ? list.map((item) => item.id) : []);
   }
 
@@ -514,6 +579,30 @@
     return deps.isAgentGenerating?.() === true && view.doc.notes.some((note) => note.sentAt);
   }
 
+  function shortcutsPopoverHtml() {
+    return `
+      <div class="vwShortcutPopover" role="dialog" aria-label="快捷键速查" ${view.shortcutsOpen ? "" : "hidden"}>
+        <div class="vwShortcutTitle">审片快捷键</div>
+        <dl class="vwShortcutList">
+          <div><dt><kbd>Space</kbd></dt><dd>播放 / 暂停</dd></div>
+          <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>上一句 / 下一句</dd></div>
+          <div><dt><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd></dt><dd>快退 / 快进 1 秒</dd></div>
+          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>逐帧后退 / 前进</dd></div>
+          <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>撤销（<kbd>Shift</kbd> 重做）</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>关闭换镜头 / 取消编辑</dd></div>
+        </dl>
+        <p class="vwShortcutTip">暂停时可直接点画面改字幕、提字卡意见或换镜头；双击脚本句子也能直接改字。</p>
+      </div>`;
+  }
+
+  function setShortcutsOpen(open) {
+    view.shortcutsOpen = open;
+    const button = view.el.querySelector('[data-action="toggle-shortcuts"]');
+    button.classList.toggle("vwIconBtnActive", open);
+    button.setAttribute("aria-expanded", String(open));
+    view.el.querySelector(".vwShortcutPopover").hidden = !open;
+  }
+
   function renderHead() {
     const data = view.data;
     const plan = view.plan;
@@ -525,31 +614,49 @@
     }).join("");
     const edits = pendingTotal();
     const notes = unsentNotes().length;
-    const total = edits + notes;
-    const route = Model.routeApply({ editCount: edits, noteCount: notes });
-    const blocked = route === "render" && !view.env?.ok;
+    const meta = Model.applyButtonMeta({ editCount: edits, noteCount: notes });
+    const blocked = meta.route === "render" && !view.env?.ok;
     let button = "";
     if (view.pendingSend) {
       button = `<button type="button" class="vwBtn" data-action="apply">等 AI 忙完再发（点击取消）</button>`;
     } else if (aiIsHandlingNotes() && notes === 0) {
       // AI 处理期间又写了新意见时，按钮要还能点（会排到这轮之后），不能把新意见卡住
       button = `<button type="button" class="vwBtn" disabled>AI 正在处理…</button>`;
-    } else if (total > 0) {
-      const hint = route === "ai"
-        ? "你写的意见会交给 AI，它改好后生成新版本"
-        : "按你的改动直接生成新版本，不经过 AI，不花模型额度";
-      button = `<button type="button" class="vwBtn vwBtnPrimary" data-action="apply" ${isRendering() || blocked ? "disabled" : ""}
-        title="${esc(blocked ? (view.env?.message || "找不到剪辑引擎") : hint)}">应用修改（${total}）</button>`;
+    } else if (meta.total > 0) {
+      const btnIcon = meta.route === "ai" ? ICONS.sparkles : ICONS.bolt;
+      button = `<button type="button" class="vwBtn vwBtnPrimary ${meta.route === "ai" ? "vwBtnAi" : ""}" data-action="apply" ${isRendering() || blocked ? "disabled" : ""}
+        title="${esc(blocked ? (view.env?.message || "找不到剪辑引擎") : meta.hint)}"><span class="vwBtnIcon">${btnIcon}</span><span>${esc(meta.label)}</span></button>`;
     }
+    const lastUndo = view.history.past[view.history.past.length - 1];
+    const lastRedo = view.history.future[view.history.future.length - 1];
+    const hasHistory = Boolean(lastUndo || lastRedo);
+    const metaParts = [
+      plan?.duration ? Model.humanDuration(plan.duration) : "",
+      view.rows.length ? `${view.rows.length} 句` : "",
+    ].filter(Boolean);
     view.el.querySelector(".vwHead").innerHTML = `
       <div class="vwHeadMain">
         <h2 class="vwTitle" title="${esc(data.path)}">${esc(title)}</h2>
         ${versions.length > 1
-          ? `<select class="vwVersion" data-change="version" aria-label="选择版本">${options}</select>`
-          : (versions.length === 1 ? `<span class="vwMeta">${esc(versionLabel(versions[0].name))}</span>` : "")}
-        ${plan?.duration ? `<span class="vwMeta">${esc(Model.humanDuration(plan.duration))}</span>` : ""}
+          ? `<select class="vwVersion" data-change="version" aria-label="选择版本" title="切换历史版本">${options}</select>`
+          : (versions.length === 1 ? `<span class="vwVersionBadge">${esc(versionLabel(versions[0].name))}</span>` : "")}
+        ${metaParts.length ? `<span class="vwMeta">${esc(metaParts.join(" · "))}</span>` : ""}
       </div>
-      <div class="vwHeadActions">${button}</div>`;
+      <div class="vwHeadActions">
+        ${hasHistory ? `
+          <div class="vwHistoryBtns" role="group" aria-label="撤销与重做">
+            <button type="button" class="vwIconBtn" data-action="undo-history" ${lastUndo ? "" : "disabled"}
+              aria-label="撤销" title="${esc(lastUndo ? `撤销：${lastUndo.label} (Ctrl+Z)` : "没有可撤销的操作")}">${ICONS.undo}</button>
+            <button type="button" class="vwIconBtn" data-action="redo-history" ${lastRedo ? "" : "disabled"}
+              aria-label="重做" title="${esc(lastRedo ? `重做：${lastRedo.label} (Ctrl+Shift+Z)` : "没有可重做的操作")}">${ICONS.redo}</button>
+          </div>` : ""}
+        <div class="vwShortcutWrap">
+          <button type="button" class="vwIconBtn ${view.shortcutsOpen ? "vwIconBtnActive" : ""}" data-action="toggle-shortcuts"
+            aria-label="审片快捷键" aria-expanded="${view.shortcutsOpen}" title="审片快捷键与技巧">${ICONS.help}</button>
+          ${shortcutsPopoverHtml()}
+        </div>
+        ${button}
+      </div>`;
   }
 
   /* ── 状态行：只说最要紧的一件事，没事就不占地方 ──── */
@@ -622,8 +729,8 @@
     if (view.picker) return;
     const body = view.el.querySelector(".vwPanelBody");
     // 正在输入时后台刷新不能冲掉草稿
-    const typing = body.contains(document.activeElement) && document.activeElement.matches("input, textarea");
-    if (!force && (view.editing || typing)) {
+    const typing = body.contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
+    if (!force && (view.editing || view.editingCard || typing)) {
       view.panelDirty = true;
       return;
     }
@@ -661,7 +768,7 @@
     const replaced = shot.replace?.value?.src;
     if (replaced && sourceThumbs.has(replaced)) return sourceThumbs.get(replaced);
     if (shot.planIndex < 0) return null;
-    return view.thumbs.get(`${view.versionName}#${shot.planIndex}`) || null;
+    return view.thumbs.get(`${versionMediaKey(currentVersion())}#${shot.planIndex}`) || null;
   }
 
   function shotKindIcon(kind) {
@@ -677,101 +784,291 @@
       : `<span class="vwShotPlaceholder" data-plan-shot="${shot.planIndex}">${shotKindIcon(shot.kind)}</span>`;
   }
 
+  function scriptProgressText() {
+    const total = view.rows.length;
+    if (!total) return "";
+    const active = view.rows.find((item) => item.id === view.activeBeat);
+    return active ? `第 ${active.index + 1} / ${total} 句` : `共 ${total} 句`;
+  }
+
+  function updateScriptProgress() {
+    const el = view?.el.querySelector(".vwScriptProgress");
+    if (el) el.textContent = scriptProgressText();
+  }
+
+  function scriptRowsHtml() {
+    const filtered = Model.filterRows(view.rows, { query: view.scriptQuery, onlyModified: view.onlyModified });
+    if (filtered.length === 0) {
+      return `<div class="vwEmptyLarge">
+        <p>没有找到符合条件的句子。</p>
+        <button type="button" class="vwBtn vwBtnSmall" data-action="clear-script-filter">清除筛选</button>
+      </div>`;
+    }
+    return filtered.map(rowHtml).join("");
+  }
+
+  function cardEditorHtml(ec) {
+    const posVal = typeof ec.draftPos === "number" ? "custom" : (ec.draftPos || "upper");
+    const posOptions = Model.TEXT_POS_OPTIONS.map(([val, label]) =>
+      `<option value="${esc(val)}" ${posVal === val ? "selected" : ""}>${esc(label)}</option>`
+    ).join("");
+    const customOption = typeof ec.draftPos === "number"
+      ? `<option value="custom" selected>自定义 (${Math.round(ec.draftPos * 100)}%)</option>`
+      : "";
+    const showBadge = !ec.isHook && (ec.draftBadge || ec.style === "chapter");
+    const showSub = ec.isHook || ec.draftSub || ec.style === "chapter" || ec.style === "title";
+    return `
+      <div class="vwCardEditor" data-card-editor>
+        <div class="vwCardEditorHead">
+          <strong>${ec.isHook ? "编辑开头钩子大字" : "编辑画面字卡"}</strong>
+          <span class="vwCardEditorHint">修改后左侧画面实时预览</span>
+        </div>
+        <div class="vwCardEditorFields">
+          <label class="vwCardField">
+            <span>${ec.isHook ? "主标题" : "字卡文字"}</span>
+            <input type="text" class="vwInput" data-card-field="text" value="${esc(ec.draftText)}" placeholder="输入画面显示的文字" />
+          </label>
+          ${showSub ? `
+          <label class="vwCardField">
+            <span>副标题（可选）</span>
+            <input type="text" class="vwInput" data-card-field="sub" value="${esc(ec.draftSub || "")}" placeholder="留空不显示" />
+          </label>` : ""}
+          ${showBadge ? `
+          <label class="vwCardField">
+            <span>角标（可选）</span>
+            <input type="text" class="vwInput" data-card-field="badge" value="${esc(ec.draftBadge || "")}" placeholder="如：白天玩法" />
+          </label>` : ""}
+          <label class="vwCardField vwCardFieldPos">
+            <span>位置</span>
+            <select class="vwInput vwPosSelect" data-card-field="pos">${customOption}${posOptions}</select>
+          </label>
+        </div>
+        <div class="vwCardEditorFoot">
+          <div class="vwCardEditorLeft">
+            <button type="button" class="vwBarBtn vwBarBtnDanger" data-action="delete-editing-card">${ICONS.trash}<span>${ec.isHook ? "删除钩子" : "删除字卡"}</span></button>
+            ${ec.editId ? `<button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(ec.editId)}">恢复原样</button>` : ""}
+            ${!ec.isHook ? `<button type="button" class="vwLink" data-action="ask-card-ai">让 AI 调样式</button>` : ""}
+          </div>
+          <div class="vwCardEditorRight">
+            <button type="button" class="vwBtn vwBtnSmall" data-action="cancel-card-edit">取消</button>
+            <button type="button" class="vwBtn vwBtnSmall vwBtnPrimary" data-action="save-card-edit">保存</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function hookCardHtml() {
+    const hook = view.hook;
+    if (!hook || !hook.exists) return "";
+    const editingHook = view.editingCard?.isHook ? view.editingCard : null;
+    if (editingHook) {
+      return `<div class="vwHookCard vwHookCardEditing">${cardEditorHtml(editingHook)}</div>`;
+    }
+    if (hook.deleted && hook.edit) {
+      return `
+        <div class="vwHookCard vwHookCardDeleted">
+          <span class="vwHookBadge">开头钩子</span>
+          <span class="vwHookText vwHookTextDel">${esc(hook.originalText)}</span>
+          <button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(hook.edit.id)}">恢复钩子</button>
+        </div>`;
+    }
+    return `
+      <div class="vwHookCard ${hook.edit ? "vwHookCardChanged" : ""}" data-action="edit-hook" title="点击直接修改开头钩子大字（实时预览）">
+        <span class="vwHookBadge">开头钩子</span>
+        <div class="vwHookContent">
+          <span class="vwHookText">${esc(hook.text)}</span>
+          ${hook.sub ? `<span class="vwHookSub">${esc(hook.sub)}</span>` : ""}
+        </div>
+        <button type="button" class="vwSayEditBtn vwHookEditBtn" data-action="edit-hook">${ICONS.edit}<span>改钩子</span></button>
+      </div>`;
+  }
+
   function scriptHtml() {
-    if (view.rows.length === 0) return `<p class="vwEmpty">这条视频还没有内容。</p>`;
-    return `<div class="vwScript">${view.rows.map(rowHtml).join("")}</div>`;
+    if (view.rows.length === 0) return `<p class="vwEmptyLarge">这条视频还没有内容。</p>`;
+    const modifiedCount = view.rows.filter(Model.rowHasChanges).length;
+    const showFilterBtn = modifiedCount > 0 || view.onlyModified;
+    return `
+      <div class="vwScriptWrap">
+        <div class="vwScriptTools">
+          <div class="vwSearchBox">
+            <span class="vwSearchIcon">${ICONS.search}</span>
+            <input type="text" class="vwSearchInput" data-input="script-query" value="${esc(view.scriptQuery)}"
+              placeholder="搜索脚本、字卡或意见…" aria-label="搜索脚本" />
+            <button type="button" class="vwSearchClear" data-action="clear-script-query" aria-label="清空搜索" ${view.scriptQuery ? "" : "hidden"}>${ICONS.close}</button>
+          </div>
+          ${showFilterBtn ? `
+            <button type="button" class="vwFilterPill ${view.onlyModified ? "vwFilterPillOn" : ""}" data-action="toggle-only-modified" aria-pressed="${view.onlyModified}">
+              仅看改动${modifiedCount ? ` (${modifiedCount})` : ""}
+            </button>` : ""}
+          <span class="vwScriptProgress">${esc(scriptProgressText())}</span>
+        </div>
+        ${!view.scriptQuery && !view.onlyModified ? hookCardHtml() : ""}
+        <div class="vwScript">${scriptRowsHtml()}</div>
+      </div>`;
   }
 
   function rowHtml(row) {
     const editing = view.editing?.beat === row.id ? view.editing : null;
     const sampleBusy = view.sampleBusy.has(row.id);
     const deleteEdit = view.doc.edits.find((edit) => edit.op === "delete_beat" && edit.beat === row.id);
+    const hasUnsentNote = row.notes.some((n) => !n.sentAt) || row.shots.some((s) => s.notes.some((n) => !n.sentAt));
+    const hasShotEdit = row.shots.some((s) => Boolean(s.replace || s.revert));
+    const hasCardEdit = (row.cards || []).some((c) => Boolean(c.setText || c.deleteText));
     const classes = ["vwRow"];
     if (row.deleted) classes.push("vwRowDeleted");
     if (row.id === view.activeBeat) classes.push("vwRowActive");
-    if (row.setSay || row.setTts) classes.push("vwRowChanged");
+    if (row.setSay || row.setTts || hasShotEdit || hasCardEdit) classes.push("vwRowChanged");
+    if (hasUnsentNote) classes.push("vwRowHasNote");
     const missing = view.data.missingSources || [];
 
     // 删掉的句子只留文字和「恢复」：成片里已经没有它的画面，换镜头也没有意义
     const shots = row.deleted ? "" : row.shots.map((shot) => {
       const duration = Model.shotDuration(shot);
       const lost = Model.isMissingSource(shot.path, missing) && !shot.replace;
-      return `<button type="button" class="vwShot ${shot.replace ? "vwShotChanged" : ""} ${lost ? "vwShotLost" : ""}"
-          data-action="open-picker" data-beat="${esc(row.id)}" data-shot="${shot.idx}"
-          aria-label="换这个镜头：${esc(shot.name)}" title="${esc(lost ? `素材读不到：${shot.path}` : `${shot.name}，点击换一个`)}">
+      const isCurrent = view.activeShotKey === `${row.id}#${shot.idx}`;
+      return `<button type="button" class="vwShot ${shot.replace ? "vwShotChanged" : ""} ${lost ? "vwShotLost" : ""} ${isCurrent ? "vwShotCurrent" : ""}"
+          data-action="open-picker" data-beat="${esc(row.id)}" data-shot="${shot.idx}" data-shot-key="${esc(`${row.id}#${shot.idx}`)}"
+          aria-label="换这个镜头：${esc(shot.name)}" title="${esc(lost ? `素材读不到：${shot.path}` : `${shot.name} · 点击换镜头`)}">
           ${shotThumbHtml(shot)}
-          ${duration !== null ? `<span class="vwShotDur">${duration.toFixed(1)}</span>` : ""}
+          ${shot.replace ? '<span class="vwShotTag">已换</span>' : (shot.kind === "scene" ? '<span class="vwShotTag vwShotTagScene">动画</span>' : "")}
+          ${duration !== null ? `<span class="vwShotDur">${duration.toFixed(1)}s</span>` : ""}
           ${lost ? `<span class="vwShotBadge">${ICONS.warn}</span>` : ""}
+          <span class="vwShotHover" aria-hidden="true">${ICONS.swap}<span>换镜头</span></span>
         </button>`;
     }).join("");
 
     const say = editing
       ? sayEditorHtml(row, editing)
-      : `<p class="vwSay" data-action="row-text" data-beat="${esc(row.id)}">${esc(row.say) || '<span class="vwMuted">（这一段没有口播）</span>'}</p>`;
+      : `<div class="vwSayHead">
+          <p class="vwSay" data-action="row-text" data-beat="${esc(row.id)}" title="${row.deleted ? "" : "点击选中，再点或双击直接改字"}">${esc(row.say) || '<span class="vwMuted">（这一段没有口播）</span>'}</p>
+          ${row.deleted ? "" : `<button type="button" class="vwSayEditBtn" data-action="edit-beat" data-beat="${esc(row.id)}" title="修改这句口播和字幕" aria-label="改字">${ICONS.edit}<span>改字</span></button>`}
+        </div>`;
 
     const notes = [
       ...row.notes.map((note) => noteHtml(note, "")),
       ...row.shots.flatMap((shot) => shot.notes.map((note) => noteHtml(note, `第 ${shot.idx + 1} 个镜头`))),
     ].join("");
 
+    const editingRowCard = view.editingCard && !view.editingCard.isHook && view.editingCard.beat === row.id ? view.editingCard : null;
+    const cards = Array.isArray(row.cards) ? row.cards : [];
+    const textsHtml = cards.length && !row.deleted
+      ? `<div class="vwTexts" aria-label="画面字卡">${cards.map((card) => {
+          if (card.deleted && card.deleteText) {
+            return `<span class="vwTextTag vwTextTagDeleted">
+              <span class="vwTextTagIcon">${ICONS.card}</span>
+              <span class="vwTextTagDelText">${esc(card.originalText)}</span>
+              <button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(card.deleteText.id)}">恢复</button>
+            </span>`;
+          }
+          const isEditingThis = editingRowCard && editingRowCard.idx === card.idx;
+          return `<button type="button" class="vwTextTag ${card.setText ? "vwTextTagEdited" : ""} ${isEditingThis ? "vwTextTagActive" : ""}"
+            data-action="edit-text-card" data-beat="${esc(row.id)}" data-idx="${card.idx}"
+            title="点击直接修改或删除这张字卡（实时预览）">
+            <span class="vwTextTagIcon">${ICONS.card}</span>
+            <span class="vwTextTagLabel">${card.setText ? "字卡·已改" : "字卡"}</span>
+            <span>${esc(card.text)}</span>
+          </button>`;
+        }).join("")}</div>${editingRowCard ? cardEditorHtml(editingRowCard) : ""}`
+      : "";
+
+    const voiceEdit = view.doc.edits.find((edit) => edit.op === "set_voice");
+    const voicePending = Boolean(voiceEdit && !isEditRendered(voiceEdit));
+    const showSample = sampleBusy || Model.rowNeedsSample(row, { isRendered: isEditRendered, voicePending });
+    const voiceCfg = view.data.edl?.voice;
+    const hasVoiceChange = voicePending || [row.setSay, row.setTts].some((edit) => edit && !isEditRendered(edit));
+    const canSampleVoice = voiceCfg && voiceCfg.enabled !== false && voiceCfg.provider !== "files" && hasVoiceChange && row.say;
+    const loadingVoice = view.voiceRequest?.beat === row.id;
+
+    const noteComposeHtml = `
+            <div class="vwNoteCompose">
+              <input type="text" class="vwNoteInput" data-note-beat="${esc(row.id)}" placeholder="写下这句的修改意见，回车或点「添加修改」" aria-label="写下这句的修改意见" />
+              <button type="button" class="vwNoteSend" data-action="submit-note" disabled>添加修改</button>
+            </div>`;
+    const deleteBtnHtml = `<button type="button" class="vwBarBtn vwBarBtnDanger" data-action="delete-beat" data-beat="${esc(row.id)}">${ICONS.trash}<span>删除这句</span></button>`;
+
+    const rowPanelHtml = row.deleted ? "" : (showSample ? `
+          <div class="vwRowPanel">
+            <div class="vwRowQuickOps">
+              <button type="button" class="vwBarBtn vwBarBtnAccent" data-action="sample" data-beat="${esc(row.id)}" ${sampleBusy || !view.env?.ok ? "disabled" : ""}
+                title="只渲染这一句的新配音与画面，几秒验效果，不用等全片生成">${ICONS.playSmall}<span>${sampleBusy ? "生成试看中…" : "试看改后效果"}</span></button>
+              ${canSampleVoice ? `<button type="button" class="vwBarBtn" data-action="voice-sample" data-beat="${esc(row.id)}" ${view.voiceRequest || !view.env?.ok ? "disabled" : ""}>${loadingVoice ? "生成配音中…" : "试听新配音"}</button>` : ""}
+              <span class="vwControlsSpacer"></span>
+              ${deleteBtnHtml}
+            </div>
+            ${noteComposeHtml}
+          </div>` : `
+          <div class="vwRowPanel">
+            <div class="vwRowCompactBar">
+              ${noteComposeHtml}
+              ${deleteBtnHtml}
+            </div>
+          </div>`);
+
     return `
       <article class="${classes.join(" ")}" data-beat="${esc(row.id)}" data-action="row-select">
-        <span class="vwRowTime">${esc(row.start === null ? "" : Model.fmtTime(row.start))}</span>
+        <div class="vwRowGutter">
+          <span class="vwRowNum">#${String(row.index + 1).padStart(2, "0")}</span>
+          <span class="vwRowTime">${esc(row.start === null ? "" : Model.fmtTime(row.start))}</span>
+        </div>
         <div class="vwRowBody">
           ${say}
-          ${row.setSay && !editing ? `<p class="vwWas">原文：${esc(row.originalSay)}</p>` : ""}
-          ${row.deleted && deleteEdit ? `<p class="vwWas">${isEditRendered(deleteEdit) ? "这句已经删掉了" : "这句会被删掉"} <button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(deleteEdit.id)}">恢复</button></p>` : ""}
+          ${row.setSay && !editing ? `<p class="vwWas"><span>原文：${esc(row.originalSay)}</span><button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(row.setSay.id)}">恢复原文</button></p>` : ""}
+          ${row.deleted && deleteEdit ? `<p class="vwWas"><span>${isEditRendered(deleteEdit) ? "这句已经删掉了" : "这句会被删掉"}</span><button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(deleteEdit.id)}">恢复这句</button></p>` : ""}
           ${row.deleted ? "" : `<div class="vwShots">${shots}</div>`}
-          ${row.texts.length && !row.deleted ? `<p class="vwTexts">${esc(row.texts.map((text) => text.text).join(" · "))}</p>` : ""}
-          ${notes}
-          ${row.deleted ? "" : `
-          <div class="vwRowBar">
-            <input type="text" class="vwNoteInput" data-note-beat="${esc(row.id)}" placeholder="告诉 AI 这句哪里不好，回车加入" aria-label="告诉 AI 这句哪里不好" />
-            <button type="button" class="vwBarBtn" data-action="sample" data-beat="${esc(row.id)}" ${sampleBusy || !view.env?.ok ? "disabled" : ""}>${sampleBusy ? "生成中…" : "试看这句"}</button>
-            <button type="button" class="vwBarBtn" data-action="delete-beat" data-beat="${esc(row.id)}">删除这句</button>
-          </div>
-          <div class="vwQuick" role="group" aria-label="一键告诉 AI">${quickNotesHtml(row)}</div>`}
+          ${textsHtml}
+          ${notes ? `<div class="vwNotesList">${notes}</div>` : ""}
+          ${rowPanelHtml}
         </div>
       </article>`;
   }
 
-  function quickNotesHtml(row) {
-    const pending = new Set(view.doc.notes
-      .filter((note) => !note.sentAt && note.beat === row.id && (note.shot ?? null) === null)
-      .map((note) => note.text));
-    return Model.quickNotesFor(row).map((item) => {
-      const on = pending.has(item.text);
-      return `<button type="button" class="vwChip ${on ? "vwChipOn" : ""}" data-action="quick-note" data-beat="${esc(row.id)}"
-        data-note="${esc(item.text)}" aria-pressed="${on}" title="${esc(on ? "已告诉 AI，再点一次撤回" : `告诉 AI：${item.text}`)}">${esc(item.label)}</button>`;
-    }).join("");
+  function editorCharHint(draft, original) {
+    const len = String(draft || "").trim().length;
+    const origLen = String(original || "").trim().length;
+    const diff = len - origLen;
+    if (!origLen || Math.abs(diff) < 5) return `${len} 字`;
+    return `${len} 字（比原句${diff > 0 ? `多 ${diff}` : `少 ${-diff}`} 字）`;
   }
 
   function sayEditorHtml(row, editing) {
+    const draft = editing.draft ?? row.say;
     return `
       <div class="vwEditor" data-editor-box>
-        <textarea class="vwSayEditor" rows="2" aria-label="口播文字" data-editor="say">${esc(editing.draft ?? row.say)}</textarea>
+        <textarea class="vwSayEditor" rows="2" aria-label="口播文字" data-editor="say" data-original-say="${esc(row.originalSay)}">${esc(draft)}</textarea>
         ${editing.showTts
           ? `<label class="vwTtsField">配音读作（字幕不变）<input type="text" class="vwInput" data-editor="tts" value="${esc(editing.ttsDraft ?? row.sayTts)}" placeholder="把难读的词换成同音字" /></label>`
-          : `<button type="button" class="vwLink" data-action="show-tts">有字读错了？</button>`}
-        <span class="vwHint">回车保存，Esc 取消</span>
+          : ""}
+        <div class="vwEditorFoot">
+          <div class="vwEditorFootLeft">
+            ${editing.showTts ? "" : `<button type="button" class="vwLink" data-action="show-tts">有字读错了？</button>`}
+            <span class="vwEditorCount">${esc(editorCharHint(draft, row.originalSay))}</span>
+          </div>
+          <div class="vwEditorFootRight">
+            <button type="button" class="vwBtn vwBtnSmall" data-action="cancel-edit">取消</button>
+            <button type="button" class="vwBtn vwBtnSmall vwBtnPrimary" data-action="commit-edit">保存</button>
+          </div>
+        </div>
       </div>`;
   }
 
   function noteHtml(note, prefix) {
-    return `<p class="vwNote ${note.sentAt ? "vwNoteSent" : ""}">
-      <span class="vwNoteTag">${note.sentAt ? "已告诉 AI" : "告诉 AI"}</span>${prefix ? `${esc(prefix)}：` : ""}${esc(note.text)}
-      ${note.sentAt ? "" : `<button type="button" class="vwLink" data-action="remove-note" data-id="${esc(note.id)}">删除</button>`}
-    </p>`;
+    return `<div class="vwNote ${note.sentAt ? "vwNoteSent" : ""}">
+      <span class="vwNoteTag">${ICONS.sparkles}<span>${note.sentAt ? "已发给 AI" : "待发给 AI"}</span></span>
+      <span class="vwNoteBody">${prefix ? `<strong>${esc(prefix)}：</strong>` : ""}${esc(note.text)}</span>
+      ${note.sentAt ? "" : `<button type="button" class="vwNoteRemove" data-action="remove-note" data-id="${esc(note.id)}" aria-label="删除这条意见" title="删除">${ICONS.close}</button>`}
+    </div>`;
   }
 
   /* ── 待处理 ─────────────────────────────────────── */
   function describeCurrent(current) {
     if (typeof current.say === "string") return current.say;
     if (typeof current.say_tts === "string") return `读作 ${current.say_tts}`;
+    if (typeof current.text === "string") return `字卡「${current.text}」`;
     if (current.scene) return `动画 ${current.scene}`;
     if (current.src) return `${Model.baseName(current.src)}${typeof current.in === "number" ? `（${current.in} 秒起）` : ""}`;
     if (current.speed !== undefined) return `语速 ${current.speed} 倍`;
     if (current.rate !== undefined) return `语速 ${current.rate}`;
+    if (current.gain_db !== undefined) return `配乐 ${current.gain_db} dB`;
     return "";
   }
 
@@ -831,32 +1128,47 @@
     const canSetSpeed = voice && typeof voice === "object" && voice.provider === "minimax";
     const voiceEdit = edits.find((edit) => edit.op === "set_voice");
     const currentSpeed = voiceEdit?.value?.speed ?? voice?.speed ?? 1;
-    const nothing = conflicted.length + notes.length + pending.length + reverts.length === 0;
+    const directCount = pending.length + reverts.length;
+    const nothing = conflicted.length + notes.length + directCount === 0;
+
+    let bannerHtml = "";
+    if (conflicted.length > 0) {
+      bannerHtml = `<div class="vwChangesBanner vwChangesBannerWarn">有 <strong>${conflicted.length}</strong> 处改动和 AI 的修改冲突，请先在下方选择保留哪个版本。</div>`;
+    } else if (notes.length > 0) {
+      bannerHtml = `<div class="vwChangesBanner vwChangesBannerAi">${ICONS.sparkles}<span>共 <strong>${notes.length}</strong> 条 AI 意见${directCount ? `（及 ${directCount} 处直接改动）` : ""}，点右上角「发给 AI 处理」将一并交给 AI。</span></div>`;
+    } else if (directCount > 0) {
+      bannerHtml = `<div class="vwChangesBanner">${ICONS.bolt}<span>共 <strong>${directCount}</strong> 处直接改动，点右上角「生成新版本」将直接本地渲染，不花 AI 额度。</span></div>`;
+    }
 
     return `
       <div class="vwChanges">
+        ${bannerHtml}
         ${conflicted.length ? `
           <section class="vwChangeGroup">
-            <h3>需要你决定</h3>
+            <h3><span class="vwGroupDot vwGroupDotDanger"></span>需要你决定 <span class="vwGroupCount">${conflicted.length}</span></h3>
             <ul class="vwChangeList">${conflicted.map(editRow).join("")}</ul>
           </section>` : ""}
         ${notes.length ? `
           <section class="vwChangeGroup">
-            <h3>告诉 AI 的</h3>
+            <h3><span class="vwGroupDot vwGroupDotAi"></span>告诉 AI 的 <span class="vwGroupCount">${notes.length}</span></h3>
             <ul class="vwChangeList">${notes.map(noteRow).join("")}</ul>
           </section>` : ""}
-        ${pending.length + reverts.length ? `
+        ${directCount ? `
           <section class="vwChangeGroup">
-            <h3>你改的</h3>
+            <h3><span class="vwGroupDot vwGroupDotEdit"></span>你改的 <span class="vwGroupCount">${directCount}</span></h3>
             <ul class="vwChangeList">${pending.map(editRow).join("")}${reverts.map(revertRow).join("")}</ul>
           </section>` : ""}
-        ${nothing ? `<p class="vwEmptyLarge">没有待处理的修改。在脚本里点一句话就能改字，点缩略图就能换镜头。</p>` : ""}
-        <section class="vwChangeGroup">
-          <input type="text" class="vwNoteInput vwNoteGlobal" data-note-beat="" placeholder="对整条视频有想法？告诉 AI，回车加入" aria-label="告诉 AI 对整条视频的想法" />
+        ${nothing ? `<div class="vwEmptyLarge"><p>还没有待处理的修改</p><small>在脚本里点「改字」或双击文字即可改口播，点镜头缩略图就能换画面。</small></div>` : ""}
+        <section class="vwChangeGroup vwGlobalNoteCard">
+          <h3>对整条视频提意见</h3>
+          <div class="vwNoteCompose">
+            <input type="text" class="vwNoteInput vwNoteGlobal" data-note-beat="" placeholder="对整条视频有修改想法？回车或点「添加修改」" aria-label="写下对整条视频的修改想法" />
+            <button type="button" class="vwNoteSend" data-action="submit-note" disabled>添加修改</button>
+          </div>
         </section>
         ${canSetSpeed ? `
           <details class="vwChangeGroup">
-            <summary>配音语速</summary>
+            <summary>配音语速（当前 ${Number(currentSpeed).toFixed(2)} 倍）</summary>
             <p class="vwHint">改语速会重配所有句子，MiniMax 按字数计费。</p>
             <div class="vwSpeed">
               <button type="button" class="vwBtn vwBtnSmall" data-action="speed" data-delta="-0.05">慢一点</button>
@@ -864,6 +1176,26 @@
               <button type="button" class="vwBtn vwBtnSmall" data-action="speed" data-delta="0.05">快一点</button>
             </div>
           </details>` : ""}
+        ${(() => {
+          const music = view.data.edl?.music;
+          const hasMusic = Boolean((view.plan?.music || music) && music !== "none");
+          if (!hasMusic) return "";
+          const baseGain = typeof music === "object" && typeof music.gain_db === "number" ? music.gain_db : 0;
+          const musicEdit = edits.find((edit) => edit.op === "set_music");
+          const curGain = musicEdit?.value?.gain_db ?? baseGain;
+          const gainText = `${curGain > 0 ? `+${curGain}` : curGain} dB`;
+          return `
+          <details class="vwChangeGroup">
+            <summary>配乐音量（当前 ${esc(gainText)}）</summary>
+            <p class="vwHint">${view.cleanMedia?.music ? "播放即可试听。成片生成时统一混音。" : "此版本没有可独立试听的配乐轨，音量将在新版本生效。"}</p>
+            <div class="vwSpeed">
+              <button type="button" class="vwBtn vwBtnSmall" data-action="music-gain" data-delta="-2">小声点 (-2)</button>
+              <span class="vwSpeedValue">${esc(gainText)}</span>
+              <button type="button" class="vwBtn vwBtnSmall" data-action="music-gain" data-delta="2">大声点 (+2)</button>
+              ${musicEdit ? `<button type="button" class="vwLink" data-action="undo-edit" data-id="${esc(musicEdit.id)}">还原</button>` : ""}
+            </div>
+          </details>`;
+        })()}
         ${rendered.length ? `
           <details class="vwChangeGroup">
             <summary>已生效（${rendered.length}）</summary>
@@ -883,10 +1215,11 @@
     const covers = data.covers || [];
     const coverGrid = covers.length
       ? `<div class="vwCovers">${covers.map((cover) => `
-          <button type="button" class="vwCover" data-action="open-cover" data-name="${esc(cover.name)}" title="${esc(cover.name)}">
-            <img src="${esc(assetUrl(cover.abs, cover.mtime))}" alt="${esc(cover.name)}" loading="lazy" />
+          <button type="button" class="vwCover" data-action="open-cover" data-name="${esc(cover.name)}" title="点击查看封面：${esc(cover.name)}">
+            <span class="vwCoverImg"><img src="${esc(assetUrl(cover.abs, cover.mtime))}" alt="${esc(cover.name)}" loading="lazy" /></span>
+            <span class="vwCoverName">${esc(cover.name)}</span>
           </button>`).join("")}</div>`
-      : `<button type="button" class="vwBtn vwBtnSmall" data-action="ask" data-text="帮这条视频做一张封面">让 AI 做封面</button>`;
+      : `<div class="vwPublishEmpty"><span>还没有生成封面</span><button type="button" class="vwBtn vwBtnSmall" data-action="ask" data-text="帮这条视频做一张封面">${ICONS.sparkles}<span>让 AI 做封面</span></button></div>`;
     const docs = [
       data.files?.publish ? ["编辑文案", data.files.publish] : null,
       data.files?.script ? ["口播稿", data.files.script] : null,
@@ -898,10 +1231,10 @@
         <section>
           ${data.files?.publish
             ? `<div class="vwPublishDoc">${view.publishHtml ?? '<p class="vwMuted">加载中…</p>'}</div>`
-            : `<h3>标题和描述</h3><button type="button" class="vwBtn vwBtnSmall" data-action="ask" data-text="帮这条视频写发布文案，包括抖音、视频号、小红书的标题和描述">让 AI 写文案</button>`}
+            : `<h3>标题和描述</h3><div class="vwPublishEmpty"><span>还没有发布文案</span><button type="button" class="vwBtn vwBtnSmall" data-action="ask" data-text="帮这条视频写发布文案，包括抖音、视频号、小红书的标题和描述">${ICONS.sparkles}<span>让 AI 写文案</span></button></div>`}
         </section>
         ${docs.length ? `<section class="vwDocLinks">${docs.map(([label, path]) => `
-          <button type="button" class="vwLink" data-action="open-doc" data-path="${esc(path)}">${esc(label)}</button>`).join("")}</section>` : ""}
+          <button type="button" class="vwDocChip" data-action="open-doc" data-path="${esc(path)}">${ICONS.doc}<span>${esc(label)}</span></button>`).join("")}</section>` : ""}
       </div>`;
   }
 
@@ -935,7 +1268,16 @@
         if (node.tagName === "H1") continue;
         current = document.createElement("section");
         current.className = "vwPlatform";
-        current.append(node);
+        const head = document.createElement("div");
+        head.className = "vwPlatformHead";
+        head.append(node);
+        const copyAll = document.createElement("button");
+        copyAll.type = "button";
+        copyAll.className = "vwCopyAll";
+        copyAll.dataset.action = "copy-platform";
+        copyAll.textContent = "复制整块";
+        head.append(copyAll);
+        current.append(head);
         sections.push(current);
         continue;
       }
@@ -1001,7 +1343,7 @@
     const tiles = plan.shots.map((shot, index) => {
       const start = shot.start / fps;
       const length = shot.frames / fps;
-      const thumb = view.thumbs.get(`${view.versionName}#${index}`);
+      const thumb = view.thumbs.get(`${versionMediaKey(currentVersion())}#${index}`);
       return `<span class="vwStripShot vwStripShot-${esc(shot.kind)} ${replacedIndex.has(index) ? "vwStripChanged" : ""} ${Model.isMissingSource(shot.path, missing) ? "vwStripLost" : ""}"
         style="left:${pct(start)};width:${pct(length)}" data-strip-shot="${index}">${thumb ? `<img src="${esc(assetUrl(thumb))}" alt="" loading="lazy" />` : ""}</span>`;
     }).join("");
@@ -1009,14 +1351,19 @@
       .map((row) => `<span class="vwStripDeleted" style="left:${pct(row.start)};width:${pct(row.end - row.start)}"></span>`).join("");
     // 句子比镜头大一级：句间留更宽的缝，选中的句子框出来，和右边脚本对得上
     const beats = view.rows.filter((row) => row.start !== null && row.end !== null)
-      .map((row, index) => `<span class="vwStripBeat ${index === 0 ? "vwStripBeatFirst" : ""} ${row.id === view.activeBeat ? "vwStripBeatActive" : ""}"
-        data-strip-beat="${esc(row.id)}" style="left:${pct(row.start)};width:${pct(row.end - row.start)}"></span>`).join("");
+      .map((row, index) => {
+        const noted = row.notes.some((n) => !n.sentAt) || row.shots.some((s) => s.notes.some((n) => !n.sentAt));
+        return `<span class="vwStripBeat ${index === 0 ? "vwStripBeatFirst" : ""} ${row.id === view.activeBeat ? "vwStripBeatActive" : ""} ${noted ? "vwStripBeatNoted" : ""}"
+          data-strip-beat="${esc(row.id)}" style="left:${pct(row.start)};width:${pct(row.end - row.start)}"></span>`;
+      }).join("");
     box.innerHTML = `
-      <div class="vwStripTrack" role="slider" tabindex="0" aria-label="播放位置" aria-valuemin="0" aria-valuemax="${Math.round(plan.duration)}" aria-valuenow="0">
-        ${tiles}${deleted}${beats}
-        <span class="vwSkimLine" hidden></span>
+      <div class="vwStripWrap">
+        <div class="vwStripTrack" role="slider" tabindex="0" aria-label="播放位置" aria-valuemin="0" aria-valuemax="${Math.round(plan.duration)}" aria-valuenow="0">
+          ${tiles}${deleted}${beats}
+          <span class="vwSkimLine" hidden></span>
+        </div>
+        <span class="vwPlayhead"><span class="vwPlayheadCap"></span></span>
         <span class="vwSkimTime" hidden></span>
-        <span class="vwPlayhead"></span>
       </div>`;
     updatePlayhead();
   }
@@ -1040,14 +1387,17 @@
     box.addEventListener("pointermove", (event) => {
       const track = event.target.closest?.(".vwStripTrack");
       if (!track || !view?.plan) return;
+      const wrap = track.closest(".vwStripWrap") || box;
       const { fraction, time } = stripTime(event, track);
       const line = track.querySelector(".vwSkimLine");
-      const label = track.querySelector(".vwSkimTime");
+      const label = wrap.querySelector(".vwSkimTime");
       line.hidden = false;
       label.hidden = false;
       line.style.left = `${fraction * 100}%`;
-      label.textContent = Model.stripLabel(view.rows, time);
-      // 提示带了句子开头，变长了：按像素夹在帧条里，不能半截跑出去
+      const row = Model.rowAtTime(view.rows, time);
+      const baseLabel = Model.stripLabel(view.rows, time, 18);
+      label.textContent = row ? `#${String(row.index + 1).padStart(2, "0")} · ${baseLabel}` : baseLabel;
+      // 提示浮在胶片条上方，按像素夹在宽度内，不半截跑出去
       const trackWidth = track.clientWidth;
       const half = label.offsetWidth / 2 + 4;
       label.style.left = `${Math.min(trackWidth - half, Math.max(half, fraction * trackWidth))}px`;
@@ -1062,10 +1412,9 @@
     });
     box.addEventListener("pointerleave", () => {
       const track = box.querySelector(".vwStripTrack");
-      if (track) {
-        track.querySelector(".vwSkimLine").hidden = true;
-        track.querySelector(".vwSkimTime").hidden = true;
-      }
+      const wrap = box.querySelector(".vwStripWrap");
+      if (track) track.querySelector(".vwSkimLine").hidden = true;
+      if (wrap) wrap.querySelector(".vwSkimTime").hidden = true;
       if (view?.skim && !view.dragging) {
         const restore = view.skim.restore;
         view.skim = null;
@@ -1102,14 +1451,242 @@
   }
 
   /* ── 播放器 ─────────────────────────────────────── */
+  function applyPlaybackRate() {
+    if (!view) return;
+    const rate = Number(view.playbackRate) || 1;
+    const video = videoEl();
+    if (video) video.playbackRate = rate;
+    const previewVideo = view.el.querySelector(".vwPreviewVideo");
+    if (previewVideo) previewVideo.playbackRate = rate;
+    const btn = view.el.querySelector(".vwRateBtn");
+    if (btn) {
+      btn.textContent = Model.formatPlaybackRate(rate);
+      btn.classList.toggle("vwRateBtnActive", rate !== 1);
+    }
+  }
+
+  function stepBeat(delta) {
+    const timed = view.rows.filter((row) => row.start !== null);
+    if (timed.length === 0) return;
+    const now = videoEl()?.currentTime || 0;
+    const currentIndex = timed.findIndex((row) => now >= row.start - 0.001 && now < row.end);
+    const next = timed[Math.min(timed.length - 1, Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + delta))];
+    if (!next) return;
+    seek(next.start);
+    markActiveRow(next.id, true);
+    const rowEl = view.el.querySelector(`.vwRow[data-beat="${CSS.escape(next.id)}"]`);
+    if (rowEl) scrollRowIntoView(rowEl, "smooth");
+  }
+
+  function wantCleanMode() {
+    if (!view || view.playingSample || view.compareOriginal) return false;
+    return hasLiveVisualChanges();
+  }
+
+  function hasLiveVisualChanges() {
+    return Boolean(view.editingCard || view.editing)
+      || view.reverted?.some((edit) => ["set_text", "delete_text", "set_hook", "set_say"].includes(edit.op))
+      || Model.hasPendingLiveVisualEdits({ rows: view.liveRows, hook: view.liveHook, isPending: (edit) => !isEditRendered(edit) });
+  }
+
+  let jobRequestSequence = 0;
+
+  function resetPreviewMedia() {
+    stopMusicPreview();
+    const audio = view.musicAudio;
+    if (audio) {
+      audio.buffers = null;
+      audio.loadingFor = null;
+      audio.failed = false;
+    }
+    closeVoiceSample();
+    view.cleanMedia = null;
+    view.cleanRequest = null;
+    view.cleanError = false;
+    view.cleanUnavailable = false;
+    view.compareOriginal = false;
+    view.usingCleanVideo = false;
+  }
+
+  function ensureCleanPreview() {
+    const current = view;
+    const version = current && currentVersion();
+    if (!version?.hasCleanBase || current.cleanMedia || current.cleanRequest || current.cleanError || current.cleanUnavailable || !current.env?.ok) return;
+    const token = String(++jobRequestSequence);
+    const request = { token, key: versionMediaKey(version) };
+    current.cleanRequest = request;
+    deps.invoke("video_start_job", {
+      path: current.projectPath,
+      kind: "clean_preview",
+      args: { video: version.name, requestId: token },
+    }).catch(() => {
+      if (view === current && current.cleanRequest === request) finishCleanRequest(null);
+    });
+  }
+
+  function finishCleanRequest(event) {
+    view.cleanRequest = null;
+    view.cleanMedia = event?.cleanVideo ? event : null;
+    view.cleanUnavailable = ["no_matching_base", "version_missing"].includes(event?.reason);
+    view.cleanError = !view.cleanMedia && !view.cleanUnavailable;
+    syncVideoSource();
+    updatePlayback();
+    if (view.tab === "changes") renderPanel();
+  }
+
+  function pendingMusicGain() {
+    const conflicts = conflictIds();
+    const edit = view.doc.edits.find((item) => item.op === "set_music" && !conflicts.has(item.id));
+    if (edit && !isEditRendered(edit) && Number.isFinite(edit.value?.gain_db)) return edit.value.gain_db;
+    if (view.reverted?.some((item) => item.op === "set_music")) return Number(view.data.edl?.music?.gain_db ?? 0);
+    return null;
+  }
+
+  function unlockMusicPreview() {
+    if (!view.musicAudio && typeof AudioContext === "function") {
+      const context = new AudioContext();
+      const limiter = context.createDynamicsCompressor();
+      limiter.threshold.value = -3;
+      limiter.ratio.value = 12;
+      limiter.connect(context.destination);
+      view.musicAudio = { context, limiter };
+    }
+    void view.musicAudio?.context.resume().catch(() => {});
+  }
+
+  function stopMusicPreview() {
+    const audio = view?.musicAudio;
+    if (!audio?.playing) return;
+    for (const source of audio.playing.sources) {
+      source.stop();
+      source.disconnect();
+    }
+    audio.playing.gain.disconnect();
+    audio.playing.video.volume = audio.playing.volume;
+    audio.playing = null;
+  }
+
+  function syncMusicPreview(video) {
+    const current = view;
+    const media = current.cleanMedia;
+    const audio = current.musicAudio;
+    const requestedGain = pendingMusicGain();
+    if (!audio || !media?.music || !media.dialogue || requestedGain === null || current.compareOriginal || current.playingSample) {
+      stopMusicPreview();
+      return;
+    }
+    if (!audio.buffers && audio.loadingFor !== media && !audio.failed) {
+      audio.loadingFor = media;
+      Promise.all([media.dialogue, media.music].map(async (path) => {
+        const response = await fetch(assetUrl(path));
+        if (!response.ok) throw new Error(String(response.status));
+        return audio.context.decodeAudioData(await response.arrayBuffer());
+      })).then((buffers) => {
+        if (view !== current || current.cleanMedia !== media) return;
+        audio.buffers = buffers;
+        audio.loadingFor = null;
+        updatePlayback();
+      }).catch(() => {
+        if (view !== current || current.cleanMedia !== media) return;
+        audio.loadingFor = null;
+        audio.failed = true;
+        updatePlayback();
+      });
+    }
+    if (!audio.buffers || audio.context.state !== "running" || video.paused || video.ended || video.seeking || video.muted || video.readyState < 2) {
+      stopMusicPreview();
+      return;
+    }
+    const time = video.currentTime;
+    const rate = video.playbackRate;
+    const now = audio.context.currentTime;
+    const gainValue = 10 ** ((requestedGain - Number(media.gainDb || 0)) / 20);
+    const active = audio.playing;
+    if (active && active.rate === rate && Math.abs(time - (active.offset + (now - active.start) * rate)) < 0.15) {
+      active.gain.gain.setTargetAtTime(gainValue, now, 0.035);
+      return;
+    }
+    stopMusicPreview();
+    const gain = audio.context.createGain();
+    gain.gain.value = gainValue;
+    gain.connect(audio.limiter);
+    const sources = audio.buffers.map((buffer, index) => {
+      const source = audio.context.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = rate;
+      source.connect(index === 1 ? gain : audio.limiter);
+      source.start(now, Math.min(buffer.duration, time));
+      return source;
+    });
+    audio.playing = { sources, gain, video, volume: video.volume, rate, offset: time, start: now };
+    video.volume = 0;
+  }
+
+  function closeVoiceSample() {
+    view.voiceRequest = null;
+    const panel = view.el.querySelector(".vwVoiceSample");
+    const player = panel.querySelector("audio");
+    player.pause();
+    if (player.hasAttribute("src")) {
+      player.removeAttribute("src");
+      player.load();
+    }
+    player.ontimeupdate = null;
+    panel.hidden = true;
+  }
+
+  function showVoiceSample(sample) {
+    const panel = view.el.querySelector(".vwVoiceSample");
+    const audio = panel.querySelector("audio");
+    const caption = panel.querySelector("output");
+    videoEl()?.pause();
+    caption.textContent = sample.say;
+    audio.ontimeupdate = () => {
+      caption.textContent = Model.cueAt(sample.cues, audio.currentTime) || sample.say;
+    };
+    audio.src = assetUrl(sample.voiceSample);
+    panel.hidden = false;
+    void audio.play().catch(() => {});
+  }
+
+  /* 有无字底片且有未渲染的文字/字卡/钩子改动时，无缝切到无字底片 + 实时叠层，保持播放时刻与状态 */
+  function syncVideoSource() {
+    const video = videoEl();
+    const version = currentVersion();
+    if (!video || !version || view.playingSample) return;
+    const shouldUseClean = Boolean(view.cleanMedia && wantCleanMode());
+    const src = shouldUseClean ? assetUrl(view.cleanMedia.cleanVideo) : assetUrl(version.abs, version.mediaRevision ?? version.mtime);
+    if (video.getAttribute("src") === src) return;
+    const wasPlaying = !video.paused && !video.ended;
+    const time = video.currentTime || 0;
+    const current = view;
+    const source = Symbol();
+    current.videoSource = source;
+    view.usingCleanVideo = shouldUseClean;
+    video.src = src;
+    video.hidden = false;
+    view.el.querySelector(".vwPlayerEmpty").hidden = true;
+    applyPlaybackRate();
+    const restore = () => {
+      if (view !== current || current.videoSource !== source || view.playingSample) return;
+      if (time > 0) video.currentTime = Math.min(time, Number.isFinite(video.duration) ? video.duration : time);
+      if (wasPlaying) video.play().catch(() => {});
+      updatePlayback();
+    };
+    if (video.readyState >= 1) restore();
+    else video.addEventListener("loadedmetadata", restore, { once: true });
+  }
+
   function loadCurrentVersion(keepTime = false) {
     const video = videoEl();
     const empty = view.el.querySelector(".vwPlayerEmpty");
     const version = currentVersion();
+    view.videoSource = null;
     view.playingSample = null;
     renderSampleTag();
     view.durationMismatch = false;
     if (!version) {
+      view.usingCleanVideo = false;
       video.hidden = true;
       video.removeAttribute("src");
       empty.hidden = false;
@@ -1119,7 +1696,10 @@
     video.hidden = false;
     empty.hidden = true;
     const time = keepTime ? video.currentTime : 0;
-    video.src = assetUrl(version.abs, version.mtime);
+    const shouldUseClean = Boolean(view.cleanMedia && wantCleanMode());
+    view.usingCleanVideo = shouldUseClean;
+    video.src = shouldUseClean ? assetUrl(view.cleanMedia.cleanVideo) : assetUrl(version.abs, version.mediaRevision ?? version.mtime);
+    applyPlaybackRate();
     if (time) video.currentTime = time;
   }
 
@@ -1127,14 +1707,20 @@
     // 试看小样的画面和成片时间对不上，画面上的可点区域要收起来
     syncHotspots(videoEl()?.currentTime || 0);
     const tag = view.el.querySelector(".vwSampleTag");
+    const frameBadge = view.el.querySelector(".vwSampleFrameBadge");
     if (!tag) return;
     if (!view.playingSample) {
       tag.hidden = true;
       tag.innerHTML = "";
+      if (frameBadge) frameBadge.hidden = true;
       return;
     }
     tag.hidden = false;
-    tag.innerHTML = `试看第 ${view.playingSample.index + 1} 句 <button type="button" class="vwLink" data-action="back-to-version">回到成片</button>`;
+    tag.innerHTML = `<span>试看第 ${view.playingSample.index + 1} 句</span><button type="button" class="vwSampleBack" data-action="back-to-version">回到成片</button>`;
+    if (frameBadge) {
+      frameBadge.textContent = `试看第 ${view.playingSample.index + 1} 句`;
+      frameBadge.hidden = false;
+    }
   }
 
   function playSample(beat, abs) {
@@ -1147,6 +1733,7 @@
     video.hidden = false;
     view.el.querySelector(".vwPlayerEmpty").hidden = true;
     video.src = assetUrl(abs, Date.now() / 1000);
+    applyPlaybackRate();
     video.play().catch(() => {});
   }
 
@@ -1187,7 +1774,10 @@
     const video = videoEl();
     if (!video?.getAttribute("src")) return;
     view.stopAt = null;
-    if (video.paused) video.play().catch(() => {});
+    if (video.paused) {
+      if (pendingMusicGain() !== null) unlockMusicPreview();
+      video.play().catch(() => {});
+    }
     else video.pause();
   }
 
@@ -1223,6 +1813,7 @@
     const video = videoEl();
     if (!video) return;
     updateClock();
+    syncMusicPreview(video);
     if (view.playingSample) return;
     const now = video.currentTime || 0;
     if (view.stopAt !== null && now >= view.stopAt - 0.03) {
@@ -1230,8 +1821,8 @@
       video.pause();
     }
     // 预览：要删的句子直接跳过，换过的镜头盖在成片上
-    if (!video.paused) {
-      const skipTo = Model.skipDeleted(view.rows, now);
+    if (!video.paused && !view.compareOriginal) {
+      const skipTo = Model.skipDeleted(view.liveRows, now);
       if (skipTo !== null) {
         video.currentTime = skipTo + 0.01;
         return;
@@ -1240,8 +1831,20 @@
     syncPreview(now);
     syncHotspots(now);
     const row = Model.rowAtTime(view.rows, now);
+    const shot = Model.shotAtTime(row, now);
     if (!view.skim && row) markActiveRow(row.id);
+    if (!view.skim) markActiveShot(row && shot ? `${row.id}#${shot.idx}` : null);
     updatePlayhead();
+  }
+
+  function markActiveShot(shotKey) {
+    if (view.activeShotKey === shotKey) return;
+    const prev = view.activeShotKey;
+    view.activeShotKey = shotKey;
+    if (view.tab !== "script" || view.picker) return;
+    const body = view.el.querySelector(".vwPanelBody");
+    if (prev) body?.querySelector(`.vwShot[data-shot-key="${CSS.escape(prev)}"]`)?.classList.remove("vwShotCurrent");
+    if (shotKey) body?.querySelector(`.vwShot[data-shot-key="${CSS.escape(shotKey)}"]`)?.classList.add("vwShotCurrent");
   }
 
   /* 暂停时画面上的字幕、字卡可以直接点，右上角给「换这个镜头」。播放时点画面仍是暂停，不抢这个习惯 */
@@ -1254,6 +1857,7 @@
     const spots = off ? [] : Model.frameHotspots({
       plan: view.plan,
       rows: view.rows,
+      hook: view.hook,
       time: now,
       landscape: view.el.dataset.orient === "landscape",
     });
@@ -1268,19 +1872,34 @@
     const place = `style="top:${(spot.top * 100).toFixed(2)}%;height:${((spot.bottom - spot.top) * 100).toFixed(2)}%"`;
     if (spot.kind === "caption") {
       return `<button type="button" class="vwHot vwHotCaption" data-action="frame-caption" data-beat="${esc(spot.beat)}" ${place}
-        aria-label="改这句字幕：${esc(spot.text)}"><span class="vwHotTip">改这句字幕</span></button>`;
+        aria-label="改这句字幕：${esc(spot.text)}"><span class="vwHotTip">点击改这句字幕</span></button>`;
     }
     if (spot.kind === "text") {
+      if (spot.isHook) {
+        return `<button type="button" class="vwHot vwHotText" data-action="edit-hook" ${place}
+          aria-label="直接修改开头钩子：${esc(spot.text)}"><span class="vwHotTip">开头钩子 · 点击直接改</span></button>`;
+      }
+      if (Number.isInteger(spot.idx)) {
+        return `<button type="button" class="vwHot vwHotText" data-action="edit-text-card" data-beat="${esc(spot.beat)}" data-idx="${spot.idx}" ${place}
+          aria-label="直接修改字卡：${esc(spot.text)}"><span class="vwHotTip">字卡 · 点击直接改</span></button>`;
+      }
       return `<button type="button" class="vwHot vwHotText" data-action="frame-text" data-beat="${esc(spot.beat)}" data-text="${esc(spot.text)}" ${place}
-        aria-label="告诉 AI 这个字卡怎么改：${esc(spot.text)}"><span class="vwHotTip">字卡：告诉 AI 怎么改</span></button>`;
+        aria-label="告诉 AI 这个字卡怎么改：${esc(spot.text)}"><span class="vwHotTip">字卡 · 点击提意见</span></button>`;
     }
-    return `<button type="button" class="vwHotChip" data-action="frame-shot" data-beat="${esc(spot.beat)}" data-shot="${spot.shot}">换这个镜头</button>`;
+    return `<button type="button" class="vwHotChip" data-action="frame-shot" data-beat="${esc(spot.beat)}" data-shot="${spot.shot}">${ICONS.swap}<span>换这个镜头</span></button>`;
   }
 
   /* 从画面跳到右边脚本里对应的那一句 */
   function showRow(beat) {
     if (view.picker) closePicker();
-    if (view.tab !== "script") {
+    const row = view.rows.find((item) => item.id === beat);
+    if (!row) return null;
+    const filteredOut = !Model.rowMatchesQuery(row, view.scriptQuery) || (view.onlyModified && !Model.rowHasChanges(row));
+    if (filteredOut) {
+      view.scriptQuery = "";
+      view.onlyModified = false;
+    }
+    if (view.tab !== "script" || filteredOut) {
       view.tab = "script";
       view.editing = null;
       renderTabs();
@@ -1325,11 +1944,119 @@
     if (tag) tag.hidden = true;
   }
 
+  function hideLiveLayer() {
+    const layer = view?.el.querySelector(".vwLiveLayer");
+    if (layer) {
+      layer.hidden = true;
+      layer.dataset.key = "";
+    }
+    const toggle = view?.el.querySelector(".vwLiveToggle");
+    if (toggle) toggle.hidden = true;
+  }
+
+  /* 实时画面合成层：把字卡、开头钩子、改字字幕（包括正在打字的草稿）0 延迟叠到画面上 */
+  function syncLiveLayer(now) {
+    const box = view?.el;
+    if (!box) return;
+    const layer = box.querySelector(".vwLiveLayer");
+    const toggle = box.querySelector(".vwLiveToggle");
+    if (!layer || !toggle) return;
+    if (view.playingSample || !view.plan) {
+      hideLiveLayer();
+      return;
+    }
+    const isPending = (edit) => !isEditRendered(edit);
+    const visuals = hasLiveVisualChanges();
+    const music = pendingMusicGain() !== null;
+    if (!visuals && !music) {
+      hideLiveLayer();
+      return;
+    }
+    toggle.hidden = false;
+    toggle.classList.toggle("vwLiveToggleOrig", view.compareOriginal);
+    const canCompare = Boolean((visuals && view.cleanMedia) || (music && view.musicAudio?.buffers));
+    const label = view.compareOriginal ? "原成片 · 看修改"
+      : canCompare ? (visuals && view.usingCleanVideo ? "实时预览 · 对比原片" : "配乐试听 · 对比原片")
+      : view.cleanRequest ? "正在准备实时预览"
+      : view.cleanError ? "预览准备失败 · 重试"
+      : music && view.musicAudio?.loadingFor ? "正在准备试听"
+      : music && view.musicAudio?.failed ? "配乐试听加载失败"
+      : "播放原片 · 修改将在新版本显示";
+    toggle.disabled = !canCompare && !view.cleanError;
+    if (toggle.textContent !== label) toggle.textContent = label;
+
+    if (view.compareOriginal || !view.usingCleanVideo) {
+      layer.hidden = true;
+      layer.dataset.key = "";
+      return;
+    }
+
+    const landscape = box.dataset.orient === "landscape";
+    const overlay = Model.liveOverlaysAt({ rows: view.liveRows, hook: view.liveHook, plan: view.plan, time: now, landscape, isPending });
+    let cards = overlay.cards;
+
+    // 正在编辑字卡/钩子时，按键立刻实时反映在左侧画面
+    const ec = view.editingCard;
+    if (ec) {
+      const y = Model.resolveTextY(ec.draftPos, landscape);
+      const draftCard = {
+        isHook: ec.isHook,
+        beat: ec.beat || null,
+        idx: ec.idx ?? null,
+        text: ec.draftText || "",
+        sub: ec.draftSub || "",
+        badge: ec.draftBadge || "",
+        style: ec.isHook ? "title" : (ec.style || "tag"),
+        y: typeof y === "number" ? y : 0.25,
+        changed: true,
+        editing: true,
+      };
+      cards = cards.filter((c) => !(c.isHook === ec.isHook && (ec.isHook || (c.beat === ec.beat && c.idx === ec.idx))));
+      if (draftCard.text.trim()) cards = [...cards, draftCard];
+    }
+
+    // 正在编辑口播文字时，实时预览草稿字幕
+    let caption = overlay.caption;
+    if (view.editing) {
+      const editRow = view.rows.find((r) => r.id === view.editing.beat);
+      const draftSay = box.querySelector('[data-editor="say"]')?.value ?? view.editing.draft;
+      if (editRow && typeof draftSay === "string" && now >= (editRow.start ?? -1) && now < (editRow.end ?? -1)) {
+        caption = Model.liveCaptionFor({ ...editRow, say: draftSay, setSay: { id: "_draft" } }, now, view.plan.cues, () => true);
+      }
+    }
+    const key = JSON.stringify({ cards, caption, captionPos: overlay.captionPos });
+    if (key === layer.dataset.key) {
+      layer.hidden = !(cards.length || caption);
+      return;
+    }
+    layer.dataset.key = key;
+    if (!cards.length && !caption) {
+      layer.hidden = true;
+      layer.innerHTML = "";
+      return;
+    }
+    const cardsHtml = cards.map((c) => {
+      const styleClass = `vwLiveCard-${c.isHook ? "hook" : (c.style || "tag")}`;
+      return `<div class="vwLiveCard ${styleClass} ${c.editing ? "vwLiveCardEditing" : ""}" style="top:${(c.y * 100).toFixed(2)}%">
+        ${c.badge ? `<span class="vwLiveCardBadge">${esc(c.badge)}</span>` : ""}
+        <div class="vwLiveCardText">${esc(c.text)}</div>
+        ${c.sub ? `<div class="vwLiveCardSub">${esc(c.sub)}</div>` : ""}
+      </div>`;
+    }).join("");
+    const capPosClass = `vwLiveCaption-${overlay.captionPos || "bottom"}`;
+    const capHtml = caption
+      ? `<div class="vwLiveCaption ${capPosClass}">${esc(caption)}</div>`
+      : "";
+    layer.hidden = false;
+    layer.innerHTML = `${cardsHtml}${capHtml}`;
+  }
+
   /* 没生成的换镜头不用等渲染：把素材盖在成片上，声音还是成片的。字幕被盖住了，用文字层补上 */
   function syncPreview(now) {
-    const hit = Model.overlayAt(view.rows, now, (edit) => !isEditRendered(edit), originalOf);
-    if (!hit || view.overlayBroken.has(hit.src)) {
+    const hit = Model.overlayAt(view.liveRows, now, (edit) => !isEditRendered(edit), originalOf);
+    if (!hit || view.overlayBroken.has(hit.src) || view.compareOriginal) {
       hidePreview();
+      syncLiveLayer(now);
       return;
     }
     const video = videoEl();
@@ -1352,6 +2079,7 @@
         previewVideo.dataset.src = hit.src;
         previewVideo.src = assetUrl(hit.src);
       }
+      previewVideo.playbackRate = Number(view.playbackRate) || 1;
       if (previewVideo.readyState >= 1 && Math.abs(previewVideo.currentTime - hit.sourceTime) > PREVIEW_DRIFT_SEC) {
         previewVideo.currentTime = hit.sourceTime;
       }
@@ -1360,10 +2088,15 @@
       previewVideo.hidden = previewVideo.readyState < 2;
     }
     const caption = box.querySelector(".vwPreviewCaption");
-    const text = Model.cueAt(view.plan?.cues, now);
-    caption.textContent = text;
-    caption.hidden = !text;
+    if (view.usingCleanVideo) {
+      caption.hidden = true;
+    } else {
+      const text = Model.cueAt(view.plan?.cues, now);
+      caption.textContent = text;
+      caption.hidden = !text;
+    }
     box.querySelector(".vwPreviewTag").hidden = false;
+    syncLiveLayer(now);
   }
 
   function markActiveRow(beat, force = false) {
@@ -1372,6 +2105,7 @@
     if (!force && view.el.querySelector(".vwRowActive")?.contains(document.activeElement) && document.activeElement.matches("input, textarea")) return;
     const previous = view.activeBeat;
     view.activeBeat = beat;
+    updateScriptProgress();
     for (const span of view.el.querySelectorAll(".vwStripBeat")) {
       span.classList.toggle("vwStripBeatActive", span.dataset.stripBeat === beat);
     }
@@ -1407,27 +2141,24 @@
   function ensureShotThumbs() {
     const version = currentVersion();
     if (!version || !view.env?.ok || !view.plan?.shots?.length) return;
-    if (view.thumbsRequested.has(version.name)) return;
-    view.thumbsRequested.add(version.name);
+    const current = view;
+    const key = versionMediaKey(version);
+    if (current.thumbsRequested.has(key)) return;
+    const requestId = String(++jobRequestSequence);
+    current.thumbsRequested.set(key, requestId);
     deps.invoke("video_start_job", {
-      path: view.projectPath,
+      path: current.projectPath,
       kind: "thumbs_shots",
-      args: { video: version.name },
-    }).catch((err) => console.warn("thumbs_shots failed", err));
+      args: { video: version.name, requestId },
+    }).catch((err) => {
+      current.thumbsRequested.delete(key);
+      console.warn("thumbs_shots failed", err);
+    });
   }
 
-  function versionOfThumb(thumbPath) {
-    const normal = String(thumbPath).replace(/\\/g, "/");
-    for (const version of view.data?.versions || []) {
-      const stem = version.name.replace(/\.[^.]+$/, "");
-      if (normal.includes(`/shots/${version.name}/`) || normal.includes(`/shots/${stem}/`)) return version.name;
-    }
-    return view.versionName;
-  }
-
-  function placeShotThumb(version, shotIndex, abs) {
-    view.thumbs.set(`${version}#${shotIndex}`, abs);
-    if (version !== view.versionName) return;
+  function placeShotThumb(key, shotIndex, abs) {
+    view.thumbs.set(`${key}#${shotIndex}`, abs);
+    if (key !== versionMediaKey(currentVersion())) return;
     const url = assetUrl(abs);
     for (const holder of view.el.querySelectorAll(`.vwScript [data-plan-shot="${shotIndex}"]`)) {
       if (holder.tagName === "IMG") holder.src = url;
@@ -1452,42 +2183,66 @@
   function handleJobEvent(payload) {
     if (!view || !payload || payload.project !== view.projectPath) return;
     const { kind, status, event } = payload;
-    if (kind === "thumbs_shots") {
-      if (status === "event" && event?.thumb && Number.isInteger(event.shot)) {
-        placeShotThumb(versionOfThumb(event.thumb), event.shot, event.thumb);
+    if (kind === "clean_preview") {
+      const request = view.cleanRequest;
+      if (!request || payload.requestId !== request.token || request.key !== versionMediaKey(currentVersion())) return;
+      if (status === "event" && event && Object.hasOwn(event, "cleanVideo")) finishCleanRequest(event);
+      else if (["done", "error", "cancelled"].includes(status)) finishCleanRequest(null);
+      return;
+    }
+    if (kind === "voice_sample") {
+      const request = view.voiceRequest;
+      if (!request || request.token !== payload.requestId) return;
+      if (status === "event" && event?.voiceSample) {
+        view.voiceRequest = null;
+        if (view.doc.revision === request.revision) showVoiceSample(event);
+        else deps.showToast("修改已更新，请重新试听");
+        renderPanel();
+      } else if (["done", "error", "cancelled"].includes(status)) {
+        view.voiceRequest = null;
+        if (status === "error") deps.showToast(`试听没生成出来：${payload.message || "请稍后再试"}`);
+        renderPanel();
       }
+      return;
+    }
+    if (kind === "thumbs_shots") {
+      const request = [...view.thumbsRequested].find(([, id]) => id === payload.requestId);
+      if (!request) return;
+      const [key] = request;
+      if (status === "event" && event?.thumb && Number.isInteger(event.shot)) placeShotThumb(key, event.shot, event.thumb);
+      if (status === "error" || status === "cancelled") view.thumbsRequested.delete(key);
       return;
     }
     if (kind === "thumbs_sources") {
+      const picker = view.picker;
+      const request = picker?.sourceRequest;
+      if (!request || payload.requestId !== request.token) return;
       if (status === "event" && event?.source) addPickerSource(event.source);
       if (status === "event" && event?.strip) stripCache.set(event.strip.path, event.strip);
       if (status === "event" && event?.thumbsDone) setPickerLoading(false);
-      if (status === "done" || status === "error" || status === "cancelled") setPickerLoading(false);
+      if (status === "done" || status === "error" || status === "cancelled") {
+        request.finished = true;
+        picker.sourceRequest = null;
+        setPickerLoading(false);
+      }
       return;
     }
     if (kind === "sample") {
-      if (status === "event" && event?.video) {
-        view.sampleBusy.delete(event.beat);
-        playSample(event.beat, event.video);
-        renderPanel();
-      }
-      if (status === "error" || status === "cancelled") {
-        const beat = view.sampleJobs.get(payload.jobId) || [...view.sampleBusy][0];
-        if (beat) view.sampleBusy.delete(beat);
-        view.sampleJobs.delete(payload.jobId);
-        if (status === "error") deps.showToast(`试看没生成出来：${payload.message || "请稍后再试"}`);
-        renderPanel();
-      }
-      if (status === "done") {
-        const beat = view.sampleJobs.get(payload.jobId);
-        view.sampleJobs.delete(payload.jobId);
-        if (beat && view.sampleBusy.delete(beat)) renderPanel();
-      }
+      const beat = view.sampleRequests.get(payload.requestId);
+      if (!beat) return;
+      const playable = status === "event" && event?.video;
+      if (!playable && !["done", "error", "cancelled"].includes(status)) return;
+      view.sampleRequests.delete(payload.requestId);
+      view.sampleBusy.delete(beat);
+      if (playable) playSample(beat, event.video);
+      if (status === "error") deps.showToast(`试看没生成出来：${payload.message || "请稍后再试"}`);
+      renderPanel();
       return;
     }
     if (kind === "render") {
       if (status === "start") {
         view.renderBusy = true;
+        view.renderJobId = payload.jobId;
         view.renderQa = false;
         view.renderError = null;
         renderHead();
@@ -1521,13 +2276,18 @@
   }
 
   /* ── 改动落盘 ───────────────────────────────────── */
-  async function writeDoc(next, base) {
+  async function writeDoc(projectPath, next, base) {
     const res = await deps.invoke("video_write_edits", {
-      path: view.projectPath,
+      path: projectPath,
       edits: { ...next, revision: base.revision },
       expectedRevision: base.revision,
     });
     return res.revision;
+  }
+
+  function trackRemovedEdits(current, before, after) {
+    const renderPending = isRendering() || deps.isAgentGenerating?.() === true;
+    return Model.trackRemovedEdits(before, after, [current.plan, current.data.plan], renderPending);
   }
 
   /* label 为空的写入（比如标记已发送）不进撤销栈 */
@@ -1535,12 +2295,11 @@
     const current = view;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const base = current.doc;
-      const next = change(base);
+      const next = trackRemovedEdits(current, base, change(base));
       try {
-        const revision = await writeDoc(next, base);
+        const revision = await writeDoc(current.projectPath, next, base);
         if (view !== current) return true;
-        if (label) current.history = Model.recordHistory(current.history, base, label);
-        trackRemoved(current, base, next);
+        if (label) current.history = Model.recordHistory(current.history, base, next, label);
         current.doc = { ...next, revision };
         afterDocChange();
         if (label) showUndo(label);
@@ -1561,6 +2320,7 @@
 
   function afterDocChange() {
     rebuildRows();
+    syncVideoSource();
     renderHead();
     renderTabs();
     renderPanel(true);
@@ -1571,19 +2331,19 @@
   }
 
   async function stepHistory(direction) {
-    const step = direction === "undo"
-      ? Model.undoHistory(view.history, view.doc)
-      : Model.redoHistory(view.history, view.doc);
-    if (!step) return;
     const current = view;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const base = current.doc;
+      const step = direction === "undo"
+        ? Model.undoHistory(current.history, base)
+        : Model.redoHistory(current.history, base);
+      if (!step) return;
+      const next = trackRemovedEdits(current, base, step.doc);
       try {
-        const revision = await writeDoc({ ...base, edits: step.doc.edits, notes: step.doc.notes }, base);
+        const revision = await writeDoc(current.projectPath, next, base);
         if (view !== current) return;
         current.history = step.history;
-        trackRemoved(current, base, step.doc);
-        current.doc = { ...base, edits: step.doc.edits, notes: step.doc.notes, revision };
+        current.doc = { ...next, revision };
         afterDocChange();
         hideUndo();
         deps.showToast(`${direction === "undo" ? "已撤销" : "已重做"}：${step.label}`);
@@ -1629,24 +2389,26 @@
   }
 
   async function startRender() {
+    const current = view;
     if (isRendering()) return;
+    if (conflictIds().size) {
+      deps.showToast("请先在「待处理」解决修改冲突，再生成新版本");
+      return;
+    }
     const offline = (view.data.missingSources || []).length;
     if (offline > 0) {
       const names = Model.offlineSummary(view.data.missingSources).names.slice(0, 2).join("、");
       const ok = await deps.confirm(`有 ${offline} 个素材读不到（${names}），生成很可能失败。还要继续吗？`, { confirmLabel: "继续生成", danger: false });
-      if (!ok || !view) return;
+      if (!ok || view !== current || isRendering()) return;
     }
     view.renderBusy = true;
     view.renderError = null;
     renderHead();
     renderStatus();
     try {
-      const { jobId } = await deps.invoke("video_start_job", { path: view.projectPath, kind: "render", args: {} });
-      if (view?.renderBusy) {
-        view.renderJobId = jobId;
-        renderStatus();
-      }
+      await deps.invoke("video_start_job", { path: current.projectPath, kind: "render", args: {} });
     } catch (err) {
+      if (view !== current) return;
       view.renderBusy = false;
       const busy = String(err).includes("JOB_BUSY");
       view.renderError = busy ? null : { cmd: "render", message: String(err) };
@@ -1693,8 +2455,12 @@
     const row = view.rows.find((item) => item.id === beat);
     if (!row || row.deleted) return;
     videoEl()?.pause();
+    view.editingCard = null;
     view.editing = { beat, showTts: Boolean(row.setTts || row.sayTts) };
+    view.compareOriginal = false;
+    syncVideoSource();
     renderPanel(true);
+    syncLiveLayer(videoEl()?.currentTime || 0);
   }
 
   async function commitEditing() {
@@ -1703,7 +2469,9 @@
     const row = view.rows.find((item) => item.id === editing.beat);
     if (!row) {
       view.editing = null;
+      syncVideoSource();
       renderPanel(true);
+      syncLiveLayer(videoEl()?.currentTime || 0);
       return;
     }
     const say = view.el.querySelector('[data-editor="say"]')?.value.trim() ?? "";
@@ -1712,14 +2480,18 @@
     view.editing = null;
     if (!say) {
       deps.showToast("口播不能为空；不要这句就点「删除这句」");
+      syncVideoSource();
       renderPanel(true);
+      syncLiveLayer(videoEl()?.currentTime || 0);
       return;
     }
     const rawBeat = view.data.edl.beats[row.index];
     const textChanged = say !== row.say;
     const ttsChanged = tts !== (row.sayTts || "");
     if (!textChanged && !ttsChanged) {
+      syncVideoSource();
       renderPanel(true);
+      syncLiveLayer(videoEl()?.currentTime || 0);
       return;
     }
     await mutateDoc((doc) => {
@@ -1730,6 +2502,131 @@
       else if (ttsChanged && row.setTts) next = Model.removeEdit(next, row.setTts.id);
       return next;
     }, `改第 ${row.index + 1} 句`);
+  }
+
+  /* ── 实时编辑开头钩子 / 画面字卡 ──────────────────── */
+  function openHookEditor() {
+    const hook = view.hook;
+    if (!hook || !hook.exists || hook.deleted) return;
+    videoEl()?.pause();
+    if (view.picker) closePicker();
+    if (view.tab !== "script") {
+      view.tab = "script";
+      renderTabs();
+    }
+    view.scriptQuery = "";
+    view.onlyModified = false;
+    view.editing = null;
+    view.compareOriginal = false;
+    view.editingCard = {
+      isHook: true,
+      draftText: hook.text,
+      draftSub: hook.sub || "",
+      draftPos: hook.pos ?? "upper",
+      originalPos: hook.pos ?? "upper",
+      editId: hook.edit?.id || null,
+    };
+    if (typeof hook.start === "number") seek(hook.start + 0.15);
+    syncVideoSource();
+    renderPanel(true);
+    syncLiveLayer(hook.start + 0.15);
+    const input = view.el.querySelector('[data-card-field="text"]');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  function openTextCardEditor(beat, idx) {
+    const row = view.rows.find((item) => item.id === beat);
+    const card = row?.cards?.find((item) => item.idx === idx);
+    if (!row || !card || card.deleted) return;
+    videoEl()?.pause();
+    showRow(beat);
+    view.editing = null;
+    view.compareOriginal = false;
+    view.editingCard = {
+      isHook: false,
+      beat,
+      idx,
+      style: card.style,
+      draftText: card.text,
+      draftSub: card.sub || "",
+      draftBadge: card.badge || "",
+      draftPos: card.pos ?? "upper",
+      originalPos: card.pos ?? "upper",
+      editId: card.setText?.id || null,
+    };
+    const previewAt = typeof card.start === "number" ? card.start + 0.12 : (row.start ?? 0);
+    if (typeof previewAt === "number") seek(previewAt);
+    syncVideoSource();
+    renderPanel(true);
+    syncLiveLayer(previewAt);
+    const input = view.el.querySelector('[data-card-field="text"]');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  function cancelCardEdit() {
+    if (!view.editingCard) return;
+    view.editingCard = null;
+    syncVideoSource();
+    renderPanel(true);
+    syncLiveLayer(videoEl()?.currentTime || 0);
+  }
+
+  async function saveCardEdit() {
+    const ec = view.editingCard;
+    if (!ec) return;
+    const text = String(ec.draftText || "").trim();
+    if (!text) {
+      deps.showToast(ec.isHook ? "钩子标题不能为空；不要就点「删除钩子」" : "字卡文字不能为空；不要就点「删除字卡」");
+      return;
+    }
+    const pos = ec.draftPos === "custom" ? ec.originalPos : ec.draftPos;
+    view.editingCard = null;
+    if (ec.isHook) {
+      await mutateDoc(
+        (doc) => Model.upsertEdit(doc, Model.makeSetHook(view.data.edl, { text, sub: ec.draftSub, pos })),
+        "改开头钩子",
+      );
+      return;
+    }
+    const row = view.rows.find((item) => item.id === ec.beat);
+    const card = row?.cards?.find((item) => item.idx === ec.idx);
+    if (!row || !card) {
+      renderPanel(true);
+      return;
+    }
+    await mutateDoc(
+      (doc) => Model.upsertEdit(doc, Model.makeSetText(row, card, { text, sub: ec.draftSub, badge: ec.draftBadge, pos })),
+      `改第 ${row.index + 1} 句字卡`,
+    );
+  }
+
+  async function deleteEditingCard() {
+    const ec = view.editingCard;
+    if (!ec) return;
+    view.editingCard = null;
+    if (ec.isHook) {
+      await mutateDoc(
+        (doc) => Model.upsertEdit(doc, Model.makeSetHook(view.data.edl, { text: "" })),
+        "删除开头钩子",
+      );
+      return;
+    }
+    const row = view.rows.find((item) => item.id === ec.beat);
+    const card = row?.cards?.find((item) => item.idx === ec.idx);
+    if (!row || !card) {
+      renderPanel(true);
+      return;
+    }
+    await mutateDoc(
+      (doc) => Model.upsertEdit(doc, Model.makeDeleteText(row, card)),
+      `删除第 ${row.index + 1} 句字卡`,
+    );
   }
 
   /* ── 换镜头面板：占右边，播放器留在左边当预览 ────── */
@@ -1771,6 +2668,7 @@
     view.stopAt = null;
     if (shot.start !== null) seek(shot.start);
     const initial = pickerSelectionFor(shot, view.sourceItems);
+    cancelSourceRequest(view.picker);
     view.picker = {
       beat,
       shotIdx,
@@ -1781,21 +2679,24 @@
       tiles: new Map(),
       used: Model.usedSourceKeys(view.rows, originalOf),
       filter: "all",
+      query: "",
       onlyUnused: false,
+      noteDrafts: new Map(),
       selectedPath: initial.selectedPath,
       selectedIn: initial.selectedIn,
       original: null,
       busy: false,
       loading: false,
-      jobId: null,
+      sourceRequest: null,
       skimTile: null,
     };
     renderTabs();
     renderPickerPanel();
     const current = view;
+    const picker = current.picker;
     try {
       const res = await deps.invoke("video_list_sources", { path: view.projectPath });
-      if (view !== current || !view.picker) return;
+      if (view !== current || view.picker !== picker) return;
       view.picker.folders = res.folders || [];
       for (const asset of res.assets || []) {
         view.picker.items.set(asset.path, Model.mergeSource(null, {
@@ -1819,6 +2720,7 @@
       if (preferred) selectFolder(preferred.abs);
       else renderPickerGrid();
     } catch (err) {
+      if (view !== current || view.picker !== picker) return;
       deps.showToast(`读取素材失败：${err}`);
       renderPickerGrid();
     }
@@ -1828,21 +2730,32 @@
     const body = view.el.querySelector(".vwPanelBody");
     const { row, shot } = pickerShot();
     const picker = view.picker;
+    const draft = picker.noteDrafts.get(picker.shotIdx) || "";
+    const shotTabs = (row?.shots?.length || 0) > 1
+      ? `<div class="vwPickerShots" role="group" aria-label="同句镜头切换">${row.shots.map((s) => `
+          <button type="button" class="vwPickerShotTab ${s.idx === picker.shotIdx ? "vwPickerShotTabOn" : ""} ${s.replace ? "vwPickerShotTabEdited" : ""}"
+            data-action="switch-picker-shot" data-shot="${s.idx}">镜头 ${s.idx + 1}</button>`).join("")}</div>`
+      : "";
     body.innerHTML = `
       <div class="vwPicker" role="group" aria-label="换镜头">
         <header class="vwPickerHead">
           <div class="vwPickerTitle">
             <button type="button" class="vwPickerBack" data-action="close-picker" title="返回脚本（Esc）">${ICONS.back}<span>脚本</span></button>
             <span class="vwPickerSep" aria-hidden="true">/</span>
-            <strong>换这个镜头</strong>
-            ${picker.need !== null ? `<span class="vwMeta">需要 ${picker.need.toFixed(1)} 秒</span>` : ""}
+            <strong>第 ${(row?.index ?? 0) + 1} 句 · 镜头 ${(shot?.idx ?? 0) + 1}</strong>
+            ${picker.need !== null ? `<span class="vwNeedBadge">需要 ${picker.need.toFixed(1)}s</span>` : ""}
           </div>
           <button type="button" class="vwBtn vwBtnSmall vwPickerRestore" data-action="restore-shot" ${shot?.replace ? "" : "hidden"}>恢复原镜头</button>
         </header>
+        ${shotTabs}
         <p class="vwPickerSay">${esc(row?.say || "")}</p>
+        <p class="vwPickerTip">在视频缩略图上左右滑动可预览并定起点，点击即从此秒起替换</p>
         <div class="vwPickerControls"></div>
         <div class="vwPickerGrid"></div>
-        <input type="text" class="vwNoteInput" data-note-beat="${esc(picker.beat)}" data-note-shot="${shot?.idx ?? ""}" placeholder="不想自己选？告诉 AI 想要什么画面，回车加入" aria-label="告诉 AI 想要什么画面" />
+        <div class="vwNoteCompose">
+          <input type="text" class="vwNoteInput" data-note-beat="${esc(picker.beat)}" data-note-shot="${shot?.idx ?? ""}" value="${esc(draft)}" placeholder="不想自己选？写下想要的画面，回车或点「添加修改」" aria-label="写下想要的画面修改意见" />
+          <button type="button" class="vwNoteSend" data-action="submit-note" ${draft.trim() ? "" : "disabled"}>添加修改</button>
+        </div>
       </div>`;
     body.scrollTop = 0;
     renderPickerControls();
@@ -1856,32 +2769,63 @@
     const folders = picker.folders.map((folder) => `
       <option value="${esc(folder.abs)}" ${folder.abs === picker.folder ? "selected" : ""} ${folder.exists === false ? "disabled" : ""}>${esc(folder.label || Model.baseName(folder.abs))}${folder.exists === false ? "（读不到）" : ""}</option>`).join("");
     box.innerHTML = `
-      ${picker.folders.length ? `<select class="vwFolderSelect" data-change="picker-folder" aria-label="素材文件夹">${folders}</select>` : ""}
-      <button type="button" class="vwLink" data-action="pick-other" data-mode="folder">其它文件夹…</button>
-      <span class="vwControlsSpacer"></span>
-      <div class="vwSegmented" role="group" aria-label="素材类型">
-        ${[["all", "全部"], ["video", "视频"], ["photo", "照片"]].map(([key, label]) => `
-          <button type="button" class="${picker.filter === key ? "vwSegActive" : ""}" data-action="pick-filter" data-filter="${key}" aria-pressed="${picker.filter === key}">${label}</button>`).join("")}
+      <div class="vwPickerControlRow">
+        <div class="vwSearchBox vwPickerSearchBox">
+          <span class="vwSearchIcon">${ICONS.search}</span>
+          <input type="text" class="vwSearchInput" data-input="picker-query" value="${esc(picker.query)}"
+            placeholder="搜文件名或画面描述…" aria-label="搜索候选素材" />
+          <button type="button" class="vwSearchClear" data-action="clear-picker-query" aria-label="清空搜索" ${picker.query ? "" : "hidden"}>${ICONS.close}</button>
+        </div>
+        ${picker.folders.length ? `<select class="vwFolderSelect" data-change="picker-folder" aria-label="素材文件夹">${folders}</select>` : ""}
+        <button type="button" class="vwLink" data-action="pick-other" data-mode="folder">其它文件夹…</button>
       </div>
-      <label class="vwCheck"><input type="checkbox" data-change="picker-unused" ${picker.onlyUnused ? "checked" : ""} /> 只看没用过的</label>`;
+      <div class="vwPickerControlRow">
+        <div class="vwSegmented" role="group" aria-label="素材类型">
+          ${[["all", "全部"], ["video", "视频"], ["photo", "照片"]].map(([key, label]) => `
+            <button type="button" class="${picker.filter === key ? "vwSegActive" : ""}" data-action="pick-filter" data-filter="${key}" aria-pressed="${picker.filter === key}">${label}</button>`).join("")}
+        </div>
+        <label class="vwCheck"><input type="checkbox" data-change="picker-unused" ${picker.onlyUnused ? "checked" : ""} /> 只看没用过的</label>
+        <span class="vwControlsSpacer"></span>
+        <span class="vwPickerCount"></span>
+      </div>`;
+    updatePickerCount();
+  }
+
+  function updatePickerCount() {
+    const el = view?.el.querySelector(".vwPickerCount");
+    const picker = view?.picker;
+    if (!el || !picker) return;
+    el.textContent = picker.loading && picker.tiles.size === 0 ? "读取中…" : `${picker.tiles.size} 个素材`;
+  }
+
+  function cancelSourceRequest(picker) {
+    const request = picker?.sourceRequest;
+    if (!request) return;
+    picker.sourceRequest = null;
+    if (request.jobId) deps.invoke("video_cancel_job", { jobId: request.jobId }).catch(() => {});
   }
 
   function selectFolder(abs) {
-    const picker = view.picker;
+    const current = view;
+    const picker = current.picker;
     if (!picker) return;
-    if (picker.jobId) deps.invoke("video_cancel_job", { jobId: picker.jobId }).catch(() => {});
+    cancelSourceRequest(picker);
+    const request = { token: String(++jobRequestSequence) };
+    picker.sourceRequest = request;
     picker.folder = abs;
     picker.loading = true;
-    picker.jobId = null;
     renderPickerControls();
     renderPickerGrid();
     deps.invoke("video_start_job", {
-      path: view.projectPath,
+      path: current.projectPath,
       kind: "thumbs_sources",
-      args: { folder: abs },
+      args: { folder: abs, requestId: request.token },
     }).then(({ jobId }) => {
-      if (view?.picker && view.picker.folder === abs) view.picker.jobId = jobId;
+      if (picker.sourceRequest === request) request.jobId = jobId;
+      else if (!request.finished) deps.invoke("video_cancel_job", { jobId }).catch(() => {});
     }).catch((err) => {
+      if (picker.sourceRequest !== request) return;
+      picker.sourceRequest = null;
       deps.showToast(`读取素材失败：${err}`);
       setPickerLoading(false);
     });
@@ -1890,8 +2834,8 @@
   function setPickerLoading(loading) {
     if (!view?.picker) return;
     view.picker.loading = loading;
-    if (!loading) view.picker.jobId = null;
     updatePickerEmpty();
+    updatePickerCount();
   }
 
   function matchesPicker(item) {
@@ -1899,6 +2843,7 @@
     if (picker.folder && !Model.samePath(Model.dirName(item.path), picker.folder)) return false;
     if (picker.filter !== "all" && item.kind !== picker.filter) return false;
     if (picker.onlyUnused && picker.used.has(Model.pathKey(item.path))) return false;
+    if (picker.query && !Model.sourceMatchesQuery(item, picker.query)) return false;
     return true;
   }
 
@@ -1920,6 +2865,7 @@
     if (!grid) return;
     appendTile(grid, merged);
     updatePickerEmpty();
+    updatePickerCount();
   }
 
   function appendTile(grid, item) {
@@ -1943,8 +2889,10 @@
     }
     const isOriginal = Boolean(picker.original) && Model.isOriginalShotSource(pickerShot().shot, item, { original: picker.original });
     const isVideo = item.kind === "video";
+    const durNum = Number(item.dur) || 0;
+    const tooShort = isVideo && durNum > 0 && picker.need && durNum < picker.need;
     tile.classList.toggle("vwSourceSelected", selected);
-    tile.title = item.notes || item.name;
+    tile.title = item.notes ? `${item.notes}（${item.name}）` : item.name;
     let badge = "";
     if (isOriginal) badge = '<span class="vwSourceUsed vwSourceOriginal">原镜头</span>';
     else if (picker.used.has(Model.pathKey(item.path))) badge = '<span class="vwSourceUsed">已用</span>';
@@ -1953,9 +2901,10 @@
         ${item.thumb ? `<img src="${esc(assetUrl(item.thumb))}" alt="" loading="lazy" />` : `<span class="vwShotPlaceholder">${shotKindIcon(item.kind)}</span>`}
         <span class="vwSkimFrame" hidden></span>
         <span class="vwSkimLine" hidden></span>
+        <span class="vwSkimBadge" hidden></span>
         ${badge}
-        ${isVideo && item.dur ? `<span class="vwShotDur">${esc(Number(item.dur).toFixed(1))}</span>` : ""}
-        ${selected && isVideo && typeof picker.selectedIn === "number" ? `<span class="vwSourceIn">从 ${esc(picker.selectedIn.toFixed(1))} 秒起</span>` : ""}
+        ${isVideo && durNum ? `<span class="vwShotDur ${tooShort ? "vwShotDurShort" : ""}">${esc(durNum.toFixed(1))}s${tooShort ? "·略短" : ""}</span>` : ""}
+        ${selected && isVideo && typeof picker.selectedIn === "number" ? `<span class="vwSourceIn">从 ${esc(picker.selectedIn.toFixed(1))}s 起</span>` : ""}
       </span>
       <span class="vwSourceName">${esc(item.notes || item.name)}</span>`;
   }
@@ -1973,6 +2922,7 @@
     }
     grid.scrollTop = top;
     updatePickerEmpty();
+    updatePickerCount();
   }
 
   function updatePickerEmpty() {
@@ -1982,7 +2932,7 @@
     grid.querySelector(".vwPickerEmpty")?.remove();
     if (picker.tiles.size > 0) return;
     const note = document.createElement("p");
-    note.className = "vwPickerEmpty vwEmpty";
+    note.className = "vwPickerEmpty vwEmptyLarge";
     note.textContent = picker.loading ? "正在读取素材…" : (picker.folder ? "这里没有符合条件的素材。" : "先选一个文件夹。");
     grid.append(note);
   }
@@ -1998,6 +2948,12 @@
     const line = tile.querySelector(".vwSkimLine");
     line.hidden = false;
     line.style.left = `${info.fraction * 100}%`;
+    const badge = tile.querySelector(".vwSkimBadge");
+    if (badge) {
+      const clamped = Model.clampIn(info.time, Number(item.dur) || 0, picker.need);
+      badge.textContent = `${clamped.in.toFixed(1)}s 起`;
+      badge.hidden = false;
+    }
     const frame = tile.querySelector(".vwSkimFrame");
     if (strip) {
       const cover = Model.stripCover({ tile: info.tile, frames: strip.frames, tileW: strip.tileW, tileH: strip.tileH, boxW: rect.width, boxH: rect.height });
@@ -2017,6 +2973,7 @@
     if (!tile) return;
     tile.querySelector(".vwSkimLine")?.setAttribute("hidden", "");
     tile.querySelector(".vwSkimFrame")?.setAttribute("hidden", "");
+    tile.querySelector(".vwSkimBadge")?.setAttribute("hidden", "");
     delete tile.dataset.skimTime;
   }
 
@@ -2063,12 +3020,38 @@
             inBadge.className = "vwSourceIn";
             tile.querySelector(".vwSourceThumb")?.append(inBadge);
           }
-          inBadge.textContent = `从 ${picker.selectedIn.toFixed(1)} 秒起`;
+          inBadge.textContent = `从 ${picker.selectedIn.toFixed(1)}s 起`;
         } else {
           inBadge?.remove();
         }
       }
     }
+    const { row } = pickerShot();
+    if (row) {
+      for (const tab of view.el.querySelectorAll(".vwPickerShotTab")) {
+        const idx = Number(tab.dataset.shot);
+        const s = row.shots.find((item) => item.idx === idx);
+        tab.classList.toggle("vwPickerShotTabEdited", Boolean(s?.replace));
+      }
+    }
+  }
+
+  function switchPickerShot(shotIdx) {
+    const picker = view?.picker;
+    if (!picker || picker.shotIdx === shotIdx) return;
+    const row = view.rows.find((item) => item.id === picker.beat);
+    const shot = row?.shots.find((item) => item.idx === shotIdx);
+    if (!shot) return;
+    videoEl()?.pause();
+    view.stopAt = null;
+    if (shot.start !== null) seek(shot.start);
+    picker.shotIdx = shotIdx;
+    picker.need = Model.shotDuration(shot);
+    const synced = pickerSelectionFor(shot, picker.items);
+    picker.selectedPath = synced.selectedPath;
+    picker.selectedIn = synced.selectedIn;
+    picker.original = pickerOriginal(shot, picker.items);
+    renderPickerPanel();
   }
 
   /* 点一下就换上，留在面板里接着比较；不满意再点别的，或者点「恢复原镜头」 */
@@ -2125,7 +3108,7 @@
   function closePicker() {
     const picker = view.picker;
     if (!picker) return;
-    if (picker.jobId) deps.invoke("video_cancel_job", { jobId: picker.jobId }).catch(() => {});
+    cancelSourceRequest(picker);
     view.picker = null;
     view.tab = "script";
     renderTabs();
@@ -2136,9 +3119,51 @@
     syncHotspots(videoEl()?.currentTime || 0);
   }
 
+  function submitNoteInput(input) {
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    const beat = input.dataset.noteBeat || null;
+    const shot = input.dataset.noteShot ? Number(input.dataset.noteShot) : null;
+    const row = view.rows.find((item) => item.id === beat);
+    const time = shot !== null ? row?.shots.find((item) => item.idx === shot)?.start ?? null : row?.start ?? null;
+    const picker = view.picker;
+    const draft = input.value;
+    picker?.noteDrafts.delete(shot);
+    input.value = "";
+    const sendBtn = input.closest(".vwNoteCompose")?.querySelector(".vwNoteSend");
+    if (sendBtn) sendBtn.disabled = true;
+    void mutateDoc((doc) => Model.addNote(doc, { beat, shot, time, text }), "添加修改意见").then((saved) => {
+      if (!picker || view?.picker !== picker) return;
+      const onSubmittedShot = picker.shotIdx === shot;
+      if (!saved && !picker.noteDrafts.has(shot)) {
+        picker.noteDrafts.set(shot, draft);
+        if (onSubmittedShot) renderPickerPanel();
+      } else if (saved && onSubmittedShot && picker.noteDrafts.size === 0) {
+        closePicker();
+      }
+    });
+  }
+
+  function focusNoteWithPrefix(beat, prefixText) {
+    const rowEl = showRow(beat);
+    const input = rowEl?.querySelector(".vwNoteInput");
+    if (!input) return;
+    input.value = prefixText;
+    const sendBtn = input.closest(".vwNoteCompose")?.querySelector(".vwNoteSend");
+    if (sendBtn) sendBtn.disabled = !input.value.trim();
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
   /* ── 交互 ───────────────────────────────────────── */
   const actions = {
     "toggle-play"() { togglePlay(); },
+    "step-beat"(target) { stepBeat(Number(target.dataset.delta) || 1); },
+    "cycle-rate"() {
+      view.playbackRate = Model.nextPlaybackRate(view.playbackRate);
+      applyPlaybackRate();
+    },
     "toggle-mute"() {
       const video = videoEl();
       video.muted = !video.muted;
@@ -2149,10 +3174,34 @@
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else frame.requestFullscreen?.().catch(() => {});
     },
+    "undo-history"() { void stepHistory("undo"); },
+    "redo-history"() { void stepHistory("redo"); },
+    "toggle-shortcuts"() {
+      setShortcutsOpen(!view.shortcutsOpen);
+    },
     tab(target) {
       view.tab = target.dataset.tab;
       view.editing = null;
       renderTabs();
+      renderPanel(true);
+    },
+    "clear-script-query"() {
+      view.scriptQuery = "";
+      const input = view.el.querySelector('[data-input="script-query"]');
+      if (input) input.value = "";
+      const clearBtn = view.el.querySelector('[data-action="clear-script-query"]');
+      if (clearBtn) clearBtn.hidden = true;
+      const list = view.el.querySelector(".vwScript");
+      if (list) list.innerHTML = scriptRowsHtml();
+      input?.focus();
+    },
+    "clear-script-filter"() {
+      view.scriptQuery = "";
+      view.onlyModified = false;
+      renderPanel(true);
+    },
+    "toggle-only-modified"() {
+      view.onlyModified = !view.onlyModified;
       renderPanel(true);
     },
     /* 点一句：跳到这里并选中；已经选中时再点文字才是编辑，和 Finder 改名一样 */
@@ -2173,16 +3222,66 @@
       if (row.start !== null) seek(row.start);
       markActiveRow(beat, true);
     },
+    "edit-beat"(target) {
+      const beat = target.dataset.beat;
+      const row = view.rows.find((item) => item.id === beat);
+      if (!row || row.deleted) return;
+      if (row.start !== null) seek(row.start);
+      markActiveRow(beat, true);
+      startEditing(beat);
+    },
+    "toggle-compare"() {
+      if (view.cleanError) {
+        view.cleanError = false;
+        ensureCleanPreview();
+        updatePlayback();
+        return;
+      }
+      view.compareOriginal = !view.compareOriginal;
+      syncVideoSource();
+      updatePlayback();
+    },
+    "edit-hook"() { openHookEditor(); },
+    "edit-text-card"(target) { openTextCardEditor(target.dataset.beat, Number(target.dataset.idx)); },
+    "save-card-edit"() { void saveCardEdit(); },
+    "cancel-card-edit"() { cancelCardEdit(); },
+    "delete-editing-card"() { void deleteEditingCard(); },
+    "ask-card-ai"() {
+      const ec = view.editingCard;
+      if (!ec || ec.isHook) return;
+      const beat = ec.beat;
+      const text = ec.draftText || "";
+      cancelCardEdit();
+      focusNoteWithPrefix(beat, `字卡「${text}」：`);
+    },
+    "cancel-edit"() {
+      view.editing = null;
+      syncVideoSource();
+      renderPanel(true);
+      syncLiveLayer(videoEl()?.currentTime || 0);
+    },
+    "commit-edit"() {
+      void commitEditing();
+    },
+    "submit-note"(target) {
+      const input = target.closest(".vwNoteCompose")?.querySelector(".vwNoteInput");
+      submitNoteInput(input);
+    },
+    "row-text-card"(target) {
+      focusNoteWithPrefix(target.dataset.beat, `字卡「${target.dataset.text}」：`);
+    },
     "jump-row"(target) {
       const row = view.rows.find((item) => item.id === target.dataset.beat);
       if (!row) return;
       view.tab = "script";
+      view.scriptQuery = "";
+      view.onlyModified = false;
       renderTabs();
       renderPanel(true);
       if (row.start !== null) seek(row.start);
       markActiveRow(row.id, true);
       const rowEl = view.el.querySelector(`.vwRow[data-beat="${CSS.escape(row.id)}"]`);
-      if (rowEl) scrollRowIntoView(rowEl);
+      if (rowEl) scrollRowIntoView(rowEl, "smooth");
     },
     "show-tts"() {
       const field = view.el.querySelector('[data-editor="say"]');
@@ -2195,10 +3294,11 @@
       await mutateDoc((doc) => Model.removeNote(doc, target.dataset.id), "删除意见");
     },
     async unrevert(target) {
-      const edit = removedEdits.get(view.projectPath)?.get(target.dataset.id);
+      const edit = view.doc.removedEdits.find((item) => item.id === target.dataset.id);
       if (edit) await mutateDoc((doc) => Model.restoreEdit(doc, edit), "撤销恢复");
     },
     async "undo-edit"(target) {
+      if (view.editingCard?.editId === target.dataset.id) view.editingCard = null;
       await mutateDoc((doc) => Model.removeEdit(doc, target.dataset.id), "撤销改动");
     },
     async "keep-mine"(target) {
@@ -2230,17 +3330,56 @@
         return Model.upsertEdit(doc, Model.makeVoiceEdit(view.data.edl, { speed: next }));
       }, "改语速");
     },
-    async sample(target) {
-      const beat = target.dataset.beat;
-      if (view.sampleBusy.has(beat)) return;
-      view.sampleBusy.add(beat);
-      target.disabled = true;
-      target.textContent = "生成中…";
+    async "music-gain"(target) {
+      const music = view.data.edl?.music;
+      if ((!music && !view.plan?.music) || music === "none") return;
+      if (view.cleanMedia?.music || view.cleanRequest || currentVersion()?.hasCleanBase) unlockMusicPreview();
+      const baseGain = typeof music === "object" && typeof music.gain_db === "number" ? music.gain_db : 0;
+      const existing = view.doc.edits.find((edit) => edit.op === "set_music");
+      const current = Number(existing?.value?.gain_db ?? baseGain);
+      const next = Math.round(Math.min(12, Math.max(-30, current + Number(target.dataset.delta))) * 10) / 10;
+      await mutateDoc((doc) => {
+        if (next === baseGain) return existing ? Model.removeEdit(doc, existing.id) : doc;
+        return Model.upsertEdit(doc, Model.makeSetMusic(view.data.edl, next));
+      }, "调配乐音量");
+    },
+    "close-voice"() {
+      closeVoiceSample();
+      renderPanel();
+    },
+    async "voice-sample"(target) {
+      const current = view;
+      if (current.voiceRequest) return;
+      closeVoiceSample();
+      const request = { beat: target.dataset.beat, token: String(++jobRequestSequence), revision: current.doc.revision };
+      current.voiceRequest = request;
+      renderPanel();
       try {
-        const { jobId } = await deps.invoke("video_start_job", { path: view.projectPath, kind: "sample", args: { beat } });
-        if (view?.sampleBusy.has(beat)) view.sampleJobs.set(jobId, beat);
+        await deps.invoke("video_start_job", {
+          path: current.projectPath, kind: "voice_sample",
+          args: { beat: request.beat, requestId: request.token },
+        });
+      } catch (error) {
+        if (view !== current || current.voiceRequest !== request) return;
+        current.voiceRequest = null;
+        deps.showToast(`试听没生成出来：${error}`);
+        renderPanel();
+      }
+    },
+    async sample(target) {
+      const current = view;
+      const beat = target.dataset.beat;
+      if (current.sampleBusy.has(beat)) return;
+      const requestId = String(++jobRequestSequence);
+      current.sampleBusy.add(beat);
+      current.sampleRequests.set(requestId, beat);
+      target.disabled = true;
+      target.innerHTML = `${ICONS.playSmall}<span>生成试看中…</span>`;
+      try {
+        await deps.invoke("video_start_job", { path: current.projectPath, kind: "sample", args: { beat, requestId } });
       } catch (err) {
-        view.sampleBusy.delete(beat);
+        if (view !== current || !current.sampleRequests.delete(requestId)) return;
+        current.sampleBusy.delete(beat);
         deps.showToast(String(err).includes("JOB_BUSY") ? "这一句正在生成" : `试看没生成出来：${err}`);
         renderPanel();
       }
@@ -2248,10 +3387,12 @@
     "back-to-version"() { backToVersion(); },
     apply() { void applyChanges(); },
     async "cancel-render"() {
-      if (!view.renderJobId) return;
+      const current = view;
+      const jobId = current.renderJobId;
+      if (!jobId) return;
       const ok = await deps.confirm("确定取消吗？已经处理好的镜头有缓存，下次不用重来。", { confirmLabel: "取消生成", danger: false });
-      if (!ok || !view?.renderJobId) return;
-      deps.invoke("video_cancel_job", { jobId: view.renderJobId }).catch((err) => deps.showToast(`取消失败：${err}`));
+      if (!ok || view !== current || current.renderJobId !== jobId) return;
+      deps.invoke("video_cancel_job", { jobId }).catch((err) => deps.showToast(`取消失败：${err}`));
     },
     continue(target) {
       const text = `继续完成这条视频（工程：${view.projectPath}），现在停在「${target.dataset.step}」这一步。`;
@@ -2289,30 +3430,45 @@
         target.classList.remove("vwCopied");
       }, 1200);
     },
+    async "copy-platform"(target) {
+      const section = target.closest(".vwPlatform");
+      if (!section) return;
+      const clone = section.cloneNode(true);
+      clone.querySelectorAll(".vwCopy, .vwCopyAll").forEach((btn) => btn.remove());
+      const lines = [...clone.querySelectorAll("li, pre")].map((el) => Model.cleanCopyText(el.textContent)).filter(Boolean);
+      const text = lines.length ? lines.join("\n\n") : Model.cleanCopyText(clone.textContent);
+      const ok = await writeClipboard(text);
+      if (!ok) {
+        deps.showToast("复制失败");
+        return;
+      }
+      target.textContent = "已复制";
+      target.classList.add("vwCopied");
+      setTimeout(() => {
+        target.textContent = "复制整块";
+        target.classList.remove("vwCopied");
+      }, 1200);
+    },
     "open-picker"(target) { void openPicker(target.dataset.beat, Number(target.dataset.shot)); },
+    "switch-picker-shot"(target) { switchPickerShot(Number(target.dataset.shot)); },
+    "clear-picker-query"() {
+      if (!view?.picker) return;
+      view.picker.query = "";
+      const input = view.el.querySelector('[data-input="picker-query"]');
+      if (input) input.value = "";
+      const clearBtn = view.el.querySelector('[data-action="clear-picker-query"]');
+      if (clearBtn) clearBtn.hidden = true;
+      renderPickerGrid();
+      input?.focus();
+    },
     "frame-caption"(target) {
       showRow(target.dataset.beat);
       startEditing(target.dataset.beat);
     },
     "frame-text"(target) {
-      const rowEl = showRow(target.dataset.beat);
-      const input = rowEl?.querySelector(".vwNoteInput");
-      if (!input) return;
-      input.value = `字卡「${target.dataset.text}」：`;
-      input.focus({ preventScroll: true });
-      input.setSelectionRange(input.value.length, input.value.length);
+      focusNoteWithPrefix(target.dataset.beat, `字卡「${target.dataset.text}」：`);
     },
     "frame-shot"(target) { void openPicker(target.dataset.beat, Number(target.dataset.shot)); },
-    /* 常用意见是开关：再点一次就撤回这条（只撤还没发出去的） */
-    async "quick-note"(target) {
-      const beat = target.dataset.beat;
-      const text = target.dataset.note;
-      const row = view.rows.find((item) => item.id === beat);
-      if (!row || !text) return;
-      const existing = view.doc.notes.find((note) => !note.sentAt && note.beat === beat && (note.shot ?? null) === null && note.text === text);
-      if (existing) await mutateDoc((doc) => Model.removeNote(doc, existing.id), "删除意见");
-      else await mutateDoc((doc) => Model.addNote(doc, { beat, shot: null, time: row.start, text }), "告诉 AI");
-    },
     "undo-last"() {
       hideUndo();
       void stepHistory("undo");
@@ -2341,21 +3497,44 @@
   };
 
   async function switchVersion(name) {
+    const current = view;
+    const data = current.data;
+    resetPreviewMedia();
     await loadPlanFor(name);
-    if (!view) return;
+    if (view !== current || view.data !== data || view.versionName !== name) return;
     rebuildRows();
     loadCurrentVersion();
     renderAll();
     ensureShotThumbs();
+    ensureCleanPreview();
   }
 
   function wireView() {
     const el = view.el;
     el.addEventListener("click", (event) => {
+      if (view.shortcutsOpen && !event.target.closest?.(".vwShortcutWrap")) {
+        setShortcutsOpen(false);
+      }
       // 从最里层往外找第一个有动作的元素，行里的按钮不会触发选中整行
       const target = event.target.closest("[data-action]");
       if (!target || !el.contains(target) || target.disabled) return;
       actions[target.dataset.action]?.(target, event);
+    });
+    // 双击脚本文字直接进入编辑，不用先选中再点
+    el.addEventListener("dblclick", (event) => {
+      const sayEl = event.target.closest?.('.vwSay[data-beat]');
+      if (!sayEl) return;
+      const beat = sayEl.dataset.beat;
+      const row = view.rows.find((item) => item.id === beat);
+      if (!row || row.deleted) return;
+      if (row.start !== null) seek(row.start);
+      markActiveRow(beat, true);
+      startEditing(beat);
+    });
+    // 点取消/保存按钮时阻断 mousedown 抢焦点导致 focusout 误保存
+    el.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest?.('[data-action="cancel-edit"], [data-action="commit-edit"]');
+      if (btn) event.preventDefault();
     });
     el.addEventListener("change", (event) => {
       const kind = event.target.dataset?.change;
@@ -2370,10 +3549,47 @@
       } else if (kind === "picker-unused") {
         view.picker.onlyUnused = event.target.checked;
         renderPickerGrid();
+      } else if (event.target.dataset?.cardField === "pos" && view.editingCard) {
+        view.editingCard.draftPos = event.target.value === "custom" ? view.editingCard.originalPos : event.target.value;
+        syncLiveLayer(videoEl()?.currentTime || 0);
       }
     });
     el.addEventListener("input", (event) => {
-      if (event.target.classList?.contains("vwSayEditor")) autoGrow(event.target);
+      const target = event.target;
+      if (target.dataset?.cardField && view.editingCard) {
+        const field = target.dataset.cardField;
+        if (field === "text") view.editingCard.draftText = target.value;
+        else if (field === "sub") view.editingCard.draftSub = target.value;
+        else if (field === "badge") view.editingCard.draftBadge = target.value;
+        syncLiveLayer(videoEl()?.currentTime || 0);
+      } else if (target.classList?.contains("vwSayEditor")) {
+        autoGrow(target);
+        const countEl = target.closest("[data-editor-box]")?.querySelector(".vwEditorCount");
+        if (countEl) countEl.textContent = editorCharHint(target.value, target.dataset.originalSay || "");
+        if (view.editing) {
+          view.editing.draft = target.value;
+          syncLiveLayer(videoEl()?.currentTime || 0);
+        }
+      } else if (target.classList?.contains("vwNoteInput")) {
+        const sendBtn = target.closest(".vwNoteCompose")?.querySelector(".vwNoteSend");
+        if (sendBtn) sendBtn.disabled = !target.value.trim();
+        if (view.picker) {
+          const { noteDrafts, shotIdx } = view.picker;
+          if (target.value) noteDrafts.set(shotIdx, target.value);
+          else noteDrafts.delete(shotIdx);
+        }
+      } else if (target.dataset?.input === "script-query") {
+        view.scriptQuery = target.value;
+        const clearBtn = el.querySelector('[data-action="clear-script-query"]');
+        if (clearBtn) clearBtn.hidden = !view.scriptQuery;
+        const list = el.querySelector(".vwScript");
+        if (list) list.innerHTML = scriptRowsHtml();
+      } else if (target.dataset?.input === "picker-query" && view.picker) {
+        view.picker.query = target.value;
+        const clearBtn = el.querySelector('[data-action="clear-picker-query"]');
+        if (clearBtn) clearBtn.hidden = !view.picker.query;
+        renderPickerGrid();
+      }
     });
     // 点到编辑框外面就保存，和 Apple 备忘录一样不用找保存按钮
     el.addEventListener("focusout", (event) => {
@@ -2430,8 +3646,12 @@
       updatePlayback();
     });
     video.addEventListener("volumechange", setPlayingUi);
+    video.addEventListener("play", () => {
+      el.querySelector(".vwVoiceSample audio").pause();
+    });
     video.addEventListener("loadedmetadata", () => {
       if (!view) return;
+      applyPlaybackRate();
       updateClock();
       if (view.playingSample) return;
       const planDuration = view.plan?.duration;
@@ -2439,6 +3659,10 @@
     });
     video.addEventListener("error", () => {
       if (!view || !video.getAttribute("src")) return;
+      if (view.usingCleanVideo) {
+        finishCleanRequest(null);
+        return;
+      }
       const empty = el.querySelector(".vwPlayerEmpty");
       empty.hidden = false;
       empty.textContent = "这个版本放不了，文件可能已被清理或还在写入。";
@@ -2475,25 +3699,30 @@
     const target = event.target;
     if (target.classList?.contains("vwNoteInput") && event.key === "Enter" && !event.isComposing) {
       event.preventDefault();
-      const text = target.value.trim();
-      if (!text) return;
-      const beat = target.dataset.noteBeat || null;
-      const shot = target.dataset.noteShot ? Number(target.dataset.noteShot) : null;
-      const row = view.rows.find((item) => item.id === beat);
-      const time = shot !== null ? row?.shots.find((item) => item.idx === shot)?.start ?? null : row?.start ?? null;
-      target.value = "";
-      const closing = Boolean(view.picker);
-      void mutateDoc((doc) => Model.addNote(doc, { beat, shot, time, text }), "告诉 AI").then(() => {
-        if (closing && view?.picker) closePicker();
-      });
+      submitNoteInput(target);
       return;
+    }
+    if (target.dataset?.cardField && !event.isComposing) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelCardEdit();
+        return;
+      }
+      if (event.key === "Enter" && target.tagName === "INPUT") {
+        event.preventDefault();
+        void saveCardEdit();
+        return;
+      }
     }
     if (target.dataset?.editor && !event.isComposing) {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         view.editing = null;
+        syncVideoSource();
         renderPanel(true);
+        syncLiveLayer(videoEl()?.currentTime || 0);
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) {
@@ -2516,6 +3745,16 @@
       event.preventDefault();
       const redo = event.key === "y" || event.shiftKey;
       void stepHistory(redo ? "redo" : "undo");
+      return;
+    }
+    if (event.key === "Escape" && view.shortcutsOpen) {
+      event.stopPropagation();
+      setShortcutsOpen(false);
+      return;
+    }
+    if (event.key === "Escape" && view.editingCard) {
+      event.stopPropagation();
+      cancelCardEdit();
       return;
     }
     if (event.key === "Escape" && view.picker) {
@@ -2545,20 +3784,9 @@
       return;
     }
     if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !view.picker) {
-      const timed = view.rows.filter((row) => row.start !== null);
-      if (timed.length === 0) return;
-      const now = videoEl()?.currentTime || 0;
-      const currentIndex = timed.findIndex((row) => now >= row.start - 0.001 && now < row.end);
-      const delta = event.key === "ArrowLeft" ? -1 : 1;
-      const next = timed[Math.min(timed.length - 1, Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + delta))];
-      if (next) {
-        event.preventDefault();
-        event.stopPropagation();
-        seek(next.start);
-        markActiveRow(next.id, true);
-        const rowEl = view.el.querySelector(`.vwRow[data-beat="${CSS.escape(next.id)}"]`);
-        if (rowEl) scrollRowIntoView(rowEl, "smooth");
-      }
+      event.preventDefault();
+      event.stopPropagation();
+      stepBeat(event.key === "ArrowLeft" ? -1 : 1);
     }
   }
 

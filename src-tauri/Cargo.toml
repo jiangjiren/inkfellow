@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.8.3"
+version = "0.8.11"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -32,4 +32,4 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
-windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Win32_UI_WindowsAndMessaging"] }

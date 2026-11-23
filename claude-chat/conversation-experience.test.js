@@ -22,11 +22,12 @@ test("发送消费草稿时清除旧快照，避免再次打开时重复恢复",
     promptEl: { value: "send this", style: {} }, currentConvId: "a",
     conversationDrafts: new Map([["a", { text: "old snapshot" }]]),
     parseProviderDispatchText() { return null; }, selectedMentionNotes: new Map(), pendingImages: [],
-    currentNoteFile: null, quotedText: null, selectedModel: "test", selectedPermissionMode: "plan", selectedEffort: "low",
-    activeProfileId() { return "test"; }, clearMentionNotes() {}, clearImages() {}, syncComposerAction() {},
+    currentNoteFile: null, noteContextEnabled: true, retryNoteContext: null, quotedText: null,
+    selectedModel: "test", selectedPermissionMode: "plan", selectedEffort: "low",
+    activeProfileId() { return "test"; }, getActiveProfile() { return null; }, clearMentionNotes() {}, clearImages() {}, syncComposerAction() {},
     quoteChip: { classList: classes() },
   });
-  vm.runInContext(source("takeRequestDraft"), c);
+  vm.runInContext([source("requestThinkingSettings"), source("takeRequestDraft")].join("\n"), c);
   assert.equal(c.takeRequestDraft().text, "send this");
   assert.equal(c.conversationDrafts.has("a"), false);
   assert.equal(c.promptEl.value, "");
@@ -34,7 +35,7 @@ test("发送消费草稿时清除旧快照，避免再次打开时重复恢复",
 
 function switchFixture() {
   const context = vm.createContext({
-    currentConvId: "original", conversationSwitchVersion: 0,
+    currentConvId: "original", conversationSwitchVersion: 0, configuredParentToken: null,
     deletedConversationIds: new Set(),
     currentSessionId: null, currentSessionProvider: null,
     convViewCache: new Map(), conversationDrafts: new Map(), convStaleIds: new Set(),
@@ -53,7 +54,7 @@ function switchFixture() {
     showInlineError(text) { context.errors.push(text); },
     requestAnimationFrame() {},
   });
-  vm.runInContext(source("loadConversation"), context);
+  vm.runInContext([source("agentApiFetch"), source("loadConversation")].join("\n"), context);
   return context;
 }
 
@@ -121,10 +122,11 @@ test("图片、笔记和引用与文字一起按会话恢复，空会话清除�
     pendingImages: [{ data: "image-A", previewUrl: "data:image/png;base64,AA", mediaType: "image/png" }],
     selectedMentionNotes: new Map([["a.md", { path: "a.md", title: "Note A" }]]),
     quotedText: "Quote A", quotedSection: "Section", quotedPrefix: "Prefix", quotedSuffix: "Suffix",
+    retryNoteContext: { path: "original.md", enabled: true },
     quoteChip: { classList: classes() }, quoteTextEl: {}, quoteLinesEl: {},
-    renderImageChip() {}, renderMentionChips() {}, hidePopup() {}, adjustPromptHeight() {},
+    renderImageChip() {}, renderMentionChips() {}, renderNoteContext() {}, hidePopup() {}, adjustPromptHeight() {},
   });
-  vm.runInContext(["captureComposerDraft", "restoreComposerDraft", "hasComposerDraft"].map(source).join("\n"), c);
+  vm.runInContext(["captureComposerDraft", "restoreComposerDraft", "applyComposerDraft", "hasComposerDraft"].map(source).join("\n"), c);
   const draft = c.captureComposerDraft();
   c.conversationDrafts.set("a", draft);
   c.restoreComposerDraft("b");
@@ -132,16 +134,118 @@ test("图片、笔记和引用与文字一起按会话恢复，空会话清除�
   assert.equal(c.pendingImages.length, 0);
   assert.equal(c.selectedMentionNotes.size, 0);
   assert.equal(c.quotedText, null);
+  assert.equal(c.retryNoteContext, null);
   c.restoreComposerDraft("a");
   assert.equal(c.promptEl.value, "Draft A");
   assert.equal(c.pendingImages[0].data, "image-A");
   assert.equal(c.selectedMentionNotes.get("a.md").title, "Note A");
   assert.equal(c.quotedSection, "Section");
+  assert.equal(c.retryNoteContext.path, "original.md");
   c.pendingImages[0].data = "changed";
   assert.equal(draft.images[0].data, "image-A", "恢复后的附件不修改已缓存快照");
   assert.ok(c.hasComposerDraft({ images: [{}] }));
   assert.ok(c.hasComposerDraft({ mentions: [{}] }));
   assert.ok(c.hasComposerDraft({ quote: { text: "quote" } }));
+});
+
+function retryFixture({ saved = false } = {}) {
+  const retryDraft = {
+    composerText: "rewrite this paragraph",
+    mentionedNotes: [{ path: "notes/source.md", title: "source" }],
+    quote: { text: "original paragraph", section: "original section", prefix: "before", suffix: "after" },
+    noteFile: "notes/one.md",
+    images: [{ mediaType: "image/png", data: "AAAA" }],
+    profileId: "original-profile", model: "original-model", effort: "medium", permissionMode: "auto",
+  };
+  const unrelatedUser = { id: "different-request", role: "user", text: "a different request" };
+  const original = { id: "failed-request", role: "user", text: "display text", retryDraft };
+  const status = {};
+  const button = {
+    dataset: { turnAction: "retry", userMessageId: original.id }, isConnected: true,
+    parentElement: { querySelector: () => status }, closest: () => null,
+  };
+  const urls = [];
+  const c = vm.createContext({
+    currentConvId: "current-id", isGenerating: false, resetRequested: false, configuredParentToken: null,
+    messageLog: [saved ? original : { ...original, retryDraft: null }, unrelatedUser],
+    messagesEl: { querySelectorAll: () => [] },
+    conversationDrafts: new Map(),
+    promptEl: { value: "", style: {}, focus() {}, setSelectionRange() {} },
+    pendingImages: [], selectedMentionNotes: new Map(),
+    currentNoteFile: "notes/two.md", noteContextEnabled: true, retryNoteContext: null,
+    quotedText: null, quotedSection: null, quotedPrefix: null, quotedSuffix: null,
+    quoteChip: { classList: classes() }, quoteTextEl: {}, quoteLinesEl: {},
+    renderImageChip() {}, renderMentionChips() {}, renderNoteContext() {}, hidePopup() {}, adjustPromptHeight() {},
+    syncComposerAction() {}, clearMentionNotes() {}, clearImages() {},
+    parseProviderDispatchText: () => null, activeProfileId: () => "current-profile",
+    getActiveProfile: () => ({ provider: "antigravity" }),
+    selectedModel: "current-model", selectedEffort: "high", selectedPermissionMode: "plan",
+    fetch: async url => {
+      urls.push(url);
+      return { ok: true, json: async () => ({ messages: [original, unrelatedUser] }) };
+    },
+  });
+  vm.runInContext([
+    "agentApiFetch", "canPrepareTurnAction", "prepareTurnAction", "isRetryImage", "applyComposerDraft",
+    "captureComposerDraft", "hasComposerDraft", "takeRequestDraft", "requestThinkingSettings", "prepareRequestDraft", "requestPayloadForDraft",
+    "clearEmptyRetryContext",
+  ].map(source).join("\n"), c);
+  return { c, original, button, status, urls };
+}
+
+for (const saved of [false, true]) {
+  test(`准备重试恢复${saved ? "历史" : "刚失败"}请求的具体上下文`, async () => {
+    const { c, button, urls, status } = retryFixture({ saved });
+    await c.prepareTurnAction(button);
+    assert.deepEqual(urls, saved ? [] : ["api/history/current-id"]);
+    assert.equal(c.promptEl.value, "rewrite this paragraph");
+    assert.equal(c.pendingImages[0].previewUrl, "data:image/png;base64,AAAA");
+    assert.match(status.textContent, /当前账号、模型和权限/);
+    const draft = c.takeRequestDraft();
+    const payload = c.requestPayloadForDraft(draft);
+    assert.match(payload.prompt, /notes\/one\.md/);
+    assert.match(payload.prompt, /notes\/source\.md/);
+    assert.match(payload.prompt, /before.*original paragraph.*after/);
+    assert.doesNotMatch(payload.prompt, /notes\/two\.md|a different request/);
+    assert.equal(payload.images[0].data, "AAAA");
+    assert.equal(payload.profileId, "current-profile");
+    assert.equal(payload.model, "current-model");
+    assert.equal(payload.permissionMode, "plan");
+    assert.equal(payload.userMessageId, undefined, "重发生成自己的请求 ID");
+    assert.equal(payload.retryDraft.noteFile, "notes/one.md");
+    assert.equal(c.retryNoteContext, null);
+  });
+}
+
+test("重试加载期间切换会话或开始写草稿时不会填入原请求", async () => {
+  for (const change of [c => { c.currentConvId = "other-id"; }, c => { c.promptEl.value = "New draft"; }]) {
+    const { c, original, button } = retryFixture();
+    let complete;
+    c.fetch = () => new Promise(resolve => { complete = resolve; });
+    const preparing = c.prepareTurnAction(button);
+    assert.equal(button.disabled, true);
+    change(c);
+    const text = c.promptEl.value;
+    complete({ ok: true, json: async () => ({ messages: [original] }) });
+    await preparing;
+    assert.equal(button.disabled, false);
+    assert.equal(c.promptEl.value, text);
+    assert.equal(c.retryNoteContext, null);
+  }
+});
+
+test("清空重试草稿后，新请求恢复使用当前笔记", async () => {
+  const { c, button } = retryFixture({ saved: true });
+  await c.prepareTurnAction(button);
+  c.promptEl.value = "";
+  c.clearEmptyRetryContext();
+  assert.equal(c.retryNoteContext.path, "notes/one.md", "附件尚在时保留草稿上下文");
+  c.pendingImages.length = 0;
+  c.selectedMentionNotes.clear();
+  c.quotedText = null;
+  c.clearEmptyRetryContext();
+  c.promptEl.value = "new request";
+  assert.equal(c.takeRequestDraft().noteFile, "notes/two.md");
 });
 
 test("流式新增内容尊重暂停跟随，主动回到底部重新开启跟随", () => {

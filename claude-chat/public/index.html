@@ -358,11 +358,19 @@ html, body {
   padding: 8px 10px 8px 12px;
   cursor: pointer; user-select: none;
 }
+.bga-toolbar { display: flex; align-items: center; }
+.bga-toolbar .bga-head { min-width: 0; flex: 1; }
 .bga-head:hover { background: var(--bg3); }
 .bga-head:focus-visible, .bga-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .bga-dot {
   width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
   background: var(--accent); animation: genPulse var(--beat) ease-in-out infinite;
+}
+#bg-activity.has-attention {
+  border-color: color-mix(in srgb, var(--yellow) 52%, var(--border-strong));
+}
+#bg-activity.has-attention .bga-dot {
+  background: var(--yellow);
 }
 .bga-text { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bga-chev {
@@ -382,11 +390,15 @@ html, body {
   padding: 7px 12px; cursor: pointer; transition: background 0.12s;
 }
 .bga-item:hover { background: var(--bg3); }
+.bga-item.is-current { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .bga-idot { position: relative; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; }
+.bga-item[data-s="needs_attention"] .bga-idot { background: var(--yellow); animation: sqBreathe var(--beat) ease-in-out infinite; }
 .bga-item[data-s="running"] .bga-idot { background: var(--accent); animation: sqBreathe var(--beat) ease-in-out infinite; }
 .bga-item[data-s="queued"] .bga-idot { box-shadow: inset 0 0 0 1.5px var(--border-strong); }
+.bga-item[data-s="stopping"] .bga-idot { background: var(--text-dim); opacity: 0.7; }
 .bga-ilabel { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bga-iorigin { flex-shrink: 0; max-width: 38%; color: var(--accent); font-family: var(--font-mono); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bga-iorigin { flex-shrink: 0; max-width: 38%; color: var(--text-dim); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bga-item[data-s="needs_attention"] .bga-iorigin { color: var(--yellow); font-weight: 500; }
 .bga-imeta { flex-shrink: 0; font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ── 子任务页 ──
@@ -738,6 +750,28 @@ html, body {
   text-align: center;
   line-height: 1.5;
 }
+
+.msg-partial {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-left: 2px solid var(--yellow);
+  border-radius: 0 var(--radius-item) var(--radius-item) 0;
+  background: var(--tool-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.msg-turn-action button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.msg-turn-action button:hover { text-decoration: underline; }
+.msg-partial .history-block, .msg-error-text .history-block { margin: 4px 0 0; }
+.msg-error-text .history-block { text-align: left; }
+.msg-turn-action-status { color: var(--text-dim); }
+.msg-turn-action-status:not(:empty) { margin-left: 8px; }
 
 #composer {
   background: var(--bg-document);
@@ -1951,6 +1985,10 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .toolbar-picker-btn svg { opacity: 0.5; transition: transform 0.15s; }
 .toolbar-picker-btn.open svg { transform: rotate(180deg); }
+#codex-speed-btn[hidden] { display: none; }
+#codex-speed-btn[aria-pressed="true"] { color: var(--accent); }
+#codex-speed-btn[aria-pressed="true"] svg { opacity: 1; }
+#codex-speed-btn:disabled { cursor: default; opacity: 0.55; }
 .effort-inline {
   font-size: 11px;
   color: var(--text-dim);
@@ -2166,10 +2204,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
-  opacity: 0;
-  transform: translateX(3px);
+  opacity: 0.65;
+  transform: translateX(0);
   transition: opacity 0.15s, transform 0.15s;
 }
+.history-item:focus-within .history-item-actions,
 .history-item:hover .history-item-actions,
 .history-item.current .history-item-actions {
   opacity: 1;
@@ -2187,6 +2226,24 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 }
 .history-item-rename:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 .history-item-del:hover { background: rgba(192,57,43,0.1); color: var(--red); }
+
+.history-item.renaming { cursor: default; align-items: flex-start; }
+.history-item.renaming .history-item-actions,
+.history-item.renaming .history-item-more { display: none !important; }
+.history-rename-editor { width: 100%; }
+.history-rename-editor .history-item-title-input {
+  padding: 6px 8px; border: 1px solid var(--accent); border-radius: 5px;
+  background: var(--bg); box-sizing: border-box;
+}
+.history-rename-controls { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.history-rename-controls span { flex: 1; font-size: 10px; color: var(--text-dim); }
+.history-rename-controls button {
+  border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px;
+  background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 11px;
+}
+.history-rename-controls [data-rename-save] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.history-rename-controls button:disabled { opacity: 0.6; cursor: wait; }
+.history-rename-error { color: var(--red); font-size: 11px; margin-top: 6px; }
 
 /* inline rename input */
 .history-item-title-input {
@@ -2603,6 +2660,50 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   font-weight: 600;
   cursor: pointer;
 }
+#wechat-settings-area {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.wechat-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+#wechat-notify-mode {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-document);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.wechat-setting-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.msg-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #07c160;
+  background: color-mix(in srgb, #07c160 12%, transparent);
+  border: 1px solid color-mix(in srgb, #07c160 28%, transparent);
+}
 
 /* ── Add account 区域 ── */
 #auth-add-section {
@@ -2952,6 +3053,436 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   .history-skeleton-line { animation: none !important; background: var(--border); }
 }
 
+/* ── ✦ Fellow 主控 + 推入式执行台 + 单任务工位（3 层导航） ── */
+.master-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.strategist-pin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s, color 0.14s, box-shadow 0.14s;
+}
+.strategist-pin-btn:hover { color: var(--text); }
+.strategist-pin-btn.active {
+  background: var(--bg-document);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+}
+.strategist-pin-star { font-size: 11.5px; line-height: 1; color: var(--fellow, var(--accent)); }
+.branch-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border-strong);
+  margin: 0 1px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.ticket-board-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px 0 5px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s, color 0.14s;
+}
+.ticket-board-btn:hover { background: var(--bg3); color: var(--text); }
+.ticket-board-btn.has-running { color: var(--text); }
+.ticket-board-btn.has-attention {
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  font-weight: 600;
+}
+.branch-arrow-icon { width: 11.5px; height: 11.5px; opacity: 0.72; flex-shrink: 0; }
+.branch-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* 底部灵动条右侧快速进执行台 */
+.bga-open-stage {
+  font-size: 11px;
+  color: var(--accent);
+  padding: 2px 6px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  margin-right: 8px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.bga-open-stage:hover { background: var(--accent-bg); }
+.bga-open-stage[hidden] { display: none; }
+
+/* 第 2 层 · 推入式「执行台」（整屏滑入，取代局促小弹窗） */
+.ticket-stage-view {
+  position: absolute;
+  inset: 0;
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.3s var(--ease-out), visibility 0s linear 0.3s;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.08);
+}
+.ticket-stage-view.open {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.3s var(--ease-out), visibility 0s;
+}
+.ticket-stage-head {
+  height: 44px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.ticket-stage-nav {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.push-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px 0 5px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s;
+}
+.push-back-btn:hover { background: var(--accent-bg); }
+.push-crumb-sep { color: var(--text-dim); opacity: 0.55; font-size: 12px; flex-shrink: 0; }
+.push-crumb-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticket-stage-toolbar {
+  padding: 9px 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.ticket-stage-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg2);
+}
+.stage-filter-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.stage-filter-btn.active {
+  background: var(--bg-document);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.ticket-stage-summary { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+.ticket-stage-feedback { padding: 5px 12px; color: var(--text-dim); font-size: 12px; }
+.ticket-stage-feedback:empty { display: none; }
+.ticket-stage-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ticket-stage-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 0 2px 6px;
+}
+.ticket-stage-empty {
+  margin: auto 0;
+  padding: 36px 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.65;
+}
+.ticket-stage-empty strong {
+  display: block;
+  color: var(--text);
+  font-size: 13.5px;
+  margin-bottom: 4px;
+}
+
+/* 第 3 层 · 单个任务现场面包屑导航条（仅在进入 Worker 时出现；Fellow 主场完全隐藏） */
+#role-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg));
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  min-height: 36px;
+}
+#role-context-bar[hidden] { display: none; }
+.role-bar-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+.role-bar-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-bar-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* ✦ Fellow 空态极简迎宾（发完第一条消息即消失，零占屏） */
+.fellow-empty-hero {
+  margin: auto 0;
+  padding: 28px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.fellow-empty-emblem {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fellow, var(--accent)) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fellow, var(--accent)) 24%, var(--border));
+  color: var(--fellow, var(--accent));
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+}
+.fellow-empty-hero h2 { font-size: 16px; font-weight: 650; color: var(--text); letter-spacing: -0.015em; }
+.fellow-empty-hero p { font-size: 12.5px; line-height: 1.6; color: var(--text-dim); max-width: 300px; }
+.fellow-empty-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 310px;
+  margin-top: 6px;
+}
+.fellow-empty-chip {
+  text-align: left;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-document);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-shadow: var(--shadow-soft);
+  transition: border-color 0.14s, transform 0.14s;
+}
+.fellow-empty-chip:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.fellow-empty-chip span:last-child { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
+
+/* 净化后的历史抽屉提示 */
+.history-purified-note {
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* 派发任务卡片（对话流内联 & 执行台共用） */
+.tk-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-document);
+  box-shadow: var(--shadow-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s;
+}
+.ticket-stage-list .tk-card { margin: 0 0 8px; }
+.tk-card:hover { border-color: var(--border-strong); }
+.tk-card[data-status="needs_attention"] {
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--border));
+  background: color-mix(in srgb, var(--yellow) 4%, var(--bg-document));
+}
+.tk-card-origin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.tk-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.tk-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+}
+.tk-status-dot[data-status="running"] { animation: sqBreathe 1.8s ease-in-out infinite; }
+.tk-status-dot[data-status="queued"] { background: transparent; border: 1.5px solid var(--text-dim); }
+.tk-status-dot[data-status="needs_attention"] { background: var(--yellow); animation: sqBreathe 1.8s ease-in-out infinite; }
+.tk-status-dot[data-status="completed"] { background: var(--green, #22c55e); }
+.tk-status-dot[data-status="failed"] { background: var(--red, #ef4444); }
+.tk-status-dot[data-status="stopped"], .tk-status-dot[data-status="interrupted"] { background: var(--text-dim); }
+.tk-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.tk-badge.status-running { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tk-badge.status-needs_attention { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+.tk-badge.status-completed { color: var(--green, #22c55e); background: color-mix(in srgb, var(--green, #22c55e) 12%, transparent); }
+.tk-badge.status-failed { color: var(--red, #ef4444); background: color-mix(in srgb, var(--red, #ef4444) 12%, transparent); }
+.tk-card-body {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tk-files { display: flex; flex-wrap: wrap; gap: 5px; }
+.tk-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-file-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tk-card-actions { display: flex; align-items: center; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
+.tk-btn {
+  height: 25px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.tk-btn:hover { background: var(--bg3); }
+.tk-btn.primary {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+.tk-btn.primary:hover { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); }
+.tk-btn.warn {
+  border-color: color-mix(in srgb, var(--yellow) 45%, var(--border));
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 10%, var(--bg));
+}
+.tk-btn.danger { color: var(--red, #ef4444); }
+
 </style>
 </head>
 <body>
@@ -2962,8 +3493,21 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     </button>
 
     <div id="session-tab-bar" class="session-tab-bar">
+      <div class="master-cluster">
+        <button id="btn-strategist-tab" class="strategist-pin-btn" type="button" title="✦ Fellow：只聊思路、做决策、派任务">
+          <span class="strategist-pin-star" aria-hidden="true">✦</span>
+          <span>Fellow</span>
+        </button>
+        <span class="branch-divider" aria-hidden="true"></span>
+        <button id="btn-ticket-board" class="ticket-board-btn" type="button" aria-expanded="false" aria-controls="ticket-stage-view" aria-haspopup="dialog" title="查看 Fellow 派出的所有执行任务">
+          <svg class="branch-arrow-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 3v6a2 2 0 0 0 2 2h6"/><path d="M9.5 8.5 12 11l-2.5 2.5"/>
+          </svg>
+          <span id="ticket-board-label">任务</span>
+        </button>
+      </div>
       <div id="session-tabs-track" class="session-tabs-track"></div>
-      <button id="btn-tab-new" class="tab-action-btn" type="button" title="新建对话 (⌘N / Ctrl+N)" aria-label="新建对话">
+      <button id="btn-tab-new" class="tab-action-btn" type="button" title="新建直聊 (⌘N / Ctrl+N)" aria-label="新建直聊">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
       </button>
       <div id="session-switcher" class="session-switcher">
@@ -2980,6 +3524,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     </div>
 
     <div id="header-actions">
+      <button id="btn-header-compact" class="header-btn" type="button" title="整理记忆：把近期要点沉淀到长期记忆并开启干净上下文" aria-label="整理记忆" hidden>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z"/><path d="M5 19h14"/>
+        </svg>
+      </button>
       <button id="btn-maximize-panel" class="header-btn" type="button" title="沉浸全宽 / 恢复宽度 (⌘+Shift+F)" aria-label="沉浸全宽 / 恢复宽度">
         <svg id="icon-maximize" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
         <svg id="icon-restore" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -2989,7 +3538,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
           <path fill-rule="evenodd" d="M10.45 6.2L9.93 4.27L14.07 4.27L13.55 6.2A6 6 0 0 1 16.24 7.76L17.66 6.34L19.73 9.93L17.8 10.45A6 6 0 0 1 17.8 13.55L19.73 14.07L17.66 17.66L16.24 16.24A6 6 0 0 1 13.55 17.8L14.07 19.73L9.93 19.73L10.45 17.8A6 6 0 0 1 7.76 16.24L6.34 17.66L4.27 14.07L6.2 13.55A6 6 0 0 1 6.2 10.45L4.27 9.93L6.34 6.34L7.76 7.76A6 6 0 0 1 10.45 6.2ZM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0Z"/>
         </svg>
       </button>
-      <button id="btn-history" class="header-btn" title="历史对话" aria-label="历史对话">
+      <button id="btn-history" class="header-btn" title="历史直聊" aria-label="历史直聊">
         <svg width="17" height="17" viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="7.5" cy="7.5" r="5.8" stroke="currentColor" stroke-width="1.3"/><path d="M7.5 4.5V7.5l2.2 2.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button id="btn-new" class="header-btn" title="新建对话" aria-label="新建对话" hidden>
@@ -2997,6 +3546,34 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </button>
     </div>
   </header>
+
+  <!-- 第 2 层 · 推入式「执行台」（整屏展示 Fellow 派出的所有任务） -->
+  <section id="ticket-stage-view" class="ticket-stage-view" role="dialog" aria-modal="true" aria-label="Fellow 派出的执行任务" aria-hidden="true" inert>
+    <div class="ticket-stage-head">
+      <div class="ticket-stage-nav">
+        <button id="btn-ticket-stage-back" class="push-back-btn" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/></svg>
+          <span>✦ Fellow</span>
+        </button>
+        <span class="push-crumb-sep" aria-hidden="true">›</span>
+        <span class="push-crumb-title">派出的任务</span>
+      </div>
+      <button id="btn-ticket-clear-done" class="tk-btn" type="button" title="归档清理已完成、已停止或已失败的历史任务">清理已完成</button>
+    </div>
+    <div class="ticket-stage-toolbar">
+      <div id="ticket-stage-filters" class="ticket-stage-filters" role="group" aria-label="任务筛选">
+        <button class="stage-filter-btn active" data-stage-filter="all" type="button" aria-pressed="true">全部</button>
+        <button class="stage-filter-btn" data-stage-filter="active" type="button" aria-pressed="false">进行中</button>
+        <button class="stage-filter-btn" data-stage-filter="attention" type="button" aria-pressed="false">需拍板</button>
+        <button class="stage-filter-btn" data-stage-filter="done" type="button" aria-pressed="false">已完成</button>
+      </div>
+      <span id="ticket-stage-summary" class="ticket-stage-summary"></span>
+    </div>
+    <div id="ticket-stage-feedback" class="ticket-stage-feedback" role="status"></div>
+    <div id="ticket-stage-list" class="ticket-stage-list"></div>
+  </section>
+
+  <div id="role-context-bar" hidden></div>
 
   <div id="git-banner">
     <span id="git-banner-dot"></span>
@@ -3085,6 +3662,17 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <button id="wechat-verify-submit" type="button">确认</button>
               </div>
             </div>
+          </div>
+          <div id="wechat-settings-area">
+            <label class="wechat-setting-row" for="wechat-notify-mode">
+              <span>后台任务推送微信</span>
+              <select id="wechat-notify-mode" aria-label="后台任务推送微信模式">
+                <option value="wechat">仅微信发起</option>
+                <option value="all">全部任务（含电脑端）</option>
+                <option value="off">关闭自动推送</option>
+              </select>
+            </label>
+            <div class="wechat-setting-hint">微信消息直连 ✦ Fellow，共享记忆与模型；发「整理记忆」可开启干净上下文。</div>
           </div>
         </div>
       </div>
@@ -3179,11 +3767,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     <!-- 子任务活动条：只要还有子 agent 在跑就常驻在输入框上方，跑完自行消失。
          发送键始终可用 —— 派生子任务的意义就是你可以继续做别的。 -->
     <div id="bg-activity" hidden>
+      <div class="bga-toolbar">
       <button class="bga-head" type="button" aria-expanded="false" aria-controls="bg-activity-list" aria-labelledby="bg-activity-label">
         <span class="bga-dot"></span>
         <span id="bg-activity-label" class="bga-text" role="status" aria-live="polite"></span>
         <svg class="bga-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4"/></svg>
       </button>
+      <button class="bga-open-stage" id="bga-open-stage" type="button" hidden>查看全部</button>
+      </div>
       <div class="bga-body"><div class="bga-clip"><div id="bg-activity-list" class="bga-list" inert></div></div></div>
     </div>
     <div id="composer">
@@ -3247,6 +3838,12 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
           </div>
         </div>
         <div style="flex:1"></div>
+        <button id="codex-speed-btn" type="button" class="toolbar-picker-btn" aria-pressed="false" aria-label="响应速度：Standard" hidden>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span id="codex-speed-label">Standard</span>
+        </button>
         <div id="model-picker">
           <button id="model-btn" class="toolbar-picker-btn" aria-label="选择模型" aria-haspopup="listbox">
             <span id="model-label">Sonnet 5.5</span>
@@ -3263,8 +3860,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
                 <span class="picker-option-name">Opus 5.5</span>
                 <span class="picker-option-desc">最强推理</span>
               </button>
-              <button class="picker-option model-option" data-model="claude-fable-5-1" data-label="Fable 5.1" role="option" aria-selected="false">
-                <span class="picker-option-name">Fable 5.1</span>
+              <button class="picker-option model-option" data-model="claude-fable-5-2" data-label="Fable 5.2" role="option" aria-selected="false">
+                <span class="picker-option-name">Fable 5.2</span>
                 <span class="picker-option-desc">旗舰最强</span>
               </button>
               <div class="picker-divider"></div>
@@ -3296,7 +3893,11 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
               </button>
               <button class="picker-option effort-option" data-effort="max" data-label="最高" role="option" aria-selected="false">
                 <span class="picker-option-name">最高 <span class="picker-option-code">max</span></span>
-                <span class="picker-option-desc">使用最高推理强度</span>
+                <span class="picker-option-desc">使用 Max 推理档位</span>
+              </button>
+              <button class="picker-option effort-option" data-effort="ultra" data-label="Ultra" role="option" aria-selected="false" hidden>
+                <span class="picker-option-name">Ultra</span>
+                <span class="picker-option-desc">使用模型的 Ultra 推理档位</span>
               </button>
             </div>
           </div>
@@ -3314,7 +3915,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </div>
 </div>
 
-<script src="turn-completion.js?v=1"></script>
+<script src="turn-completion.js?v=2"></script>
 <script>
 globalThis.InkfellowCompletion = new InkfellowTurnCompletionTracker((completion) => {
   postParentMessage({ type: "ai-turn-completed", ...completion, title: convTitleOf(completion.conversationId) });
@@ -3339,6 +3940,11 @@ const pageParams = new URLSearchParams(location.search);
 const configuredParentOrigin = pageParams.get("parentOrigin");
 const configuredParentToken = pageParams.get("token");
 const isDesktopEmbed = pageParams.get("desktop") === "1";
+
+function agentApiFetch(url, options) {
+  if (!configuredParentToken) return fetch(url, options);
+  return fetch(url, { ...options, headers: { ...options?.headers, Authorization: `Bearer ${configuredParentToken}` } });
+}
 let referrerOrigin = null;
 try {
   referrerOrigin = document.referrer ? new URL(document.referrer).origin : null;
@@ -3424,18 +4030,27 @@ function syncComposerAction() {
     sendBtn.title = stopping ? label : "停止当前回答（Esc）";
   } else {
     // 草稿是空的就没有可发送的动作 —— 按钮该是灰的，而不是看着能点
-    sendBtn.disabled = resetRequested || !socketReady || !promptEl.value.trim();
+    sendBtn.disabled = promptEl.readOnly || resetRequested || !socketReady || !promptEl.value.trim();
     const label = action === "steer" ? "追加到当前任务" : "发送";
     sendBtn.setAttribute("aria-label", label);
     sendBtn.title = `${label}（Enter）`;
   }
 }
 
-function showInlineError(text) {
+function makeInlineError(text, { retryable = false, details = null, userMessageId = null, raw = null } = {}) {
   const el = document.createElement("div");
   el.className = "msg-error";
-  el.innerHTML = `<div class="msg-error-text">${renderPlain(text)}</div>`;
-  messagesEl.appendChild(el);
+  const body = document.createElement("div");
+  body.className = "msg-error-text";
+  body.innerHTML = renderPlain(text);
+  if (retryable) body.appendChild(makeTurnAction("retry", userMessageId ?? raw?.userMessageId));
+  if (details) body.appendChild(makeHistoryBlock("连接详情", details));
+  el.appendChild(body);
+  return el;
+}
+
+function showInlineError(text, options) {
+  messagesEl.appendChild(makeInlineError(text, options));
   scrollBottom();
 }
 
@@ -3485,6 +4100,7 @@ function renderImageChip() {
     btn.addEventListener("click", () => {
       pendingImages.splice(Number(btn.dataset.idx), 1);
       renderImageChip();
+      clearEmptyRetryContext();
     });
   });
 }
@@ -3569,12 +4185,19 @@ function genId() {
 
 
 let _historyCache = null;  // in-memory cache, avoids fetch delay on open
+let historyMutationVersion = 0;
+let historyFetchVersion = 0;
+let activeHistoryRename = null;
 
 async function fetchHistory() {
+  const mutationVersion = historyMutationVersion;
+  const fetchVersion = ++historyFetchVersion;
   try {
-    const res = await fetch("api/history");
+    const res = await agentApiFetch("api/history");
     if (res.ok) {
-      _historyCache = (await res.json()).filter(entry => !deletedConversationIds.has(entry.id));
+      const entries = await res.json();
+      if (mutationVersion !== historyMutationVersion || fetchVersion !== historyFetchVersion) return _historyCache ?? [];
+      _historyCache = entries.filter(entry => !deletedConversationIds.has(entry.id));
       return _historyCache;
     }
   } catch { }
@@ -3585,7 +4208,7 @@ async function fetchHistory() {
 const CLAUDE_MODELS = [
   { model: "claude-sonnet-5-5",          label: "Sonnet 5.5", name: "Sonnet 5.5", desc: "快速均衡" },
   { model: "claude-opus-5-5",            label: "Opus 5.5",   name: "Opus 5.5",   desc: "最强推理" },
-  { model: "claude-fable-5-1",           label: "Fable 5.1",  name: "Fable 5.1",  desc: "旗舰最强" },
+  { model: "claude-fable-5-2",           label: "Fable 5.2",  name: "Fable 5.2",  desc: "旗舰最强" },
 ];
 
 /* Antigravity 通道能选的模型，以及每个模型认哪些推理档位。
@@ -3597,12 +4220,12 @@ const CLAUDE_MODELS = [
    下面是首帧兜底：接口回来之前得先有东西渲染，别让模型菜单空一格。接口一到就
    整份换掉，所以它旧一点没关系，不必跟着每次模型升级来改。
 
-   模型名都不带 -high/-medium/-low 后缀：那是「模型 × 推理档位」的组合，档位
-   交给 effort 选择器。agy 只有 low/medium/high 三档，界面上的 xhigh/max 对它
-   一律不存在；档位给空数组的模型不吃 --effort，选择器直接藏掉——选了不生效
-   比不给选更让人困惑。 */
+   模型和推理档位分别用各自的选择器。可用档位由目录按模型给出，空数组表示该模型
+   使用固定配置，隐藏档位选择器。 */
 let AGY_MODELS = [
   { model: "gemini-4-argon",    label: "Gemini 4 Argon",   name: "Gemini 4 Argon",   desc: "旗舰最强" },
+  { model: "gemini-4-neon",     label: "Gemini 4 Neon",    name: "Gemini 4 Neon",    desc: "默认对话" },
+  { model: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", name: "Gemini 4 Hydrogen", desc: "快速执行" },
   { model: "gemini-3.8-flash",  label: "Gemini 3.8 Flash", name: "Gemini 3.8 Flash", desc: "快速通用" },
   { model: "claude-opus-5-5",   label: "Opus 5.5",         name: "Opus 5.5",         desc: "Claude 旗舰" },
   { model: "claude-sonnet-5-5", label: "Sonnet 5.5",       name: "Sonnet 5.5",       desc: "Claude 均衡" },
@@ -3610,7 +4233,9 @@ let AGY_MODELS = [
 
 // 全目录，含已经从菜单上撤下来但还能跑的旧版本——还选着它的对话要照常显示档位
 let AGY_EFFORT_LEVELS = {
+  "gemini-4-neon": ["low", "medium", "high", "xhigh"],
   "gemini-4-argon": ["low", "medium", "high"],
+  "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"],
   "gemini-3.8-flash": ["low", "medium", "high"],
   "claude-opus-5-5": ["low", "medium", "high"],
   "claude-sonnet-5-5": ["low", "medium", "high"],
@@ -3698,9 +4323,9 @@ async function loadCodexModelCatalog() {
   _codexModelsLoaded = true;
   try {
     const res = await fetch("api/codex/models", { cache: "no-store" });
-    if (!res.ok) return;
+    if (!res.ok) throw new Error("Codex model catalog unavailable");
     const data = await res.json();
-    if (!Array.isArray(data?.models) || !data.models.length) return;
+    if (!Array.isArray(data?.models) || !data.models.length) throw new Error("Empty Codex model catalog");
     CODEX_MODELS = data.models;
     if (Array.isArray(data.all) && data.all.length) CODEX_MODEL_IDS = data.all;
     // 目录换了，当前选中的可能已经不在菜单里，重渲染会把它落回默认
@@ -3710,19 +4335,31 @@ async function loadCodexModelCatalog() {
   }
 }
 
-// null = 这家不限制，五档随便选
+const CODEX_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+function selectedCodexModel() {
+  return CODEX_MODELS.find(item => item.model === selectedModel);
+}
+
 function effortLevelsForCurrentModel() {
-  if ((getActiveProfile()?.provider || "claude") !== "antigravity") return null;
-  return AGY_EFFORT_LEVELS[selectedModel] ?? ["low", "medium", "high"];
+  const provider = getActiveProfile()?.provider;
+  if (provider === "codex") return selectedCodexModel()?.efforts ?? CODEX_EFFORT_ORDER.slice(0, 4);
+  if (provider === "antigravity") return AGY_EFFORT_LEVELS[selectedModel] ?? ["low", "medium", "high"];
+  return null;
 }
 
 // 用户选的档位这个模型不认时，实际会落到哪一档。
-// 这段就近逻辑必须和 server.js 的 agyEffortForModel 一致，否则界面显示的和真跑的对不上。
+// GPT 会员直接发送这里算出的档位；Antigravity 的同档回退仍和后端保持一致。
 function effectiveEffort(levels) {
-  if (!levels) return selectedEffort;
+  if (!levels) return selectedEffort === "ultra" ? "max" : selectedEffort;
   if (!levels.length) return null;
   if (levels.includes(selectedEffort)) return selectedEffort;
-  const wanted = (selectedEffort === "xhigh" || selectedEffort === "max") ? "high" : selectedEffort;
+  if (getActiveProfile()?.provider === "codex") {
+    const index = CODEX_EFFORT_ORDER.indexOf(selectedEffort);
+    const requested = index < 0 ? CODEX_EFFORT_ORDER.indexOf("high") : index;
+    return CODEX_EFFORT_ORDER.slice(0, requested + 1).reverse().find(level => levels.includes(level)) ?? levels[0];
+  }
+  const wanted = (selectedEffort === "xhigh" || selectedEffort === "max" || selectedEffort === "ultra") ? "high" : selectedEffort;
   if (levels.includes(wanted)) return wanted;
   const order = wanted === "high" ? ["high", "medium", "low"]
     : wanted === "low" ? ["low", "medium", "high"]
@@ -3736,7 +4373,8 @@ const MODEL_MIGRATIONS = {
   "claude-opus-4-6": "claude-opus-5-5",
   "claude-opus-4-8": "claude-opus-5-5",
   "claude-opus-5":   "claude-opus-5-5",
-  "claude-fable-5":  "claude-fable-5-1",
+  "claude-fable-5":   "claude-fable-5-2",
+  "claude-fable-5-1": "claude-fable-5-2",
 };
 
 let _profileData = { activeProfileId: localStorage.getItem("activeProfileId") || "p_claude", profiles: [] };
@@ -3860,12 +4498,12 @@ function activeProfileId() {
     等于把这次要修的现象换成一次性的。同一个模型挂在多个中转账号下时先认当前的，
     那个顺序最不让人意外。 */
 function profileIdOwningModel(model) {
-  if (!model) return null;
+  if (typeof model !== "string" || !model) return null;
   const owns = (p) => {
     if (!p) return false;
     if (p.provider === "claude") return CLAUDE_MODELS.some(o => o.model === (MODEL_MIGRATIONS[model] ?? model));
     // 认全目录而不是菜单：从菜单上撤下来的旧版本仍然属于这个账号
-    if (p.provider === "antigravity") return Object.prototype.hasOwnProperty.call(AGY_EFFORT_LEVELS, model);
+    if (p.provider === "antigravity") return Object.prototype.hasOwnProperty.call(AGY_EFFORT_LEVELS, model.replace(/-xhigh$/, ""));
     // Codex 同理：菜单只露前几个，撤下来的旧版本仍然属于这个账号
     if (p.provider === "codex") return CODEX_MODEL_IDS.includes(model) || [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
     return [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
@@ -3940,6 +4578,12 @@ function modelOptionsForProfile(activeProfile) {
   return options;
 }
 
+function defaultAgyChatModel(options, profileDefault) {
+  return options.find(option => /^gemini-\d+(?:[.-]\d+)*-neon$/.test(option.model))?.model
+    ?? options.find(option => option.model === profileDefault)?.model
+    ?? options[0].model;
+}
+
 function renderModelOptions(activeProfile) {
   const provider = activeProfile?.provider || "claude";
   if (provider === "antigravity") loadAgyModelCatalog();
@@ -3949,15 +4593,25 @@ function renderModelOptions(activeProfile) {
   /* 先认这个对话自己记着的，没有才落到全局默认。换厂商时这份记录多半不在新
      清单里，下面那句 options.some(...) 会把它退回默认，不用单独判断。 */
   const convPref = currentConvId ? convModelPrefs.get(currentConvId) : null;
-  const rawSaved = convPref?.model ?? localStorage.getItem(key);
-  const saved = provider === "claude" ? (MODEL_MIGRATIONS[rawSaved] ?? rawSaved) : rawSaved;
-  const defaultModel = provider === "claude"
-    ? options[0].model
-    : (activeProfile?.sonnetModel || options[0].model);
+  const rawSaved = provider === "antigravity"
+    ? (convPref?.profileId === activeProfile?.id ? convPref?.model : null)
+    : convPref?.model ?? localStorage.getItem(key);
+  let saved = provider === "claude" ? (MODEL_MIGRATIONS[rawSaved] ?? rawSaved) : rawSaved;
+  const legacyAgyBase = provider === "antigravity" ? /^(.+)-xhigh$/.exec(rawSaved)?.[1] : null;
+  if (legacyAgyBase && AGY_EFFORT_LEVELS[legacyAgyBase]?.includes("xhigh")) saved = legacyAgyBase;
+  const profileDefault = activeProfile?.sonnetModel;
+  const defaultModel = provider === "antigravity" ? defaultAgyChatModel(options, profileDefault)
+    : provider !== "claude" && options.some(o => o.model === profileDefault)
+    ? profileDefault : options[0].model;
   selectedModel = options.some(o => o.model === saved) ? saved : defaultModel;
   if (saved !== rawSaved && selectedModel === saved) {
-    localStorage.setItem(key, saved);
-    // 老 id 迁到新 id 了，对话自己记的那份也一起更新，别每次切回来都再迁一次
+    if (legacyAgyBase) {
+      // 旧菜单把极高档记成了独立型号。保留旧全局键里携带的档位，只迁移会话偏好。
+      selectedEffort = "xhigh";
+      if (convPref) convPref.effort = selectedEffort;
+    } else {
+      localStorage.setItem(key, saved);
+    }
     if (convPref) { convPref.model = saved; persistConvModelPrefs(); }
   }
   const modelView = modelDropdown.querySelector(".model-view");
@@ -4568,10 +5222,18 @@ function applyConversationProfile(data, owner, profileId, effort) {
   const options = modelOptionsForProfile(profile);
   const provider = profile.provider || "claude";
   const previous = convModelPrefs.get(owner);
-  const raw = previous?.model ?? localStorage.getItem(`model:${provider === "claude" ? "claude" : profile.id}`);
+  const raw = provider === "antigravity"
+    ? (previous?.profileId === profileId ? previous.model : null)
+    : previous?.model ?? localStorage.getItem(`model:${provider === "claude" ? "claude" : profile.id}`);
   const saved = provider === "claude" ? (MODEL_MIGRATIONS[raw] ?? raw) : raw;
-  const fallback = provider === "claude" ? options[0].model : (profile.sonnetModel || options[0].model);
-  const pref = { profileId, model: options.some(o => o.model === saved) ? saved : fallback, effort: previous?.effort ?? effort };
+  const fallback = provider === "antigravity" ? defaultAgyChatModel(options, profile.sonnetModel)
+    : provider === "claude" ? options[0].model : (profile.sonnetModel || options[0].model);
+  const pref = {
+    ...previous,
+    profileId,
+    model: options.some(o => o.model === saved) ? saved : fallback,
+    effort: previous?.effort ?? effort,
+  };
   convModelPrefs.set(owner, pref);
   persistConvModelPrefs();
   persistConvPrefsToServer(owner, pref);
@@ -4955,6 +5617,8 @@ function setWechatStatus(tone, text) {
 async function checkWechatStatus() {
   const actionBtn = document.getElementById("wechat-action-btn");
   const qrArea = document.getElementById("wechat-qr-area");
+  const settingsArea = document.getElementById("wechat-settings-area");
+  const notifySelect = document.getElementById("wechat-notify-mode");
   try {
     const res = await fetch("api/wechat/status");
     const data = await res.json();
@@ -4963,17 +5627,41 @@ async function checkWechatStatus() {
       actionBtn.textContent = "断开";
       actionBtn.classList.add("danger");
       qrArea.style.display = "none";
+      if (settingsArea) settingsArea.style.display = "flex";
+      if (notifySelect && data.notifyTicketsMode) notifySelect.value = data.notifyTicketsMode;
       stopWechatPolling();
     } else {
-      setWechatStatus("", "未连接 · 连上后可在微信里直接用这个助手");
+      setWechatStatus("", "未连接 · 连上后可在微信里直接和 Fellow 对话");
       actionBtn.textContent = "连接";
       actionBtn.classList.remove("danger");
+      if (settingsArea) settingsArea.style.display = "none";
     }
   } catch (err) {
     console.error("Failed to fetch WeChat status", err);
     setWechatStatus("warn", "状态读取失败");
   }
 }
+
+document.getElementById("wechat-notify-mode")?.addEventListener("change", async (e) => {
+  const select = e.currentTarget;
+  const mode = select.value;
+  select.disabled = true;
+  try {
+    const res = await agentApiFetch("api/wechat/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notifyTicketsMode: mode }),
+    });
+    const data = await res.json();
+    if (!res.ok || data?.ok === false) throw new Error(data?.error || "保存微信推送设置失败");
+    if (data.notifyTicketsMode) select.value = data.notifyTicketsMode;
+  } catch (err) {
+    showInlineError(err?.message || "保存微信推送设置失败");
+    void checkWechatStatus();
+  } finally {
+    select.disabled = false;
+  }
+});
 
 function stopWechatPolling() {
   if (wechatPollInterval) {
@@ -5081,9 +5769,8 @@ document.getElementById("wechat-verify-submit").addEventListener("click", () => 
 async function saveCurrentConversation() {
   if (!currentConvId || deletedConversationIds.has(currentConvId) || messageLog.length === 0) return;
   const firstUser = messageLog.find(m => m.role === "user");
-  const title = firstUser
-    ? firstUser.text.replace(/[\n\r]+/g, " ").slice(0, 60)
-    : "新对话";
+  const title = _historyCache?.find(h => h.id === currentConvId)?.title
+    || (firstUser ? firstUser.text.replace(/[\n\r]+/g, " ").slice(0, 60) : "新对话");
   const conv = {
     id: currentConvId,
     title,
@@ -5096,19 +5783,23 @@ async function saveCurrentConversation() {
     model: selectedModel,
     effort: selectedEffort,
     profileId: activeProfileId(),
+    ...(selectedCodexSpeed ? { codexSpeed: selectedCodexSpeed } : {}),
   };
   const messageCount = messageLog.length;
   try {
-    const response = await fetch(`api/history/${conv.id}`, {
+    const response = await agentApiFetch(`api/history/${conv.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(conv),
     });
     if (!response.ok || deletedConversationIds.has(conv.id)) return;
+    const saved = await response.json();
+    if (deletedConversationIds.has(conv.id)) return;
+    historyMutationVersion += 1;
     // 更新内存缓存，使下次打开历史面板时可立即渲染
     if (_historyCache !== null) {
       const idx = _historyCache.findIndex(h => h.id === conv.id);
-      const summary = { ...conv, messageCount };
+      const summary = { ...conv, messageCount, title: (idx >= 0 ? _historyCache[idx].title : null) || saved.title || conv.title };
       if (idx >= 0) _historyCache[idx] = { ..._historyCache[idx], ...summary };
       else _historyCache.unshift(summary);
     }
@@ -5119,10 +5810,24 @@ async function saveCurrentConversation() {
 function renderPlain(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+function tokenizeMarkdownLink(src) {
+  const token = marked.Tokenizer.prototype.link.call(this, src);
+  if (token?.type === "link" && /^[a-z]:/i.test(token.href)) {
+    // 取回反斜杠原文，避免 Markdown 把 \. 一类的路径分隔符当成转义。
+    const destination = this.rules.inline.link.exec(token.raw)?.[2]?.trim();
+    if (destination) {
+      const path = destination.startsWith("<") ? destination.slice(1, -1) : destination;
+      if (/^[a-z]:\\/i.test(path)) token.href = path.replace(/\\/g, "/");
+    }
+  }
+  return token;
+}
+
 let _markedReady = false;
 try {
   if (typeof marked !== "undefined") {
-    marked.use({ gfm: true, breaks: true });
+    marked.use({ gfm: true, breaks: true, tokenizer: { link: tokenizeMarkdownLink } });
     _markedReady = true;
   }
 } catch { }
@@ -5144,10 +5849,10 @@ const MARKDOWN_ALLOWED_ATTR = [
   "align", "alt", "checked", "class", "colspan", "disabled", "height",
   "href", "open", "rowspan", "src", "start", "title", "type", "width",
 ];
-/* 相对路径照收，协议只认这四个。data: 刻意不在里面——DOMPurify 自己按
+/* 相对路径和带盘符的 Windows 绝对路径照收，协议只认这四个。data: 刻意不在里面——DOMPurify 自己按
    ADD_DATA_URI_TAGS 只给 <img> 之类放行 data:，正好是想要的粒度：
    图片能内嵌，而 <a href="data:text/html"> 进不来。 */
-const MARKDOWN_URI_ALLOWLIST = /^(?:(?:https?|mailto|tel|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+const MARKDOWN_URI_ALLOWLIST = /^(?:(?:https?|mailto|tel|file):|[a-z]:(?:[\\/]|%5c)|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 /* code 上的 language-* 给高亮用，task-list* 给 GFM 待办列表用。其余一律摘掉：
    class 值本身不可执行，但能套用页面已有的样式，把模型输出伪装成系统提示。 */
 const MARKDOWN_SAFE_CLASS = /^(?:language-[\w-]+|task-list|task-list-item)$/;
@@ -5315,6 +6020,7 @@ function textFromAssistantBlocks(blocks) {
 }
 
 function appendAssistantBlock(body, block) {
+  if (block.type === "ticket_receipt") return;
   if (block.type === "thinking" && block.thinking) {
     const el = document.createElement("details");
     el.className = "thinking-block";
@@ -5339,6 +6045,23 @@ function appendAssistantBlock(body, block) {
 
   if (block.type === "refusal" && block.text) {
     body.appendChild(makeHistoryBlock("拒绝回复", block.raw ?? block, block.text));
+    return;
+  }
+
+  if (block.type === "antigravity_partial") {
+    const notice = document.createElement("div");
+    notice.className = "msg-partial";
+    const message = document.createElement("p");
+    message.setAttribute("role", "status");
+    message.textContent = block.message;
+    notice.append(message, makeTurnAction("review", block.userMessageId));
+    if (block.details) notice.appendChild(makeHistoryBlock("连接详情", block.details));
+    body.appendChild(notice);
+    return;
+  }
+
+  if (block.type === "codex_error" && block.provider === "antigravity") {
+    body.appendChild(makeInlineError(block.message, block));
     return;
   }
 
@@ -5441,10 +6164,17 @@ function renderVideoOpenCard(messageEl, text) {
 function applyToolFailuresFromBlocks(body, blocks) {
   for (const block of blocks || []) {
     const raw = block?.raw ?? block;
-    const results = raw?.message?.content ?? (isToolResultType(block?.type) ? [raw] : null);
+    const results = raw?.message?.content ?? ((isToolResultType(block?.type) || block?.type === "ticket_receipt") ? [raw] : null);
     for (const r of results ?? []) {
-      if (r?.type?.includes("tool_result") && r.is_error && r.tool_use_id) {
-        body.querySelector(`.tool-call[data-tool-id="${cssEscapeValue(r.tool_use_id)}"]`)?.classList.add("failed");
+      const toolUseId = r?.tool_use_id || r?.raw?.id;
+      const isErr = r?.is_error === true || Boolean(r?.raw?.error);
+      if (r?.type?.includes("tool_result") && toolUseId) {
+        if (typeof bindInlineTicketToolResult === "function") {
+          bindInlineTicketToolResult(body, toolUseId, r.content ?? r.raw?.result?.content ?? r.raw?.result ?? r.raw?.error, isErr);
+        }
+        if (isErr) {
+          body.querySelector(`.tool-call[data-tool-id="${cssEscapeValue(toolUseId)}"]`)?.classList.add("failed");
+        }
       }
     }
   }
@@ -5485,20 +6215,32 @@ function setGenerating(v, notifyParent = true) {
 // ── Note context (injected by parent via postMessage) ─────
 let currentNoteFile = null;
 let noteContextEnabled = true;
+let retryNoteContext = null;
 let vaultNotes = [];
 const selectedMentionNotes = new Map();
 
 function renderNoteContext() {
-  if (!currentNoteFile) {
+  const file = retryNoteContext ? retryNoteContext.path : currentNoteFile;
+  const enabled = retryNoteContext?.enabled ?? noteContextEnabled;
+  if (!file) {
     contextChip.classList.remove("visible");
     return;
   }
-  const fileName = currentNoteFile.split("/").pop().replace(/\.(md|html?)$/i, "");
+  const fileName = file.split(/[\\/]/).pop().replace(/\.(md|html?)$/i, "");
   ctxPathEl.textContent = fileName;
+  ctxPathEl.title = file;
   contextChip.classList.add("visible");
-  contextChip.classList.toggle("context-disabled", !noteContextEnabled);
-  ctxToggle.setAttribute("aria-pressed", noteContextEnabled ? "true" : "false");
-  ctxToggle.title = noteContextEnabled ? "不发送当前笔记上下文" : "发送当前笔记上下文";
+  contextChip.classList.toggle("context-disabled", !enabled);
+  ctxToggle.setAttribute("aria-pressed", String(enabled));
+  const contextLabel = retryNoteContext ? "原请求的笔记上下文" : "当前笔记上下文";
+  ctxToggle.title = `${enabled ? "不发送" : "发送"}${contextLabel}`;
+  ctxToggle.setAttribute("aria-label", `切换${contextLabel}`);
+}
+
+function clearEmptyRetryContext() {
+  if (!retryNoteContext || promptEl.value.trim() || pendingImages.length || selectedMentionNotes.size || quotedText) return;
+  retryNoteContext = null;
+  renderNoteContext();
 }
 
 function normalizeMentionSearch(value) {
@@ -5554,6 +6296,7 @@ mentionChipsEl.addEventListener("click", (e) => {
   if (!removeButton) return;
   selectedMentionNotes.delete(removeButton.dataset.path);
   renderMentionChips();
+  clearEmptyRetryContext();
   promptEl.focus();
 });
 
@@ -5596,7 +6339,7 @@ window.addEventListener("message", (e) => {
     for (const path of selectedMentionNotes.keys()) {
       const refreshed = vaultNotes.find((note) => note.path === path);
       if (refreshed) selectedMentionNotes.set(path, refreshed);
-      else selectedMentionNotes.delete(path);
+      else if (!retryNoteContext) selectedMentionNotes.delete(path);
     }
     renderMentionChips();
   }
@@ -5618,7 +6361,7 @@ window.addEventListener("message", (e) => {
     quoteLinesEl.textContent = `(${lines} 行)`;
     quoteChip.classList.add("visible");
   }
-  if (e.data?.type === "note-selection-clear") {
+  if (e.data?.type === "note-selection-clear" && !retryNoteContext) {
     quotedText = null;
     quotedSection = null;
     quotedPrefix = null;
@@ -5654,15 +6397,17 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-ctxToggle.addEventListener("click", () => {
-  noteContextEnabled = !noteContextEnabled;
+function toggleNoteContext() {
+  if (retryNoteContext) retryNoteContext.enabled = !retryNoteContext.enabled;
+  else noteContextEnabled = !noteContextEnabled;
   renderNoteContext();
-});
+}
+
+ctxToggle.addEventListener("click", toggleNoteContext);
 
 contextChip.addEventListener("click", (e) => {
-  if (!currentNoteFile || e.target.closest("#ctx-toggle")) return;
-  noteContextEnabled = !noteContextEnabled;
-  renderNoteContext();
+  if (e.target.closest("#ctx-toggle")) return;
+  toggleNoteContext();
 });
 
 document.getElementById("quote-dismiss").addEventListener("click", () => {
@@ -5671,6 +6416,7 @@ document.getElementById("quote-dismiss").addEventListener("click", () => {
   quotedPrefix = null;
   quotedSuffix = null;
   quoteChip.classList.remove("visible");
+  clearEmptyRetryContext();
 });
 
 // ── WebSocket ─────────────────────────────────────────────
@@ -5800,8 +6546,14 @@ function buildCommandList(skills) {
   ];
 }
 
+/* 跟服务端 normalizeSkillProvider 保持同一套归类：codex、agy 各有自己的技能目录，
+   其余（会员号、各家 API 账号）都走 Claude SDK、用同一份技能。以前 agy 也被归成
+   claude，从 Claude 账号切到 agy 时这里判断「没变」就不去刷新，菜单里留着的还是
+   Claude 的技能。 */
 function activeSkillProvider() {
-  return getActiveProfile()?.provider === "codex" ? "codex" : "claude";
+  const provider = getActiveProfile()?.provider;
+  if (provider === "codex" || provider === "antigravity") return provider;
+  return "claude";
 }
 
 function requestSkillRefresh(force = false) {
@@ -6894,6 +7646,8 @@ function ensureBgActivityEl() {
   const el = document.getElementById("bg-activity");
   if (!el) return null;
   bgActivityEl = el;
+  const openStage = el.querySelector?.(".bga-open-stage");
+  if (openStage) openStage.onclick = () => openTicketStage();
   el.querySelector(".bga-head").onclick = () => {
     bgActivityOpen = !bgActivityOpen;
     el.classList.toggle("open", bgActivityOpen);
@@ -6913,6 +7667,40 @@ function liveBackgroundTasks() {
   return live;
 }
 
+function activeOrchestratorTickets() {
+  if (typeof orchestratorTickets === "undefined" || typeof orchestratorTickets?.values !== "function") return [];
+  const rank = { needs_attention: 0, running: 1, queued: 2, stopping: 3 };
+  return [...orchestratorTickets.values()]
+    .filter(t => Object.prototype.hasOwnProperty.call(rank, t?.status))
+    .sort((a, b) => {
+      const diff = (rank[a.status] ?? 9) - (rank[b.status] ?? 9);
+      if (diff !== 0) return diff;
+      return (Date.parse(a.startedAt || a.createdAt || "") || 0) - (Date.parse(b.startedAt || b.createdAt || "") || 0);
+    });
+}
+
+function activeBottomActivityItems() {
+  const role = typeof roleForConversationId === "function" ? roleForConversationId(currentConvId) : "normal";
+  const tickets = activeOrchestratorTickets().map(ticket => ({ kind: "ticket", ticket }));
+  // Fellow 主对话与 Worker 现场完全以服务端权威工单为准，避免旧子任务启发式误识别
+  if (role === "strategist" || role === "worker") return tickets;
+  const subagents = activeSubagentTasks().map(item => ({ kind: "subagent", ...item }));
+  return [...tickets, ...subagents];
+}
+
+function formatBgActivityHeading(items) {
+  if (!items.length) return "";
+  const tickets = items.filter(i => i.kind === "ticket").map(i => i.ticket);
+  const subagents = items.filter(i => i.kind === "subagent");
+  if (!tickets.length) return `${subagents.length} 个子任务进行中`;
+  const attention = tickets.filter(t => t.status === "needs_attention").length;
+  const others = tickets.length - attention + subagents.length;
+  if (attention > 0 && others > 0) return `${attention} 个任务需拍板 · ${others} 个进行中`;
+  if (attention > 0) return `${attention} 个任务需拍板`;
+  const allQueued = tickets.every(t => t.status === "queued") && subagents.length === 0;
+  return allQueued ? `${tickets.length} 个任务排队中` : `${tickets.length + subagents.length} 个任务进行中`;
+}
+
 function updateBackgroundActivity() {
   const el = ensureBgActivityEl();
   if (!el) return;
@@ -6920,14 +7708,20 @@ function updateBackgroundActivity() {
     bgActivityConversationId = currentConvId;
     bgActivityOpen = false;
   }
-  const live = activeSubagentTasks().length;
+  const items = activeBottomActivityItems();
+  const live = items.length;
+  const hasTickets = items.some(i => i.kind === "ticket");
+  const hasAttention = items.some(i => i.kind === "ticket" && i.ticket.status === "needs_attention");
   el.hidden = live === 0;
   if (!live) bgActivityOpen = false;
   el.classList.toggle("open", bgActivityOpen);
+  el.classList.toggle("has-attention", hasAttention);
   el.querySelector(".bga-head").setAttribute("aria-expanded", String(bgActivityOpen));
   el.querySelector(".bga-list").inert = !bgActivityOpen;
-  el.querySelector(".bga-text").textContent = live ? `${live} 个子任务进行中` : "";
-  // 输入区只显示当前活动；完成结果留在原对话卡片中。
+  el.querySelector(".bga-text").textContent = formatBgActivityHeading(items);
+  const openStageBtn = el.querySelector?.(".bga-open-stage");
+  if (openStageBtn) openStageBtn.hidden = !hasTickets;
+  // 输入区只显示当前活动；完成结果留在原对话卡片与顶部归档看板中。
   if (bgActivityOpen) renderBgActivityList();
   else {
     el.querySelector(".bga-list").innerHTML = "";
@@ -7013,22 +7807,49 @@ function renderBgActivityList() {
   if (!listEl) return;
   const now = Date.now();
   listEl.innerHTML = "";
-  activeSubagentTasks().forEach(({ card, id, s, label }) => {
+  activeBottomActivityItems().forEach((entry) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "bga-item";
-    item.dataset.s = s.status;
-    if (s.startAt) item.dataset.start = String(s.startAt);
     item.innerHTML = `<span class="bga-idot"></span><span class="bga-ilabel"></span><span class="bga-iorigin"></span><span class="bga-imeta"></span>`;
-    item.querySelector(".bga-ilabel").textContent = label;
-    item.querySelector(".bga-iorigin").textContent = formatDispatchOrigin(s.origin);
-    // 跑着的显示走动的秒数：静态的"运行中"分不出刚起步和卡了三分钟
-    item.querySelector(".bga-imeta").textContent =
-      s.status === "running" ? (s.startAt ? formatElapsed(now - s.startAt) : "运行中")
-        : "等待中";
-    item.title = label;
-    // 点一项 = 直接打开它的子任务页：卡片多半早被后面的消息顶出视口了
-    item.onclick = () => openSubtaskView(card, id);
+    if (entry.kind === "ticket") {
+      const t = entry.ticket;
+      const startAt = Date.parse(t.startedAt || t.createdAt || "") || 0;
+      item.dataset.s = t.status;
+      if (t.workerConversationId && t.workerConversationId === currentConvId) {
+        item.classList.add("is-current");
+      }
+      if (t.status === "running" && startAt) item.dataset.start = String(startAt);
+      item.querySelector(".bga-ilabel").textContent = t.title || "后台任务";
+      const subText = t.status === "needs_attention"
+        ? (t.attentionReason || "等待你拍板")
+        : (t.lastStepLabel || [t.profileName || t.provider, t.model].filter(Boolean).join(" · ") || "");
+      item.querySelector(".bga-iorigin").textContent = subText;
+      item.querySelector(".bga-imeta").textContent =
+        t.status === "needs_attention" ? "需拍板"
+          : t.status === "running" ? (startAt ? formatElapsed(now - startAt) : "执行中")
+            : t.status === "stopping" ? "停止中"
+              : "排队中";
+      item.title = `${t.title || "后台任务"}${subText ? ` · ${subText}` : ""}（点击进入任务）`;
+      item.onclick = () => {
+        bgActivityOpen = false;
+        updateBackgroundActivity();
+        void enterTicketWorker(t.id);
+      };
+    } else {
+      const { card, id, s, label } = entry;
+      item.dataset.s = s.status;
+      if (s.startAt) item.dataset.start = String(s.startAt);
+      item.querySelector(".bga-ilabel").textContent = label;
+      item.querySelector(".bga-iorigin").textContent = formatDispatchOrigin(s.origin);
+      // 跑着的显示走动的秒数：静态的"运行中"分不出刚起步和卡了三分钟
+      item.querySelector(".bga-imeta").textContent =
+        s.status === "running" ? (s.startAt ? formatElapsed(now - s.startAt) : "运行中")
+          : "等待中";
+      item.title = label;
+      // 点一项 = 直接打开它的子任务页：卡片多半早被后面的消息顶出视口了
+      item.onclick = () => openSubtaskView(card, id);
+    }
     listEl.appendChild(item);
   });
   syncBgActivityTicker();
@@ -7150,7 +7971,7 @@ function restoreSubtaskThreads(conversationId, messages) {
         const status = msg.status === "complete" ? "done" : msg.status === "stopped" ? "stopped" : "failed";
         const error = msg.blocks?.find(block => block.type === "codex_error")?.message;
         thread.items.push({ id: msg.id, role: "assistant", text: msg.text || error || "", status,
-          model: msg.via?.model || "", steps: [], at });
+          model: msg.via?.model || "", steps: (msg.dispatchSteps || []).map(step => subagentToolLabel(step.name, step.input)), at });
         if (msg.via?.model) thread.model = msg.via.model;
       }
     }
@@ -7275,7 +8096,15 @@ function subtaskVendorName(s) {
 }
 
 function subtaskCurrentModel(conversationId, itemId, s) {
-  return subtaskThreads.get(subtaskKey(conversationId, itemId))?.model || s?.followupModel || s?.model || "";
+  if (s?.followupModel) return s.followupModel;
+  const profile = subtaskProfile(s);
+  const lastModel = subtaskThreads.get(subtaskKey(conversationId, itemId))?.model;
+  const originalModel = s?.origin?.model || s?.model;
+  if (profile?.provider === "antigravity") {
+    const model = originalModel || lastModel || profile.opusModel || profile.sonnetModel || profile.haikuModel || "";
+    return /^gemini(?:-|$)/i.test(model) ? "gemini-4-hydrogen" : model;
+  }
+  return lastModel || originalModel || "";
 }
 
 /* 编队卡这一行报的是「现在接着这个子任务的是谁」：子任务页里换过模型，行尾的
@@ -7670,6 +8499,11 @@ function renderSubtaskThreadItem(item, s, settled) {
   if (who) sig.appendChild(makeSubtaskChip(who));
   if (item.steps?.length) sig.append(`· 做了 ${item.steps.length} 步`);
   entry.appendChild(sig);
+  if (item.steps?.length) {
+    const list = subtaskStepsList(item.steps, { running: item.status === "running" });
+    list.hidden = !(item.stepsOpen ?? item.status === "running");
+    entry.append(subtaskStepsToggle(list, item.steps.length, open => { item.stepsOpen = open; }), list);
+  }
   if (item.resumed === false) {
     const note = document.createElement("div");
     note.className = "stv-note";
@@ -7677,7 +8511,6 @@ function renderSubtaskThreadItem(item, s, settled) {
     entry.appendChild(note);
   }
   if (item.status === "running") {
-    if (item.steps?.length) entry.appendChild(subtaskStepsList(item.steps, { running: true, limit: 3 }));
     const typing = document.createElement("div");
     typing.className = "typing";
     typing.innerHTML = "<span></span><span></span><span></span>";
@@ -7870,7 +8703,7 @@ function pumpSubtaskThread(thread) {
   const s = card?.state.get(thread.itemId);
   if (!s || !subtaskItemSettled(s) || !subtaskCanFollowUp(s)) return;
   const item = thread.queue[0];
-  const model = thread.model || s.model || null;
+  const model = subtaskCurrentModel(thread.conversationId, thread.itemId, s) || null;
   const history = thread.items
     .filter((entry) => entry !== item
       && ((entry.role === "user" && entry.status === "sent")
@@ -7935,13 +8768,20 @@ function handleSubtaskEvent(ev) {
   const thread = subtaskThreads.get(subtaskKey(ev.conversationId, ev.subtaskId));
   const reply = thread?.items.find((item) => item.id === `${ev.requestId}_reply`);
   if (!reply) return;
+  if (Array.isArray(ev.steps) && reply.status === "running") {
+    reply.steps = ev.steps.map(step => subagentToolLabel(step.name, step.input));
+  }
   if (ev.type === "subtask_started") {
     if (ev.model) reply.model = ev.model;
     if (typeof ev.resumed === "boolean") reply.resumed = ev.resumed;
     if (thread.inflight?.requestId === ev.requestId) thread.inflight.acknowledged = true;
     persistSubtaskPending(thread.conversationId);
   } else if (ev.type === "subtask_step") {
-    if (reply.status === "running") reply.steps.push(subagentToolLabel(ev.name, ev.input));
+    if (reply.status === "running") {
+      const label = subagentToolLabel(ev.name, ev.input);
+      if (Number.isInteger(ev.stepIndex) && ev.stepIndex >= 0) reply.steps[ev.stepIndex] = label;
+      else reply.steps.push(label);
+    }
   } else if (SUBTASK_TERMINAL_EVENTS[ev.type]) {
     if (reply.status !== "running") return;
     reply.status = SUBTASK_TERMINAL_EVENTS[ev.type];
@@ -8154,6 +8994,8 @@ function handleEvent(ev) {
   // 也不进主对话那套回合、完成提醒和会话状态点的逻辑
   if (typeof ev.type === "string" && ev.type.startsWith("subtask_")) { handleSubtaskEvent(ev); return; }
 
+  if (typeof handleOrchestratorEvent === "function" && handleOrchestratorEvent(ev)) return;
+
   if (ev.type === "sessions_snapshot") { applySessionsSnapshot(ev); return; }
 
   if ((["done", "stopped", "error"].includes(ev.type)
@@ -8302,6 +9144,21 @@ function handleEvent(ev) {
       pendingRequestDraft = null;
       clearTimeout(requestRetryTimer);
       requestRetryTimer = null;
+    }
+    if (
+      ev.userMessageId
+      && ev.displayText
+      && !messagesEl.querySelector(`.msg-user[data-user-message-id="${cssEscapeValue(ev.userMessageId)}"]`)
+    ) {
+      resetAssistantState();
+      addMessage("user", ev.displayText, undefined, ev.userMessageId, { sourceChannel: ev.sourceChannel });
+      messageLog.push({
+        id: ev.userMessageId,
+        role: "user",
+        text: ev.displayText,
+        cost: null,
+        ...(ev.sourceChannel ? { sourceChannel: ev.sourceChannel } : {}),
+      });
     }
     activeRequestId = ev.userMessageId || activeRequestId;
     setGenerating(true);
@@ -8651,7 +9508,13 @@ function handleEvent(ev) {
   if (ev.type === "user" && isToolResultEvent(ev)) {
     subagentIngest(ev);   // 派生的 tool_result → 该分支合流
     for (const b of ev.message?.content ?? []) {
-      if (b?.type === "tool_result") markToolSettled(b.tool_use_id, b.is_error);
+      if (b?.type === "tool_result") {
+        markToolSettled(b.tool_use_id, b.is_error);
+        if (assistantEl && assistantBlocks.some(block => block.id === b.tool_use_id && isOrchestratorDispatchTool(block.name))) {
+          assistantBlocks.push({ type: "ticket_receipt", raw: cloneJson(b) });
+          bindInlineTicketToolResult(assistantEl, b.tool_use_id, b.content, b.is_error === true);
+        }
+      }
     }
     cleanupRunningTools();
     return;
@@ -8686,6 +9549,7 @@ function handleEvent(ev) {
     assistantBlocks.push(block);
     const body = assistantEl.querySelector(".msg-body");
     appendAssistantBlock(body, block);
+    applyToolFailuresFromBlocks(body, [block]);
     reanchorGenChip();
     scrollBottom();
     return;
@@ -8696,8 +9560,15 @@ function handleEvent(ev) {
   if (ev.type === "result") {
     // 先收尾再保存快照，避免历史恢复把无结果的前台任务重新算作运行中。
     const resultRequestId = ev.userMessageId ?? activeRequestId;
-    const resultWasStopped = stopRequested && resultRequestId && resultRequestId === activeRequestId;
+    const resultIsPartial = ev.provider === "antigravity" && ev.status === "partial";
+    const resultWasStopped = !resultIsPartial && stopRequested && resultRequestId && resultRequestId === activeRequestId;
     settleRunningSquadTasks(resultWasStopped ? "已停止" : "已结束，未收到结果", resultRequestId, !resultWasStopped);
+    if (resultIsPartial) {
+      const notice = { type: "antigravity_partial", message: ev.text, details: ev.details, userMessageId: resultRequestId };
+      assistantBlocks.push(notice);
+      if (!assistantEl) { removeTyping(); assistantEl = addMessage("assistant", ""); }
+      appendAssistantBlock(assistantEl.querySelector(".msg-body"), notice);
+    }
     const savedText = assistantTxt;
     const savedBlocks = cloneJson(assistantBlocks);
     // 后台任务可能晚于主回复结束；之后的完成信号也要写回这份历史快照。
@@ -8715,7 +9586,8 @@ function handleEvent(ev) {
     }
     resetAssistantState();
     if (savedText || savedBlocks?.length) {
-      messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status: resultWasStopped ? "stopped" : "complete" });
+      const status = resultWasStopped ? "stopped" : resultIsPartial ? "partial" : "complete";
+      messageLog.push({ id: genId(), role: "assistant", text: savedText, blocks: savedBlocks, raw: savedRawMessages, events: savedEvents, cost: resultCost, status });
       saveCurrentConversation();
     }
     return;
@@ -8734,7 +9606,11 @@ function handleEvent(ev) {
     clearAskUserQuestion();
     cleanupRunningTools();
     settleRunningSquadTasks("已中断", ev.userMessageId ?? activeRequestId);
-    showInlineError(ev.text?.trim() || "发生错误");
+    if (ev.provider === "antigravity") {
+      showInlineError(ev.text?.trim() || "发生错误", { ...ev, userMessageId: ev.userMessageId ?? activeRequestId });
+    } else {
+      showInlineError(ev.text?.trim() || "发生错误");
+    }
     if (!activeRequestId || ev.userMessageId === activeRequestId) {
       finishGenerationAfterError(ev.userMessageId ?? null);
     }
@@ -8751,11 +9627,19 @@ function handleEvent(ev) {
 }
 
 // ── DOM helpers ───────────────────────────────────────────
-function addMessage(role, text, imageUrls) {
+function addMessage(role, text, imageUrls, id, meta = null) {
+  messagesEl.querySelector?.(".fellow-empty-hero")?.remove();
   const wrap = document.createElement("div");
   wrap.className = `msg msg-${role}`;
+  if (id && role === "user") wrap.dataset.userMessageId = id;
   const body = document.createElement("div");
   body.className = "msg-body";
+  if (role === "user" && meta?.sourceChannel === "wechat") {
+    const badge = document.createElement("div");
+    badge.className = "msg-source-badge";
+    badge.textContent = "微信";
+    body.appendChild(badge);
+  }
   if (imageUrls?.length) {
     const imgRow = document.createElement("div");
     imgRow.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;";
@@ -8782,6 +9666,9 @@ function addMessage(role, text, imageUrls) {
 }
 
 function makeToolEl(tool) {
+  if (typeof isOrchestratorDispatchTool === "function" && isOrchestratorDispatchTool(tool.name)) {
+    return makeInlineTicketCardEl(tool);
+  }
   const el = document.createElement("div");
   el.className = "tool-call";
   el.dataset.toolId = tool.id;
@@ -8951,15 +9838,114 @@ messagesEl.addEventListener("scroll", () => {
   followLatestMessage = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop <= 48;
   updateJumpToLatest();
 }, { passive: true });
-/* 回答里的链接一律不许就地跳。这一页是被主窗口 iframe 套着的，跳走就等于整个
-   对话界面被换成那个网页，而且没有后退可按——http 链接如此，模型贴的 file://
-   更是如此。真要用系统浏览器打开得让父窗口转一手 Tauri 的 shell，那是另一件事；
-   这里先保证不会把人从对话里弄丢。 */
+
+function makeTurnAction(kind, userMessageId) {
+  const row = document.createElement("div");
+  row.className = "msg-turn-action";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.turnAction = kind;
+  if (userMessageId) button.dataset.userMessageId = userMessageId;
+  button.textContent = kind === "retry" ? "准备重试" : "核对结果";
+  const status = document.createElement("span");
+  status.className = "msg-turn-action-status";
+  status.setAttribute("role", "status");
+  row.append(button, status);
+  return row;
+}
+
+function canPrepareTurnAction(status) {
+  if (isGenerating || resetRequested) {
+    status.textContent = "请等当前回复结束。";
+    return false;
+  }
+  if (hasComposerDraft(captureComposerDraft())) {
+    status.textContent = "请先处理输入框里的草稿。";
+    promptEl.focus();
+    return false;
+  }
+  return true;
+}
+
+async function prepareTurnAction(button) {
+  const retry = button.dataset.turnAction === "retry";
+  const status = button.parentElement.querySelector(".msg-turn-action-status");
+  if (!canPrepareTurnAction(status)) return;
+  const owner = currentConvId;
+  const requestId = button.dataset.userMessageId;
+  let original = requestId && messageLog.find(message => message.id === requestId && message.role === "user");
+  if (retry && requestId && !original?.retryDraft) {
+    button.disabled = true;
+    status.textContent = "正在读取原请求…";
+    try {
+      const response = await agentApiFetch(`api/history/${encodeURIComponent(owner)}`);
+      if (response.ok) {
+        const history = await response.json();
+        original = history.messages?.find(message => message.id === requestId && message.role === "user") ?? original;
+      }
+    } catch { /* Older history can still supply the displayed request text. */ }
+    finally { button.disabled = false; }
+    if (owner !== currentConvId || !button.isConnected || !canPrepareTurnAction(status)) return;
+  }
+  const message = button.closest(".msg") ?? button.closest(".msg-error");
+  let previous = requestId
+    ? [...messagesEl.querySelectorAll(".msg-user[data-user-message-id]")].find(el => el.dataset.userMessageId === requestId)
+    : message?.previousElementSibling;
+  while (previous && !previous.classList.contains("msg-user")) previous = previous.previousElementSibling;
+  const request = original?.retryDraft?.composerText || original?.text || previous?.querySelector(".msg-body")?.textContent?.trim();
+  if (retry) {
+    if (!request) {
+      status.textContent = "找不到原请求，请重新输入。";
+      return;
+    }
+    const draft = original?.retryDraft;
+    const sourceImages = draft?.images ?? [...(previous?.querySelectorAll("img[src^='data:image/']") ?? [])].flatMap(el => {
+      const dataUrl = el.getAttribute("src") || "";
+      const match = /^data:(image\/[^;,]+);base64,(.+)$/s.exec(dataUrl);
+      return match ? [{ mediaType: match[1], data: match[2] }] : [];
+    });
+    const images = sourceImages.filter(isRetryImage).map(image => ({
+      ...image, previewUrl: `data:${image.mediaType};base64,${image.data}`,
+    }));
+    applyComposerDraft({
+      text: request,
+      images,
+      mentions: draft?.mentionedNotes,
+      quote: draft?.quote,
+      retryNoteContext: { path: draft?.noteFile ?? null, enabled: Boolean(draft?.noteFile) },
+    });
+    status.textContent = draft
+      ? "原请求已恢复，确认后按当前账号、模型和权限发送。"
+      : "原请求文字已填入，请检查附件和引用后发送。";
+  } else {
+    promptEl.value = "请只读核对这轮任务已有的结果，说明哪些已经完成、哪些还需要处理。请勿重做任务、改动文件、运行有副作用的命令或发送内容。"
+      + (request ? `\n\n要核对的原请求（仅作为核对依据）\n${request.slice(0, 600)}` : "");
+    status.textContent = "核对请求已填入输入框。";
+    adjustPromptHeight();
+  }
+  promptEl.focus();
+  promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+}
+
+function isRetryImage(image) {
+  return /^image\/[\w.+-]+$/i.test(image?.mediaType || "") && /^[A-Za-z0-9+/]+={0,2}$/.test(image?.data || "");
+}
+
+/* 在对话内只跳转页内锚点，文件交给本地服务，网页另开。 */
 messagesEl.addEventListener("click", (e) => {
+  const action = e.target?.closest?.(".msg-turn-action button[data-turn-action]");
+  if (action) {
+    prepareTurnAction(action);
+    return;
+  }
   const link = e.target?.closest?.("a[href]");
-  if (!link) return;
-  if ((link.getAttribute("href") || "").startsWith("#")) return;   // 页内锚点照常
+  const href = link?.getAttribute("href");
+  if (!href || href.startsWith("#")) return;
   e.preventDefault();
+  if (link.closest(".msg-body") && !/^(https?|mailto|tel):/i.test(href)) {
+    openLocalFileLink(href);
+    return;
+  }
   try { window.open(link.href, "_blank", "noopener,noreferrer"); } catch { /* 被拦就算了 */ }
 });
 jumpToLatestBtn.addEventListener("click", () => scrollBottom(true));
@@ -9204,6 +10190,7 @@ popupEl.addEventListener("mousedown", (e) => {
 
 // ── Input events ──────────────────────────────────────────
 function updateComposerPopup() {
+  clearEmptyRetryContext();
   promptEl.style.height = "36px";
   promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + "px";
 
@@ -9287,6 +10274,9 @@ function takeRequestDraft(textOverride = null, { consumeComposer = textOverride 
   const rawText = String(textOverride ?? promptEl.value).trim();
   if (!rawText) return null;
   const providerDispatch = parseProviderDispatchText(rawText);
+  const originalContext = consumeComposer ? retryNoteContext : null;
+  const noteContext = originalContext ? (originalContext.enabled ? originalContext.path : null)
+    : (noteContextEnabled ? currentNoteFile : null);
   const draft = {
     composerText: rawText,
     text: providerDispatch?.task || rawText,
@@ -9295,9 +10285,7 @@ function takeRequestDraft(textOverride = null, { consumeComposer = textOverride 
     dispatchReason: providerDispatch ? "用户通过 > 明确指定厂商" : null,
     mentionedNotes: consumeComposer ? [...selectedMentionNotes.values()] : [],
     images: consumeComposer ? pendingImages.map((image) => ({ ...image })) : [],
-    noteFile: noteFile !== undefined
-      ? noteFile
-      : (currentNoteFile && noteContextEnabled ? currentNoteFile : null),
+    noteFile: noteFile === undefined ? noteContext : noteFile,
     quote: consumeComposer && quotedText ? {
       text: quotedText,
       section: quotedSection,
@@ -9306,8 +10294,9 @@ function takeRequestDraft(textOverride = null, { consumeComposer = textOverride 
     } : null,
     model: selectedModel,
     permissionMode: selectedPermissionMode,
-    effort: selectedEffort,
+    ...requestThinkingSettings(),
     profileId: activeProfileId(),
+    includeRetryContext: getActiveProfile()?.provider === "antigravity" || providerDispatch?.profile.provider === "antigravity",
     conversationId: currentConvId,
   };
 
@@ -9322,6 +10311,10 @@ function takeRequestDraft(textOverride = null, { consumeComposer = textOverride 
     quotedPrefix = null;
     quotedSuffix = null;
     quoteChip.classList.remove("visible");
+    if (retryNoteContext) {
+      retryNoteContext = null;
+      renderNoteContext();
+    }
     // 草稿被消费掉了 —— 生成中的话主按钮此刻应该让位给"停止"
     syncComposerAction();
   }
@@ -9363,8 +10356,10 @@ function prepareRequestDraft(draft) {
 
 function requestPayloadForDraft(draft, deliveryMode = null) {
   prepareRequestDraft(draft);
+  const convRole = typeof roleForConversationId === "function" ? roleForConversationId(draft.conversationId) : "normal";
   const payload = {
     conversationId: draft.conversationId,
+    ...(convRole && convRole !== "normal" ? { conversationRole: convRole } : {}),
     userMessageId: draft.userMessageId,
     displayText: draft.displayText,
     composerText: draft.composerText,
@@ -9373,8 +10368,15 @@ function requestPayloadForDraft(draft, deliveryMode = null) {
     permissionMode: draft.permissionMode,
     effort: draft.effort,
     profileId: draft.profileId,
+    ...(draft.codexSpeed ? { codexSpeed: draft.codexSpeed } : {}),
   };
   if (deliveryMode) payload.deliveryMode = deliveryMode;
+  if (draft.includeRetryContext) payload.retryDraft = {
+    composerText: draft.composerText,
+    mentionedNotes: draft.mentionedNotes.map(({ path, title }) => ({ path, title })),
+    quote: draft.quote,
+    noteFile: draft.noteFile,
+  };
   if (draft.dispatchProvider) {
     payload.dispatchProvider = draft.dispatchProvider;
     payload.dispatchReason = draft.dispatchReason;
@@ -9498,7 +10500,7 @@ function handleBackgroundDeliveryEvent(ev) {
 }
 
 function settleAcknowledgedSteering(ev) {
-  if (ev.type !== "request_ack" || !["steering_applied", "complete", "stopped", "error"].includes(ev.state)) return;
+  if (ev.type !== "request_ack" || !["steering_applied", "complete", "partial", "stopped", "error"].includes(ev.state)) return;
   const state = conversationDeliveryState(ev.conversationId || currentConvId);
   const index = state.queue.findIndex(item => item.id === ev.userMessageId);
   if (index < 0) return;
@@ -9945,7 +10947,7 @@ function materializeSteeringItem(item, event) {
   blockMap = {};
   prevTurnTexts = [];
 
-  addMessage("user", displayText, imagePreviewUrls);
+  addMessage("user", displayText, imagePreviewUrls, id);
   messageLog.push({ id, role: "user", text: displayText, cost: null });
   saveCurrentConversation();
 }
@@ -9978,7 +10980,7 @@ function upsertSteeringFromEvent(raw, state = { queue: steeringQueue, removals: 
       quote: null,
       model: selectedModel,
       permissionMode: selectedPermissionMode,
-      effort: selectedEffort,
+      ...requestThinkingSettings(),
       profileId: activeProfileId(),
       conversationId: event.conversationId,
       userMessageId: event.id,
@@ -10184,7 +11186,7 @@ function dispatchRequestDraft(draft) {
     // points to the old AI message element. Clear it so the upcoming response is
     // appended after this new user message, not inside the old AI bubble.
     resetAssistantState();
-    addMessage("user", displayText, imagePreviewUrls);
+    addMessage("user", displayText, imagePreviewUrls, userMessageId);
     scrollBottom(true);
     messageLog.push({ id: userMessageId, role: "user", text: displayText, cost: null });
     draft.rendered = true;
@@ -10270,6 +11272,7 @@ function submitRequest(textOverride = null, options = {}) {
 }
 
 function send() {
+  if (promptEl.readOnly) return;
   return submitRequest(null, { consumeComposer: true });
 }
 
@@ -10478,20 +11481,6 @@ sendBtn.addEventListener("click", () => {
   if (composerAction() === "stop") sendStopRequest();
   else send();
 });
-messagesEl.addEventListener("click", (e) => {
-  // AI 提到本地文件时会写成 markdown 链接，marked 原样把路径塞进 href——
-  // 那从来不是能在 webview 里跳转的 URL，http(s)/mailto/tel 之外一律当本地路径拦下来，
-  // 转发到后端用系统默认程序打开（等价于双击这个文件）。
-  const link = e.target.closest?.(".msg-body a[href]");
-  if (link) {
-    const href = link.getAttribute("href") || "";
-    if (href && !/^(https?|mailto|tel):/i.test(href) && !href.startsWith("#")) {
-      e.preventDefault();
-      openLocalFileLink(href);
-    }
-  }
-});
-
 async function openLocalFileLink(href) {
   try {
     const res = await fetch("api/open-file", {
@@ -10552,6 +11541,18 @@ if (
 }
 localStorage.setItem("effortDefaultVersion", effortDefaultVersion);
 let selectedEffort = localStorage.getItem("effort") || "high";
+let selectedCodexSpeed = null;
+
+function effectiveCodexSpeed() {
+  return selectedCodexSpeed === "fast" && selectedCodexModel()?.fast === true ? "fast" : "standard";
+}
+
+function requestThinkingSettings() {
+  if (getActiveProfile()?.provider === "codex") {
+    return { effort: effectiveEffort(effortLevelsForCurrentModel()), codexSpeed: effectiveCodexSpeed() };
+  }
+  return { effort: selectedEffort === "ultra" ? "max" : selectedEffort };
+}
 
 /* ══════════════════════════════════════════════════════════
    模型和推理档位跟着对话走
@@ -10602,6 +11603,7 @@ function rememberConvModelPrefs() {
   convModelPrefs.set(currentConvId, {
     model: selectedModel,
     effort: selectedEffort,
+    ...(selectedCodexSpeed ? { codexSpeed: selectedCodexSpeed } : {}),
     // 记解析后的那个 id，不是 _profileData 里可能已经失效的那个
     profileId: activeProfileId(),
   });
@@ -10617,13 +11619,27 @@ function rememberConvModelPrefs() {
  * 刻意带上原来的 date：不带的话服务端会盖一个新的，换个模型就把这条对话顶到
  * 历史列表最前面去了。
  */
-function persistConvPrefsToServer(owner = currentConvId, pref = { model: selectedModel, effort: selectedEffort, profileId: activeProfileId() }) {
-  if (!owner || _historyCache === null) return;
+function persistConvPrefsToServer(owner = currentConvId, pref = convModelPrefs.get(owner)) {
+  if (!owner || !pref) return;
+  if (String(owner).startsWith("wrk_")) {
+    const ticket = ticketForWorkerConversation(owner);
+    if (!ticket || !pref.profileId) return;
+    const desired = ticket.nextConfig || ticket;
+    if (desired.profileId === pref.profileId && desired.model === pref.model && desired.effort === pref.effort) return;
+    void orchestratorRequest(`tickets/${encodeURIComponent(ticket.id)}/config`, {
+      profileId: pref.profileId, model: pref.model, effort: pref.effort,
+    }).then(result => upsertOrchestratorTicket(result.ticket)).catch(error => {
+      if (currentConvId === owner) showInlineError(error.message);
+    });
+    return;
+  }
+  if (_historyCache === null) return;
   const entry = _historyCache.find(h => h.id === owner);
   if (!entry) return;
-  if (entry.model === pref.model && entry.effort === pref.effort && entry.profileId === pref.profileId) return;
+  if (entry.model === pref.model && entry.effort === pref.effort && entry.profileId === pref.profileId
+      && entry.codexSpeed === pref.codexSpeed) return;
   Object.assign(entry, pref);
-  fetch(`api/history/${owner}`, {
+  agentApiFetch(`api/history/${owner}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...pref, date: entry.date }),
@@ -10642,6 +11658,7 @@ function adoptServerConvPrefs(conv) {
   const pref = {};
   if (typeof conv.model === "string" && conv.model) pref.model = conv.model;
   if (typeof conv.effort === "string" && conv.effort) pref.effort = conv.effort;
+  if (conv.codexSpeed === "standard" || conv.codexSpeed === "fast") pref.codexSpeed = conv.codexSpeed;
   /* 账号可能已经被删了。指着一个不存在的 id 会让 applyConvModelPrefs 每次切进来
      都白判断一次「它还在吗」，不如不记——那条路会就地退回当前账号。 */
   if (conv.profileId && _profileData?.profiles?.some(p => p.id === conv.profileId)) {
@@ -10671,6 +11688,7 @@ function forgetProfileFromConvPrefs(profileId) {
 function applyConvModelPrefs() {
   const pref = currentConvId ? convModelPrefs.get(currentConvId) : null;
   selectedEffort = pref?.effort ?? localStorage.getItem("effort") ?? "high";
+  selectedCodexSpeed = pref?.codexSpeed === "fast" || pref?.codexSpeed === "standard" ? pref.codexSpeed : null;
   /* 账号得赶在模型前面认下来——模型清单是它算出来的，顺序反了会先照着上一个
      对话的厂商画一遍。这里刻意不 PUT 服务端：那条路会 clearSession，而服务端
      每条消息都读请求里的 profileId，它那份只是消息没带时的兜底，无需同步。
@@ -10698,11 +11716,29 @@ const modelLabel    = document.getElementById("model-label");
 const effortLabelInline = document.getElementById("effort-label-inline");
 const effortView        = document.getElementById("effort-view");
 const effortBackBtn     = document.getElementById("effort-back-btn");
+const codexSpeedBtn     = document.getElementById("codex-speed-btn");
+const codexSpeedLabel   = document.getElementById("codex-speed-label");
 const permissionBtn      = document.getElementById("permission-btn");
 const permissionDropdown = document.getElementById("permission-dropdown");
 const permissionLabel    = document.getElementById("permission-label");
 
+function updateCodexSpeedDisplay() {
+  const active = getActiveProfile()?.provider === "codex";
+  const supportsFast = active && selectedCodexModel()?.fast === true;
+  const speed = active ? effectiveCodexSpeed() : "standard";
+  codexSpeedBtn.hidden = !active;
+  codexSpeedBtn.disabled = !supportsFast;
+  codexSpeedBtn.setAttribute("aria-pressed", String(speed === "fast"));
+  const label = speed === "fast" ? "Fast" : "Standard";
+  codexSpeedLabel.textContent = label;
+  codexSpeedBtn.setAttribute("aria-label", `响应速度：${label}`);
+  codexSpeedBtn.title = supportsFast
+    ? (speed === "fast" ? "切换到 Standard" : "切换到 Fast，可能消耗更多额度")
+    : "当前模型仅可用 Standard";
+}
+
 function updateEffortDisplay() {
+  updateCodexSpeedDisplay();
   const levels = effortLevelsForCurrentModel();
   // 落到实处的那一档。selectedEffort 本身不改也不写回 localStorage——
   // 那是用户跨账号的偏好，不该被某个不支持它的模型抹掉。
@@ -10726,7 +11762,7 @@ function updateEffortDisplay() {
   const opt = shown ? effortView.querySelector(`.effort-option[data-effort="${shown}"]`) : null;
   if (effortLabelInline) effortLabelInline.textContent = opt ? opt.dataset.label : (shown ?? "");
   effortView.querySelectorAll(".effort-option").forEach(el => {
-    const usable = !levels || levels.includes(el.dataset.effort);
+    const usable = levels ? levels.includes(el.dataset.effort) : el.dataset.effort !== "ultra";
     el.hidden = !usable;
     el.classList.toggle("active", el.dataset.effort === shown);
     el.setAttribute("aria-selected", el.dataset.effort === shown ? "true" : "false");
@@ -10843,9 +11879,20 @@ effortView.addEventListener("mousedown", (e) => {
   const opt = e.target.closest(".effort-option");
   if (!opt) return;
   e.preventDefault();
+  const levels = effortLevelsForCurrentModel();
+  if (opt.hidden || (levels && !levels.includes(opt.dataset.effort))) return;
   selectedEffort = opt.dataset.effort;
   rememberConvModelPrefs();   // 同上：只记在这个对话名下，不动全局默认
   updateEffortDisplay();
+  closeHeaderPickers();
+});
+
+codexSpeedBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (codexSpeedBtn.disabled || codexSpeedBtn.hidden) return;
+  selectedCodexSpeed = effectiveCodexSpeed() === "fast" ? "standard" : "fast";
+  rememberConvModelPrefs();
+  updateCodexSpeedDisplay();
   closeHeaderPickers();
 });
 
@@ -10887,15 +11934,16 @@ const historyBackdrop = document.getElementById("history-backdrop");
 
 async function deleteConversation(id) {
   try {
-    const response = await fetch(`api/history/${id}`, { method: "DELETE" });
-    if (!response.ok) throw new Error("删除对话失败，请重试。");
+    const httpFetch = String(id).startsWith("wrk_") || id === "strategist" ? agentApiFetch : fetch;
+    const response = await httpFetch(`api/history/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || "删除对话失败，请重试。");
   } catch (error) {
     showInlineError(error.message || "删除对话失败，请重试。");
     return false;
   }
   /* 删掉的对话要从所有地方消失，不然它还挂在未读/最近用过里，
      下一轮 switcherEntries 会再给它分配一个槽位，看起来像删不掉。 */
-  deletedConversationIds.add(id);
+  if (!String(id).startsWith("wrk_")) deletedConversationIds.add(id);
   try { localStorage.removeItem(`inkfellow.subtask.pending.${id}`); } catch { }
   if (subtaskView?.conversationId === id) closeSubtaskView({ reveal: false });
   for (const [key, thread] of subtaskThreads) {
@@ -11085,6 +12133,7 @@ function captureComposerDraft() {
     images: pendingImages.map(image => ({ ...image })),
     mentions: [...selectedMentionNotes.values()],
     quote: quotedText ? { text: quotedText, section: quotedSection, prefix: quotedPrefix, suffix: quotedSuffix } : null,
+    retryNoteContext: retryNoteContext ? { ...retryNoteContext } : null,
   };
 }
 
@@ -11093,7 +12142,10 @@ function hasComposerDraft(draft) {
 }
 
 function restoreComposerDraft(id) {
-  const draft = conversationDrafts.get(id);
+  applyComposerDraft(conversationDrafts.get(id));
+}
+
+function applyComposerDraft(draft) {
   promptEl.value = draft?.text || "";
   pendingImages = (draft?.images || []).map(image => ({ ...image }));
   renderImageChip();
@@ -11107,6 +12159,8 @@ function restoreComposerDraft(id) {
   quoteChip.classList.toggle("visible", Boolean(quotedText));
   quoteTextEl.textContent = quotedText ? (quotedText.length > 55 ? quotedText.slice(0, 55) + "…" : quotedText) : "";
   quoteLinesEl.textContent = quotedText ? `(${quotedText.split("\n").filter(line => line.trim()).length} 行)` : "";
+  retryNoteContext = draft?.retryNoteContext ? { ...draft.retryNoteContext } : null;
+  renderNoteContext();
   hidePopup();
   adjustPromptHeight();
 }
@@ -11269,6 +12323,7 @@ function renderSessionTabs() {
 
   const html = entries.map((id, index) => {
     if (!id) return "";
+    if (typeof isPinnedOrWorkerConversation === "function" && isPinnedOrWorkerConversation(id)) return "";
     const isCurrent = id === activeId;
     const state = sessionBadgeState(id);
     const title = convTitleOf(id);
@@ -11365,7 +12420,7 @@ function switcherIsOpen() {
  * 空壳只是个占位符，不该在标签栏里占位置，也不该拦着你新建。
  */
 function isBlankConversation(id) {
-  if (!id) return false;
+  if (!id || isPinnedOrWorkerConversation(id)) return false;
   if (sessionsRunning.has(id) || sessionsAwaiting.has(id) || sessionUnread.has(id)) return false;
   if (_historyCache?.some(h => h.id === id)) return false;   // 已经存进历史 = 说过话了
   if (id === currentConvId) return messageLog.length === 0 && !hasComposerDraft(captureComposerDraft());
@@ -11561,15 +12616,25 @@ function adjustPromptHeight() {
   syncComposerAction();   // 这个文件里同步发送按钮状态的函数叫这个名字
 }
 
-async function loadConversation(conv) {
+async function loadConversation(conv, { restoreCurrent = false } = {}) {
   if (!conv || !conv.id || deletedConversationIds.has(conv.id)) return;
   const switchVersion = ++conversationSwitchVersion;
-  if (conv.id === currentConvId) {
+  if (conv.id === currentConvId && !restoreCurrent) {
     closeSwitcher();
     return;
   }
 
   const targetId = conv.id;
+  if (String(targetId).startsWith("wrk_") && !ticketForWorkerConversation(targetId)) {
+    try {
+      const result = await orchestratorRequest(`tickets/${encodeURIComponent(targetId.slice(4))}`);
+      upsertOrchestratorTicket(result.ticket);
+    } catch (error) {
+      if (switchVersion === conversationSwitchVersion) showInlineError(error.message);
+      return;
+    }
+    if (switchVersion !== conversationSwitchVersion) return;
+  }
   const cached = convViewCache.get(targetId);
   const stale = convStaleIds.has(targetId);
   const wasCached = !!cached && typeof cached.html === "string" && !stale;
@@ -11577,15 +12642,18 @@ async function loadConversation(conv) {
   // 较早的请求即使更晚返回，也不能覆盖用户最后选择的会话。
   if (!wasCached && (!conv.messages || stale)) {
     try {
-      const res = await fetch(`api/history/${targetId}`);
+      const res = await agentApiFetch(`api/history/${targetId}`);
       if (res.ok) {
         const loaded = await res.json();
         if (loaded.id === targetId && Array.isArray(loaded.messages)) conv = loaded;
         else conv = { ...conv, messages: null };
+      } else if (res.status === 404 && (targetId === STRATEGIST_CONV_ID || ticketForWorkerConversation(targetId))) {
+        conv = { ...conv, messages: [] };
       } else conv = { ...conv, messages: null };
     } catch { conv = { ...conv, messages: null }; }
   }
   if (switchVersion !== conversationSwitchVersion || deletedConversationIds.has(targetId)) return;
+  if (restoreCurrent && (currentConvId !== targetId || messageLog.length || isGenerating)) return;
   if (!wasCached && !conv.messages && !cached) {
     // 只有草稿、没有发过消息的会话还没有服务端历史。
     if (conversationDrafts.has(targetId)) conv = { ...conv, messages: [] };
@@ -11650,12 +12718,14 @@ async function loadConversation(conv) {
       events: m.events ?? null,
       cost: m.cost ?? null,
       status: m.status ?? null,
+      ...(m.sourceChannel ? { sourceChannel: m.sourceChannel } : {}),
+      ...(m.retryDraft ? { retryDraft: m.retryDraft } : {}),
     }));
     let lastAssistantEl = null;
     for (const msg of (conv.messages || [])) {
       if (msg.subtask) continue;
       const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
-      const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text);
+      const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text, undefined, msg.id, { sourceChannel: msg.sourceChannel });
       if (hasAssistantBlocks) {
         renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
       }
@@ -11708,9 +12778,11 @@ async function loadConversation(conv) {
 function finishConversationSwitch(conv, { rebuilt = true } = {}) {
   pruneSettledSquads();
   updateJumpToLatest();
+  if (typeof syncStrategistChrome === "function") syncStrategistChrome();
   /* 本地没记录的（换了机器、清过缓存、或者早于 60 条上限被挤掉）先把服务端
      历史里那份接回来，下面这一串反推和 applyConvModelPrefs 才有东西可认。 */
-  adoptServerConvPrefs(conv);
+  const ticket = ticketForWorkerConversation(conv.id);
+  adoptServerConvPrefs(ticket ? { ...conv, ...ticket, ...ticket.nextConfig, id: conv.id } : conv);
   /* 必须赶在 applyConvModelPrefs() 之前取：那个函数对还没有记录的对话会当场
      把「此刻激活的账号」记成它的，取晚了就再也分不清「这个对话自己记着的
      厂商」和「上一个对话恰好用着的厂商」。 */
@@ -11803,6 +12875,7 @@ async function startNewConversation() {
 
   renderSessionTabs();
   renderSessionSwitcher();
+  if (typeof syncStrategistChrome === "function") syncStrategistChrome();
   resetRequested = true;
   sendResetRequest();
 }
@@ -11822,6 +12895,7 @@ async function openHistoryPanel() {
 }
 
 function closeHistoryPanel() {
+  activeHistoryRename?.cancel();
   historyDropdown.classList.remove("open");
   historyBackdrop.classList.remove("open");
 }
@@ -11882,75 +12956,106 @@ document.getElementById("action-sheet-rename").addEventListener("click", () => {
 });
 
 function startInlineRename(item, convId) {
+  if (activeHistoryRename?.convId === convId) {
+    activeHistoryRename.input.focus();
+    return;
+  }
+  activeHistoryRename?.cancel();
+  if (activeHistoryRename || !item || deletedConversationIds.has(convId)) return;
   const titleEl = item.querySelector(".history-item-title");
   if (!titleEl) return;
   const originalTitle = titleEl.textContent;
-  const actionsEl = item.querySelector(".history-item-actions");
-  const moreBtn = item.querySelector(".history-item-more");
-
-  const input = document.createElement("input");
-  input.className = "history-item-title-input";
+  const editor = document.createElement("div");
+  editor.className = "history-rename-editor";
+  editor.innerHTML = '<input class="history-item-title-input" aria-label="重命名对话" maxlength="120">'
+    + '<div class="history-rename-controls"><span>Enter 保存 · Esc 取消</span>'
+    + '<button type="button" data-rename-cancel>取消</button><button type="button" data-rename-save>保存</button></div>'
+    + '<div class="history-rename-error" role="alert" hidden></div>';
+  const input = editor.querySelector("input");
+  const saveBtn = editor.querySelector("[data-rename-save]");
+  const cancelBtn = editor.querySelector("[data-rename-cancel]");
+  const errorEl = editor.querySelector(".history-rename-error");
   input.value = originalTitle;
-  input.setAttribute("aria-label", "重命名对话");
-  titleEl.replaceWith(input);
-  if (actionsEl) actionsEl.style.visibility = "hidden";
-  if (moreBtn) moreBtn.style.visibility = "hidden";
-  input.focus();
-  input.select();
-
-  let committed = false;
-
+  titleEl.replaceWith(editor);
+  item.classList.add("renaming");
+  let saving = false;
+  let finished = false;
+  const finish = (title) => {
+    if (finished) return;
+    finished = true;
+    titleEl.textContent = title;
+    titleEl.title = title;
+    editor.replaceWith(titleEl);
+    item.classList.remove("renaming");
+    activeHistoryRename = null;
+  };
+  const cancel = () => { if (!saving) finish(originalTitle); };
   const commit = async () => {
-    if (committed) return;
-    committed = true;
-    const newTitle = input.value.trim() || originalTitle;
-    const newTitleEl = document.createElement("div");
-    newTitleEl.className = "history-item-title";
-    newTitleEl.textContent = newTitle;
-    input.replaceWith(newTitleEl);
-    if (actionsEl) actionsEl.style.visibility = "";
-    if (moreBtn) moreBtn.style.visibility = "";
-    if (newTitle !== originalTitle) {
+    if (saving || finished) return;
+    const title = input.value.trim();
+    if (!title || title.length > 120 || /[\r\n]/.test(title)) {
+      errorEl.textContent = "请输入 1–120 个字符的名称";
+      errorEl.hidden = false;
+      input.focus();
+      return;
+    }
+    if (title === originalTitle) { finish(originalTitle); return; }
+    saving = true;
+    input.disabled = saveBtn.disabled = cancelBtn.disabled = true;
+    saveBtn.textContent = "保存中…";
+    errorEl.hidden = true;
+    try {
+      const response = await agentApiFetch(`api/history/${convId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) throw new Error("save failed");
+      const saved = await response.json();
+      if (deletedConversationIds.has(convId)) { finish(originalTitle); return; }
+      const savedTitle = saved.title || title;
       const conv = _historyCache?.find(h => h.id === convId);
-      if (conv) {
-        conv.title = newTitle;
-        fetch(`api/history/${convId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(conv),
-        }).catch(() => {});
-      }
+      if (conv) conv.title = savedTitle;
+      historyMutationVersion += 1;
+      finish(savedTitle);
+      renderSessionSwitcher();
+    } catch {
+      errorEl.textContent = "保存失败，名称尚未确认。请重试";
+      errorEl.hidden = false;
+      saving = false;
+      input.disabled = saveBtn.disabled = cancelBtn.disabled = false;
+      saveBtn.textContent = "保存";
+      input.focus();
     }
   };
-
-  const cancel = () => {
-    if (committed) return;
-    committed = true;
-    const restoredEl = document.createElement("div");
-    restoredEl.className = "history-item-title";
-    restoredEl.textContent = originalTitle;
-    input.replaceWith(restoredEl);
-    if (actionsEl) actionsEl.style.visibility = "";
-    if (moreBtn) moreBtn.style.visibility = "";
-  };
-
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") { ev.preventDefault(); commit(); }
-    if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+  activeHistoryRename = { convId, input, cancel };
+  editor.addEventListener("click", ev => ev.stopPropagation());
+  input.addEventListener("keydown", ev => {
+    if (ev.isComposing || ev.keyCode === 229) return;
+    if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); void commit(); }
+    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel(); }
   });
-  input.addEventListener("blur", commit);
+  saveBtn.addEventListener("click", () => { void commit(); });
+  cancelBtn.addEventListener("click", cancel);
+  input.focus();
+  input.select();
 }
 
 function renderHistoryFromData(history) {
+  if (activeHistoryRename) return; // Background refresh must not destroy the editor.
   queueMicrotask(renderSessionBadges);   // 列表 innerHTML 刷完再补状态点
 
   const listEl = document.getElementById("history-list");
-  if (history.length === 0) {
-    listEl.innerHTML = '<div class="history-empty">暂无历史对话</div>';
+  const visibleHistory = (history || []).filter(conv => (
+    conv.role !== "strategist" && conv.role !== "worker"
+      && (typeof isPinnedOrWorkerConversation !== "function" || !isPinnedOrWorkerConversation(conv.id))
+  ));
+  const noteHtml = '<div class="history-purified-note">这里仅保留普通直聊；✦ Fellow 派出的所有后台任务均在「↳ 任务」执行台集中管理。</div>';
+  if (visibleHistory.length === 0) {
+    listEl.innerHTML = `${noteHtml}<div class="history-empty">暂无普通直聊记录</div>`;
     return;
   }
 
-  listEl.innerHTML = history.map(conv => {
+  listEl.innerHTML = noteHtml + visibleHistory.map(conv => {
     const isCurrent = conv.id === currentConvId;
     const msgCount = conv.messageCount ?? (conv.messages ? conv.messages.length : 0);
     return `<div class="history-item${isCurrent ? " current" : ""}" data-id="${conv.id}">
@@ -11980,6 +13085,7 @@ function renderHistoryFromData(history) {
 
   listEl.querySelectorAll(".history-item").forEach(item => {
     item.addEventListener("click", async (e) => {
+      if (item.classList.contains("renaming")) return;
       if (e.target.closest(".history-item-del") || e.target.closest(".history-item-rename") || e.target.closest(".history-item-more") || e.target.closest(".history-item-title-input")) return;
       const conv = history.find(h => h.id === item.dataset.id);
       if (conv) loadConversation(conv);
@@ -12044,36 +13150,836 @@ document.getElementById("btn-new")?.addEventListener("click", startNewConversati
 document.getElementById("history-close")?.addEventListener("click", closeHistoryPanel);
 historyBackdrop?.addEventListener("click", closeHistoryPanel);
 
-/* 打开就落在一个真实的对话上。以前 currentConvId 一直空到你发出第一条消息，
-   于是「常驻」标签栏在最常见的状态——刚打开——是空的：你明明能打字能发送、
-   右下角还挂着模型和档位，标签栏却说你不在任何对话里。发送的那一刻标签凭空
-   长出来，把「+」从 x=27 顶到 x=130，人正等着看回答，左上角先动一下。
+// ── 军师主控 + 后台工单看板 + 活任务卡片 ────────────────────────
+const STRATEGIST_CONV_ID = "strategist";
+const orchestratorTickets = new Map(); // ticketId -> ticket summary
+const orchestratorTicketByWorker = new Map(); // workerConversationId -> ticketId
+let ticketBoardOpen = false;
+let ticketStageFilter = "all"; // all | active | attention | done
+let workerStageReturnId = null;
+let ticketStageReturnFocus = null;
+let ticketStageInertSiblings = [];
+let clearingFinishedTickets = false;
+let hasCompleteTicketSnapshot = false;
+const clearedOrchestratorTicketIds = new Set();
 
-   顺带修掉一个旧毛病：没有 id 的这段时间里改模型档位是记不住的
-   （rememberConvModelPrefs 见空 id 直接 return），dispatchRequestDraft 里那句
-   「补记一次」就是在给这个打补丁。身份提前给了，补丁的前提也就不存在了。
+const TICKET_STATUS_LABEL = {
+  queued: "排队中",
+  running: "执行中",
+  needs_attention: "等你拍板",
+  completed: "已完成",
+  failed: "失败",
+  stopped: "已停止",
+  interrupted: "已中断",
+  stopping: "停止中",
+  partial: "结果待确认",
+};
 
-   这里不需要发 reset：冷启动 resetRequested 是 false，ws.onopen 走的是
-   resendPendingRequest 那条路，不会触发 reset_complete 往返。
-   也不怕排出一串空壳：startNewConversation 见当前就是空对话时只把光标送回
-   输入框，loadConversation 切走时 forgetConversationLocally 会收掉这个槽位。 */
+function isStrategistConversationId(id) {
+  if (!id) return false;
+  if (id === STRATEGIST_CONV_ID) return true;
+  return _historyCache?.find(h => h.id === id)?.role === "strategist";
+}
+
+function isWorkerConversationId(id) {
+  if (!id) return false;
+  if (String(id).startsWith("wrk_")) return true;
+  return orchestratorTicketByWorker.has(id) || _historyCache?.find(h => h.id === id)?.role === "worker";
+}
+
+function isPinnedOrWorkerConversation(id) {
+  return isStrategistConversationId(id) || isWorkerConversationId(id);
+}
+
+function roleForConversationId(id) {
+  if (isStrategistConversationId(id)) return "strategist";
+  if (isWorkerConversationId(id)) return "worker";
+  return "normal";
+}
+
+function isOrchestratorDispatchTool(name) {
+  const s = String(name || "");
+  return s === "dispatch_task" || /(?:__|:|_|\/)dispatch_task$/.test(s);
+}
+
+function ticketForWorkerConversation(convId) {
+  const tid = orchestratorTicketByWorker.get(convId);
+  if (tid && orchestratorTickets.has(tid)) return orchestratorTickets.get(tid);
+  if (String(convId || "").startsWith("wrk_")) {
+    const guess = String(convId).slice(4);
+    if (orchestratorTickets.has(guess)) return orchestratorTickets.get(guess);
+  }
+  return null;
+}
+
+function upsertOrchestratorTicket(summary) {
+  if (!summary?.id || clearedOrchestratorTicketIds.has(summary.id)) return;
+  const previous = orchestratorTickets.get(summary.id);
+  if (previous && (summary.revision || 0) < (previous.revision || 0)) return;
+  orchestratorTickets.set(summary.id, summary);
+  if (summary.workerConversationId) {
+    orchestratorTicketByWorker.set(summary.workerConversationId, summary.id);
+  }
+}
+
+function openArtifactInDesktop(filePath) {
+  const path = String(filePath || "").trim();
+  if (!path) return;
+  const absolutePath = /^(?:[a-z]:[\\/]|[\\/])/i.test(path);
+  if (isDesktopEmbed && !absolutePath && /\.(?:md|markdown|txt|html|css|js|ts|json|ya?ml|csv|png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path)) {
+    postParentMessage({ type: "agent-open-note", path });
+    return;
+  }
+  void orchestratorRequest("artifact/open", { path }).catch(error => showInlineError(error.message));
+}
+
+async function orchestratorRequest(path, body) {
+  const response = await agentApiFetch(`api/orchestrator/${path}`, body === undefined ? {}
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const result = await response.json();
+  if (!response.ok || result?.ok === false) throw new Error(result?.error || "工单操作失败");
+  return result;
+}
+
+async function openStrategistConversation({ openStage = false } = {}) {
+  if (!openStage) closeTicketStage();
+  const existing = _historyCache?.find(h => h.id === STRATEGIST_CONV_ID);
+  const loading = loadConversation(existing || { id: STRATEGIST_CONV_ID, title: "Fellow", role: "strategist" });
+  const switchVersion = conversationSwitchVersion;
+  await loading;
+  if (switchVersion !== conversationSwitchVersion || currentConvId !== STRATEGIST_CONV_ID) return;
+  workerStageReturnId = null;
+  if (openStage) openTicketStage();
+}
+
+async function enterTicketWorker(ticketId, { fromStage = false } = {}) {
+  const switchVersion = ++conversationSwitchVersion;
+  try {
+    let ticket = orchestratorTickets.get(ticketId);
+    if (!ticket) {
+      const result = await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}`);
+      upsertOrchestratorTicket(result.ticket);
+      ticket = orchestratorTickets.get(ticketId);
+    }
+    if (switchVersion !== conversationSwitchVersion) return;
+    if (!ticket?.workerConversationId) throw new Error("工单现场不可用");
+    const existing = _historyCache?.find(h => h.id === ticket.workerConversationId);
+    const loading = loadConversation({
+      ...existing, id: ticket.workerConversationId, title: ticket.title, role: "worker", ticketId: ticket.id,
+    });
+    const loadingVersion = conversationSwitchVersion;
+    await loading;
+    if (loadingVersion !== conversationSwitchVersion) return;
+    if (currentConvId !== ticket.workerConversationId) {
+      if (fromStage && ticketBoardOpen) setTicketStageFeedback("暂时无法加载任务现场，请重试。");
+      return;
+    }
+    workerStageReturnId = fromStage ? ticket.workerConversationId : null;
+    closeTicketStage({ restoreFocus: false });
+    syncStrategistChrome();
+    if (fromStage) document.querySelector("[data-return-worker-back]")?.focus({ preventScroll: true });
+  } catch (error) {
+    if (switchVersion === conversationSwitchVersion) {
+      if (fromStage && ticketBoardOpen) setTicketStageFeedback(error.message);
+      else showInlineError(error.message);
+    }
+  }
+}
+
+function shortArtifactName(p) {
+  return String(p || "").split(/[\\/]/).pop() || String(p || "");
+}
+
+function updateTicketCardMarkup(card, markup) {
+  if (!card.firstElementChild) {
+    card.innerHTML = markup;
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const current = new Map(Array.from(card.children, part => [part.className, part]));
+  const next = Array.from(template.content.children);
+  const nextClasses = new Set(next.map(part => part.className));
+  for (const [key, part] of current) {
+    if (!nextClasses.has(key)) part.remove();
+  }
+  let previous = null;
+  for (const part of next) {
+    const existing = current.get(part.className);
+    let node = part;
+    if (existing && part.className === "tk-card-actions") {
+      for (const key of ["data-enter-ticket", "data-stop-ticket", "data-retry-ticket"]) {
+        const oldButton = existing.querySelector(`[${key}]`);
+        const newButton = part.querySelector(`[${key}]`);
+        if (oldButton && newButton && oldButton.getAttribute(key) === newButton.getAttribute(key)) {
+          if (oldButton.textContent !== newButton.textContent) oldButton.textContent = newButton.textContent;
+          if (oldButton.className !== newButton.className) oldButton.className = newButton.className;
+        } else if (oldButton && newButton) oldButton.replaceWith(newButton);
+        else if (oldButton) oldButton.remove();
+        else if (newButton) existing.appendChild(newButton);
+      }
+      node = existing;
+    } else if (existing?.isEqualNode(part)) {
+      node = existing;
+    } else {
+      existing?.remove();
+    }
+    const expected = previous ? previous.nextElementSibling : card.firstElementChild;
+    if (node !== expected) card.insertBefore(node, expected);
+    previous = node;
+  }
+}
+
+function renderTicketCardContent(cardEl, ticket, fallbackTitle = "", { compactOrigin = false } = {}) {
+  const archived = ticket?.archived;
+  const status = archived ? "archived" : ticket?.status || "running";
+  const title = ticket?.title || fallbackTitle || "后台任务";
+  const statusText = archived ? "已归档" : TICKET_STATUS_LABEL[status] || status;
+  const originText = [ticket?.profileName || ticket?.provider, ticket?.model].filter(Boolean).join(" · ");
+  const isActive = ["running", "queued", "needs_attention"].includes(status);
+  const canRetry = ["failed", "interrupted", "stopped"].includes(status);
+
+  cardEl.dataset.status = status;
+  if (ticket?.id) cardEl.dataset.ticketId = ticket.id;
+
+  const originLabel = archived ? "↳ Fellow 派发 · 已归档" : status === "completed"
+    ? "✓ 已向 Fellow 交卷"
+    : status === "needs_attention"
+      ? "↳ Fellow 派发 · 等待你拍板"
+      : "↳ Fellow 已派发";
+
+  let bodyText = "";
+  if (archived) {
+    bodyText = "工单已从执行台清理。";
+  } else if (status === "needs_attention") {
+    bodyText = ticket?.attentionReason || "执行专员需要你确认下一步。";
+  } else if (["failed", "interrupted", "partial"].includes(status)) {
+    bodyText = ticket?.error || "任务未能完成，可进入现场查看或重试。";
+    if (status === "partial") bodyText = ticket?.error || "请检查已有结果，再进入现场继续。";
+  } else if (status === "stopping") {
+    bodyText = "正在等执行器退出并释放写入范围。";
+  } else if (status === "stopped") {
+    bodyText = ticket?.summary || "任务已停止，可进入现场查看进度。";
+  } else if (status === "completed") {
+    bodyText = ticket?.summary || "已完成，可点击打开产物或进入现场查看。";
+  } else if (status === "queued") {
+    bodyText = ticket?.lastStepLabel || "等待冲突任务释放文件写锁后自动启动…";
+  } else {
+    bodyText = ticket?.lastStepLabel
+      ? `正在执行：${ticket.lastStepLabel}${ticket.stepsCount ? `（第 ${ticket.stepsCount} 步）` : ""}`
+      : "已派发，后台任务正在启动…";
+  }
+
+  const files = (ticket?.artifactPaths?.length ? ticket.artifactPaths : ticket?.changedFiles) || [];
+  const filesHtml = files.slice(0, 5).map((fp) => (
+    `<button type="button" class="tk-file-chip" data-open-artifact="${escapeAttr(fp)}" title="${escapeAttr(fp)}">📄 ${esc(shortArtifactName(fp))}</button>`
+  )).join("");
+
+  const enterLabel = status === "needs_attention" ? "去拍板" : "进入现场";
+  const enterCls = status === "needs_attention" ? "tk-btn warn" : "tk-btn primary";
+
+  updateTicketCardMarkup(cardEl, `
+    ${!compactOrigin ? `<div class="tk-card-origin"><span>${esc(originLabel)}</span>${originText ? `<span>${esc(originText)}</span>` : ""}</div>` : ""}
+    <div class="tk-card-head">
+      <span class="tk-status-dot" data-status="${escapeAttr(status)}"></span>
+      <span class="tk-card-title" title="${escapeAttr(title)}">${esc(title)}</span>
+      ${compactOrigin && originText ? `<span class="tk-badge">${esc(originText)}</span>` : ""}
+      <span class="tk-badge status-${escapeAttr(status)}">${esc(statusText)}</span>
+    </div>
+    <div class="tk-card-body">${esc(bodyText)}</div>
+    ${filesHtml ? `<div class="tk-files">${filesHtml}</div>` : ""}
+    <div class="tk-card-actions">
+      ${ticket?.id && !archived ? `<button type="button" class="${enterCls}" data-enter-ticket="${escapeAttr(ticket.id)}">${enterLabel}</button>` : ""}
+      ${ticket?.id && isActive ? `<button type="button" class="tk-btn danger" data-stop-ticket="${escapeAttr(ticket.id)}">停止</button>` : ""}
+      ${ticket?.id && canRetry ? `<button type="button" class="tk-btn" data-retry-ticket="${escapeAttr(ticket.id)}">重试</button>` : ""}
+    </div>
+  `);
+}
+
+function makeInlineTicketCardEl(tool) {
+  const el = document.createElement("div");
+  el.className = "tk-card";
+  el.dataset.toolId = tool.id || "";
+  const title = String(tool.input?.title || tool.input?.goal || "派发后台任务").trim();
+  el.dataset.ticketTitle = title;
+  renderTicketCardContent(el, null, title);
+  return el;
+}
+
+function bindInlineTicketToolResult(container, toolUseId, content, isError = false) {
+  if (!container || !toolUseId) return;
+  const card = container.querySelector(`.tk-card[data-tool-id="${cssEscapeValue(toolUseId)}"]`);
+  if (!card) return;
+  const rawText = toolResultText(content).trim();
+  let result;
+  try { result = JSON.parse(rawText); } catch { /* plain text */ }
+  if (Array.isArray(result) && typeof result[0]?.text === "string") {
+    try { result = JSON.parse(result[0].text); } catch { /* keep */ }
+  } else if (result && typeof result.text === "string" && !result.ticketId) {
+    try { result = JSON.parse(result.text); } catch { /* keep */ }
+  }
+  if (result?.ticketId) {
+    const live = orchestratorTickets.get(result.ticketId);
+    renderTicketCardContent(card, live || {
+      id: result.ticketId,
+      workerConversationId: result.workerConversationId,
+      title: card.dataset.ticketTitle,
+      status: result.status || "running",
+      lastStepLabel: result.message,
+      error: result.error,
+      archived: clearedOrchestratorTicketIds.has(result.ticketId) || hasCompleteTicketSnapshot,
+    }, card.dataset.ticketTitle);
+  } else if (isError || result?.ok === false) {
+    renderTicketCardContent(card, { status: "failed", title: card.dataset.ticketTitle, error: result?.error || rawText || "派单失败" });
+  }
+}
+
+function refreshInlineTicketCards(ticketId = null) {
+  const selector = ticketId
+    ? `.tk-card[data-ticket-id="${cssEscapeValue(ticketId)}"]`
+    : ".tk-card[data-ticket-id]";
+  messagesEl.querySelectorAll(selector).forEach((card) => {
+    const id = card.dataset.ticketId;
+    const ticket = orchestratorTickets.get(id);
+    if (ticket) renderTicketCardContent(card, ticket, card.dataset.ticketTitle);
+    else if (clearedOrchestratorTicketIds.has(id) || hasCompleteTicketSnapshot) {
+      const artifactPaths = Array.from(card.querySelectorAll("[data-open-artifact]"), button => button.dataset.openArtifact);
+      renderTicketCardContent(card, { id, archived: true, artifactPaths }, card.dataset.ticketTitle);
+    }
+  });
+}
+
+function renderTicketBoardButton() {
+  const btn = document.getElementById("btn-ticket-board");
+  const label = document.getElementById("ticket-board-label");
+  if (!btn || !label) return;
+  const all = [...orchestratorTickets.values()];
+  const attention = all.filter(t => t.status === "needs_attention").length;
+  const running = all.filter(t => ["running", "queued", "stopping"].includes(t.status)).length;
+
+  // 顶部「↳ 任务」归属在 Fellow 主从胶囊内：仅在真有运行中/需拍板任务时显示数字，闲置时零数字打扰
+  btn.classList.toggle("has-attention", attention > 0);
+  btn.classList.toggle("has-running", attention === 0 && running > 0);
+  if (attention > 0) {
+    label.innerHTML = `<span class="branch-count">${attention}</span> 需拍板`;
+  } else if (running > 0) {
+    label.innerHTML = `任务 <span class="branch-count">${running}</span>`;
+  } else {
+    label.textContent = "任务";
+  }
+  btn.title = all.length > 0 ? `查看 Fellow 派出的执行任务（共 ${all.length} 条）` : "查看 Fellow 派出的执行任务";
+}
+
+function ticketCardSignature(ticket) {
+  return JSON.stringify([
+    ticket.status,
+    ticket.title || "",
+    ticket.lastStepLabel || "",
+    ticket.stepsCount || 0,
+    ticket.summary || "",
+    ticket.attentionReason || "",
+    ticket.error || "",
+    ticket.profileName || ticket.provider || "",
+    ticket.model || "",
+    ticket.artifactPaths || [],
+    ticket.changedFiles || [],
+  ]);
+}
+
+function renderTicketStage() {
+  const stage = document.getElementById("ticket-stage-view");
+  const listEl = document.getElementById("ticket-stage-list");
+  if (!stage || !listEl || !ticketBoardOpen) return;
+
+  const all = [...orchestratorTickets.values()];
+  const attention = all.filter(t => t.status === "needs_attention");
+  const running = all.filter(t => ["running", "queued", "stopping"].includes(t.status));
+  const done = all.filter(t => !["needs_attention", "running", "queued", "stopping"].includes(t.status))
+    .sort((a, b) => (Date.parse(b.finishedAt || b.updatedAt || b.createdAt) || 0)
+      - (Date.parse(a.finishedAt || a.updatedAt || a.createdAt) || 0));
+
+  const filterBar = document.getElementById("ticket-stage-filters");
+  if (filterBar) {
+    filterBar.querySelectorAll(".stage-filter-btn").forEach((btn) => {
+      const isActive = btn.dataset.stageFilter === ticketStageFilter;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
+    });
+  }
+
+  const clearBtn = document.getElementById("btn-ticket-clear-done");
+  if (clearBtn) clearBtn.disabled = clearingFinishedTickets || done.length === 0;
+
+  const allGroups = [
+    { key: "attention", title: "需要你拍板", items: attention },
+    { key: "running", title: "正在后台执行", items: running },
+    { key: "done", title: "已完成 · 已向 Fellow 交卷", items: done.filter(t => t.status === "completed") },
+    { key: "ended", title: "其他已结束任务", items: done.filter(t => t.status !== "completed") },
+  ];
+  const visibleGroups = allGroups.filter((g) => {
+    if (g.items.length === 0) return false;
+    if (ticketStageFilter === "active") return g.key === "attention" || g.key === "running";
+    if (ticketStageFilter === "attention") return g.key === "attention";
+    if (ticketStageFilter === "done") return g.key === "done" || g.key === "ended";
+    return true;
+  });
+
+  const shownCount = visibleGroups.reduce((sum, g) => sum + g.items.length, 0);
+  const summaryEl = document.getElementById("ticket-stage-summary");
+  if (summaryEl) {
+    summaryEl.textContent = ticketStageFilter === "all"
+      ? `共 ${all.length} 条`
+      : `${shownCount} / ${all.length} 条`;
+  }
+
+  if (visibleGroups.length === 0) {
+    listEl.innerHTML = all.length === 0
+      ? `<div class="ticket-stage-empty"><strong>还没有派出的任务</strong>直接跟 ✦ Fellow 聊想法或交代要办的事，需要动手干活时会自动派到这里并行执行。</div>`
+      : `<div class="ticket-stage-empty"><strong>当前筛选下暂无任务</strong>可以切换到「全部」查看全部历史记录。</div>`;
+    return;
+  }
+
+  // 清除空态占位，增量复用已有卡片节点以免别的任务刷进度时打断当前点击
+  listEl.querySelector(".ticket-stage-empty")?.remove();
+  const existingGroups = new Map(
+    Array.from(listEl.children)
+      .filter(el => el.classList.contains("ticket-stage-group"))
+      .map(el => [el.dataset.groupKey, el])
+  );
+  const keepKeys = new Set(visibleGroups.map(g => g.key));
+  for (const [k, el] of existingGroups) {
+    if (!keepKeys.has(k)) el.remove();
+  }
+
+  let prevGroup = null;
+  for (const group of visibleGroups) {
+    let groupEl = existingGroups.get(group.key);
+    if (!groupEl) {
+      groupEl = document.createElement("div");
+      groupEl.className = "ticket-stage-group";
+      groupEl.dataset.groupKey = group.key;
+      groupEl.innerHTML = `<div class="ticket-stage-group-label"></div>`;
+    }
+    const heading = groupEl.firstElementChild;
+    heading.textContent = `${group.title}（${group.items.length}）`;
+
+    const existingCards = new Map(
+      Array.from(groupEl.children)
+        .slice(1)
+        .map(el => [el.dataset.ticketId, el])
+    );
+    const keepIds = new Set(group.items.map(t => t.id));
+    for (const [id, el] of existingCards) {
+      if (!keepIds.has(id)) el.remove();
+    }
+
+    let prevCard = heading;
+    for (const ticket of group.items) {
+      let card = existingCards.get(ticket.id);
+      const sig = ticketCardSignature(ticket);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "tk-card";
+        card.dataset.ticketId = ticket.id;
+        card.dataset.ticketTitle = ticket.title || "";
+        card.dataset.renderSig = sig;
+        renderTicketCardContent(card, ticket, ticket.title || "", { compactOrigin: true });
+      } else if (card.dataset.renderSig !== sig) {
+        card.dataset.ticketTitle = ticket.title || "";
+        card.dataset.renderSig = sig;
+        renderTicketCardContent(card, ticket, ticket.title || "", { compactOrigin: true });
+      }
+      if (card !== prevCard.nextElementSibling) groupEl.insertBefore(card, prevCard.nextElementSibling);
+      prevCard = card;
+    }
+
+    const expectedNext = prevGroup ? prevGroup.nextElementSibling : listEl.firstElementChild;
+    if (groupEl !== expectedNext) listEl.insertBefore(groupEl, expectedNext);
+    prevGroup = groupEl;
+  }
+}
+
+function openTicketStage() {
+  const stage = document.getElementById("ticket-stage-view");
+  const btn = document.getElementById("btn-ticket-board");
+  if (!stage || ticketBoardOpen) return;
+  closeSubtaskView({ reveal: false });
+  closeSwitcher();
+  closeHistoryPanel();
+  ticketStageReturnFocus = document.activeElement;
+  ticketBoardOpen = true;
+  ticketStageInertSiblings = Array.from(stage.parentElement.children).filter(node => node !== stage && !node.inert);
+  for (const node of ticketStageInertSiblings) node.inert = true;
+  stage.inert = false;
+  stage.classList.add("open");
+  stage.setAttribute("aria-hidden", "false");
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  if (!clearingFinishedTickets) setTicketStageFeedback("");
+  renderTicketStage();
+  document.getElementById("btn-ticket-stage-back")?.focus({ preventScroll: true });
+  wsSend({ type: "tickets_list" });
+}
+
+function closeTicketStage({ restoreFocus = true } = {}) {
+  if (!ticketBoardOpen) return;
+  ticketBoardOpen = false;
+  const stage = document.getElementById("ticket-stage-view");
+  const btn = document.getElementById("btn-ticket-board");
+  if (stage) {
+    stage.classList.remove("open");
+    stage.inert = true;
+    stage.setAttribute("aria-hidden", "true");
+  }
+  for (const node of ticketStageInertSiblings) node.inert = false;
+  ticketStageInertSiblings = [];
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  if (restoreFocus) {
+    (ticketStageReturnFocus?.isConnected ? ticketStageReturnFocus : btn)?.focus({ preventScroll: true });
+    if (stage?.contains(document.activeElement)) btn?.focus({ preventScroll: true });
+  }
+  ticketStageReturnFocus = null;
+}
+
+function toggleTicketBoard() {
+  if (ticketBoardOpen) closeTicketStage();
+  else openTicketStage();
+}
+
+function setTicketStageFeedback(text) {
+  document.getElementById("ticket-stage-feedback").textContent = text;
+}
+
+async function clearCompletedTicketsAction() {
+  if (clearingFinishedTickets) return;
+  clearingFinishedTickets = true;
+  setTicketStageFeedback("正在清理已结束的工单…");
+  renderTicketStage();
+  try {
+    const result = await orchestratorRequest("tickets/clear-completed", {});
+    handleOrchestratorEvent({
+      type: "tickets_snapshot",
+      removedIds: result.removedIds || [],
+      tickets: hasCompleteTicketSnapshot ? [] : result.tickets || [],
+    });
+    const failed = result.failedIds?.length || 0;
+    setTicketStageFeedback(failed
+      ? `已清理 ${result.removedCount} 条，${failed} 条未能清理，可重试。`
+      : `已清理 ${result.removedCount} 条工单。`);
+  } catch (error) {
+    setTicketStageFeedback(error.message || "清理已完成任务失败");
+  } finally {
+    clearingFinishedTickets = false;
+    renderTicketStage();
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!ticketBoardOpen || e.isComposing) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    conversationSwitchVersion++;
+    closeTicketStage();
+  } else if (e.ctrlKey || e.metaKey) {
+    e.stopPropagation();
+  }
+}, true);
+
+async function submitTicketAction(button, ticketId, action) {
+  button.disabled = true;
+  try {
+    await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}/${action}`, {});
+    const result = await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}`);
+    handleOrchestratorEvent({ type: "ticket_updated", ticket: result.ticket });
+  } catch (error) {
+    if (ticketBoardOpen && button.closest?.("#ticket-stage-view")) setTicketStageFeedback(error.message || "工单请求未送达");
+    else showInlineError(error.message || "工单请求未送达");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function syncFellowEmptyHero() {
+  if (!messagesEl) return;
+  const existing = messagesEl.querySelector(".fellow-empty-hero");
+  const role = roleForConversationId(currentConvId);
+  const shouldShow = role === "strategist"
+    && messageLog.length === 0
+    && !isGenerating
+    && !messagesEl.querySelector(".msg");
+  if (!shouldShow) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const hero = document.createElement("div");
+  hero.className = "fellow-empty-hero";
+  hero.innerHTML = `
+    <div class="fellow-empty-emblem" aria-hidden="true">✦</div>
+    <h2>Fellow</h2>
+    <p>只陪你聊思路、做决策、拆任务——写稿、剪片、改代码、网页发布都由我派后台任务并行完成。</p>
+    <div class="fellow-empty-chips">
+      <button type="button" class="fellow-empty-chip" data-fellow-quick-prompt="帮我梳理下这周的选题方向，先聊思路再拆任务">
+        <span>梳理本周选题方向，先聊思路再派活</span><span>思路</span>
+      </button>
+      <button type="button" class="fellow-empty-chip" data-fellow-quick-prompt="把当前正在看的笔记改成小红书图文，配好封面卡片后让我确认再发">
+        <span>把笔记改成小红书图文卡片，确认后再发</span><span>派任务</span>
+      </button>
+      <button type="button" class="fellow-empty-chip" data-fellow-quick-prompt="检查下我电脑里最近修改的项目和待办，给我一份简报">
+        <span>盘点电脑里最近的项目进展和待办简报</span><span>秘书</span>
+      </button>
+    </div>
+  `;
+  messagesEl.appendChild(hero);
+}
+
+function syncStrategistChrome() {
+  const pinBtn = document.getElementById("btn-strategist-tab");
+  const compactBtn = document.getElementById("btn-header-compact");
+  const bar = document.getElementById("role-context-bar");
+  const role = roleForConversationId(currentConvId);
+  const archived = role === "worker" && clearedOrchestratorTicketIds.has(currentConvId.slice(4));
+  if (promptEl && promptEl.readOnly !== archived) {
+    promptEl.readOnly = archived;
+    syncComposerAction();
+  }
+
+  if (pinBtn) {
+    pinBtn.classList.toggle("active", role === "strategist");
+  }
+  if (compactBtn) {
+    compactBtn.hidden = role !== "strategist";
+  }
+  renderTicketBoardButton();
+  if (ticketBoardOpen) renderTicketStage();
+  if (typeof updateBackgroundActivity === "function") updateBackgroundActivity();
+
+  if (!bar) return;
+  if (role === "strategist") {
+    bar.hidden = true;
+    bar.className = "";
+    if (promptEl && !promptEl.value) {
+      promptEl.placeholder = "跟 Fellow 聊想法，或交代要办的事（会自动派后台任务并行执行）…";
+    }
+    syncFellowEmptyHero();
+    return;
+  }
+
+  messagesEl?.querySelector(".fellow-empty-hero")?.remove();
+
+  if (role === "worker") {
+    const ticket = ticketForWorkerConversation(currentConvId);
+    const st = archived ? "已归档" : ticket ? (TICKET_STATUS_LABEL[ticket.status] || ticket.status) : "后台任务";
+    const isActive = ticket && ["running", "queued", "needs_attention"].includes(ticket.status);
+    const firstFile = (ticket?.artifactPaths?.[0] || ticket?.changedFiles?.[0]) || "";
+    bar.hidden = false;
+    bar.className = "role-worker";
+    const markup = `
+      <button type="button" class="push-back-btn" data-return-worker-back="1">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/></svg>
+        <span>${workerStageReturnId === currentConvId ? "派出的任务" : "✦ Fellow"}</span>
+      </button>
+      <span class="push-crumb-sep" aria-hidden="true">›</span>
+      <div class="role-bar-main">
+        <span class="role-bar-title" title="${escapeAttr(ticket?.title || "后台任务")}">${esc(ticket?.title || "后台任务")}</span>
+        <span class="tk-badge status-${escapeAttr(ticket?.status || "running")}">${esc(st)}</span>
+      </div>
+      <div class="role-bar-actions">
+        ${firstFile ? `<button type="button" class="tk-btn" data-open-artifact="${escapeAttr(firstFile)}">打开产物</button>` : ""}
+        ${ticket && isActive ? `<button type="button" class="tk-btn danger" data-stop-ticket="${escapeAttr(ticket.id)}">停止</button>` : ""}
+      </div>
+    `;
+    if (bar.dataset.markup !== markup) {
+      bar.innerHTML = markup;
+      bar.dataset.markup = markup;
+    }
+    if (promptEl && !promptEl.value) {
+      promptEl.placeholder = archived ? "此工单已从执行台清理。" : "直接指挥当前执行任务（完成后自动向 Fellow 交卷）…";
+    }
+    return;
+  }
+
+  bar.hidden = true;
+  bar.className = "";
+}
+
+function handleOrchestratorEvent(ev) {
+  if (!ev || typeof ev.type !== "string") return false;
+  if (ev.type === "tickets_snapshot") {
+    const tickets = ev.tickets || [];
+    let removedIds = ev.removedIds;
+    if (!Array.isArray(removedIds) && ev.replace) {
+      hasCompleteTicketSnapshot = true;
+      const included = new Set(tickets.map(t => t.id));
+      removedIds = [...orchestratorTickets.keys()].filter(id => !included.has(id));
+    }
+    for (const id of removedIds || []) {
+      const previous = orchestratorTickets.get(id);
+      if (previous?.workerConversationId) orchestratorTicketByWorker.delete(previous.workerConversationId);
+      orchestratorTickets.delete(id);
+      clearedOrchestratorTicketIds.add(id);
+    }
+    for (const t of tickets) upsertOrchestratorTicket(t);
+    refreshInlineTicketCards();
+    syncStrategistChrome();
+    return true;
+  }
+  if (ev.type === "ticket_updated" && ev.ticket) {
+    upsertOrchestratorTicket(ev.ticket);
+    refreshInlineTicketCards(ev.ticket.id);
+    syncStrategistChrome();
+    return true;
+  }
+  if (ev.type === "ticket_reset_rejected" && ev.conversationId) {
+    const state = conversationDeliveryState(ev.conversationId);
+    state.resetPending = false;
+    state.resetPayload = null;
+    if (ev.conversationId === currentConvId) resetRequested = false;
+    return true;
+  }
+  if (ev.type === "ticket_action_error") {
+    showInlineError(ev.error || "工单操作失败");
+    return true;
+  }
+  return false;
+}
+
+document.getElementById("btn-strategist-tab")?.addEventListener("click", () => {
+  void openStrategistConversation();
+});
+
+document.getElementById("btn-ticket-board")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleTicketBoard();
+});
+
+document.getElementById("btn-ticket-stage-back")?.addEventListener("click", () => {
+  void openStrategistConversation();
+});
+
+document.getElementById("btn-ticket-clear-done")?.addEventListener("click", () => {
+  void clearCompletedTicketsAction();
+});
+
+document.getElementById("ticket-stage-filters")?.addEventListener("click", (e) => {
+  const btn = e.target.closest?.(".stage-filter-btn");
+  if (!btn || !btn.dataset.stageFilter) return;
+  ticketStageFilter = btn.dataset.stageFilter;
+  renderTicketStage();
+});
+
+function triggerStrategistCompactMemory(btn) {
+  if (!btn || btn.disabled) return;
+  const origTitle = btn.dataset.origTitle || btn.title || "整理记忆";
+  btn.dataset.origTitle = origTitle;
+  btn.disabled = true;
+  btn.title = "正在整理长期记忆…";
+  void orchestratorRequest("strategist/compact-memory", { conversationId: STRATEGIST_CONV_ID })
+    .then(() => {
+      btn.style.color = "var(--green, #22c55e)";
+      btn.title = "已将近期要点沉淀到长期记忆 ✓";
+      setTimeout(() => {
+        btn.style.color = "";
+        btn.title = origTitle;
+      }, 2400);
+    }).catch(error => {
+      showInlineError(error.message || "整理记忆失败");
+      btn.title = origTitle;
+    }).finally(() => {
+      btn.disabled = false;
+    });
+}
+
+document.getElementById("btn-header-compact")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  triggerStrategistCompactMemory(e.currentTarget);
+});
+
+document.addEventListener("click", (e) => {
+  const quickPromptBtn = e.target.closest?.("[data-fellow-quick-prompt]");
+  if (quickPromptBtn && promptEl) {
+    e.stopPropagation();
+    promptEl.value = quickPromptBtn.dataset.fellowQuickPrompt || "";
+    promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+    promptEl.focus();
+    return;
+  }
+  const enterBtn = e.target.closest?.("[data-enter-ticket]");
+  if (enterBtn) {
+    e.stopPropagation();
+    const fromStage = Boolean(enterBtn.closest?.("#ticket-stage-view"));
+    void enterTicketWorker(enterBtn.dataset.enterTicket, { fromStage });
+    return;
+  }
+  const stopBtn = e.target.closest?.("[data-stop-ticket]");
+  if (stopBtn) {
+    e.stopPropagation();
+    void submitTicketAction(stopBtn, stopBtn.dataset.stopTicket, "stop");
+    return;
+  }
+  const retryBtn = e.target.closest?.("[data-retry-ticket]");
+  if (retryBtn) {
+    e.stopPropagation();
+    void submitTicketAction(retryBtn, retryBtn.dataset.retryTicket, "retry");
+    return;
+  }
+  const artifactBtn = e.target.closest?.("[data-open-artifact]");
+  if (artifactBtn) {
+    e.stopPropagation();
+    openArtifactInDesktop(artifactBtn.dataset.openArtifact);
+    return;
+  }
+  if (e.target.closest?.("[data-return-worker-back]")) {
+    e.stopPropagation();
+    void openStrategistConversation({ openStage: workerStageReturnId === currentConvId });
+    return;
+  }
+  if (e.target.closest?.("[data-return-strategist]")) {
+    e.stopPropagation();
+    void openStrategistConversation();
+    return;
+  }
+  if (e.target.closest?.("#btn-strategist-compact")) {
+    e.stopPropagation();
+    triggerStrategistCompactMemory(document.getElementById("btn-strategist-compact"));
+    return;
+  }
+});
+
+// 默认以「✦ 军师」作为主入口启动（点击 + 仍可随时开普通自由对话）
 if (!currentConvId) {
-  currentConvId = genId();
+  currentConvId = STRATEGIST_CONV_ID;
   if (_profileData.profiles.length) rememberConvModelPrefs();
 }
 
-// 启动时静默预取历史标题并初始化常驻标签栏
-void fetchHistory().then(() => {
+const startupSwitchVersion = conversationSwitchVersion;
+void fetchHistory().then(history => {
   renderSessionSwitcher();
+  syncStrategistChrome();
+  const saved = Array.isArray(history) && history.find(h => h.id === STRATEGIST_CONV_ID);
+  if (saved && startupSwitchVersion === conversationSwitchVersion && currentConvId === STRATEGIST_CONV_ID
+      && messageLog.length === 0) {
+    void loadConversation(saved, { restoreCurrent: true });
+  }
 });
+void orchestratorRequest("tickets").then(data => {
+  if (!hasCompleteTicketSnapshot) handleOrchestratorEvent({ type: "tickets_snapshot", tickets: data.tickets });
+}).catch(() => {});
 renderSessionSwitcher();
+syncStrategistChrome();
 
 
 // Rotating placeholder logic
 (function initRotatingPlaceholder() {
   const promptEl = document.getElementById("prompt");
   if (!promptEl) return;
-  const placeholders = [
+  const strategistPlaceholders = [
+    "跟 Fellow 聊思路，或直接交代要派出去做的事…",
+    "试试输入：帮我整理最近收藏并更新知识库…",
+    "试试输入：按这个角度起一篇公众号初稿…",
+    "试试输入：把这几件事拆开同时推进…"
+  ];
+  const normalPlaceholders = [
     "Message inkfellow...",
     "试试输入：帮我修改这份文件...",
     "试试输入：根据这些资料写一篇文章...",
@@ -12083,8 +13989,11 @@ renderSessionSwitcher();
   setInterval(() => {
     // Only update if input is not focused and empty
     if (document.activeElement !== promptEl && promptEl.value.trim() === "") {
-      idx = (idx + 1) % placeholders.length;
-      promptEl.setAttribute("placeholder", placeholders[idx]);
+      const role = typeof roleForConversationId === "function" ? roleForConversationId(currentConvId) : "normal";
+      if (role === "worker") return;
+      const list = role === "strategist" ? strategistPlaceholders : normalPlaceholders;
+      idx = (idx + 1) % list.length;
+      promptEl.setAttribute("placeholder", list[idx]);
     }
   }, 4000);
 })();

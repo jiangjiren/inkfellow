@@ -48,14 +48,14 @@ export const AGY_PRINT_TIMEOUT = process.env.AGY_PRINT_TIMEOUT || "8760h";
    刻意不含 conversationId：新对话的第一轮是 agy 自己生成 id 回传给我们的，
    把它算进指纹，下一轮就必然对不上，等于白常驻。「还是不是同一条会话」由
    runtime.boundConversationId 单独比（见 agyRuntimeReusable）。 */
-export function agyRuntimeSignature({ bin, cwd, model, effort, permissionMode }) {
+export function agyRuntimeSignature({ bin, cwd, model, effort, permissionMode, extraAddDirs = [] }) {
   return crypto.createHash("sha256")
-    .update(JSON.stringify({ bin, cwd, model, effort, permissionMode }))
+    .update(JSON.stringify({ bin, cwd, model, effort, permissionMode, extraAddDirs }))
     .digest("hex");
 }
 
 /** 常驻进程的命令行。跟一次性那套的区别只有：prompt 改从 stdin 来。 */
-export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId }) {
+export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId, extraAddDirs = [] }) {
   const args = [
     // Go 的 flag 包要求 --print 带值；prompt 走 stdin，所以给个空的。
     // 写成分开的两个参数会被它当成「把下一个参数当 prompt」，必须是 --print= 这一坨。
@@ -72,6 +72,9 @@ export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeCo
   const effortFlag = agyProvider.effortForModel(model, effort);
   if (effortFlag) args.push("--effort", effortFlag);
   if (cwd) args.push("--add-dir", cwd);
+  for (const extraDir of extraAddDirs) {
+    if (extraDir) args.push("--add-dir", extraDir);
+  }
   // 不传 --add-dir 时它会跑到 ~/.gemini/antigravity-cli/scratch 里操作文件
   if (resumeConversationId) args.push("--conversation", resumeConversationId);
   return args;
@@ -145,7 +148,7 @@ export class PersistentAgyRuntime {
   /**
    * 跑一轮。message 是要写进 stdin 的那条 NDJSON（调用方负责组装）。
    *
-   * @returns {Promise<{conversationId, text, usage, status}>}
+   * @returns {Promise<{conversationId, text, response, usage, status, finishedReason, error, stderr}>}
    *   resolve 只代表「这一轮跑完了」，status 非 SUCCESS 由调用方决定怎么报。
    */
   runTurn({ message, onEvent = null, onSession = null, signal = null }) {
@@ -262,14 +265,17 @@ export class PersistentAgyRuntime {
     turn.detach();
     if (error) { turn.reject(error); return; }
     const payload = turn.resultPayload;
+    const response = typeof payload?.response === "string" ? payload.response.trim() : "";
     turn.resolve({
       conversationId: this.boundConversationId,
       /* result 的 response 是这一轮的全文，正常情况下跟累积起来的增量一样。
          用 || 而不是 ??：agy 偶尔会给一个空的 response（工具轮、被截断的轮），
          那时候真正的文本只在 text_delta 里，?? 会把它当成「有值」而丢掉。 */
-      text: (payload?.response || turn.answerParts.join("")).trim(),
+      text: response || turn.answerParts.join("").trim(),
+      response,
       usage: payload?.usage ?? null,
-      status: payload?.status ?? "SUCCESS",
+      status: payload?.status ?? null,
+      finishedReason: payload?.finished_reason ?? null,
       error: payload?.error ?? null,
       stderr: this._stderr.trim(),
     });

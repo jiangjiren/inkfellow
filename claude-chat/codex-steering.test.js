@@ -281,6 +281,21 @@ test("Codex changed model settings wait for the next turn instead of being silen
   } finally { await s.close(); }
 });
 
+test("Codex Fast selection applies to the next turn when a Standard turn is running", { timeout: 30000 }, async () => {
+  const s = await boot();
+  try {
+    s.ask("speed-switch", "standard-run");
+    await waitFor(s.events, e => e.type === "assistant" && e.userMessageId === "standard-run");
+    s.follow("speed-switch", "fast-run", "continue in Fast", { codexSpeed: "fast" });
+    const queued = await waitFor(s.events, e => e.type === "steering_queued" && e.userMessageId === "fast-run");
+    assert.equal(queued.delivery, "next_turn");
+    await waitFor(s.events, e => e.type === "done" && e.userMessageId === "fast-run");
+    const log = await s.log();
+    assert.equal(log.some(e => e.method === "turn/steer"), false);
+    assert.deepEqual(log.filter(e => e.method === "turn/start").map(e => e.params.serviceTierForTurn), ["default", "priority"]);
+  } finally { await s.close(); }
+});
+
 test("Codex queued edits and ordering are preserved when multiple inputs enter the same native turn", { timeout: 30000 }, async () => {
   const s = await boot();
   try {

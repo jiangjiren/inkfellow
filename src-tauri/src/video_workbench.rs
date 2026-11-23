@@ -22,6 +22,7 @@ struct Job {
     project: String,
     kind: String,
     beat: Option<String>,
+    request_id: Option<String>,
     pid: AtomicU32,
     cancelled: AtomicBool,
 }
@@ -177,8 +178,18 @@ fn versions(dir: &Path, base: &str) -> Vec<Value> {
         }
     }
     logic::sort_versions(&mut names);
-    names.into_iter().filter_map(|v| {let p=paths.get(&v.name)?;let m=fs::metadata(p).ok()?;
-        Some(json!({"name":v.name,"abs":abs(p),"n":v.n,"kind":v.kind,"size":m.len(),"mtime":modified(p),"hasPlan":dir.join("work/versions").join(format!("{}.plan.json",p.file_stem()?.to_string_lossy())).is_file()}))
+    names.into_iter().filter_map(|v| {
+        let p = paths.get(&v.name)?;
+        let metadata = fs::metadata(p).ok()?;
+        let stem = p.file_stem()?.to_string_lossy();
+        let versions_dir = dir.join("work/versions");
+        let nanos = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos().to_string();
+        Some(json!({
+            "name":v.name, "abs":abs(p), "n":v.n, "kind":v.kind, "size":metadata.len(),
+            "mtime":modified(p), "mediaRevision":nanos,
+            "hasPlan":versions_dir.join(format!("{stem}.plan.json")).is_file(),
+            "hasCleanBase":versions_dir.join(format!("{stem}.clean.mp4")).is_file(),
+        }))
     }).collect()
 }
 fn latest_version(vs: &[Value], base: &str) -> Option<String> {
@@ -609,7 +620,7 @@ pub async fn video_env() -> Result<Value, String> {
 }
 
 fn emit_job(app: &AppHandle, id: &str, job: &Job, status: &str, extra: Value) {
-    let mut event = json!({"jobId":id,"project":job.project,"kind":job.kind,"status":status});
+    let mut event = json!({"jobId":id,"project":job.project,"kind":job.kind,"status":status,"requestId":job.request_id});
     if let (Some(o), Some(e)) = (event.as_object_mut(), extra.as_object()) {
         o.extend(e.clone());
     }
@@ -754,11 +765,11 @@ fn job_conflicts(map: &HashMap<String, Arc<Job>>, job: &Job) -> bool {
     map.values().any(|j| {
         j.project == job.project
             && ((j.kind == "render" && job.kind == "render")
-                || (j.kind == "sample" && job.kind == "sample" && j.beat == job.beat))
+                || (matches!(j.kind.as_str(), "sample" | "voice_sample") && j.kind == job.kind && j.beat == job.beat))
     })
 }
 fn execute_job(app: AppHandle, id: String, job: Arc<Job>, dir: PathBuf, args: Value) {
-    let _thumb_guard = if job.kind.starts_with("thumbs_") {
+    let _thumb_guard = if job.kind.starts_with("thumbs_") || job.kind == "clean_preview" {
         loop {
             if job.cancelled.load(AtomicOrdering::SeqCst) {
                 emit_job(&app, &id, &job, "cancelled", json!({}));
@@ -788,6 +799,10 @@ fn execute_job(app: AppHandle, id: String, job: Arc<Job>, dir: PathBuf, args: Va
             edl.clone(),
             "--beat".into(),
             job.beat.clone().unwrap_or_default(),
+        ]),
+        "voice_sample" => project_cache(&app, &job.project).map(|base| vec![
+            "voice".into(), edl.clone(), "--beat".into(), job.beat.clone().unwrap_or_default(),
+            "--out".into(), abs(&base.join("voice")),
         ]),
         "edits_status" => Ok(vec![
             "edits".into(),
@@ -839,6 +854,19 @@ fn execute_job(app: AppHandle, id: String, job: Arc<Job>, dir: PathBuf, args: Va
                 })
             }
         }
+        "clean_preview" => project_cache(&app, &job.project).and_then(|base| {
+            let out = base.join("clean");
+            fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            Ok(vec![
+                "thumbs".into(),
+                "clean".into(),
+                edl.clone(),
+                "--video".into(),
+                abs(&dir.join("out").join(args["video"].as_str().unwrap_or_default())),
+                "--out".into(),
+                abs(&out),
+            ])
+        }),
         _ => Err("Invalid job kind.".into()),
     };
     let result = arguments.and_then(|argv| run_command(&app, &id, &job, &dir, &argv));
@@ -922,7 +950,7 @@ pub async fn video_start_job(
         move || project(&app, &path)
     })
     .await?;
-    let beat = if kind == "sample" {
+    let beat = if matches!(kind.as_str(), "sample" | "voice_sample") {
         let beat = args["beat"].as_str().ok_or("Invalid beat.")?;
         if !logic::valid_beat(beat) {
             return Err("Invalid beat.".into());
@@ -933,11 +961,11 @@ pub async fn video_start_job(
     };
     if !matches!(
         kind.as_str(),
-        "render" | "sample" | "edits_status" | "thumbs_shots" | "thumbs_sources"
+        "render" | "sample" | "voice_sample" | "edits_status" | "thumbs_shots" | "thumbs_sources" | "clean_preview"
     ) {
         return Err("Invalid job kind.".into());
     }
-    if kind == "thumbs_shots" {
+    if matches!(kind.as_str(), "thumbs_shots" | "clean_preview") {
         let video = args["video"].as_str().unwrap_or("");
         if !logic::valid_video_name(video) || !p.absolute.join("out").join(video).is_file() {
             return Err("Invalid video.".into());
@@ -948,6 +976,7 @@ pub async fn video_start_job(
         project: p.relative,
         kind,
         beat,
+        request_id: args["requestId"].as_str().map(str::to_owned),
         pid: AtomicU32::new(0),
         cancelled: AtomicBool::new(false),
     });
@@ -1040,6 +1069,7 @@ mod tests {
             project: "sample/project".into(),
             kind: kind.into(),
             beat: beat.map(str::to_owned),
+            request_id: None,
             pid: AtomicU32::new(0),
             cancelled: AtomicBool::new(false),
         })

@@ -9,6 +9,122 @@ vm.runInContext(source, context);
 const Model = context.InkfellowVideoModel;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test("a render snapshot only marks the exact saved version of an edit as applied", () => {
+  const first = { id: "card-edit", op: "set_text", beat: "b01", text: 0, value: { text: "第一稿" }, createdAt: 100 };
+  const second = { ...first, value: { text: "第二稿" }, createdAt: 105 };
+  const snapshot = { renderedAt: 110, editsApplied: [first.id], appliedEdits: [first] };
+  assert.equal(Model.isEditInPlan(snapshot, first), true);
+  assert.equal(Model.isEditInPlan(snapshot, second), false);
+  assert.equal(Model.isEditInPlan({ ...snapshot, appliedEdits: undefined }, first), true);
+});
+
+test("a default-position card keeps its actual source fields and stable timeline index", () => {
+  const source = { beats: [{ id: "b01", texts: [{ text: "第一张" }, { text: "第二张" }] }] };
+  const planned = { fps: 30, duration: 4, beats: [{ id: "b01", i: 0, start: 0, frames: 120 }],
+    texts: [{ beat: 0, idx: 1, text: "第二张", start: 2.5, end: 3.5 }] };
+  const [row] = Model.buildRows({ edl: source, plan: planned });
+  assert.equal(row.cards[1].start, 2.5);
+  const change = Model.makeSetText(row, row.cards[1], { text: "修改后", pos: "upper" });
+  assert.deepEqual(plain(change.base), { text: "第二张" });
+  const rows = Model.buildRows({ edl: source, plan: planned, edits: { edits: [Model.makeDeleteText(row, row.cards[0]), change] } });
+  const before = Model.liveOverlaysAt({ rows, plan: planned, time: 0.5 });
+  const during = Model.liveOverlaysAt({ rows, plan: planned, time: 2.7 });
+  assert.equal(before.cards.length, 0);
+  assert.equal(during.cards[0].text, "修改后");
+});
+
+test("workbench falls back to the original video and ignores a previous version's clean job", async () => {
+  const script = await readFile(new URL("../desktop-lite/video-workbench.js", import.meta.url), "utf8");
+  const instrumented = script.replace("  root.InkfellowVideoWorkbench = {",
+    "  root.test = { use: (state) => { view = state; }, handleJobEvent, syncLiveLayer, versionMediaKey };\n  root.InkfellowVideoWorkbench = {");
+  vm.runInContext(instrumented, context);
+  const { use, handleJobEvent, syncLiveLayer, versionMediaKey } = context.test;
+  const toggle = { hidden: true, disabled: false, textContent: "", classList: { toggle() {} } };
+  const layer = { hidden: false, dataset: {} };
+  const version = { name: "demo_v2.mp4", mediaRevision: "123", size: 100 };
+  const state = {
+    el: { querySelector: (selector) => ({ ".vwLiveLayer": layer, ".vwLiveToggle": toggle })[selector] },
+    projectPath: "demo",
+    data: { versions: [version], edl: {} },
+    versionName: version.name,
+    plan: { duration: 3 },
+    doc: { edits: [] },
+    liveRows: [],
+    editingCard: { draftText: "新版字幕" },
+    cleanRequest: { token: "current", key: versionMediaKey(version) },
+  };
+  use(state);
+  syncLiveLayer(0);
+  assert.equal(layer.hidden, true);
+  assert.match(toggle.textContent, /正在准备/);
+  handleJobEvent({ project: "demo", kind: "clean_preview", requestId: "previous", status: "event",
+    event: { cleanVideo: "wrong.mp4" } });
+  assert.equal(state.cleanMedia, undefined);
+  handleJobEvent({ project: "demo", kind: "clean_preview", requestId: "current", status: "error" });
+  assert.equal(state.cleanRequest, null);
+  assert.equal(state.cleanError, true);
+  syncLiveLayer(0);
+  assert.equal(layer.hidden, true);
+  assert.equal(toggle.disabled, false);
+  assert.match(toggle.textContent, /重试/);
+});
+
+test("video jobs keep their request owner when switching folders or receiving overlapping sample results", async () => {
+  const script = await readFile(new URL("../desktop-lite/video-workbench.js", import.meta.url), "utf8");
+  const sandbox = vm.createContext({ InkfellowVideoModel: Model });
+  vm.runInContext(script.replace("  root.InkfellowVideoWorkbench = {",
+    "  root.test = { use: (state, options) => { view = state; deps = options; }, handleJobEvent, selectFolder, actions };\n"
+    + "  root.InkfellowVideoWorkbench = {"), sandbox);
+  const { use, handleJobEvent, selectFolder, actions } = sandbox.test;
+  const starts = [];
+  const cancelled = [];
+  const toasts = [];
+  const picker = {};
+  const state = {
+    el: { querySelector: () => null },
+    projectPath: "demo",
+    picker,
+    sampleBusy: new Set(),
+    sampleRequests: new Map(),
+  };
+  use(state, {
+    invoke(command, params) {
+      if (command === "video_cancel_job") {
+        cancelled.push(params.jobId);
+        return Promise.resolve();
+      }
+      return new Promise(resolve => starts.push({ params, resolve }));
+    },
+    showToast(message) { toasts.push(message); },
+  });
+  const emit = (start, status) => handleJobEvent({
+    project: "demo", kind: start.params.kind, requestId: start.params.args.requestId, status,
+  });
+
+  selectFolder("first");
+  selectFolder("second");
+  emit(starts[0], "cancelled");
+  assert.equal(picker.loading, true);
+  starts[0].resolve({ jobId: "old" });
+  emit(starts[1], "done");
+  starts[1].resolve({ jobId: "finished" });
+  await Promise.resolve();
+  assert.deepEqual(cancelled, ["old"]);
+  assert.equal(picker.loading, false);
+  assert.equal(picker.sourceRequest, null);
+
+  const first = actions.sample({ dataset: { beat: "b01" } });
+  const second = actions.sample({ dataset: { beat: "b02" } });
+  emit(starts[3], "error");
+  assert.deepEqual([...state.sampleBusy], ["b01"]);
+  assert.equal(toasts.length, 1);
+  emit(starts[2], "done");
+  starts[2].resolve({ jobId: "b01" });
+  starts[3].resolve({ jobId: "b02" });
+  await Promise.all([first, second]);
+  assert.equal(state.sampleBusy.size, 0);
+});
+
 const edl = {
   voice: { provider: "minimax", speed: 0.9 },
   beats: [
@@ -434,7 +550,7 @@ test("stripCover keeps the window inside one tile for any aspect ratio", () => {
 test("undo and redo restore content and keep labels", () => {
   const a = Model.addNote(null, { beat: "b01", shot: null, text: "甲" });
   const b = Model.addNote(a, { beat: "b01", shot: null, text: "乙" });
-  let history = Model.recordHistory({ past: [], future: [] }, a, "写意见");
+  let history = Model.recordHistory({ past: [], future: [] }, a, b, "写意见");
   const undone = Model.undoHistory(history, b);
   assert.equal(undone.label, "写意见");
   assert.equal(undone.doc.notes.length, 1);
@@ -444,8 +560,41 @@ test("undo and redo restore content and keep labels", () => {
   assert.equal(redone.doc.notes.length, 2);
   assert.equal(Model.undoHistory({ past: [], future: [] }, b), null);
   assert.equal(Model.redoHistory({ past: [], future: [] }, b), null);
-  const fresh = Model.recordHistory(redone.history, b, "新操作");
+  const fresh = Model.recordHistory(redone.history, b, a, "新操作");
   assert.equal(fresh.future.length, 0, "新操作后不能再重做");
+});
+
+test("撤销和重做只应用原操作，保留后来发送或清理的意见", () => {
+  const initial = Model.normalizeDoc(null);
+  const noted = Model.addNote(initial, { beat: "b01", shot: null, text: "慢一点" });
+  const row = Model.buildRows({ edl, plan, edits: null })[1];
+  const edited = Model.upsertEdit(noted, Model.makeSetSay(row, "新的第二句"));
+  const noteHistory = Model.recordHistory({ past: [], future: [] }, initial, noted, "写意见");
+  const history = Model.recordHistory(noteHistory, noted, edited, "改第二句");
+  const sent = Model.markNotesSent(edited, [noted.notes[0].id], 1000);
+  const undone = Model.undoHistory(history, sent);
+  assert.equal(undone.doc.edits.length, 0);
+  assert.equal(undone.doc.notes[0].sentAt, 1000);
+
+  const pruned = Model.pruneSentNotes(undone.doc, 2000);
+  const undoneNote = Model.undoHistory(undone.history, pruned);
+  const redoneNote = Model.redoHistory(undoneNote.history, undoneNote.doc);
+  assert.equal(redoneNote.doc.notes.length, 0);
+  const redoneEdit = Model.redoHistory(redoneNote.history, redoneNote.doc);
+  assert.equal(redoneEdit.doc.notes.length, 0);
+  assert.equal(redoneEdit.doc.edits[0].value.say, "新的第二句");
+});
+
+test("撤销重试时保留其他编辑，并能识别重新读盘后属性顺序不同的同一改动", () => {
+  const initial = Model.normalizeDoc(null);
+  const rows = Model.buildRows({ edl, plan, edits: initial });
+  const edited = Model.upsertEdit(initial, Model.makeSetSay(rows[0], "改第一句"));
+  const history = Model.recordHistory({ past: [], future: [] }, initial, edited, "改第一句");
+  const external = Model.upsertEdit(edited, Model.makeSetSay(rows[1], "改第二句"));
+  const reordered = external.edits.map((edit) => Object.fromEntries(Object.entries(edit).reverse()));
+  const undone = Model.undoHistory(history, { ...external, edits: reordered, revision: 3 });
+  assert.equal(undone.doc.revision, 3);
+  assert.deepEqual(plain(undone.doc.edits.map((edit) => edit.value.say)), ["改第二句"]);
 });
 
 test("cleanCopyText strips the character-count note before copying", () => {
@@ -561,22 +710,30 @@ test("撤掉已出片的改动：算待生成，AI 吸收了的、又改成别�
   const e2 = { id: "e2", op: "set_say", beat: "b02", createdAt: 1000, base: { say: "第二句" }, value: { say: "改过的第二句" } };
   const e3 = { id: "e3", op: "set_say", beat: "b03", createdAt: 2500, base: { say: "第三句" }, value: { say: "还没出片" } };
 
-  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [e1, e2, e3] });
+  const before = Model.normalizeDoc({ edits: [e1, e2, e3] });
+  const after = Model.trackRemovedEdits(before, Model.normalizeDoc({ edits: [] }), [rendered]);
+  assert.deepEqual(plain(after.removedEdits.map((edit) => edit.id)), ["e1", "e2"]);
+  const reloaded = plain(after);
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: reloaded });
   assert.deepEqual(plain(reverted.map((edit) => edit.id)), ["e1", "e2"], "e3 没进过成片，删了就是删了");
+  const whileRendering = Model.trackRemovedEdits(before, Model.normalizeDoc({ edits: [] }), [rendered], true);
+  const completed = { ...rendered, renderedAt: 3000, editsApplied: [e3.id] };
+  assert.deepEqual(plain(Model.revertedEdits({ plan: completed, edl, doc: whileRendering })), [e3]);
 
   // 用户又换了别的素材：新改动本身就是待生成，不重复算
   const again = { id: "e9", op: "replace_shot", beat: "b01", shot: 0, createdAt: 3000, base: e1.base, value: { src: "D:\\素材\\y.mp4" } };
-  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [again] }, removed: [e1] }).length, 0);
+  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [again], removedEdits: [e1] } }).length, 0);
   // 放回去了
-  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [e1] }, removed: [e1] }).length, 0);
+  assert.equal(Model.revertedEdits({ plan: rendered, edl, doc: { edits: [e1], removedEdits: [e1] } }).length, 0);
   // AI 已经把换镜头写进 edl：再生成也还是 x，不算撤回
   const absorbed = plain(edl);
   absorbed.beats[0].shots[0] = { src: "D:\\素材\\x.mp4", in: 1 };
-  assert.equal(Model.revertedEdits({ plan: rendered, edl: absorbed, doc: { edits: [] }, removed: [e1] }).length, 0);
+  assert.equal(Model.revertedEdits({ plan: rendered, edl: absorbed, doc: { edits: [], removedEdits: [e1] } }).length, 0);
 
   // 撤销「恢复」：原样放回，成片里就是它
-  const restored = Model.restoreEdit({ edits: [] }, e1);
+  const restored = Model.trackRemovedEdits(reloaded, Model.restoreEdit(reloaded, e1), [rendered]);
   assert.deepEqual(plain(restored.edits), [e1]);
+  assert.deepEqual(plain(restored.removedEdits), [e2]);
   assert.equal(Model.describeRevert(e1, Model.buildRows({ edl, plan, edits: null })), "第 1 句第 1 个镜头恢复原镜头");
   assert.equal(Model.describeRevert(e2, Model.buildRows({ edl, plan, edits: null })), "第 2 句恢复原文");
 });
@@ -588,7 +745,7 @@ test("撤掉已出片的换镜头后，预览盖回原镜头，原镜头标记�
   rendered.editsApplied = ["e1"];
   const e1 = { id: "e1", op: "replace_shot", beat: "b01", shot: 0, createdAt: 1000,
     base: { src: "D:\\素材\\a.mp4", in: 2 }, value: { src: "D:\\素材\\x.mp4", in: 1 } };
-  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [e1] });
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [], removedEdits: [e1] } });
   const rows = Model.buildRows({ edl, plan: rendered, edits: { edits: [] }, reverted });
   const shot = rows[0].shots[0];
   assert.equal(shot.replace, null);
@@ -636,7 +793,7 @@ test("「已用」按改动后的样子算：换上的算、换下的不算、�
   rendered.shots[0] = { ...rendered.shots[0], path: "D:\\素材\\x.mp4" };
   rendered.renderedAt = 2000;
   rendered.editsApplied = ["e1"];
-  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [] }, removed: [{ ...e1, value: { src: "D:\\素材\\x.mp4" } }] });
+  const reverted = Model.revertedEdits({ plan: rendered, edl, doc: { edits: [], removedEdits: [{ ...e1, value: { src: "D:\\素材\\x.mp4" } }] } });
   const revRows = Model.buildRows({ edl, plan: rendered, edits: null, reverted });
   const revUsed = Model.usedSourceKeys(revRows, (shot) => Model.resolveOriginalShot(shot));
   assert.equal(revUsed.has(Model.pathKey("D:\\素材\\a.mp4")), true);
@@ -676,12 +833,19 @@ test("画面上能点的地方：字幕、当时在屏上的字卡、当前镜�
   assert.equal(Model.frameHotspots({ plan: null, rows, time: 1.2 }).length, 0);
 });
 
-test("一键意见：有字卡的句子给「去掉字卡」，没有的给「加个字卡」", () => {
-  const keys = (row) => Model.quickNotesFor(row).map((item) => item.key).join(",");
-  assert.equal(keys({ id: "b", texts: [] }), "shot,slow,choppy,card");
-  assert.equal(keys({ id: "b", texts: [{ text: "地点" }] }), "shot,slow,choppy,nocard");
-  assert.equal(keys({ id: "b", texts: [], deleted: true }), "");
-  for (const item of Model.QUICK_NOTES) assert.ok(item.text.length > item.label.length, "写进意见的话要比按钮上的字具体");
+test("试看改后效果：只有存在未出片的本地改动或全片改语速时才出现", () => {
+  const baseRows = Model.buildRows({ edl, plan, edits: null });
+  assert.equal(Model.rowNeedsSample(baseRows[0]), false, "没改过的句子不显示");
+  assert.equal(Model.rowNeedsSample(baseRows[0], { voicePending: true }), true, "全片改语速后任意未删句都可试看");
+
+  let doc = Model.upsertEdit(null, Model.makeSetSay(baseRows[0], "改过字"));
+  doc = Model.upsertEdit(doc, Model.makeReplaceShot(baseRows[2].shots[0], { src: "D:\\素材\\x.mp4", inSec: 1, kind: "video" }));
+  doc = Model.upsertEdit(doc, Model.makeDeleteBeat(baseRows[1]));
+  const rows = Model.buildRows({ edl, plan, edits: doc });
+  assert.equal(Model.rowNeedsSample(rows[0]), true, "改过字需要试看");
+  assert.equal(Model.rowNeedsSample(rows[0], { isRendered: () => true }), false, "已进当前成片的改动不需要再试看");
+  assert.equal(Model.rowNeedsSample(rows[1], { voicePending: true }), false, "删掉的句子不显示试看");
+  assert.equal(Model.rowNeedsSample(rows[2]), true, "换过镜头需要试看");
 });
 
 test("帧条悬停提示：时间加这一句开头，太长截断", () => {
@@ -689,4 +853,92 @@ test("帧条悬停提示：时间加这一句开头，太长截断", () => {
   assert.equal(Model.stripLabel(rows, 1), "00:01 · 第一句");
   assert.equal(Model.stripLabel([{ ...rows[0], say: "一二三四五六七八九十甲乙丙丁戊己" }], 1), "00:01 · 一二三四五六七八九十甲乙丙丁…");
   assert.equal(Model.stripLabel(rows, 99), "01:39", "超出范围只给时间");
+});
+
+test("播放倍速循环与格式化", () => {
+  assert.equal(Model.nextPlaybackRate(1), 1.25);
+  assert.equal(Model.nextPlaybackRate(1.25), 1.5);
+  assert.equal(Model.nextPlaybackRate(1.5), 2);
+  assert.equal(Model.nextPlaybackRate(2), 1);
+  assert.equal(Model.formatPlaybackRate(1), "1x");
+  assert.equal(Model.formatPlaybackRate(1.25), "1.25x");
+});
+
+test("主操作按钮文案按路由清晰区分直接渲染与发给 AI", () => {
+  assert.equal(Model.applyButtonMeta({ editCount: 0, noteCount: 0 }).route, "none");
+  const renderMeta = Model.applyButtonMeta({ editCount: 2, noteCount: 0 });
+  assert.equal(renderMeta.route, "render");
+  assert.equal(renderMeta.label, "生成新版本（2）");
+  const aiMeta = Model.applyButtonMeta({ editCount: 2, noteCount: 1 });
+  assert.equal(aiMeta.route, "ai");
+  assert.equal(aiMeta.label, "发给 AI 处理（3）");
+});
+
+test("脚本筛选：支持按口播、字卡、意见、素材名搜索，并支持仅看改动", () => {
+  let doc = Model.upsertEdit(null, Model.makeSetSay(Model.buildRows({ edl, plan, edits: null })[0], "修改后的开头"));
+  doc = Model.addNote(doc, { beat: "b03", shot: null, text: "这句加点空镜" });
+  const rows = Model.buildRows({ edl, plan, edits: doc });
+
+  assert.equal(Model.filterRows(rows, { query: "26 公里" }).map((r) => r.id).join(","), "b02");
+  assert.equal(Model.filterRows(rows, { query: "空镜" }).map((r) => r.id).join(","), "b03");
+  assert.equal(Model.filterRows(rows, { query: "第一句" }).map((r) => r.id).join(","), "b01", "应能搜到改字前的原文");
+  assert.equal(Model.filterRows(rows, { onlyModified: true }).map((r) => r.id).join(","), "b01,b03");
+  assert.equal(Model.filterRows(rows, { query: "开头", onlyModified: true }).map((r) => r.id).join(","), "b01");
+});
+
+test("候选素材搜索：同时匹配文件名、备注与编号（不区分大小写）", () => {
+  const item = { id: "V12", name: "IMG_2048.MP4", notes: "元江江边日落航拍" };
+  assert.equal(Model.sourceMatchesQuery(item, "日落"), true);
+  assert.equal(Model.sourceMatchesQuery(item, "img_2048"), true);
+  assert.equal(Model.sourceMatchesQuery(item, "v12"), true);
+  assert.equal(Model.sourceMatchesQuery(item, "泳池"), false);
+  assert.equal(Model.sourceMatchesQuery(item, ""), true);
+});
+
+test("实时编辑字卡、开头钩子与配乐音量：支持改字、删字卡、改回原样自动撤销及实时叠层计算", () => {
+  const richEdl = {
+    ...plain(edl),
+    hook: { text: "梯田里过哈尼新年", sub: "玉溪元江", pos: "upper", dur: 2.6 },
+    music: { track: "bgm.wav", gain_db: -1 },
+    beats: [
+      { ...plain(edl.beats[0]), texts: [{ text: "昆明自驾 2.5 小时", style: "tag", pos: "upper" }, { text: "那诺梯田", style: "loc", pos: "lower" }] },
+      ...plain(edl.beats.slice(1)),
+    ],
+  };
+  const richPlan = {
+    ...plain(plan),
+    texts: [
+      { hook: true, beat: null, style: "title", text: "梯田里过哈尼新年", sub: "玉溪元江", pos: "upper", start: 0, end: 2.6 },
+      { beat: 0, idx: 0, style: "tag", text: "昆明自驾 2.5 小时", pos: "upper", start: 0.5, end: 2.5 },
+      { beat: 0, idx: 1, style: "loc", text: "那诺梯田", pos: "lower", start: 2.0, end: 4.5 },
+    ],
+  };
+
+  let rows = Model.buildRows({ edl: richEdl, plan: richPlan, edits: null });
+  assert.equal(rows[0].cards.length, 2);
+  let doc = Model.upsertEdit(null, Model.makeSetText(rows[0], rows[0].cards[0], { text: "昆明出发 2.5 小时", pos: "center" }));
+  doc = Model.upsertEdit(doc, Model.makeDeleteText(rows[0], rows[0].cards[1]));
+  doc = Model.upsertEdit(doc, Model.makeSetHook(richEdl, { text: "元江哈尼十月年", sub: "那诺梯田", pos: "top" }));
+  doc = Model.upsertEdit(doc, Model.makeSetMusic(richEdl, -5));
+  assert.equal(doc.edits.length, 4);
+
+  rows = Model.buildRows({ edl: richEdl, plan: richPlan, edits: doc });
+  const hook = Model.buildHook({ edl: richEdl, plan: richPlan, edits: doc });
+  assert.equal(rows[0].cards[0].text, "昆明出发 2.5 小时");
+  assert.equal(rows[0].cards[0].pos, "center");
+  assert.equal(rows[0].cards[1].deleted, true);
+  assert.equal(hook.text, "元江哈尼十月年");
+  assert.equal(Model.rowHasChanges(rows[0]), true);
+
+  const live = Model.liveOverlaysAt({ rows, hook, plan: richPlan, time: 1.5, landscape: false });
+  assert.equal(live.cards.length, 2, "钩子 + 第 1 张字卡应实时显示，已删的第 2 张不显示");
+  assert.equal(live.cards[0].isHook, true);
+  assert.equal(live.cards[0].text, "元江哈尼十月年");
+  assert.equal(live.cards[1].text, "昆明出发 2.5 小时");
+  assert.equal(Model.hasPendingLiveVisualEdits({ rows, hook }), true);
+
+  // 改回原样自动移除改动
+  doc = Model.upsertEdit(doc, Model.makeSetText(rows[0], rows[0].cards[0], { text: "昆明自驾 2.5 小时", pos: "upper" }));
+  doc = Model.upsertEdit(doc, Model.makeSetMusic(richEdl, -1));
+  assert.equal(doc.edits.length, 2);
 });

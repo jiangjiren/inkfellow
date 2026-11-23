@@ -149,9 +149,9 @@ test("codex 常驻：进程跨轮复用，参数各待在该待的那一层", { 
     assert.ok(!texts.includes("回放的用户消息"), "用户消息被回放了第二遍");
 
     // 第二轮换了模型：进程和 thread 都接着用，新模型得靠 turn/start 带过去
-    const second = await ask(2, { model: "gpt-6-sol", effort: "high", permissionMode: "plan" });
+    const second = await ask(2, { model: "gpt-6-sol", effort: "max", codexSpeed: "fast", permissionMode: "plan" });
     assert.deepEqual(second.filter(e => e.type === "error"), []);
-    const terra = await ask(3, { model: "gpt-6.1-terra", effort: "high", permissionMode: "plan" });
+    const terra = await ask(3, { model: "gpt-6.1-terra", effort: "ultra", codexSpeed: "standard", permissionMode: "plan" });
     assert.deepEqual(terra.filter(e => e.type === "error"), []);
     assert.ok(terra.some(e => e.type === "result" && e.subtype === "success"));
 
@@ -180,6 +180,8 @@ test("codex 常驻：进程跨轮复用，参数各待在该待的那一层", { 
     const ensures = log.filter(e => e.call === "ensureThread");
     assert.equal(ensures[1].threadId, "thread-persistent", "第二轮没接上第一轮的 thread");
     assert.equal(ensures[2].threadId, "thread-persistent", "Terra should continue the same thread");
+    assert.deepEqual(turns.map(t => t.params.effort), ["high", "max", "ultra"]);
+    assert.deepEqual(turns.map(t => t.params.serviceTierForTurn), ["default", "priority", "default"]);
   } finally {
     ws?.terminate();
     if (child.exitCode === null) {

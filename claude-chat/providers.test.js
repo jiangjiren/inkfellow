@@ -206,6 +206,24 @@ const CODEX_MODELS_CACHE = {
   ],
 };
 
+test("codex catalog exposes the advertised efforts and Fast support per model", () => {
+  try {
+    codex.setCatalog(codex.parseModelsCache({
+      models: [
+        { slug: "gpt-6.2-sol", visibility: "list", priority: 0,
+          supported_reasoning_levels: [{ effort: "max" }, { effort: "ultra" }], service_tiers: [{ id: "priority" }] },
+        { slug: "gpt-6-luna", visibility: "list", priority: 1,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }], service_tiers: [] },
+      ],
+    }));
+    const [sol, luna] = codex.menuModels();
+    assert.deepEqual(sol.efforts, ["max", "ultra"]);
+    assert.equal(sol.fast, true);
+    assert.deepEqual(luna.efforts, ["low", "max"]);
+    assert.equal(luna.fast, false);
+  } finally { codex._resetCatalog(); }
+});
+
 test("codex catalog retains Terra and Luna when five current-generation models are listed", () => {
   codex._resetCatalog();
   try {
@@ -613,6 +631,59 @@ test("agy: 旗舰换了命名也认得出来，菜单和默认模型跟着走", 
   assert.equal(agy.effortForModel("claude-sonnet-5-5", "max"), "high");
   assert.equal(agy.effortForModel("gpt-oss-120b", "high"), "medium");
   agy._resetCatalog();
+});
+
+test("agy: Hydrogen 极高档合并为一项，Orchestrator 保留完整名称和固定配置", () => {
+  const rows = [
+    "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+    "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+    "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+    "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+    "gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)",
+  ];
+  const catalog = agy.parseModelsList([...rows, AGY_MODELS_2026_11].join("\n"));
+  agy.setCatalog(catalog);
+  const menu = agy.menuModels();
+  assert.deepEqual(menu.slice(0, 3).map(({ name, desc, efforts }) => ({ name, desc, efforts })), [
+    { name: "Gemini 4 Argon", desc: "旗舰最强", efforts: ["low", "medium", "high"] },
+    { name: "Gemini 4 Hydrogen", desc: "快速执行", efforts: ["low", "medium", "high", "xhigh"] },
+    { name: "Orchestrator (Argon)", desc: "规划与执行协作", efforts: [] },
+  ]);
+  assert.equal(menu.filter(item => item.name.includes("Hydrogen")).length, 1);
+  assert.equal(agy.effortForModel("gemini-4-hydrogen", "xhigh"), "xhigh");
+  assert.equal(agy.effortForModel("gemini-4-argon", "xhigh"), "high");
+  assert.equal(agy.resolveModel("gemini-4-hydrogen-xhigh"), "gemini-4-hydrogen-xhigh");
+  assert.equal(agy.effortForModel("gemini-4-hydrogen-xhigh", "low"), null);
+  assert.equal(agy.effortForModel("gemini-pro-orchestrator-g1-pro", "high"), null);
+  assert.equal(agy.defaultModels().opusModel, "gemini-4-argon");
+
+  // 安装版已有的旧格式缓存应在下一次刷新之前正确显示。
+  const oldCache = catalog.map(entry => entry.model === "gemini-4-hydrogen"
+    ? { ...entry, efforts: ["low", "medium", "high"] } : entry);
+  oldCache.push({ model: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)", efforts: [] });
+  agy.setCatalog(oldCache);
+  assert.deepEqual(agy.menuModels(), menu);
+  agy._resetCatalog();
+});
+
+test("agy: Neon is the chat default on supported catalogs and Flash remains the fast model", () => {
+  try {
+    agy._resetCatalog();
+    assert.equal(agy.defaultModels().sonnetModel, "gemini-4-neon");
+    agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11 + [
+      "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+      "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
+    ].join("\n")));
+    assert.deepEqual(agy.defaultModels(), {
+      opusModel: "gemini-4-argon",
+      sonnetModel: "gemini-4-neon",
+      haikuModel: "gemini-3.8-flash",
+    });
+    assert.equal(agy.effortForModel("gemini-4-neon", "xhigh"), "xhigh");
+    agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+    assert.equal(agy.defaultModels().sonnetModel, "gemini-3.8-flash");
+  } finally { agy._resetCatalog(); }
 });
 
 test("agy: 没有 Gemini 旗舰时默认模型退到菜单第一个，不写死型号", () => {

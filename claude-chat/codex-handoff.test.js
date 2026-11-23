@@ -45,11 +45,18 @@ test("server uses SDK only for text → image → text and resumes the same thre
       }};
     }
     export class Codex {
-      resumeThread(id) {
+      constructor(options) {
+        const expected = rounds === 1 ? 'priority' : 'default';
+        if (options.config.service_tier !== expected) throw Error('incorrect SDK service tier');
+      }
+      resumeThread(id, options) {
+        const expected = rounds === 1 ? 'ultra' : 'max';
+        if (options.modelReasoningEffort !== expected) throw Error('incorrect SDK effort');
         if (id !== 'handoff-thread' || rounds === 0) throw Error('lost conversation history');
         return thread(id);
       }
-      startThread() {
+      startThread(options) {
+        if (options.modelReasoningEffort !== 'max') throw Error('incorrect initial SDK effort');
         if (rounds !== 0) throw Error('unexpected replacement conversation');
         return thread('handoff-thread');
       }
@@ -86,6 +93,7 @@ test("server uses SDK only for text → image → text and resumes the same thre
     for (let i = 0; i < 3; i++) {
       const start = events.length;
       ws.send(JSON.stringify({prompt: 'question ' + i, conversationId: 'handoff', userMessageId: 'q' + i,
+        effort: i === 1 ? 'ultra' : 'max', codexSpeed: i === 1 ? 'fast' : 'standard',
         ...(i === 1 ? {images: [{mediaType: 'image/png', data: 'aGVsbG8='}]} : {})}));
       const end = Date.now() + 4000;
       while (!events.slice(start).some(e => e.type === 'done')) {

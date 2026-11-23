@@ -15,6 +15,9 @@ import { join } from "node:path";
 import * as wire from "./wire.js";
 
 export const PROVIDER_ID = "codex";
+const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const FALLBACK_EFFORTS = REASONING_LEVELS.slice(0, 4);
+const FALLBACK_FAST_MODELS = new Set(["gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"]);
 
 export function isAuthAvailable() {
   const authFile = join(homedir(), ".codex", "auth.json");
@@ -127,6 +130,8 @@ function normalizeCatalog(models) {
       desc: String(raw?.desc ?? "").trim(),
       rank,
       listed: raw?.listed !== false,
+      efforts: Array.isArray(raw?.efforts) ? REASONING_LEVELS.filter(level => raw.efforts.includes(level)) : null,
+      fast: typeof raw?.fast === "boolean" ? raw.fast : null,
     });
   }
   out.sort((a, b) => a.rank - b.rank);
@@ -145,6 +150,10 @@ export function parseModelsCache(json) {
     label: entry?.display_name,
     desc: entry?.description,
     rank: entry?.priority,
+    efforts: Array.isArray(entry?.supported_reasoning_levels)
+      ? entry.supported_reasoning_levels.map(level => level?.effort) : null,
+    fast: Array.isArray(entry?.service_tiers)
+      ? entry.service_tiers.some(tier => tier?.id === "priority") : null,
     // hide 的是内部模型，被官方标了 upgrade 的是等着下线的，两种都不上菜单
     listed: entry?.visibility === "list" && !entry?.upgrade,
   })));
@@ -186,7 +195,14 @@ export function menuModels() {
   const sameGen = latest ? listed.filter(entry => generationOf(entry.model) === latest) : listed;
   return sameGen.map((entry) => {
     const desc = MENU_DESCS.find(([pattern]) => pattern.test(entry.model))?.[1] ?? entry.desc;
-    return { model: entry.model, label: entry.label, name: entry.label, desc: desc || entry.label };
+    return {
+      model: entry.model,
+      label: entry.label,
+      name: entry.label,
+      desc: desc || entry.label,
+      efforts: entry.efforts ?? FALLBACK_EFFORTS,
+      fast: entry.fast ?? FALLBACK_FAST_MODELS.has(entry.model),
+    };
   });
 }
 

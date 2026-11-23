@@ -59,6 +59,23 @@ test("errors, stopped turns, local stopping and failed results suppress a later 
   }
 });
 
+test("output retained with an unconfirmed Gemini turn never sends a completion alert", () => {
+  for (const events of [
+    [{ type: "result", status: "partial" }, { type: "done" }],
+    [{ type: "done", status: "partial" }],
+    [{ type: "request_ack", state: "partial" }, { type: "done" }],
+  ]) {
+    const c = tracker();
+    c.send("request_started");
+    for (const event of events) c.send(event.type, event);
+    c.send("done");
+    assert.equal(c.completions.length, 0, JSON.stringify(events));
+    c.send("request_started", { userMessageId: "r2" });
+    c.send("done", { userMessageId: "r2" });
+    assert.deepEqual(c.completions, [{ conversationId: "a", userMessageId: "r2" }]);
+  }
+});
+
 test("simultaneous conversations retain completion ownership even with equal request ids", () => {
   const c = tracker();
   c.send("request_started");

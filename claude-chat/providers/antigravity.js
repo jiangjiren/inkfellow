@@ -51,7 +51,7 @@ export function modeFlag(permissionMode) {
   return "accept-edits";
 }
 
-// agy 只认三档，界面上的 xhigh/max 都压到 high
+// 目录明确支持 xhigh 时优先使用该档，其他模型沿用 high 兜底。
 const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
 
 /* ── 模型目录 ────────────────────────────────────────────────
@@ -61,7 +61,7 @@ const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max:
      claude-opus-5-5-low<TAB>Claude Opus 5.5 (Low)
      claude-sonnet-4-6<TAB>Claude Sonnet 4.6 (Thinking)
 
-   末尾的 -low/-medium/-high 是「模型 × 档位」的组合，剥掉它就是模型名，剥出
+   末尾的 -low/-medium/-high/-xhigh 是「模型 × 档位」的组合，剥掉它就是模型名，剥出
    来的那几个后缀合起来就是这个模型支持的档位；压根没后缀的（上面第三行那种，
    现在的清单里已经没有了，但格式还认）表示它不吃 --effort，传了会报
    "effort is not supported"。档位给错 agy 直接拒绝启动，所以这张表必须准。
@@ -70,21 +70,22 @@ const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max:
    先用磁盘缓存把界面顶起来，再在后台刷新（见 server.js 的 getAgyModelCatalog），
    刷回来的结果调 setCatalog 灌进这里。
 
-   下面这张兜底表是 2026-11-05 那天 `agy models` 的原样输出，只有「装了 agy
-   但一次都没查成功过」时才用得上。模型升级不需要来改它，刷新自己就带回来了，
-   这张表旧一点只影响首次启动那几秒。
+   下面这张兜底表在还没查到当前账号的目录时使用。Orchestrator 的可用项因套餐而异，
+   由 agy 的实时目录或磁盘缓存提供。
 
    （旧注释说这条命令在管道里会挂住不退出、只能写死一张表——那是早期版本的
    毛病。现在管道和文件重定向都是 7 秒正常退出，已复测。） */
 const FALLBACK_CATALOG = [
   { model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"] },
+  { model: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["low", "medium", "high", "xhigh"] },
+  { model: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high", "xhigh"] },
   { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
   { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high"] },
   { model: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high"] },
   { model: "gpt-oss-120b", label: "GPT-OSS 120B", efforts: ["medium"] },
 ];
 
-// 上面这张表是什么时候查的。换表时一起改：它决定多旧的磁盘缓存不该再用。
+// 2026-11-05 的模型换代是磁盘缓存的最低版本线。
 const FALLBACK_CATALOG_AS_OF = Date.parse("2026-11-05T11:20:00+08:00");
 
 /**
@@ -97,8 +98,9 @@ export function isCachedCatalogUsable(fetchedAt) {
   return Number.isFinite(at) && at >= FALLBACK_CATALOG_AS_OF;
 }
 
-const EFFORT_SUFFIX = /-(low|medium|high)$/;
-const EFFORT_ORDER = ["low", "medium", "high"];
+const EFFORT_SUFFIX = /-(low|medium|high|xhigh)$/;
+const EFFORT_LABEL_SUFFIX = /\s*\((low|medium|high|xhigh)\)$/i;
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh"];
 
 let _catalog = null;                  // setCatalog 灌进来的那份，null = 还没查过
 const _effortOverrides = new Map();   // learnEffortsFromError 从报错里学到的修正
@@ -130,20 +132,31 @@ export function _resetCatalog() {
 
 function normalizeCatalog(models) {
   if (!Array.isArray(models)) return null;
-  const out = [];
+  const byModel = new Map();
   for (const raw of models) {
-    const model = String(raw?.model ?? "").trim();
+    const slug = String(raw?.model ?? "").trim();
+    if (!slug || /\s/.test(slug)) continue;
+    // 旧缓存把 xhigh 单存成一条模型，读缓存和解析 CLI 输出走同一套合并规则。
+    const suffix = EFFORT_SUFFIX.exec(slug);
+    const model = suffix ? slug.slice(0, -suffix[0].length) : slug;
     if (!model) continue;
     const efforts = (Array.isArray(raw?.efforts) ? raw.efforts : [])
       .map(level => String(level).trim().toLowerCase())
       .filter(level => EFFORT_ORDER.includes(level));
-    out.push({
-      model,
-      label: String(raw?.label ?? "").trim() || model,
-      efforts: [...new Set(efforts)].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b)),
-    });
+    const rawLabel = String(raw?.label ?? "").trim();
+    const label = suffix ? rawLabel.replace(EFFORT_LABEL_SUFFIX, "").trim() : rawLabel;
+    const entry = byModel.get(model) ?? { model, label: "", efforts: new Set() };
+    if (!entry.label && label) entry.label = label;
+    if (suffix) entry.efforts.add(suffix[1]);
+    for (const level of efforts) entry.efforts.add(level);
+    byModel.set(model, entry);
   }
-  return out.length ? out : null;
+  if (!byModel.size) return null;
+  return [...byModel.values()].map(({ model, label, efforts }) => ({
+    model,
+    label: label || model,
+    efforts: EFFORT_ORDER.filter(level => efforts.has(level)),
+  }));
 }
 
 /**
@@ -151,23 +164,13 @@ function normalizeCatalog(models) {
  * 一行都认不出来时返回 null——那多半是没登录或者输出格式变了，宁可继续用旧目录。
  */
 export function parseModelsList(stdout) {
-  const byModel = new Map();
+  const models = [];
   for (const line of String(stdout ?? "").split(/\r?\n/)) {
     const tab = line.indexOf("\t");
     if (tab <= 0) continue;   // "Fetching available models..." 这类日志行没有 TAB
-    const slug = line.slice(0, tab).trim();
-    if (!slug || /\s/.test(slug)) continue;
-    const rawLabel = line.slice(tab + 1).trim();
-    const suffix = EFFORT_SUFFIX.exec(slug);
-    const model = suffix ? slug.slice(0, -suffix[0].length) : slug;
-    // 带档位的那几行 label 只差结尾一个括号，合并成一个模型时去掉它
-    const label = suffix ? rawLabel.replace(/\s*\([^()]*\)\s*$/, "").trim() : rawLabel;
-    const entry = byModel.get(model) ?? { model, label: "", efforts: [] };
-    if (suffix) entry.efforts.push(suffix[1]);
-    if (!entry.label && label) entry.label = label;
-    byModel.set(model, entry);
+    models.push({ model: line.slice(0, tab), label: line.slice(tab + 1) });
   }
-  return normalizeCatalog([...byModel.values()]);
+  return normalizeCatalog(models);
 }
 
 // agy 拒绝启动时会把真实档位写进错误里，例如
@@ -212,6 +215,7 @@ export function effortForModel(model, effort) {
   const supported = supportedEfforts(model);
   if (!supported) return wanted;          // 没见过的模型，照传让 agy 自己判
   if (supported.length === 0) return null; // claude-* 这类不接受档位
+  if (supported.includes(effort)) return effort;
   if (supported.includes(wanted)) return wanted;
   // 就近取。medium 缺失时优先往下走：high 更慢更费额度，不该由我们替用户升上去
   const order = wanted === "high"
@@ -219,7 +223,7 @@ export function effortForModel(model, effort) {
     : wanted === "low"
     ? ["low", "medium", "high"]
     : ["low", "high", "medium"];
-  return order.find(level => supported.includes(level)) ?? null;
+  return order.find(level => supported.includes(level)) ?? supported[0];
 }
 
 /* ── 模型菜单 ────────────────────────────────────────────────
@@ -232,13 +236,16 @@ export function effortForModel(model, effort) {
    下面这张表只管排序和一句话说明，认的是「哪一类模型」而不是具体版本，
    所以模型升级同样不用动它；匹配不上的新家族排在最后，照样进菜单。
 
-   旗舰不认具体名字：Gemini 的旗舰从 3.x 的 -pro 换成过 4 的 -argon，下一代还可能
-   再换。所以 Gemini 里除了 Flash 都算旗舰，这样再改名也不用回来改。 */
+   Gemini 旗舰的名字会随代际变化，Flash、Hydrogen 和 Orchestrator 有各自的菜单说明。 */
 const FLASH = /-flash(?:-|$)/;
-const FLAGSHIP = /^gemini-(?!.*-flash(?:-|$))/;
+const FLAGSHIP = /^gemini-\d(?!.*-(?:flash|hydrogen|orchestrator)(?:-|$))/;
+const HYDROGEN = /^gemini-\d.*-hydrogen(?:-|$)/;
+const ORCHESTRATOR = /(?:^|-)orchestrator(?:-|$)/;
 
 const MENU_RULES = [
   [FLAGSHIP, "旗舰最强"],
+  [HYDROGEN, "快速执行"],
+  [ORCHESTRATOR, "规划与执行协作"],
   [FLASH, "快速通用"],
   [/^claude-opus/, "Claude 旗舰"],
   [/^claude-sonnet/, "Claude 均衡"],
@@ -273,15 +280,14 @@ export function menuModels() {
   const latest = new Map();
   for (const entry of getCatalog()) {
     if (MENU_HIDDEN.some(pattern => pattern.test(entry.model))) continue;
-    const key = seriesKey(entry.model);
+    const key = ORCHESTRATOR.test(entry.model) ? entry.label : seriesKey(entry.model);
     const prev = latest.get(key);
     if (!prev || isNewer(entry.model, prev.model)) latest.set(key, entry);
   }
   return [...latest.values()]
     .map((entry) => {
       const rank = MENU_RULES.findIndex(([pattern]) => pattern.test(entry.model));
-      // 菜单上的名字：去掉结尾的 (Thinking) 之类，Claude 前缀也去掉，跟另外两家的菜单一样短
-      const name = entry.label.replace(/\s*\([^()]*\)\s*$/, "").replace(/^Claude\s+/, "").trim() || entry.model;
+      const name = entry.label.replace(/\s*\(Thinking\)$/i, "").replace(/^Claude\s+/, "").trim() || entry.model;
       return {
         model: entry.model,
         label: name,
@@ -296,17 +302,17 @@ export function menuModels() {
 }
 
 /**
- * 三档默认模型。opus 给旗舰（派发默认用它），sonnet/haiku 给 Flash（前端新对话默认用
- * sonnet 档）——Pro 计划下 Argon 是单独的周额度，不该让每条新对话都去烧它。
- * 跟着目录走，别在外面写死型号：写死的那个迟早会下线，agy 会直接拒绝启动。
+ * 对话默认优先用目录里的 Neon。目录没有 Neon 时沿用 Flash 兜底；
+ * 派发仍取旗舰档，快速档仍优先 Flash。
  */
 export function defaultModels() {
   const menu = menuModels();
+  const neon = menu.find(item => /^gemini-\d+(?:[.-]\d+)*-neon$/.test(item.model))?.model;
   const flash = menu.find(item => FLASH.test(item.model))?.model;
   const flagship = menu.find(item => FLAGSHIP.test(item.model))?.model
     ?? menu[0]?.model
     ?? getCatalog()[0]?.model;
-  return { opusModel: flagship, sonnetModel: flash ?? flagship, haikuModel: flash ?? flagship };
+  return { opusModel: flagship, sonnetModel: neon ?? flash ?? flagship, haikuModel: flash ?? flagship };
 }
 
 /**
@@ -429,6 +435,8 @@ export function createTranslator() {
   const openedText = new Set();   // 已经发过 content_block_start 的文本 step
   const toolIds = new Map();      // step_index → 前端用来配对的工具 id
   let streamed = false;           // 本轮是否已经开过流式块
+  let hasAnswer = false;
+  let hasToolResult = false;
 
   const openTextBlock = (idx, out) => {
     if (openedText.has(idx)) return;
@@ -439,7 +447,7 @@ export function createTranslator() {
     streamed = true;
   };
 
-  return function translate(ev) {
+  function translate(ev) {
     const out = [];
     if (!ev || typeof ev !== "object") return out;
     if (ev.event !== "step_update") return out;
@@ -458,7 +466,10 @@ export function createTranslator() {
         const text = (texts.get(idx) || "").trim();
         if (openedText.has(idx)) out.push(wire.streamTextStop());
         // 定稿：前端拿这条重渲染，历史也只认这条
-        if (text) out.push(wire.assistantMessage([wire.textBlock(text)]));
+        if (text) {
+          hasAnswer = true;
+          out.push(wire.assistantMessage([wire.textBlock(text)]));
+        }
         texts.delete(idx);
         openedText.delete(idx);
       }
@@ -467,6 +478,9 @@ export function createTranslator() {
 
     if (step.step_type === "tool") {
       if (step.state === "DONE") {
+        if (toolIds.has(idx) || step.tool_name || step.tool_info?.name || step.tool_info?.output != null) {
+          hasToolResult = true;
+        }
         const id = toolIds.get(idx) || `agy_${idx}`;
         toolIds.delete(idx);
         const output = toolOutput(step.tool_info);
@@ -494,7 +508,19 @@ export function createTranslator() {
     }
 
     return out;
+  }
+
+  // 流式增量不会写进对话历史，连接中断时也要补成正式的助手消息。
+  translate.finishPartial = (response) => {
+    const pending = [...texts.values()].map(text => text.trim()).filter(Boolean);
+    if (pending.length) {
+      return [wire.streamTextStop(), wire.assistantMessage(pending.map(text => wire.textBlock(text)))];
+    }
+    if (!hasAnswer && response) return [wire.assistantMessage([wire.textBlock(response)])];
+    return hasAnswer || hasToolResult ? [] : null;
   };
+  translate.hasToolActivity = () => hasToolResult || toolIds.size > 0;
+  return translate;
 }
 
 /* ── 用量额度 ──────────────────────────────────────────────

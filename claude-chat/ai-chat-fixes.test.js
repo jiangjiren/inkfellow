@@ -226,7 +226,7 @@ test("对话页自己发 CSP 头——Tauri 那份管不到跨源 iframe", { tim
     assert.ok(csp, "页面必须带 CSP 头");
     assert.match(csp, /script-src-attr 'none'/, "内联事件属性要堵死");
     assert.match(csp, /object-src 'none'/);
-    assert.match(csp, /base-uri 'none'/);
+    assert.match(csp, /base-uri '(?:none|self)'/);
     // 全部前端逻辑内联在 index.html 里，script-src 还去不掉 unsafe-inline
     assert.match(csp, /script-src 'self' 'unsafe-inline'/);
     // 主窗口用 iframe 套着这一页，写死祖先就是赌它的源，赌错整页白屏

@@ -5434,7 +5434,7 @@ const CHAT_PAGE_CSP = [
   "connect-src 'self' ws: wss:",
   "object-src 'none'",
   "frame-src 'none'",
-  "base-uri 'none'",
+  "base-uri 'self'",
   "form-action 'none'",
 ].join("; ");
 

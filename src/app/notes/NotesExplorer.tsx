@@ -56,7 +56,8 @@ const captureStamp = (d = new Date()) =>
 
 const DEFAULT_ASSISTANT_PANEL_WIDTH = 520;
 const MIN_ASSISTANT_PANEL_WIDTH = 340;
-const MAX_ASSISTANT_PANEL_WIDTH = 900;
+const MAX_ASSISTANT_PANEL_WIDTH = 1200;
+const MIN_READER_SPLIT_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const MIN_SIDEBAR_WIDTH = 180;
 const MAX_SIDEBAR_WIDTH = 400;
@@ -1305,18 +1306,20 @@ export default function NotesExplorer() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [shareModalOpen, deleteConfirmOpen, moreMenuOpen, renameTarget, treeMenuTarget, treeSheetTarget, globalCreateMenuOpen, importError]);
 
-  // CSS 把面板压在 --assistant-panel-max-vw（桌面 42vw、平板横屏 40vw）以内，
-  // 若拖动仍按常量 900 收敛，超过该点后面板不再变宽而 state 继续涨，
-  // 回拖时要先把这段虚高消耗完，表现为一段推不动的死区。读同一个变量对齐两边。
+  // CSS 把面板压在 --assistant-panel-max-vw（桌面 72vw、平板横屏 60vw）以内，
+  // 同时为左侧正文区留出至少 MIN_READER_SPLIT_WIDTH（320px），避免分屏被压塌；
+  // 想要 100% 铺满时点击顶栏「沉浸全宽」按钮即可。
   const getMaxAssistantPanelWidth = useCallback(() => {
     const el = assistantPanelRef.current;
     const ratio = el
       ? Number.parseFloat(getComputedStyle(el).getPropertyValue("--assistant-panel-max-vw"))
       : Number.NaN;
-    const viewportCap = Number.isFinite(ratio)
+    const ratioCap = Number.isFinite(ratio)
       ? (window.innerWidth * ratio) / 100
       : Number.POSITIVE_INFINITY;
-    // 视口极窄时 vw 上限可能低于 MIN，取 max 防止上下限倒挂（clamp 里 max 会压过 min）
+    const readerSafeCap = window.innerWidth - MIN_READER_SPLIT_WIDTH;
+    const viewportCap = Math.min(ratioCap, readerSafeCap);
+    // 视口极窄时上限可能低于 MIN，取 max 防止上下限倒挂（clamp 里 max 会压过 min）
     return Math.max(MIN_ASSISTANT_PANEL_WIDTH, Math.min(MAX_ASSISTANT_PANEL_WIDTH, viewportCap));
   }, []);
 
@@ -3470,7 +3473,6 @@ export default function NotesExplorer() {
   const isDashboardChatMode = !note && isAssistantPanelOpen && isDashboardChatActive && !isMobileViewport;
   const isChatFocusMode = !isMobileViewport && isAssistantPanelOpen && chatFocusActive && !gitPanelOpen;
   const isCenteredChatMode = isDashboardChatMode || isChatFocusMode;
-  const focusNoteTitle = isDraft ? "记录灵感" : stripNoteExtension(activePath?.split("/").pop() ?? "");
 
   // Restore before paint. While hidden, polling and scroll events must not save a clamped zero.
   useLayoutEffect(() => {
@@ -3526,13 +3528,17 @@ export default function NotesExplorer() {
       setIsDashboardChatActive(false);
     }
   }, [activePath]);
-  // 同步沉浸全宽状态到 chat iframe
+  // 同步沉浸全宽状态与宿主视口模式（桌面/移动端）到 chat iframe
   useEffect(() => {
     claudeFrameRef.current?.contentWindow?.postMessage(
       { type: "agent-maximize-state", isMaximized: isChatFocusMode },
       window.location.origin,
     );
-  }, [isChatFocusMode, claudeFrameTick]);
+    claudeFrameRef.current?.contentWindow?.postMessage(
+      { type: "host-viewport-mode", mobile: isMobileViewport },
+      window.location.origin,
+    );
+  }, [isChatFocusMode, isMobileViewport, claudeFrameTick]);
 
   // 处理来自对齐版 chat iframe 的面板控制、文件跳转与完成通知事件
   useEffect(() => {
@@ -4751,21 +4757,6 @@ export default function NotesExplorer() {
           </>
         )}
 
-        {isChatFocusMode && (
-          <header className={styles.dashboardChatHeader}>
-            <button type="button" className={`${styles.dashboardChatBackBtn} ${isChildOverlayOpen ? styles.dashboardChatBackBtnHidden : ""}`}
-              tabIndex={isChildOverlayOpen ? -1 : 0} onClick={handleExitChatFocus}
-              aria-label="退出专注聊天" title="退出专注聊天（Ctrl/⌘ + \ 或 Esc）">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M4 14h5v5M20 10h-5V5M15 10l6-6M3 20l6-6" />
-              </svg>
-              <span>退出专注</span>
-            </button>
-            <span className={styles.chatFocusTitle} title={activePath ?? undefined}>
-              {activePath || isDraft ? `正在讨论：${focusNoteTitle}` : "Fellow"}
-            </span>
-          </header>
-        )}
         {!isChatFocusMode && (isDashboardChatMode || isMobileDashboardChat) && (
           <header className={styles.dashboardChatHeader}>
             <button
@@ -4795,7 +4786,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=13${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=14${isMobileViewport ? "&mobile=1" : ""}${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
@@ -4808,6 +4799,10 @@ export default function NotesExplorer() {
             try { alertsEnabled = window.localStorage.getItem("inkfellow-completion-alerts-v1") !== "0"; } catch { /* ignore */ }
             claudeFrameRef.current?.contentWindow?.postMessage(
               { type: "completion-notifications-state", enabled: alertsEnabled },
+              window.location.origin,
+            );
+            claudeFrameRef.current?.contentWindow?.postMessage(
+              { type: "host-viewport-mode", mobile: isMobileViewport },
               window.location.origin,
             );
             claudeFrameRef.current?.contentWindow?.postMessage(

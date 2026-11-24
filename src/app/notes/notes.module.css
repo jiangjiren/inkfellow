@@ -1278,10 +1278,10 @@
   top: 0;
   height: 100vh;
   height: 100dvh;
-  /* 流式上限：永远不超过视口 42%，窗口变窄也只占右侧一部分，绝不铺满。
-     比例抽成变量，拖动逻辑要读同一个值来收敛宽度，否则会拖出死区。 */
-  --assistant-panel-max-vw: 42;
-  width: min(var(--assistant-panel-width, 520px), calc(var(--assistant-panel-max-vw) * 1vw));
+  /* 分屏流式上限：桌面端最高可拖到视口 72%（支持 5:5 / 7:3 对照），同时由 JS 保底正文 ≥ 320px；
+     想要 100% 铺满时走「沉浸全宽」。比例抽成变量供拖动逻辑读取，避免拖出死区。 */
+  --assistant-panel-max-vw: 72;
+  width: min(var(--assistant-panel-width, 520px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - 320px));
   flex: 0 0 auto;
   min-width: 0;
   display: flex;
@@ -3978,8 +3978,8 @@
    竖屏平板不会命中这里，会落到上面的底部抽屉规则。 */
 @media (orientation: landscape) and (min-width: 901px) and (max-width: 1260px) {
   .assistantPanel {
-    --assistant-panel-max-vw: 40;
-    width: min(var(--assistant-panel-width, 460px), calc(var(--assistant-panel-max-vw) * 1vw));
+    --assistant-panel-max-vw: 60;
+    width: min(var(--assistant-panel-width, 460px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - 320px));
   }
 }
 
@@ -5436,20 +5436,17 @@
   to { opacity: 0; }
 }
 
-/* 浮在 iframe 自带顶栏（44px，按钮居右）的同一行上：
-   左侧「返回首页」与右侧设置/历史/新建合并为一行，不再各占一行 */
+/* 首页进入全屏对话时的返回栏：采用常规流布局，避免覆盖 iframe 顶栏左侧的 ✦ Fellow 与多标签 */
 .dashboardChatHeader {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 2;
-  height: 44px;
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  height: 40px;
   display: flex;
   align-items: center;
-  padding: 0 8px;
-  background: transparent;
-  border-bottom: none;
-  pointer-events: none;
+  padding: 0 10px;
+  background: var(--notes-bg-app);
+  border-bottom: 1px solid var(--notes-border);
 }
 
 .dashboardChatBackBtn {

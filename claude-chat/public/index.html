@@ -3022,11 +3022,14 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   text-align: center;
 }
 
+/* 仅在宿主告知处于移动端抽屉模式时隐藏桌面侧栏折叠/全宽按钮（不能用 iframe 自身 max-width 媒体查询） */
+:root.mobile-embed #btn-collapse-desktop-panel,
+:root.mobile-embed #btn-maximize-panel {
+  display: none !important;
+}
+
 /* ── Mobile Slide-in UI ── */
 @media (max-width: 768px) {
-  #btn-collapse-desktop-panel, #btn-maximize-panel {
-    display: none !important;
-  }
   #auth-dialog, #history-dropdown {
     position: fixed;
     top: 0; right: 0; bottom: 0; left: 0;
@@ -4243,6 +4246,9 @@ const configuredParentOrigin = pageParams.get("parentOrigin");
 const configuredParentToken = pageParams.get("token");
 const isDesktopEmbed = pageParams.get("desktop") === "1";
 const isWebEmbed = !isDesktopEmbed && window.parent !== window;
+if (pageParams.get("mobile") === "1") {
+  document.documentElement.classList.add("mobile-embed");
+}
 
 function agentApiFetch(url, options) {
   if (!configuredParentToken) return fetch(url, options);
@@ -6823,6 +6829,10 @@ window.addEventListener("message", (e) => {
   }
   if (e.data?.type === "note-ask" && e.data.text) {
     submitRequest(e.data.text, { consumeComposer: false, noteFile: e.data.filePath ?? null });
+  }
+  if (e.data?.type === "host-viewport-mode") {
+    document.documentElement.classList.toggle("mobile-embed", e.data.mobile === true);
+    return;
   }
   if (e.data?.type === "agent-maximize-state") {
     setMaximizeButtonState(e.data.isMaximized === true);

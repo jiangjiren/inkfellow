@@ -2437,23 +2437,64 @@ function videoCardHtml(project, { showDate = false } = {}) {
   </button>`;
 }
 
-function recentNoteRowHtml(file, projects) {
+let dashboardSortMode = "recent";
+let dashboardLiveTickets = [];
+
+function formatDashboardDateLine(now = new Date()) {
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return `${now.getMonth() + 1}月${now.getDate()}日 · ${weekdays[now.getDay()]}`;
+}
+
+function dashboardNoteFiles() {
+  const projects = InkfellowVideoWorkbench.listProjects();
+  const files = collectFiles(state.tree);
+  return InkfellowHomeModel.recentFiles({
+    files,
+    opened: dashboardSortMode === "recent" ? readOpenedNotes() : [],
+    projects,
+    limit: 8,
+  });
+}
+
+function recentNoteRowHtml(file, projects, isTop = false) {
   const context = InkfellowHomeModel.contextOf(file, projects);
   return `<button type="button" class="dashboardRecentRow" data-path="${escapeHtml(file.path)}" title="${escapeHtml(file.path)}">
-    <span class="dashboardRecentRowIcon" aria-hidden="true">${FILE_KIND_ICONS[fileKindOf(file.extension)] || FILE_ICON}</span>
+    <span class="dashboardRecentRowIcon${isTop ? " isTop" : ""}" aria-hidden="true">${FILE_KIND_ICONS[fileKindOf(file.extension)] || FILE_ICON}</span>
     <span class="dashboardRecentRowTitle">${escapeHtml(stripExt(file.name))}</span>
-    ${context ? `<span class="dashboardRecentRowContext">${escapeHtml(context)}</span>` : ""}
-    <span class="dashboardRecentRowDate">${escapeHtml(InkfellowHomeModel.relativeTime(file.touchedAt))}</span>
+    <span class="dashboardRecentRowMeta">
+      ${context ? `<span class="dashboardFolderTag">${escapeHtml(context)}</span>` : ""}
+      <span class="dashboardRecentRowDate">${escapeHtml(InkfellowHomeModel.relativeTime(file.touchedAt))}</span>
+    </span>
+  </button>`;
+}
+
+function renderFellowStripHtml() {
+  if (!dashboardLiveTickets.length) return "";
+  const ticket = dashboardLiveTickets.find((t) => t.status === "needs_attention" || t.status === "partial")
+    || dashboardLiveTickets.find((t) => t.status === "running")
+    || dashboardLiveTickets[0];
+  const isAttention = ticket.status === "needs_attention" || ticket.status === "partial";
+  const tag = isAttention ? "待验收" : ticket.status === "queued" ? "排队中" : "Fellow 执行中";
+  const suffix = dashboardLiveTickets.length > 1 ? ` 等 ${dashboardLiveTickets.length} 项任务` : "";
+  return `<button type="button" id="dashboard-fellow-strip" class="dashboardFellowStrip${isAttention ? " isReady" : ""}">
+    <span class="dashboardPulseDot" aria-hidden="true"></span>
+    <span class="dashboardFellowStripBody">
+      <span class="dashboardFellowStripTag">${escapeHtml(tag)}</span>
+      <span class="dashboardFellowStripText">${escapeHtml(`${ticket.title || "后台任务"}${suffix}`)}</span>
+    </span>
+    <span class="dashboardFellowStripCta">查看执行台 ›</span>
   </button>`;
 }
 
 /* 启动时视频列表比文件树先回来。树没到的时候什么都不知道，这一段先不画，
    不然有笔记的人每次打开都会闪一下「还没有笔记」。 */
 function renderDashboardSections() {
-  const files = recentDashboardFiles();
+  const files = dashboardNoteFiles();
+  const totalNotes = state.tree ? collectFiles(state.tree).filter((f) => !/^(png|jpe?g|gif|webp|svg|avif|pdf)$/i.test(f.extension || "")).length : 0;
   const projects = InkfellowVideoWorkbench.listProjects();
   const videos = projects.slice(0, DASHBOARD_VIDEO_LIMIT);
   return `
+    ${renderFellowStripHtml()}
     ${videos.length ? `<div class="dashboardSection dashboardVideoSection">
       <div class="dashboardSectionHeader">
         <h2 class="dashboardSectionTitle">最近的视频</h2>
@@ -2463,21 +2504,25 @@ function renderDashboardSections() {
     </div>` : ""}
     ${!state.tree ? "" : `<div class="dashboardSection">
       <div class="dashboardSectionHeader">
-        <h2 class="dashboardSectionTitle">${files.length ? "继续你的工作" : "开始记录"}</h2>
-        <button type="button" id="dashboard-capture" class="dashboardCaptureChip">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-          </svg>
-          <span>记录灵感</span>
-        </button>
+        <h2 class="dashboardSectionTitle">${files.length ? "继续工作" : "开始记录"}</h2>
+        ${files.length ? `<div class="dashboardFilterGroup" role="tablist" aria-label="排序方式">
+          <button type="button" role="tab" data-sort-mode="recent" aria-selected="${dashboardSortMode === "recent"}" class="dashboardFilterTab${dashboardSortMode === "recent" ? " active" : ""}">最近打开</button>
+          <button type="button" role="tab" data-sort-mode="updated" aria-selected="${dashboardSortMode === "updated"}" class="dashboardFilterTab${dashboardSortMode === "updated" ? " active" : ""}">最近修改</button>
+        </div>` : ""}
       </div>
-      ${files.length ? `<div class="dashboardRecentList">${files.map((file) => recentNoteRowHtml(file, projects)).join("")}</div>` : `
+      ${files.length ? `<div class="dashboardRecentSheet">${files.map((file, idx) => recentNoteRowHtml(file, projects, idx === 0)).join("")}</div>` : `
         <div class="dashboardEmptyPanel">
-          <p>还没有笔记。点击下方按钮，或左上角「+」开始记录。</p>
-          <button type="button" id="dashboard-empty-create" class="emptyStateCta">新建笔记</button>
+          <p>这里还是空的。新建第一篇笔记，或按 ⌘N 开始记录。</p>
+          <button type="button" id="dashboard-empty-create" class="dashboardPrimaryBtn">新建笔记</button>
         </div>
       `}
+      <footer class="dashboardFooter">
+        <span>共 ${totalNotes} 篇笔记</span>
+        <div class="dashboardFooterLinks">
+          <button type="button" id="dashboard-footer-search" class="dashboardSubtleLink">⌘P 快速跳转</button>
+          <button type="button" id="dashboard-footer-fellow" class="dashboardSubtleLink">⌘L 开关 Fellow</button>
+        </div>
+      </footer>
     </div>`}`;
 }
 
@@ -2485,21 +2530,42 @@ function renderDashboard() {
   dashboardSectionsHtml = renderDashboardSections();
   return `
     <section class="dashboardContainer">
-      <div class="dashboardHero">
-        <p class="dashboardSubtitle">你的个人知识库，已就绪。</p>
-        <form class="dashboardComposer" id="dashboard-ask-form" aria-label="问 Fellow">
-          <span class="dashboardComposerMark" aria-hidden="true">✦</span>
-          <input id="dashboard-ask-input" class="dashboardComposerInput" type="text" placeholder="问 Fellow…" autocomplete="off" spellcheck="false" />
-          <button type="submit" class="dashboardComposerSend" title="问 Fellow" aria-label="问 Fellow">
-            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M8 12V4" />
-              <path d="M4.5 7.5 8 4l3.5 3.5" />
-            </svg>
+      <header class="dashboardMasthead">
+        <div>
+          <div class="dashboardDate">${escapeHtml(formatDashboardDateLine())}</div>
+          <h1 class="dashboardHeading">继续今天的创作</h1>
+        </div>
+        <div class="dashboardActions">
+          <button type="button" id="dashboard-create-note" class="dashboardPrimaryBtn">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>新建笔记</span>
           </button>
-        </form>
-      </div>
+          <button type="button" id="dashboard-quick-open" class="dashboardSearchBtn" title="快速打开笔记 (⌘P)">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <span class="dashboardKbd">⌘P</span>
+          </button>
+        </div>
+      </header>
       <div id="dashboard-sections">${dashboardSectionsHtml}</div>
     </section>`;
+}
+
+async function refreshDashboardFellowStrip() {
+  const origin = agentOrigin();
+  if (!origin) return;
+  try {
+    const headers = state.agentToken ? { Authorization: `Bearer ${state.agentToken}` } : {};
+    const res = await fetch(`${origin}/api/orchestrator/tickets?archived=active`, { cache: "no-store", headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    const raw = Array.isArray(data?.tickets) ? data.tickets : (Array.isArray(data) ? data : []);
+    const liveStatuses = new Set(["running", "queued", "needs_attention", "partial"]);
+    dashboardLiveTickets = raw
+      .filter((t) => typeof t?.id === "string" && liveStatuses.has(String(t.status || "")))
+      .map((t) => ({ id: t.id, title: String(t.title || "后台任务"), status: String(t.status) }));
+    const docArea = qs("doc-area");
+    if (docArea) refreshDashboardInPlace(docArea);
+  } catch { /* sidecar 未就绪时静默忽略 */ }
 }
 
 /* 笔记库里任何文件一变，首页就要刷新；视频工程列表也是后台异步回来的。整页重画会清掉
@@ -2548,6 +2614,17 @@ function onDashboardSectionsClick(event) {
     if (path) void loadNote(path);
   } else if (button.id === "dashboard-all-videos") {
     openAllVideos();
+  } else if (button.id === "dashboard-fellow-strip") {
+    openFellowPanel();
+    setTimeout(() => postAgentMessage({ type: "open-ticket-stage" }), 100);
+  } else if (button.dataset.sortMode) {
+    dashboardSortMode = button.dataset.sortMode === "updated" ? "updated" : "recent";
+    const docArea = qs("doc-area");
+    if (docArea) refreshDashboardInPlace(docArea);
+  } else if (button.id === "dashboard-footer-search") {
+    openQuickOpen();
+  } else if (button.id === "dashboard-footer-fellow") {
+    togglePanel();
   } else if (button.id === "dashboard-capture" || button.id === "dashboard-empty-create") {
     createNote();
   }
@@ -2556,30 +2633,9 @@ function onDashboardSectionsClick(event) {
 function wireDashboard() {
   // 列表会被整块替换，事件挂在外层，替换之后不用重新绑
   qs("dashboard-sections")?.addEventListener("click", onDashboardSectionsClick);
-  const askInput = qs("dashboard-ask-input");
-  const askSend = qs("dashboard-ask-form")?.querySelector(".dashboardComposerSend");
-  const syncAskReady = () => {
-    if (!askSend || !askInput) return;
-    askSend.classList.toggle("isReady", askInput.value.trim().length > 0);
-  };
-  askInput?.addEventListener("input", syncAskReady);
-  syncAskReady();
-
-  qs("dashboard-ask-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const input = qs("dashboard-ask-input");
-    const text = input?.value.trim();
-    openFellowPanel();
-    setTimeout(() => {
-      const accepted = postAgentMessage(text
-        ? { type: "note-ask", text, filePath: state.activePath ?? null }
-        : { type: "note-ask", filePath: state.activePath ?? null });
-      if (accepted && input) {
-        input.value = "";
-        syncAskReady();
-      }
-    }, 120);
-  });
+  qs("dashboard-create-note")?.addEventListener("click", () => createNote());
+  qs("dashboard-quick-open")?.addEventListener("click", (event) => openQuickOpen(event.currentTarget));
+  void refreshDashboardFellowStrip();
 }
 
 /* ── 全部视频 ──────────────────────────────────── */

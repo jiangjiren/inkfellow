@@ -6805,6 +6805,12 @@ window.addEventListener("message", (e) => {
   if (e.data?.type === "focus-input") {
     promptEl.focus();
   }
+  if (e.data?.type === "open-ticket-stage") {
+    closeAuthDialog();
+    closeHistoryPanel();
+    openTicketStage();
+    return;
+  }
   if (e.data?.type === "open-conversation" && typeof e.data.conversationId === "string") {
     closeHistoryPanel();
     void switchToConversation(e.data.conversationId);

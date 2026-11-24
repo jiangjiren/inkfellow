@@ -1351,10 +1351,10 @@ input, textarea { font-family: inherit; }
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 760px;
+  max-width: 960px;
   min-height: 100%;
   margin: 0 auto;
-  padding: 48px 36px 88px;
+  padding: 44px 40px 88px;
   animation: dashboardFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 

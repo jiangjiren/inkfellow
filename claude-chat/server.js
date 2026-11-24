@@ -24,6 +24,10 @@ import * as agyProvider from "./providers/antigravity.js";
 import { codexAuthFile, getCodexCatalog, resolveCodexEffort } from "./providers/codex-models.js";
 import { getCatalog as getAgyCatalog, getUsage as getAgyUsage, runAntigravity, resolveModel as resolveAgyModel } from "./antigravity-runtime.js";
 import { z } from "zod";
+import { createFellow } from "./fellow.js";
+import { STRATEGIST_CONVERSATION_ID, STRATEGIST_SYSTEM_PROMPT } from "./orchestrator.js";
+import { workerToolDecision, workerToolEvents } from "./worker-watchdog.js";
+import { canonicalPath, pathWithin } from "./write-scope-lock.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -2510,6 +2514,15 @@ const http = createServer((req, res) => {
     res.end(JSON.stringify({ error: "不允许跨站修改对话或设置" }));
     return;
   }
+  if (url.startsWith("/api/fellow/")) {
+    if (!isAllowedBrowserOrigin(req)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    void fellow.handle(req, res, url, method);
+    return;
+  }
 
   // ── WeChat Settings API ──
   if (url === "/api/wechat/status" && method === "GET") {
@@ -2883,7 +2896,9 @@ const http = createServer((req, res) => {
   if (historyItemRe) {
     const id = historyItemRe[1];
     if (method === "GET") {
-      const conv = eventLog.project(id);
+      const ticket = fellow.getWorkerTicket(id);
+      const conv = eventLog.project(id) ?? (ticket || id === STRATEGIST_CONVERSATION_ID
+        ? { id, title: ticket?.title || "Fellow", messages: [] } : null);
       if (conv) {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(conv));
@@ -2891,6 +2906,11 @@ const http = createServer((req, res) => {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "not found" }));
       }
+      return;
+    }
+    if (id === STRATEGIST_CONVERSATION_ID || id.startsWith("wrk_tk_")) {
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "请通过 Fellow 任务台管理这条会话。" }));
       return;
     }
     if (method === "PUT") {
@@ -3331,6 +3351,277 @@ function createRun(runId, ws, ac) {
   };
 }
 
+function clearPendingAskUserQuestion(run, reason = "cancelled") {
+  if (!run?.pendingAskUserQuestion) return;
+  const pending = run.pendingAskUserQuestion;
+  run.pendingAskUserQuestion = null;
+  pending.cleanup?.();
+  pending.reject(makeAbortError(reason));
+  run.send({ type: "ask_user_question_cancelled", requestId: pending.requestId, reason });
+}
+
+function waitForAskUserQuestionAnswer(run, input, context = {}) {
+  const questions = normalizeAskUserQuestions(input);
+  if (questions.length === 0) {
+    return Promise.reject(new Error("AskUserQuestion 请求格式无效：缺少 questions/options"));
+  }
+  clearPendingAskUserQuestion(run, "新的澄清问题已替换上一条问题");
+
+  const requestId = crypto.randomUUID();
+  run.send({
+    type: "ask_user_question",
+    requestId,
+    toolUseID: context.toolUseID ?? null,
+    questions,
+  });
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      if (run.pendingAskUserQuestion?.requestId !== requestId) return;
+      run.pendingAskUserQuestion = null;
+      reject(makeAbortError("用户输入已取消"));
+      run.send({ type: "ask_user_question_cancelled", requestId, reason: "aborted" });
+    };
+    const signal = context.signal;
+    if (signal?.aborted) {
+      reject(makeAbortError("用户输入已取消"));
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    run.pendingAskUserQuestion = {
+      requestId,
+      questions,
+      toolUseID: context.toolUseID ?? null,
+      cleanup: () => signal?.removeEventListener("abort", onAbort),
+      reject,
+      resolve: (payload = {}) => {
+        if (run.pendingAskUserQuestion?.requestId !== requestId) return;
+        run.pendingAskUserQuestion = null;
+        signal?.removeEventListener("abort", onAbort);
+        const rawAnswers = payload && typeof payload.answers === "object" && payload.answers !== null
+          ? payload.answers
+          : {};
+        const answers = {};
+        for (const question of questions) {
+          const raw = rawAnswers[question.question];
+          const value = Array.isArray(raw)
+            ? raw.map(v => String(v ?? "").trim()).filter(Boolean).join(", ")
+            : String(raw ?? "").trim();
+          if (value) answers[question.question] = value;
+        }
+        const response = typeof payload.response === "string" ? payload.response.trim() : "";
+        if (Object.keys(answers).length === 0 && !response) {
+          reject(new Error("未收到有效回答"));
+          return;
+        }
+        resolve({ questions, answers, response });
+      },
+    };
+  });
+}
+
+const FELLOW_READ_TOOLS = ["Read", "Glob", "Grep"];
+const FELLOW_WRITE_TOOLS = ["Write", "Edit", "NotebookEdit"];
+
+function fellowFilePath(path, cwd) {
+  const target = canonicalPath(path || cwd, cwd);
+  const root = canonicalPath(DEFAULT_CWD);
+  if (!pathWithin(target, root)) throw new Error("目标路径必须在当前笔记库内。");
+  const segments = relative(root, target).split(/[\\/]/);
+  if (segments.some(part => /^(?:\.git|\.inkfellow|\.agents|\.claude|\.codex|\.env(?:\..*)?)$/i.test(part))) {
+    throw new Error("Fellow 工具无法访问笔记库的配置目录或凭证文件。");
+  }
+  return target;
+}
+
+function broadcastFellow(event) {
+  const payload = JSON.stringify(event);
+  for (const client of wss.clients) {
+    if (client.readyState !== client.OPEN) continue;
+    try { client.send(payload); } catch { client.terminate(); }
+  }
+}
+
+const fellow = createFellow({
+  dataDir: DATA_DIR,
+  port: PORT,
+  cwd: DEFAULT_CWD,
+  readProfiles,
+  readMessages: id => eventLog.project(id)?.messages ?? [],
+  hasRequest: (id, requestId) => Boolean(eventLog.getRequestState(id, requestId)),
+  notify: broadcastFellow,
+  report(id, _reports, text) {
+    if (liveRunsByConversation.has(id)) return false;
+    eventLog.ensureConversation(id, { title: "Fellow" });
+    eventLog.appendEvents(id, [
+      { kind: "sdk", payload: { type: "assistant", message: { content: [{ type: "text", text: `**后台任务汇报**\n\n${text}` }] } } },
+      { kind: "sdk", payload: { type: "done" } },
+    ]);
+    eventLog.refreshMessageCount(id);
+    broadcastFellow({ type: "fellow_report", conversationId: id });
+    return true;
+  },
+  launch(ticket, { instruction, requestId, displayText, images, workerSystemPrompt }) {
+    const id = ticket.workerConversationId;
+    const { profileId, provider, model, effort, attempt, cwd } = ticket.execution;
+    const profile = fellow.selectProfile(profileId, provider);
+    const prompt = instruction || ticket.mandate.brief || ticket.mandate.goal;
+    const msg = {
+      conversationId: id,
+      userMessageId: requestId || `worker_${ticket.id}_${attempt}`,
+      displayText: displayText || (instruction ? prompt : `【Fellow 派发】${ticket.title}\n\n${prompt}`),
+      prompt, model, effort, images,
+    };
+    const run = startFellowRun(msg, { profile, cwd, systemPrompt: workerSystemPrompt, ticket });
+    broadcastFellow({ type: "fellow_worker_started", conversationId: id });
+    return { state: run.finished ? "rejected" : "running" };
+  },
+  stop(ticket) {
+    const run = liveRunsByConversation.get(ticket.workerConversationId);
+    if (run?.ticketAttempt === ticket.execution.attempt) run.ac.abort();
+  },
+});
+
+function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket = null, ws = null }) {
+  const ac = new AbortController();
+  const run = createRun(msg.runId || crypto.randomUUID(), ws, ac);
+  const conversationId = msg.conversationId;
+  run.requestId = msg.userMessageId;
+  run.profileId = profile.id;
+  run.provider = profile.provider;
+  run.model = msg.model || null;
+  run.effort = normalizeEffort(msg.effort, profile.provider, run.model);
+  run.ticketAttempt = ticket?.execution.attempt;
+  run.bufferExpired = !ws;
+  const previous = eventLog.project(conversationId);
+  const context = prepareConversationContext(previous, {
+    provider: profile.provider, profileId: profile.id, model: run.model, prompt: msg.prompt,
+  });
+  const activeProfileData = { activeProfileId: profile.id, profiles: [profile] };
+  const env = buildAgentEnv(activeProfileData, run.effort, run.model);
+  if (!["claude", "anthropic"].includes(profile.provider)) env.ENABLE_TOOL_SEARCH = "false";
+  const toolNames = ticket ? [...FELLOW_READ_TOOLS, ...FELLOW_WRITE_TOOLS, ASK_USER_QUESTION_TOOL] : FELLOW_READ_TOOLS;
+  const options = {
+    cwd,
+    env,
+    abortController: ac,
+    settingSources: [],
+    permissionMode: "dontAsk",
+    strictMcpConfig: true,
+    systemPrompt,
+    tools: toolNames,
+    allowedTools: [...toolNames],
+    includePartialMessages: true,
+    effort: run.effort,
+    maxTurns: ticket?.mandate.maxTurns ?? 20,
+    ...(run.model && profile.provider === "claude" ? { model: run.model } : {}),
+    ...(context.sessionId ? { resume: context.sessionId } : {}),
+  };
+  if (!ticket) {
+    options.mcpServers = {
+      orchestrator: fellow.tools(profile.id),
+      scheduler: _buildSchedulerMcpServer({ sourceChannel: "web", sourcePeer: WEB_SCHEDULER_PEER, defaultOutputs: ["chat_history"] }),
+    };
+    options.allowedTools.push("mcp__orchestrator__*", "mcp__scheduler__*");
+  }
+  options.hooks = { PreToolUse: [{ hooks: [async ({ tool_name: name, tool_input: input }, toolUseID) => {
+    try {
+      if (!ticket && /^(mcp__orchestrator__|mcp__scheduler__)/.test(name)) return {};
+      if (!toolNames.includes(name)) throw new Error("当前会话没有此工具的权限。");
+      if (ticket && name === ASK_USER_QUESTION_TOOL) {
+        if (input?.answers || input?.response) return {};
+        const questions = normalizeAskUserQuestions(input);
+        if (!questions.length) throw new Error("澄清问题缺少有效选项。");
+        fellow.orchestrator.onWorkerNeedsAttention(conversationId, {
+          attempt: run.ticketAttempt, reason: questions[0].question, question: questions,
+        });
+        try {
+          const answer = await waitForAskUserQuestionAnswer(run, input, { signal: ac.signal, toolUseID });
+          return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input, ...answer } } };
+        } finally {
+          fellow.orchestrator.onWorkerResumed(conversationId, run.ticketAttempt);
+        }
+      }
+      if (FELLOW_READ_TOOLS.includes(name)) {
+        fellowFilePath(input?.file_path || input?.path, cwd);
+        return {};
+      }
+      fellowFilePath(input?.file_path || input?.notebook_path, cwd);
+      const scopes = fellow.orchestrator.attemptScopes(ticket.id, run.ticketAttempt);
+      if (!scopes || ac.signal.aborted) throw new Error("工单已结束或正在停止。");
+      const decision = workerToolDecision(ticket, name, input, DEFAULT_CWD, scopes);
+      if (decision.reason) throw new Error(decision.reason);
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: decision.input } };
+    } catch (error) {
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: error.message } };
+    }
+  }] }] };
+
+  async function* messages() {
+    const prompt = ticket ? context.prompt : [
+      fellow.orchestrator.buildStrategistContextBlock(conversationId, cwd), context.prompt,
+    ].filter(Boolean).join("\n\n");
+    yield buildUserMessage({ ...msg, prompt });
+  }
+
+  eventLog.ensureConversation(conversationId, { title: ticket?.title || "Fellow" });
+  beginRunHistory(run, msg);
+  rememberClientRequest(run.requestId, "running", run.id);
+  run.send({ type: "request_ack", state: "running" });
+  run.send({ type: "request_started", startedAt: run.startedAt, provider: run.provider, model: run.model, effort: run.effort });
+
+  void (async () => {
+    let status = "failed";
+    let output = "";
+    let failure = null;
+    try {
+      let result = null;
+      for await (const event of query({ prompt: messages(), options })) {
+        ac.signal.throwIfAborted();
+        if (ticket) {
+          fellow.orchestrator.onWorkerActivity(conversationId, run.ticketAttempt);
+          for (const { name, input, ...step } of workerToolEvents(event)) {
+            fellow.orchestrator.recordWorkerStep(conversationId, name, input, { ...step, attempt: run.ticketAttempt });
+          }
+        }
+        if (event.type === "system" && event.subtype === "init" && event.session_id) {
+          run.send({ type: "session", sessionId: event.session_id, provider: "claude", model: run.model });
+        }
+        if (event.type === "result") {
+          assertSuccessfulResult(event);
+          if (!event.origin) result = event;
+        } else {
+          if (event.type === "assistant" && !event.parent_tool_use_id) {
+            const text = event.message?.content?.filter(block => block.type === "text").map(block => block.text).join("\n");
+            if (text) output = text;
+          }
+          run.send(event);
+        }
+      }
+      ac.signal.throwIfAborted();
+      if (!result) throw new Error("执行器已退出，未返回本轮结果。");
+      if (!output && result.result) {
+        output = result.result;
+        run.send({ type: "assistant", message: { content: [{ type: "text", text: output }] } });
+      }
+      run.send(result);
+      run.send({ type: "done" });
+      status = "completed";
+    } catch (error) {
+      status = ac.signal.aborted ? "stopped" : "failed";
+      failure = status === "failed" ? error.message : null;
+      if (failure) run.send({ type: "error", text: failure });
+      run.send({ type: status === "stopped" ? "stopped" : "done" });
+    } finally {
+      try { run.finish(); }
+      finally {
+        if (ticket) fellow.orchestrator.onWorkerSettled(conversationId, { attempt: run.ticketAttempt, status, output, error: failure });
+      }
+    }
+  })().catch(error => console.error("[Fellow] Failed to record run:", error));
+  return run;
+}
+
 wss.on("connection", (ws) => {
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
@@ -3362,75 +3653,6 @@ wss.on("connection", (ws) => {
     });
   };
   backgroundEventSink = backgroundSink;
-
-  const clearPendingAskUserQuestion = (run, reason = "cancelled") => {
-    if (!run?.pendingAskUserQuestion) return;
-    const pending = run.pendingAskUserQuestion;
-    run.pendingAskUserQuestion = null;
-    pending.cleanup?.();
-    pending.reject(makeAbortError(reason));
-    run.send({ type: "ask_user_question_cancelled", requestId: pending.requestId, reason });
-  };
-
-  const waitForAskUserQuestionAnswer = (run, input, context = {}) => {
-    const questions = normalizeAskUserQuestions(input);
-    if (questions.length === 0) {
-      return Promise.reject(new Error("AskUserQuestion 请求格式无效：缺少 questions/options"));
-    }
-    clearPendingAskUserQuestion(run, "新的澄清问题已替换上一条问题");
-
-    const requestId = crypto.randomUUID();
-    run.send({
-      type: "ask_user_question",
-      requestId,
-      toolUseID: context.toolUseID ?? null,
-      questions,
-    });
-
-    return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        if (run.pendingAskUserQuestion?.requestId !== requestId) return;
-        run.pendingAskUserQuestion = null;
-        reject(makeAbortError("用户输入已取消"));
-        run.send({ type: "ask_user_question_cancelled", requestId, reason: "aborted" });
-      };
-      const signal = context.signal;
-      if (signal?.aborted) {
-        reject(makeAbortError("用户输入已取消"));
-        return;
-      }
-      signal?.addEventListener("abort", onAbort, { once: true });
-      run.pendingAskUserQuestion = {
-        requestId,
-        questions,
-        toolUseID: context.toolUseID ?? null,
-        cleanup: () => signal?.removeEventListener("abort", onAbort),
-        reject,
-        resolve: (payload = {}) => {
-          if (run.pendingAskUserQuestion?.requestId !== requestId) return;
-          run.pendingAskUserQuestion = null;
-          signal?.removeEventListener("abort", onAbort);
-          const rawAnswers = payload && typeof payload.answers === "object" && payload.answers !== null
-            ? payload.answers
-            : {};
-          const answers = {};
-          for (const question of questions) {
-            const raw = rawAnswers[question.question];
-            const value = Array.isArray(raw)
-              ? raw.map(v => String(v ?? "").trim()).filter(Boolean).join(", ")
-              : String(raw ?? "").trim();
-            if (value) answers[question.question] = value;
-          }
-          const response = typeof payload.response === "string" ? payload.response.trim() : "";
-          if (Object.keys(answers).length === 0 && !response) {
-            reject(new Error("未收到有效回答"));
-            return;
-          }
-          resolve({ questions, answers, response });
-        },
-      };
-    });
-  };
 
   // Send the persisted default first; the browser sends a profile-specific refresh
   // after it loads its local activeProfileId.
@@ -3555,6 +3777,12 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.reset) {
+      if (activeRun?.ticketAttempt != null) {
+        activeRun.detach();
+        activeRun = null;
+        send({ type: "reset_complete" });
+        return;
+      }
       clearPendingAskUserQuestion(activeRun, "会话已重置");
       if (activeRun) {
         activeRun.discarded = true;
@@ -3577,6 +3805,11 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.stop) {
+      const ticket = activeRun && fellow.getWorkerTicket(activeRun.historyConversationId);
+      if (ticket) {
+        void fellow.orchestrator.stopTicket(ticket.id).catch(error => send({ type: "error", text: error.message }));
+        return;
+      }
       clearPendingAskUserQuestion(activeRun, "用户停止了生成");
       if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id);
       // Cancel only this run. Claude closes its iterator and resumes the saved native session next turn.
@@ -3614,6 +3847,31 @@ wss.on("connection", (ws) => {
     }
 
     const incomingProfileData = readProfiles();
+    if (msg.conversationId?.startsWith("wrk_tk_")) {
+      send({ type: "error", text: "请通过工单现场提交补充要求。", userMessageId: requestId, conversationId: msg.conversationId });
+      return;
+    }
+    if (msg.conversationId === STRATEGIST_CONVERSATION_ID) {
+      try {
+        const profile = fellow.selectProfile(msg.profileId);
+        const live = liveRunsByConversation.get(STRATEGIST_CONVERSATION_ID);
+        if (live && !live.finished) {
+          rememberClientRequest(requestId, "queued");
+          send({ type: "request_ack", userMessageId: requestId, state: "queued", conversationId: msg.conversationId });
+          send({ type: "request_queued", userMessageId: requestId, reason: "busy", conversationId: msg.conversationId });
+          return;
+        }
+        if (activeRun?.ws === ws && !activeRun.finished) activeRun.detach();
+        activeRun = startFellowRun(msg, {
+          profile, ws, systemPrompt: `${STRATEGIST_SYSTEM_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`,
+        });
+      } catch (error) {
+        rememberClientRequest(requestId, "error");
+        send({ type: "request_ack", userMessageId: requestId, state: "error", conversationId: msg.conversationId });
+        send({ type: "error", text: error.message, userMessageId: requestId, conversationId: msg.conversationId });
+      }
+      return;
+    }
     if (msg.profileId && !incomingProfileData.profiles.some(profile => profile.id === msg.profileId)) {
       rememberClientRequest(requestId, "error");
       send({ type: "request_ack", state: "error", userMessageId: requestId, conversationId: msg.conversationId });
@@ -4269,6 +4527,8 @@ wss.on("connection", (ws) => {
 
 importLegacyHistoryOnce();
 
+fellow.orchestrator.start();
+http.on("close", fellow.orchestrator.stop);
 http.listen(PORT, HOST, () => {
   console.log(`claude-chat listening on ${HOST}:${PORT}`);
 });

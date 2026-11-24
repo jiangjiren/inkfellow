@@ -28,20 +28,23 @@ const PROBE_PROFILES = {
   profiles: [{ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", baseUrl: "" }],
 };
 
-async function startServer() {
+async function startServer({ mockFellow = false, sharedScratch = null } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-sync-test-"));
   const authFile = join(scratch, "auth-profile.json");
   await writeFile(authFile, JSON.stringify(PROBE_PROFILES), "utf8");
   const port = await reservePort();
 
-  const child = spawn(process.execPath, ["server.js"], {
+  const child = spawn(process.execPath, [
+    ...(mockFellow ? ["--experimental-loader", "./fixtures/sdk-loader.mjs"] : []),
+    "server.js",
+  ], {
     cwd: HERE,
     env: {
       ...process.env,
       PORT: String(port),
       HOST: "127.0.0.1",
-      VAULT_PATH: scratch,
-      CLAUDE_CHAT_DATA_DIR: scratch,
+      VAULT_PATH: sharedScratch || scratch,
+      CLAUDE_CHAT_DATA_DIR: sharedScratch || scratch,
       CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -119,6 +122,96 @@ const SEED_MESSAGES = [
   },
 ];
 
+test("Fellow dispatches two independent workers, queues overlapping writes, and resumes the right history", { timeout: 30_000 }, async () => {
+  const server = await startServer({ mockFellow: true });
+  const sockets = [];
+  try {
+    const base = `http://127.0.0.1:${server.port}/api`;
+    async function post(path, body = {}) {
+      const res = await fetch(`${base}/fellow/${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      assert.ok(res.ok, JSON.stringify(json));
+      return json;
+    }
+    async function read(path) { return (await fetch(`${base}/${path}`)).json(); }
+    async function poll(check) {
+      for (let i = 0; i < 350; i++) {
+        const result = await check();
+        if (result) return result;
+        await delay(20);
+      }
+      throw new Error("Fellow state did not settle");
+    }
+
+    const manager = await connect(server.port);
+    sockets.push(manager.ws);
+    manager.ws.send(JSON.stringify({
+      conversationId: "strategist", prompt: "派出测试工单", userMessageId: "test_manager_1", profileId: "p_claude",
+    }));
+    await waitForMessage(manager.events, event => event.type === "done" && event.conversationId === "strategist");
+    const board = (await read("fellow/tickets")).tickets;
+    const [a, b, next] = ["甲任务", "乙任务", "甲的后续"].map(title => board.find(ticket => ticket.title === title));
+    assert.equal(a.status, "running");
+    assert.equal(b.status, "running");
+    assert.equal(next.status, "queued");
+    assert.deepEqual(next.blockedBy, [a.id]);
+
+    const worker = await connect(server.port);
+    sockets.push(worker.ws);
+    worker.ws.send(JSON.stringify({ type: "hello", conversationId: b.workerConversationId, lastSeq: 0 }));
+    const firstSync = await waitForMessage(worker.events, event => event.type === "sync");
+    assert.equal(firstSync.turn.status, "running");
+    assert.match(JSON.stringify(firstSync.events), /hold-two/);
+    assert.doesNotMatch(JSON.stringify(firstSync.events), /hold-one/);
+    worker.ws.terminate();
+    const reconnect = await connect(server.port);
+    sockets.push(reconnect.ws);
+    reconnect.ws.send(JSON.stringify({ type: "hello", conversationId: b.workerConversationId, lastSeq: firstSync.lastSeq }));
+    assert.equal((await waitForMessage(reconnect.events, event => event.type === "sync")).turn.status, "running");
+
+    await post(`tickets/${a.id}/stop`);
+    await poll(async () => (await read(`fellow/tickets/${next.id}`)).ticket.status === "completed");
+    assert.equal((await read(`fellow/tickets/${a.id}`)).ticket.status, "stopped");
+    assert.equal((await read(`fellow/tickets/${b.id}`)).ticket.status, "running");
+
+    const checked = await post("tickets", { title: "确认写入范围", brief: "check-write-scope", writeScope: ["c.md"] });
+    const outcome = await poll(async () => {
+      const { ticket } = await read(`fellow/tickets/${checked.ticketId}`);
+      return ticket.status === "completed" && ticket;
+    });
+    assert.equal(outcome.summary, "allow,deny,deny,deny");
+    const asking = await post("tickets", { title: "等待拍板", brief: "ask-worker", writeScope: ["d.md"] });
+    await poll(async () => (await read(`fellow/tickets/${asking.ticketId}`)).ticket.status === "needs_attention");
+    const startIndex = reconnect.events.length;
+    reconnect.ws.send(JSON.stringify({ type: "hello", conversationId: asking.workerConversationId, lastSeq: 0 }));
+    const question = await waitForMessage(reconnect.events, event => event.type === "ask_user_question", startIndex);
+    reconnect.ws.send(JSON.stringify({
+      type: "ask_user_question_response", requestId: question.requestId, answers: { "选哪一个？": "乙" },
+    }));
+    await poll(async () => (await read(`fellow/tickets/${asking.ticketId}`)).ticket.summary === "已选择 乙");
+    const readOnly = await fetch(`${base}/history/${b.workerConversationId}`, { method: "DELETE" });
+    assert.equal(readOnly.status, 405);
+    const forbidden = await fetch(`${base}/fellow/tickets`, { headers: { Origin: "https://foreign.example" } });
+    assert.equal(forbidden.status, 403);
+
+    const message = { instruction: "补充细节", requestId: "followup_test_1" };
+    await post(`tickets/${next.id}/message`, message);
+    await post(`tickets/${next.id}/message`, message);
+    await poll(async () => (await read(`fellow/tickets/${next.id}`)).ticket.summary === "echo:补充细节");
+    const history = await read(`history/${next.workerConversationId}`);
+    assert.equal(history.messages.filter(message => message.text === "补充细节").length, 1);
+    await poll(async () => (await read("history/strategist")).messages.some(message => (
+      message.role === "assistant" && message.text.includes("后台任务汇报") && message.text.includes("甲的后续")
+    )));
+    await post(`tickets/${b.id}/stop`);
+  } finally {
+    for (const ws of sockets) ws.terminate();
+    await server.stop();
+  }
+});
+
 test("hello 带 lastSeq=0 时回放整段会话", { timeout: 30_000 }, async () => {
   const server = await startServer();
   try {
@@ -134,6 +227,28 @@ test("hello 带 lastSeq=0 时回放整段会话", { timeout: 30_000 }, async () 
     ws.close();
   } finally {
     await server.stop();
+  }
+});
+
+test("Fellow tickets stay with their chat instance when two ports share a data directory", { timeout: 30_000 }, async () => {
+  const first = await startServer({ mockFellow: true });
+  let second;
+  try {
+    const base = instance => `http://127.0.0.1:${instance.port}/api/fellow/tickets`;
+    const response = await fetch(base(first), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "实例一", brief: "hold-instance", writeScope: ["a.md"] }),
+    });
+    const ticket = await response.json();
+    assert.equal(ticket.status, "running");
+    second = await startServer({ mockFellow: true, sharedScratch: first.scratch });
+    const secondBoard = await (await fetch(base(second))).json();
+    assert.deepEqual(secondBoard.tickets, []);
+    const firstTicket = await (await fetch(`${base(first)}/${ticket.ticketId}`)).json();
+    assert.equal(firstTicket.ticket.status, "running");
+  } finally {
+    await second?.stop();
+    await first.stop();
   }
 });
 

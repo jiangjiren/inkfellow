@@ -1,0 +1,807 @@
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * Orchestrator —— 军师（Strategist）与后台执行专员（Worker）控制面
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * 融合 DeepSeek Super-Agent 的系统骨架与 Grok Bot 的产品体感：
+ *   1. 硬边界隔离：军师没有 Edit/Write/Bash，只负责拆解、权衡、派单与验收；
+ *   2. 异步非阻塞：dispatch_task 创建持久化 Ticket 并立刻返回，不卡死主对话；
+ *   3. Inline & Spill + Chain of Recall：主上下文只保留精简工单盘面与 ID 指针，
+ *      Worker 过程日志落盘在各自的对话历史里，需要细节时按 ticketId 精准召回；
+ *   4. Thread 直通：用户点进工单现场（workerConversationId）直接对话纠偏，
+ *      不经过军师，完成后自动把压缩摘要同步回工单与军师台账；
+ *   5. Batching 聚合汇报：多个 Worker 密集完成时合并汇报，不炸屏。
+ */
+
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, join, relative } from "node:path";
+import { canonicalPath, isSystemProtectedPath, normalizeScopePath, pathWithin, WriteScopeLock } from "./write-scope-lock.js";
+import { WorkerWatchdog } from "./worker-watchdog.js";
+import { ACTIVE_TICKET_STATUSES } from "./ticket-store.js";
+
+export const STRATEGIST_CONVERSATION_ID = "strategist";
+const STRATEGIST_MEMORY_REL = ".inkfellow/strategist/MEMORY.md";
+const SPECIALISTS_DIR_REL = ".inkfellow/agents";
+const MAX_INLINE_SUMMARY_CHARS = 360;
+const MAX_MEMORY_INJECT_CHARS = 4000;
+
+export const STRATEGIST_SYSTEM_PROMPT = `你是 inkfellow 的 Fellow 总管。直接回答讨论类问题，涉及具体执行时用 dispatch_task 派给后台 Worker。只有工具返回成功后才可告诉用户任务已派发。
+- 每张工单必须给出可独立理解的目标、要求、相关文件和验收标准。路径以当前笔记库或任务工作目录为基准。
+- 可连续派出互不依赖的工单。给每个任务指定准确的 writeScope，使不重叠的任务能同时执行。范围不明时，工单会占用整个笔记库的写入锁。
+- 用 list_tickets 查状态，inspect_ticket / recall_ticket_detail 查看结果与步骤，message_ticket 转达补充要求，stop_ticket 停止。用 list_providers 查看可用执行账号。
+- 后台汇报是工单执行结果。概括交付物和卡点，等用户给出新指令后再处理后续工作。
+- 需要操作笔记库外的文件、调用命令行或对外发布时，向用户说明当前 Web Worker 的工具范围。`;
+
+export function buildWorkerSystemPrompt(ticket, specialistDoc = null) {
+  const m = ticket.mandate || {};
+  const lines = [
+    "【inkfellow 后台执行专员（Worker）任务契约】",
+    `工单编号：${ticket.id}`,
+    `任务标题：${ticket.title}`,
+    `核心目标：${m.goal || ticket.title}`,
+  ];
+  if (m.writeScope?.length) {
+    lines.push(`允许写入范围（writeScope）：${m.writeScope.join("、")}（严禁擅自修改范围外文件）`);
+  }
+  if (m.contextFiles?.length) {
+    lines.push(`建议先读的参考文件：${m.contextFiles.join("、")}`);
+  }
+  if (m.acceptanceCriteria?.length) {
+    lines.push("验收标准：");
+    m.acceptanceCriteria.forEach((c, idx) => lines.push(`  ${idx + 1}. ${c}`));
+  }
+  if (specialistDoc?.content) {
+    lines.push("", `【专岗设定与长期记忆：${specialistDoc.name}】`, specialistDoc.content.slice(0, 3500));
+  }
+  lines.push(
+    "",
+    "执行纪律：",
+    "- 专注把本工单扎实做完并直接落盘，不要再递归派发新工单。",
+    "- 遇到关键分岔口、信息缺失或不可逆高风险操作（删重要文件、对外发布等）时，暂停并清晰说明选项与截图路径等待用户确认，不要盲猜。",
+    "- 完成后，回复的最后请附一段 3~6 行的简洁「交付摘要」（做了什么、产出的图片/视频/文档的绝对路径、是否有待确认项），便于 Fellow 验收并直接回传给用户。",
+  );
+  return lines.join("\n");
+}
+
+/** 从 Worker 输出提取压缩摘要，绝不把万字长文原封不动倒回军师。 */
+export function summarizeWorkerOutput(text, maxChars = MAX_INLINE_SUMMARY_CHARS) {
+  const cleaned = String(text ?? "").trim();
+  if (!cleaned) return "";
+  // 优先抓「交付摘要」段落
+  const summaryMatch = cleaned.match(/(?:^|\n)#*\s*(?:交付摘要|总结|完成摘要|Summary)[：:\s]*\n?([\s\S]{10,800})/i);
+  const candidate = summaryMatch ? summaryMatch[1].trim() : cleaned;
+  if (candidate.length <= maxChars) return candidate;
+  return `${candidate.slice(0, maxChars - 1)}…`;
+}
+
+/** 读取 Vault 中的可选专岗设定（.inkfellow/agents/*.md）。 */
+export function loadSpecialists(cwd) {
+  if (!cwd) return [];
+  const dir = join(cwd, SPECIALISTS_DIR_REL);
+  if (!existsSync(dir)) return [];
+  let files = [];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const file of files) {
+    try {
+      const raw = readFileSync(join(dir, file), "utf8");
+      const id = basename(file, ".md");
+      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+      const meta = {};
+      let content = raw;
+      if (fm) {
+        content = fm[2].trim();
+        for (const line of fm[1].split(/\r?\n/)) {
+          const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.+)$/);
+          if (kv) meta[kv[1].trim()] = kv[2].trim().replace(/^["']|["']$/g, "");
+        }
+      }
+      out.push({
+        id,
+        name: meta.name || id,
+        description: meta.description || "",
+        provider: meta.provider || null,
+        model: meta.model || null,
+        writeScope: meta.writeScope ? meta.writeScope.split(",").map((s) => s.trim()).filter(Boolean) : [],
+        content,
+      });
+    } catch {
+      // 忽略单个损坏的专岗文件
+    }
+  }
+  return out;
+}
+
+export function readStrategistMemory(cwd) {
+  if (!cwd) return "";
+  const file = join(cwd, STRATEGIST_MEMORY_REL);
+  if (!existsSync(file)) return "";
+  try {
+    const entries = readFileSync(file, "utf8").trim().split(/\r?\n(?=## \d{4}-\d{2}-\d{2} \d{2}:\d{2}\b)/);
+    const recent = [];
+    let length = 0;
+    for (const entry of entries.reverse()) {
+      const clean = entry.trim();
+      if (length + clean.length + (recent.length ? 2 : 0) > MAX_MEMORY_INJECT_CHARS) break;
+      recent.unshift(clean);
+      length += clean.length + (recent.length > 1 ? 2 : 0);
+    }
+    return recent.join("\n\n");
+  } catch {
+    return "";
+  }
+}
+
+export class ReportBatcher {
+  constructor({ onFlush, delayMs = 1800 } = {}) {
+    if (typeof onFlush !== "function") throw new TypeError("onFlush is required");
+    this.onFlush = onFlush;
+    this.delayMs = delayMs;
+    this._pending = new Map(); // parentConversationId -> Map<ticketId, report>
+    this._timers = new Map();
+    this._inflight = new Set();
+  }
+
+  enqueue(parentConversationId, report) {
+    const parentId = String(parentConversationId || STRATEGIST_CONVERSATION_ID);
+    if (!this._pending.has(parentId)) this._pending.set(parentId, new Map());
+    this._pending.get(parentId).set(report.ticketId, report);
+    if (this.delayMs <= 0) this.flush(parentId);
+    else this.schedule(parentId, this.delayMs);
+  }
+
+  schedule(parentId, delay) {
+    clearTimeout(this._timers.get(parentId));
+    const timer = setTimeout(() => this.flush(parentId), delay);
+    timer.unref?.();
+    this._timers.set(parentId, timer);
+  }
+
+  flush(parentId) {
+    clearTimeout(this._timers.get(parentId));
+    this._timers.delete(parentId);
+    const map = this._pending.get(parentId);
+    if (!map?.size || this._inflight.has(parentId)) return;
+    const reports = [...map.values()];
+    this._inflight.add(parentId);
+    Promise.resolve().then(() => this.onFlush(parentId, reports)).then(confirmed => {
+      if (confirmed !== false) {
+        for (const report of reports) {
+          if (map.get(report.ticketId) === report) map.delete(report.ticketId);
+        }
+      }
+    }, error => console.warn("[Orchestrator] Report delivery failed:", error)).finally(() => {
+      this._inflight.delete(parentId);
+      if (this._pending.get(parentId) !== map) return;
+      if (map.size) this.schedule(parentId, Math.max(this.delayMs, 1000));
+      else this._pending.delete(parentId);
+    });
+  }
+
+  clear() {
+    for (const timer of this._timers.values()) clearTimeout(timer);
+    this._timers.clear();
+    this._pending.clear();
+  }
+}
+
+export function formatBatchedReport(reports) {
+  if (!Array.isArray(reports) || reports.length === 0) return "";
+  const statusLabel = {
+    completed: "已完成",
+    failed: "执行失败",
+    needs_attention: "需要拍板/关注",
+    stopped: "已停止",
+    partial: "结果待确认",
+  };
+  const blocks = reports.map((r) => {
+    const lines = [
+      `- 工单「${r.title}」（${r.ticketId}）：${statusLabel[r.status] || r.status}`,
+    ];
+    if (r.summary) lines.push(`  摘要：${r.summary}`);
+    if (r.changedFiles?.length) lines.push(`  改动文件：${r.changedFiles.join("、")}`);
+    if (r.attentionReason) lines.push(`  卡点说明：${r.attentionReason}`);
+    if (r.error) lines.push(`  错误信息：${r.error}`);
+    return lines.join("\n");
+  });
+  return blocks.join("\n");
+}
+
+/**
+ * 创建 Orchestrator 控制面实例，由 server.js 注入具体运行能力（启动 Worker、
+ * 停止 Worker、向 Worker 发消息、查历史、推送事件与唤醒军师）。
+ */
+export function createOrchestrator({
+  ticketStore,
+  defaultCwd,
+  allowOutsideVault = false,
+  launchWorker,
+  messageWorker,
+  stopWorker,
+  readWorkerMessages,
+  validateExecution = () => {},
+  listProviders,
+  notifyClient,
+  wakeStrategist,
+  batchDelayMs = 1800,
+  watchdogIntervalMs = 30_000,
+  stallTimeoutMs = 5 * 60_000,
+  maxConsecutiveErrors = 4,
+  now = () => Date.now(),
+}) {
+  const vault = canonicalPath(defaultCwd);
+  const lock = new WriteScopeLock({ cwd: vault });
+  const attempts = new Map();
+
+  function validateCwd(rawCwd) {
+    const cwd = canonicalPath(rawCwd || vault, vault);
+    if (isSystemProtectedPath(cwd)) throw new Error("禁止在系统受保护目录执行工单");
+    if ((!allowOutsideVault && !pathWithin(cwd, vault)) || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error(allowOutsideVault ? "工作目录不存在或不是有效文件夹" : "工作目录不在当前 Vault 内或已失效");
+    }
+    return cwd;
+  }
+
+  function getScopes(writeScope, cwd) {
+    return writeScope.map(scope => {
+      const path = normalizeScopePath(scope, cwd, allowOutsideVault ? (cwd || vault) : vault);
+      if (isSystemProtectedPath(path)) throw new Error("工单写入范围不能指向系统受保护目录");
+      if (!allowOutsideVault && !pathWithin(path, vault)) throw new Error("工单写入范围必须位于当前 Vault 内");
+      return path;
+    });
+  }
+
+  function executionScope(ticket) {
+    if (!ticket.execution?.cwd || (ticket.vaultId && ticket.vaultId !== vault)) {
+      throw new Error("工单所属 Vault 或工作目录已失效");
+    }
+    const cwd = validateCwd(ticket.execution.cwd);
+    if (cwd !== ticket.execution.cwd && ticket.mandate.canonicalScopes) throw new Error("工单工作目录已变化");
+    const scopes = getScopes(ticket.mandate.writeScope, cwd);
+    if (ticket.mandate.canonicalScopes && JSON.stringify(scopes) !== JSON.stringify(ticket.mandate.canonicalScopes)) {
+      throw new Error("工单写入范围已变化，请重新派单");
+    }
+    return { cwd, scopes };
+  }
+
+  function lockScopes(scopes) {
+    return scopes.length ? scopes : [allowOutsideVault ? "*" : vault];
+  }
+
+  const batcher = new ReportBatcher({
+    delayMs: batchDelayMs,
+    onFlush: async (parentConversationId, reports) => {
+      reports = reports.filter(report => ticketStore.get(report.ticketId)?.pendingReport?.revision === report.revision);
+      if (!reports.length) return true;
+      if (typeof wakeStrategist !== "function") return false;
+      const confirmed = await wakeStrategist(parentConversationId, reports, formatBatchedReport(reports));
+      if (confirmed === false) return false;
+      for (const report of reports) {
+        const current = ticketStore.get(report.ticketId);
+        if (current?.pendingReport?.revision !== report.revision) continue;
+        ticketStore.update(report.ticketId, draft => {
+          draft.reportedAt = new Date(now()).toISOString();
+          delete draft.pendingReport;
+        });
+      }
+      return true;
+    },
+  });
+
+  const watchdog = new WorkerWatchdog({
+    ticketStore,
+    intervalMs: watchdogIntervalMs,
+    stallTimeoutMs,
+    maxConsecutiveErrors,
+    activityAt: ticket => attempts.get(ticket.id)?.activityAt ?? ticket.execution.lastActivityAt,
+    now,
+    onFlag: (ticket, reason) => {
+      onWorkerNeedsAttention(ticket.workerConversationId, { reason, attempt: ticket.execution.attempt });
+    },
+  });
+
+  function pushTicketUpdate(ticket, eventType = "ticket_updated") {
+    if (typeof notifyClient !== "function" || !ticket) return;
+    notifyClient({
+      type: eventType,
+      conversationId: ticket.parentConversationId,
+      ticket: ticketStore.toSummary(ticket),
+    });
+  }
+
+  function setTicketArchived(ticketId, archived) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: "未找到工单" };
+    if (archived) {
+      if (ACTIVE_TICKET_STATUSES.has(ticket.status) || attempts.has(ticket.id)) {
+        return { ok: false, error: "仅已结束的任务可以归档。" };
+      }
+    }
+    try {
+      const updated = ticketStore.update(ticket.id, draft => {
+        draft.archivedAt = archived ? new Date(now()).toISOString() : null;
+      });
+      pushTicketUpdate(updated);
+      return { ok: true, ticket: ticketStore.toSummary(updated) };
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error) };
+    }
+  }
+
+  function releaseTicket(id) {
+    for (const nextId of lock.release(id)) {
+      const next = ticketStore.get(nextId);
+      if (next?.status === "queued") {
+        queueMicrotask(() => {
+          const queued = ticketStore.get(nextId);
+          if (queued?.status === "queued") void startTicketExecution(queued, queued.execution.runInstruction === true);
+        });
+      }
+      else releaseTicket(nextId);
+    }
+  }
+
+  function showFailure(ticket, error) {
+    notifyClient?.({ type: "ticket_action_error", ticketId: ticket.id, error: String(error?.message || error) });
+  }
+
+  async function startTicketExecution(ticket, useInstruction = false) {
+    const current = ticketStore.get(ticket.id);
+    if (!lock.heldBy(ticket.id) || !current || attempts.has(ticket.id)) return current;
+    ticket = current;
+    let running;
+    let entry;
+    try {
+      const { cwd, scopes } = executionScope(ticket);
+      if (!lock.matches(ticket.id, lockScopes(scopes))) throw new Error("工单写入范围已变化，请重新派单");
+      const specialistDoc = loadSpecialists(vault).find(s => s.id === ticket.specialistId);
+      entry = useInstruction ? ticket.execution.pendingInstructions?.[0] : null;
+      const config = entry?.config || ticket.execution.nextConfig;
+      validateExecution({ ...ticket.execution, ...config }, ticket.mandate);
+      running = ticketStore.update(ticket.id, draft => {
+        draft.status = "running";
+        draft.execution.cwd = cwd;
+        draft.execution.attempt = (draft.execution.attempt || 0) + 1;
+        draft.execution.startedAt = new Date(now()).toISOString();
+        draft.execution.finishedAt = null;
+        draft.execution.lastActivityAt = now();
+        draft.execution.consecutiveErrors = 0;
+        draft.execution.blockedBy = [];
+        draft.execution.runInstruction = false;
+        if (entry) draft.execution.pendingInstructions.shift();
+        Object.assign(draft.execution, config);
+        if (config && JSON.stringify(config) === JSON.stringify(draft.execution.nextConfig)) delete draft.execution.nextConfig;
+        draft.result.error = null;
+        draft.result.attentionReason = null;
+        draft.result.pendingQuestion = null;
+        draft.archivedAt = null;
+      });
+      let resolve;
+      const done = new Promise(complete => { resolve = complete; });
+      attempts.set(ticket.id, {
+        number: running.execution.attempt, done, resolve, tools: new Map(), activityAt: now(), scopes, entry,
+      });
+      watchdog.clearFlag(ticket.id);
+      pushTicketUpdate(running);
+      const context = { workerSystemPrompt: buildWorkerSystemPrompt(running, specialistDoc), specialistDoc };
+      const response = entry
+        ? await messageWorker(running, entry.prompt, { ...entry, ...context })
+        : await launchWorker(running, context);
+      if (response?.state === "rejected" || response?.state === "queued") {
+        throw new Error(response.error || "执行器未接受工单");
+      }
+    } catch (error) {
+      if (running && attempts.get(ticket.id)?.number === running.execution.attempt) {
+        onWorkerSettled(running.workerConversationId, {
+          attempt: running.execution.attempt, status: "failed", error: String(error?.message || error), restoreInstruction: true,
+        });
+      } else if (!running) {
+        const message = String(error?.message || error);
+        try {
+          pushTicketUpdate(ticketStore.update(ticket.id, draft => {
+            draft.status = "failed";
+            draft.execution.blockedBy = [];
+            draft.result.error = message;
+          }));
+        } catch (persistError) {
+          showFailure(ticket, persistError);
+          return { ...ticket, status: "failed", result: { ...ticket.result, error: message } };
+        } finally {
+          releaseTicket(ticket.id);
+        }
+        showFailure(ticket, error);
+      }
+    }
+    return ticketStore.get(ticket.id);
+  }
+
+  async function queueOrStart(ticket, useInstruction = false) {
+    const { cwd, scopes } = executionScope(ticket);
+    const requestedScopes = lockScopes(scopes);
+    const result = lock.tryAcquire(ticket.id, requestedScopes, cwd, { enqueue: false, canonical: true });
+    if (result.acquired) return startTicketExecution(ticket, useInstruction);
+    const queued = ticketStore.update(ticket.id, draft => {
+      draft.status = "queued";
+      draft.archivedAt = null;
+      draft.execution.runInstruction = useInstruction;
+      draft.execution.blockedBy = result.blockedBy;
+      draft.result.error = null;
+    });
+    lock.tryAcquire(ticket.id, requestedScopes, cwd, { canonical: true });
+    pushTicketUpdate(queued);
+    return queued;
+  }
+
+  function dispatchReceipt(ticket) {
+    return {
+      ok: ticket.status !== "failed",
+      ticketId: ticket.id,
+      workerConversationId: ticket.workerConversationId,
+      blockedBy: ticket.execution.blockedBy,
+      status: ticket.status,
+      error: ticket.result.error,
+      message: ticket.status === "queued" ? "已排队，写入范围空闲后自动启动。" : ticket.result.error || "工单已接收。",
+    };
+  }
+
+  async function dispatchTask(params = {}) {
+    const cwd = validateCwd(params.cwd);
+    const specialist = loadSpecialists(vault).find(s => s.id === params.specialistId);
+    const writeScope = params.writeScope?.length ? params.writeScope : getScopes(specialist?.writeScope || [], vault);
+    const canonicalScopes = getScopes(writeScope, cwd);
+    const execution = {
+      provider: params.provider || specialist?.provider || null,
+      profileId: params.profileId || null,
+      profileName: params.profileName || null,
+      model: params.model || specialist?.model || null,
+      effort: params.effort || null,
+    };
+    validateExecution(execution, params);
+    const ticket = ticketStore.create({
+      ...params, ...execution, id: undefined, cwd, writeScope, canonicalScopes, permissionMode: "auto",
+    });
+    return dispatchReceipt(await queueOrStart(ticket));
+  }
+
+  function listTickets({ status = null, parentConversationId = null, archived = "all", limit = 30 } = {}) {
+    const items = ticketStore.list({ status, parentConversationId, archived, limit });
+    return {
+      tickets: items.map((t) => ticketStore.toSummary(t)),
+      specialists: loadSpecialists(defaultCwd).map(({ id, name, description, provider, model }) => ({
+        id, name, description, provider, model,
+      })),
+    };
+  }
+
+  function inspectTicket(ticketId) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: `未找到工单：${ticketId}` };
+    return {
+      ok: true,
+      ticket: {
+        ...ticketStore.toSummary(ticket),
+        goal: ticket.mandate?.goal || "",
+        acceptanceCriteria: ticket.mandate?.acceptanceCriteria || [],
+        recentSteps: (ticket.execution?.recentSteps || []).slice(-6),
+      },
+    };
+  }
+
+  /** Chain of Recall：按需拉取 Worker 对话片段，避免一次性灌爆军师上下文。 */
+  function recallTicketDetail(ticketId, { offset = 0, limit = 6 } = {}) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: `未找到工单：${ticketId}` };
+    const messages = typeof readWorkerMessages === "function"
+      ? (readWorkerMessages(ticket.workerConversationId) || [])
+      : [];
+    const safeOffset = Math.max(0, Number(offset) || 0);
+    const safeLimit = Math.max(1, Math.min(12, Number(limit) || 6));
+    const slice = messages.slice(safeOffset, safeOffset + safeLimit).map((m) => ({
+      role: m.role,
+      text: String(m.text || "").slice(0, 1200),
+      status: m.status || null,
+      createdAt: m.createdAt || null,
+    }));
+    return {
+      ok: true,
+      ticketId: ticket.id,
+      workerConversationId: ticket.workerConversationId,
+      totalMessages: messages.length,
+      offset: safeOffset,
+      messages: slice,
+      changedFiles: ticket.result?.changedFiles || [],
+      recentSteps: (ticket.execution?.recentSteps || []).slice(-12),
+    };
+  }
+
+  async function messageTicket(ticketId, prompt, { fromUser = false, requestId = null, config = null, images = null, displayText = null, composerText = null, steering = false } = {}) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: "未找到工单" };
+    if (ticket.status === "stopping") return { ok: false, error: "正在等待执行器停止，请稍后继续。" };
+    const cleanPrompt = typeof prompt === "string" ? prompt.trim() : "";
+    if (!cleanPrompt || cleanPrompt.length > 32_000) return { ok: false, error: "补充指令须为 1 到 32000 字符" };
+    executionScope(ticket);
+    validateExecution({ ...ticket.execution, ...ticket.execution.nextConfig, ...config }, ticket.mandate);
+    const pending = ticket.execution.pendingInstructions || [];
+    if (requestId && (pending.some(entry => entry.requestId === requestId)
+      || attempts.get(ticket.id)?.entry?.requestId === requestId)) return { ...dispatchReceipt(ticket), delivery: "queued" };
+    if (pending.length >= 20) return { ok: false, error: "补充指令已满，请等待已有指令执行。" };
+    const updated = ticketStore.update(ticket.id, draft => {
+      draft.archivedAt = null;
+      const entries = draft.execution.pendingInstructions || [];
+      const entry = { prompt: cleanPrompt, fromUser, requestId, config, images, displayText, composerText, steering };
+      draft.execution.pendingInstructions = ACTIVE_TICKET_STATUSES.has(ticket.status)
+        ? [...entries, entry] : [entry, ...entries];
+    });
+    if (ACTIVE_TICKET_STATUSES.has(ticket.status)) {
+      pushTicketUpdate(updated);
+      return { ...dispatchReceipt(updated), delivery: "queued" };
+    }
+    return dispatchReceipt(await queueOrStart(updated, true));
+  }
+
+  function discardPendingInstructions(ticket) {
+    for (const entry of ticket.execution.pendingInstructions || []) {
+      if (!entry.requestId) continue;
+      notifyClient?.({
+        type: entry.steering ? "steering_removed" : "stopped",
+        userMessageId: entry.requestId, conversationId: ticket.workerConversationId, reason: "stopped",
+      });
+    }
+  }
+
+  async function stopTicket(ticketId) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: "未找到工单" };
+    const active = attempts.get(ticket.id);
+    if (ticket.status === "stopping" && active) return active.done;
+    if (!ACTIVE_TICKET_STATUSES.has(ticket.status)) return { ...dispatchReceipt(ticket), ok: true };
+    const updated = ticketStore.update(ticket.id, draft => {
+      draft.status = active ? "stopping" : "stopped";
+      draft.execution.pendingInstructions = [];
+      draft.execution.blockedBy = [];
+      draft.result.pendingQuestion = null;
+      draft.result.attentionReason = null;
+      if (!active) draft.execution.finishedAt = new Date(now()).toISOString();
+    });
+    pushTicketUpdate(updated);
+    discardPendingInstructions(ticket);
+    if (!active) {
+      releaseTicket(ticket.id);
+      return dispatchReceipt(updated);
+    }
+    try {
+      const response = await stopWorker(updated);
+      if (!response?.pending) onWorkerSettled(ticket.workerConversationId, { status: "stopped", attempt: active.number });
+    } catch (error) {
+      showFailure(ticket, error);
+      return { ok: false, status: "stopping", error: String(error?.message || error) };
+    }
+    return active.done;
+  }
+
+  async function retryTicket(ticketId) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: "未找到工单" };
+    if (ACTIVE_TICKET_STATUSES.has(ticket.status) || attempts.has(ticket.id)) {
+      return { ok: false, error: "工单正在执行、排队或停止中。" };
+    }
+    if (ticket.status === "partial") return { ok: false, error: "请先检查已有结果，再补充指令继续。" };
+    return dispatchReceipt(await queueOrStart(ticket, Boolean(ticket.execution.pendingInstructions?.length)));
+  }
+
+  function currentAttempt(workerId, attempt) {
+    const ticket = ticketStore.findByWorkerConversationId(workerId);
+    const active = ticket && attempts.get(ticket.id);
+    if (!active || attempt !== active.number) return [];
+    return [ticket, active];
+  }
+
+  function recordWorkerStep(workerId, toolName, input = {}, { attempt, id, phase = "start", isError = false } = {}) {
+    const [ticket, active] = currentAttempt(workerId, attempt);
+    if (!active || !id || ticket.status === "stopping") return;
+    if (phase === "start") {
+      if (active.tools.has(id)) return;
+      active.tools.set(id, { toolName, input });
+    } else {
+      const tool = active.tools.get(id);
+      if (!tool && !toolName) return;
+      active.tools.delete(id);
+      toolName = tool?.toolName || toolName;
+      input = { ...tool?.input, ...input };
+    }
+    active.activityAt = now();
+    const paths = ["Write", "Edit", "NotebookEdit"].includes(toolName)
+      ? [input?.file_path || input?.notebook_path || input?.path]
+      : toolName === "apply_patch" && Array.isArray(input?.changes)
+        ? input.changes.filter(change => change?.kind !== "delete").map(change => change?.path) : [];
+    const artifacts = phase === "result" && !isError ? paths.flatMap(path => {
+      try {
+        const target = canonicalPath(path, ticket.execution.cwd);
+        const inVault = pathWithin(target, vault);
+        if (isSystemProtectedPath(target) || (!inVault && !allowOutsideVault)) return [];
+        if (active.scopes.length && !active.scopes.some(scope => pathWithin(target, scope))) return [];
+        return [inVault ? relative(vault, target).replace(/\\/g, "/") : target];
+      } catch { return []; }
+    }) : [];
+    try {
+      const updated = ticketStore.update(ticket.id, draft => {
+        draft.execution.lastActivityAt = active.activityAt;
+        if (phase === "start") draft.execution.stepsCount += 1;
+        else draft.execution.consecutiveErrors = isError ? draft.execution.consecutiveErrors + 1 : 0;
+        const label = `${toolName}${paths[0] ? ` ${basename(paths[0])}` : ""}${isError ? "（失败）" : ""}`;
+        draft.execution.lastStepLabel = label;
+        draft.execution.recentSteps = [...draft.execution.recentSteps, { at: now(), name: toolName, label, isError }].slice(-20);
+        draft.result.changedFiles = [...new Set([...draft.result.changedFiles, ...artifacts])];
+        draft.result.artifactPaths = [...new Set([...draft.result.artifactPaths, ...artifacts])];
+      });
+      pushTicketUpdate(updated);
+      if (phase === "result" && isError) watchdog.checkOnce();
+    } catch (error) {
+      showFailure(ticket, error);
+    }
+  }
+
+  function onWorkerActivity(workerId, attempt) {
+    const [, active] = currentAttempt(workerId, attempt);
+    if (active) active.activityAt = now();
+  }
+
+  function onWorkerNeedsAttention(workerId, { reason = "", question = null, attempt } = {}) {
+    const [ticket] = currentAttempt(workerId, attempt);
+    if (!ticket || ticket.status === "stopping") return null;
+    try {
+      const updated = ticketStore.update(ticket.id, draft => {
+        draft.status = "needs_attention";
+        draft.execution.lastActivityAt = now();
+        draft.result.attentionReason = reason || "执行专员需要你确认下一步。";
+        if (question) draft.result.pendingQuestion = question;
+        draft.pendingReport = {
+          ticketId: draft.id, revision: (draft.revision || 0) + 1,
+          title: draft.title, status: draft.status,
+          attentionReason: draft.result.attentionReason, changedFiles: draft.result.changedFiles,
+        };
+      });
+      pushTicketUpdate(updated);
+      batcher.enqueue(updated.parentConversationId, updated.pendingReport);
+      return updated;
+    } catch (error) {
+      showFailure(ticket, error);
+      return null;
+    }
+  }
+
+  function onWorkerResumed(workerId, attempt) {
+    const [ticket, active] = currentAttempt(workerId, attempt);
+    if (!active || ticket.status !== "needs_attention" || !ticket.result.pendingQuestion) return;
+    const updated = ticketStore.update(ticket.id, draft => {
+      draft.status = "running";
+      draft.result.attentionReason = null;
+      draft.result.pendingQuestion = null;
+      draft.execution.lastActivityAt = now();
+      if (draft.pendingReport?.status === "needs_attention") delete draft.pendingReport;
+    });
+    active.activityAt = now();
+    watchdog.clearFlag(ticket.id, attempt);
+    pushTicketUpdate(updated);
+  }
+
+  function onWorkerSettled(workerId, { attempt, status = "completed", output = "", error = null, restoreInstruction = false } = {}) {
+    const [ticket, active] = currentAttempt(workerId, attempt);
+    if (!active) return null;
+    const finalStatus = ticket.status === "stopping" ? "stopped" : status;
+    let updated;
+    try {
+      updated = ticketStore.update(ticket.id, draft => {
+        draft.status = finalStatus;
+        draft.execution.finishedAt = new Date(now()).toISOString();
+        draft.execution.lastActivityAt = now();
+        if (restoreInstruction && active.entry && finalStatus !== "stopped") {
+          draft.execution.pendingInstructions.unshift(active.entry);
+        }
+        draft.result.summary = summarizeWorkerOutput(output);
+        draft.result.error = error ? String(error) : null;
+        draft.result.attentionReason = null;
+        draft.result.pendingQuestion = null;
+        draft.pendingReport = {
+          ticketId: draft.id, revision: (draft.revision || 0) + 1,
+          title: draft.title, status: finalStatus, summary: draft.result.summary,
+          changedFiles: draft.result.changedFiles, error: draft.result.error,
+        };
+      });
+      pushTicketUpdate(updated);
+      batcher.enqueue(updated.parentConversationId, updated.pendingReport);
+    } catch (persistError) {
+      showFailure(ticket, persistError);
+    } finally {
+      watchdog.clearFlag(ticket.id);
+      attempts.delete(ticket.id);
+      active.resolve(updated ? dispatchReceipt(updated) : { ok: false, error: "工单终态保存失败" });
+      if (updated?.status === "completed" && updated.execution.pendingInstructions?.length) {
+        try {
+          ticketStore.update(ticket.id, draft => {
+            draft.status = "queued";
+            draft.execution.runInstruction = true;
+          });
+          queueMicrotask(() => {
+            const queued = ticketStore.get(ticket.id);
+            if (queued?.status === "queued") void startTicketExecution(queued, true);
+          });
+        } catch (persistError) {
+          showFailure(ticket, persistError);
+          releaseTicket(ticket.id);
+        }
+      } else releaseTicket(ticket.id);
+    }
+    return updated;
+  }
+
+  /** 仅返回精简的活跃任务盘面文本，用于非 Claude 续接轮次做轻量增量变化对比。 */
+  function buildStrategistTicketBoardBlock(parentConversationId = STRATEGIST_CONVERSATION_ID) {
+    const tickets = ticketStore.list({ parentConversationId, archived: "active", limit: 12 });
+    if (tickets.length === 0) return "";
+    const rows = tickets.map((t) => {
+      const files = t.result?.changedFiles?.length ? ` · 改动:${t.result.changedFiles.length}个文件` : "";
+      const note = t.status === "needs_attention"
+        ? ` · 卡点:${t.result?.attentionReason || "待确认"}`
+        : (t.result?.summary ? ` · 摘要:${t.result.summary.slice(0, 80)}` : "");
+      return `- [${t.status}] ${t.id}「${t.title}」(${t.execution?.provider || "默认"})${files}${note}`;
+    });
+    return `【当前后台工单盘面（共 ${tickets.length} 条，细节用 inspect_ticket / recall_ticket_detail 按需查看）】\n${rows.join("\n")}`;
+  }
+
+  /** 为军师构建极轻量的 Inline 盘面上下文（活跃工单 + 长期记忆摘录）。 */
+  function buildStrategistContextBlock(parentConversationId = STRATEGIST_CONVERSATION_ID, cwd = defaultCwd) {
+    const parts = [];
+    const memory = readStrategistMemory(cwd);
+    if (memory) {
+      parts.push(`【军师长期工作记忆（${STRATEGIST_MEMORY_REL}）】\n${memory}`);
+    }
+    const board = buildStrategistTicketBoardBlock(parentConversationId);
+    if (board) parts.push(board);
+    const specialists = loadSpecialists(cwd);
+    if (specialists.length > 0) {
+      const sRows = specialists.map((s) => `- ${s.id}（${s.name}）：${s.description || "专岗助手"}`);
+      parts.push(`【可用常驻专岗（派单时可填 specialistId）】\n${sRows.join("\n")}`);
+    }
+    return parts.join("\n\n");
+  }
+
+  function start() {
+    ticketStore.reconcileOnBoot();
+    for (const ticket of ticketStore.list({ limit: Infinity })) {
+      if (ticket.pendingReport) batcher.enqueue(ticket.parentConversationId, ticket.pendingReport);
+    }
+    watchdog.start();
+  }
+
+  function stop() {
+    watchdog.stop();
+    batcher.clear();
+  }
+
+  return {
+    start,
+    stop,
+    dispatchTask,
+    listTickets,
+    inspectTicket,
+    recallTicketDetail,
+    messageTicket,
+    stopTicket,
+    retryTicket,
+    attemptScopes: (id, number) => attempts.get(id)?.number === number ? attempts.get(id)?.scopes : null,
+    recordWorkerStep,
+    onWorkerActivity,
+    onWorkerNeedsAttention,
+    onWorkerResumed,
+    onWorkerSettled,
+    setTicketArchived,
+    buildStrategistContextBlock,
+    listProviders: () => (typeof listProviders === "function" ? listProviders() : []),
+  };
+}

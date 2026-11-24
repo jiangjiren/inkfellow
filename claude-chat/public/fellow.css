@@ -1,0 +1,61 @@
+#fellow-navigation { display: flex; gap: 4px; align-items: center; }
+#fellow-navigation .header-btn { width: auto; padding: 0 8px; display: inline-flex; gap: 5px; font-weight: 600; }
+#fellow-navigation [aria-pressed="true"] { color: var(--text); background: var(--bg3); }
+#fellow-active-count { color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
+#fellow-context[hidden], #fellow-create[hidden] { display: none; }
+#fellow-context { display: flex; align-items: center; gap: 8px; padding: 4px 12px 9px; min-width: 0; font-size: 12px; }
+#fellow-context-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+#fellow-context-status { color: var(--text-dim); margin-left: auto; flex-shrink: 0; }
+#app:is([data-fellow-view="manager"], [data-fellow-view="worker"]) #permission-picker,
+#app[data-fellow-view="worker"] #model-picker { display: none; }
+#fellow-board {
+  width: min(520px, calc(100% - 20px));
+  max-width: none;
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: 0 16px 60px #0004;
+  overscroll-behavior: contain;
+}
+#fellow-board::backdrop { background: #10101665; }
+.fellow-board-head, .fellow-board-controls, .fellow-ticket-heading {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+}
+.fellow-board-head h2 { margin: 1px 0 10px; font-size: 23px; line-height: 1.2; }
+.fellow-board-brand { color: var(--text-dim); font-size: 12px; }
+.fellow-board-controls { align-items: center; margin-bottom: 10px; }
+#fellow-board :is(button, select, input, textarea), #fellow-back {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--bg2);
+}
+#fellow-board :is(button, select), #fellow-back { cursor: pointer; }
+#fellow-board button:disabled { opacity: .55; cursor: wait; }
+#fellow-board button:hover:not(:disabled), #fellow-back:hover { background: var(--bg3); }
+#fellow-board :focus-visible, #fellow-back:focus-visible { outline: 2px solid var(--accent, #7667b8); outline-offset: 2px; }
+#fellow-create { display: grid; gap: 8px; padding: 10px; margin-bottom: 10px; background: var(--bg2); border-radius: 8px; }
+#fellow-create label { display: grid; gap: 4px; font-size: 12px; font-weight: 600; }
+#fellow-create :is(input, textarea) { width: 100%; font-weight: 400; }
+#fellow-create textarea { resize: vertical; min-height: 64px; }
+#fellow-create button { justify-self: start; }
+#fellow-board-status { color: var(--text-dim); font-size: 12px; margin: 4px 0; }
+#fellow-board-status:empty { display: none; }
+#fellow-tickets { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.fellow-ticket { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; min-width: 0; }
+.fellow-ticket strong { overflow-wrap: anywhere; }
+.fellow-ticket-state { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.fellow-ticket[data-status="running"] .fellow-ticket-state { color: var(--accent, #7667b8); }
+.fellow-ticket :is(small, p), .fellow-empty { font-size: 12px; color: var(--text-dim); }
+.fellow-ticket p { margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.fellow-ticket-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+.fellow-empty { padding: 24px 4px; text-align: center; }

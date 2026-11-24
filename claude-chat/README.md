@@ -93,6 +93,14 @@ The panel supports:
 
 Permission behavior is provider-specific. `bypassPermissions` is the broadest mode and should be enabled only in a trusted, single-user environment.
 
+## Fellow
+
+Open **✦ Fellow** in the chat header to plan work and delegate it to background Workers. Use **任务** to create a ticket manually, filter tickets, open a Worker's conversation, send follow-up instructions, stop or retry work, and archive finished tickets.
+
+Each ticket has its own conversation and persists under `CLAUDE_CHAT_DATA_DIR/tickets/<PORT>`, matching the conversation log's instance boundary. Workers with non-overlapping write scopes can run concurrently. Overlapping scopes queue until the worker holding the lock exits. A ticket without an explicit scope reserves the vault's write scope. Refreshing or switching conversations leaves the work running. After a service restart, interrupted work can be reviewed and retried from the board.
+
+Fellow and its Workers use Claude or a configured Claude-compatible profile. Workers operate on vault files through scoped tools. The chat service retains its existing Codex, Antigravity, and WeChat routes for ordinary conversations.
+
 ## Scheduled Jobs
 
 The built-in scheduler supports cron jobs and future one-off jobs. A job can:

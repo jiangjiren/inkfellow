@@ -12,10 +12,14 @@ function browser() {
   const sent = [];
   w.HTMLElement.prototype.scrollTo = function() {};
   w.HTMLElement.prototype.scrollIntoView = function() {};
+  w.HTMLDialogElement.prototype.showModal = function() { this.open = true; };
+  w.HTMLDialogElement.prototype.close = function() { this.open = false; };
   w.matchMedia = () => ({ matches: false, addEventListener() {} });
   w.ResizeObserver = class { observe() {} disconnect() {} };
   w.CSS = { escape: String };
-  w.fetch = async () => ({ ok: true, json: async () => ({ activeProfileId: "p_claude", profiles: [{ id: "p_claude", provider: "claude", name: "Claude" }] }) });
+  w.fetch = async url => ({ ok: true, json: async () => url === "api/fellow/tickets" ? { tickets: [] } : ({
+    activeProfileId: "p_claude", profiles: [{ id: "p_claude", provider: "claude", name: "Claude" }],
+  }) });
   w.WebSocket = class {
     static OPEN = 1; static CONNECTING = 0; static CLOSED = 3; static CLOSING = 2;
     constructor() { this.readyState = 1; }
@@ -25,8 +29,48 @@ function browser() {
   for (const name of ["marked.min.js", "pending-queue.js", "account-status.js"]) evaluate(readFileSync(new URL(`public/${name}`, import.meta.url), "utf8"));
   evaluate(readFileSync(new URL("node_modules/dompurify/dist/purify.min.js", import.meta.url), "utf8"));
   for (const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) if (match[1].trim()) evaluate(match[1]);
+  evaluate(readFileSync(new URL("public/fellow.js", import.meta.url), "utf8"));
   return { dom, w, sent, run: code => evaluate(code), close: async () => { await new Promise(resolve => setImmediate(resolve)); w.close(); } };
 }
+
+test("Fellow board opens an isolated worker and preserves unrelated row focus on live updates", async () => {
+  const h = browser();
+  try {
+    const doc = h.w.document;
+    const tick = () => new Promise(resolve => setImmediate(resolve));
+    await tick();
+    const a = { id: "tk_a", title: "稿件甲", workerConversationId: "wrk_tk_a", status: "running", revision: 1, updatedAt: "2026-01-01" };
+    const b = { id: "tk_b", title: "稿件乙", workerConversationId: "wrk_tk_b", status: "queued", revision: 1, updatedAt: "2026-01-01" };
+    const requests = [];
+    h.w.fetch = async (url, init) => {
+      requests.push({ url, init });
+      return { ok: true, json: async () => url === "api/fellow/tickets" ? { tickets: [a, b] } :
+        url === "api/history/strategist" ? { id: "strategist", messages: [] } :
+        url === "api/history/wrk_tk_b" ? { id: "wrk_tk_b", title: b.title, messages: [] } : { ok: true, delivery: "queued" } };
+    };
+    doc.getElementById("fellow-open").click();
+    await tick();
+    assert.equal(h.run("currentConvId"), "strategist");
+    doc.getElementById("fellow-board-open").click();
+    await tick();
+    const board = doc.getElementById("fellow-board");
+    assert.ok(board.open);
+    const enter = doc.querySelector('[data-ticket-id="tk_b"] [data-fellow-action="open"]');
+    enter.focus();
+    h.run(`handleEvent({type:"ticket_updated",ticket:${JSON.stringify({ ...a, revision: 2, lastStepLabel: "当前步骤" })}})`);
+    assert.equal(doc.activeElement, enter);
+    enter.click();
+    await tick();
+    assert.equal(h.run("currentConvId"), "wrk_tk_b");
+    assert.equal(board.open, false);
+    h.run('promptEl.value = "补充要求"; send()');
+    await tick();
+    assert.ok(requests.some(({ url, init }) => url === "api/fellow/tickets/tk_b/message"
+      && JSON.parse(init.body).instruction === "补充要求"));
+    doc.getElementById("fellow-back").click();
+    assert.ok(board.open);
+  } finally { await h.close(); }
+});
 
 test("full chat page starts and sanitizes model HTML while retaining Markdown", async () => {
   const h = browser();

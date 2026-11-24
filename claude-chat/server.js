@@ -1347,7 +1347,23 @@ function normalizeProfile(raw) {
     haikuModel:  str(p.haikuModel)  || legacyFastModel || legacyModel || preset.haikuModel  || "",
     baseUrl:     str(p.baseUrl)     || preset.baseUrl || "",
     goodAt:      str(p.goodAt)      || PROVIDER_GOOD_AT[provider] || PROVIDER_GOOD_AT.custom,
+    ...(p.hidden === true ? { hidden: true } : {}),
   };
+}
+
+function isProfileReadyForFallback(p) {
+  if (!p || p.hidden) return false;
+  if (p.provider === "antigravity") return isAgyAuthAvailable();
+  if (p.provider === "codex") return isCodexAuthAvailable();
+  if (p.provider === "claude") return hasLocalClaudeCredentials(claudeAccountConfigDir(p, CLAUDE_ACCOUNTS_DIR));
+  return Boolean(p.apiKey);
+}
+
+function pickFallbackActiveProfileId(profiles) {
+  const visible = profiles.filter(p => !p.hidden);
+  const ready = visible.find(isProfileReadyForFallback);
+  if (ready) return ready.id;
+  return visible[0]?.id ?? profiles[0]?.id ?? PRIMARY_CLAUDE_PROFILE_ID;
 }
 
 /** 从旧格式迁移到新 profiles 格式 */
@@ -1400,7 +1416,7 @@ function migrateOldFormat(old) {
   if (isAgyAuthAvailable()) {
     profiles.push({ id: "p_agy", name: "Gemini（Antigravity）", provider: "antigravity", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.antigravity, ...agyDefaultModels() });
   }
-  let activeProfileId = "p_claude";
+  let activeProfileId = pickFallbackActiveProfileId(profiles);
   if (old.provider === "deepseek") {
     const match = profiles.find(p => p.provider === "deepseek" &&
       (old.deepseek?.selectedKeyId ? p.id === old.deepseek.selectedKeyId : true));
@@ -1442,9 +1458,12 @@ function normalizeProfiles(raw) {
       profiles.push({ id: "p_agy", name: "Gemini（Antigravity）", provider: "antigravity", apiKey: "", baseUrl: "", goodAt: PROVIDER_GOOD_AT.antigravity, ...agyDefaultModels() });
     }
   }
-  const activeProfileId = typeof data.activeProfileId === "string" && profiles.some(p => p.id === data.activeProfileId)
-    ? data.activeProfileId
-    : profiles[0].id;
+  const currentActive = typeof data.activeProfileId === "string"
+    ? profiles.find(p => p.id === data.activeProfileId)
+    : null;
+  const activeProfileId = currentActive && !currentActive.hidden
+    ? currentActive.id
+    : pickFallbackActiveProfileId(profiles);
   return { activeProfileId, profiles };
 }
 
@@ -1480,6 +1499,7 @@ function toPublicProfiles(data = readProfiles()) {
       sonnetModel: p.sonnetModel,
       haikuModel:  p.haikuModel,
       goodAt:      p.goodAt,
+      ...(p.hidden ? { hidden: true } : {}),
       // 仅 custom provider 暴露 baseUrl（内置厂商不需要显示）
       ...(p.provider === "custom" ? { baseUrl: p.baseUrl } : {}),
     })),
@@ -1487,7 +1507,8 @@ function toPublicProfiles(data = readProfiles()) {
 }
 
 function getActiveProfile(data = readProfiles()) {
-  return data.profiles.find(p => p.id === data.activeProfileId) ?? data.profiles[0] ?? null;
+  const active = data.profiles.find(p => p.id === data.activeProfileId && !p.hidden);
+  return active ?? data.profiles.find(p => !p.hidden) ?? data.profiles[0] ?? null;
 }
 
 /**
@@ -3667,7 +3688,7 @@ function dispatchModelForProfile(profile) {
 }
 
 export function listDispatchProviders(profileData = readProfiles()) {
-  return (profileData?.profiles ?? []).map(profile => ({
+  return (profileData?.profiles ?? []).filter(profile => !profile.hidden).map(profile => ({
     id: profile.id,
     name: profile.name,
     provider: profile.provider,
@@ -6146,10 +6167,19 @@ const http = createServer((req, res) => {
     (async () => {
       // antigravity 不进 Promise.all：它是本地进程、要十几秒，读缓存就走
       // claude 仍是主号那份；额外的 Claude 会员账号各查各的，放在 claudeAccounts 里按 id 取
-      const extraClaudeProfiles = readProfiles().profiles.filter(isExtraClaudeAccount);
+      // 已隐藏的会员账号跳过轮询，避免对停用/被封账号反复查询报错
+      const allProfiles = readProfiles().profiles;
+      const primaryClaude = allProfiles.find(p => p.id === PRIMARY_CLAUDE_PROFILE_ID);
+      const codexProfile = allProfiles.find(p => p.provider === "codex");
+      const agyProfile = allProfiles.find(p => p.provider === "antigravity");
+      const extraClaudeProfiles = allProfiles.filter(p => isExtraClaudeAccount(p) && !p.hidden);
       const [claude, codex, ...extraClaude] = await Promise.all([
-        getClaudeSubscriptionLimits(),
-        queryCodexSubscriptionLimits(),
+        primaryClaude?.hidden
+          ? Promise.resolve({ provider: "claude", status: "hidden" })
+          : getClaudeSubscriptionLimits(),
+        codexProfile?.hidden
+          ? Promise.resolve({ provider: "codex", status: "hidden" })
+          : queryCodexSubscriptionLimits(),
         ...extraClaudeProfiles.map(profile => getClaudeSubscriptionLimits(profile)),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -6158,7 +6188,9 @@ const http = createServer((req, res) => {
           claude,
           claudeAccounts: Object.fromEntries(extraClaudeProfiles.map((profile, i) => [profile.id, extraClaude[i]])),
           codex,
-          antigravity: getAntigravityUsageLimits(),
+          antigravity: agyProfile?.hidden
+            ? { provider: "antigravity", status: "hidden", authenticated: null, available: false }
+            : getAntigravityUsageLimits(),
         },
       }));
     })().catch((err) => {
@@ -6179,14 +6211,44 @@ const http = createServer((req, res) => {
         let addedProfileId = null;
 
         if (payload.action === "activate") {
-          // 切换当前账号
+          // 切换当前账号（若此前被隐藏则顺带恢复可见）
           const id = String(payload.profileId ?? "");
           if (!current.profiles.some(p => p.id === id)) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "账号不存在" }));
             return;
           }
-          next = { ...current, activeProfileId: id };
+          const profiles = current.profiles.map(p => {
+            if (p.id !== id || !p.hidden) return p;
+            const { hidden: _hidden, ...visible } = p;
+            return visible;
+          });
+          next = { ...current, profiles, activeProfileId: id };
+
+        } else if (payload.action === "set-hidden") {
+          const id = String(payload.profileId ?? "");
+          const hidden = payload.hidden === true;
+          const target = current.profiles.find(p => p.id === id);
+          if (!target) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "账号不存在" }));
+            return;
+          }
+          if (hidden && current.profiles.filter(p => p.id !== id && !p.hidden).length === 0) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "至少保留一个可见账号" }));
+            return;
+          }
+          const profiles = current.profiles.map(p => {
+            if (p.id !== id) return p;
+            if (hidden) return { ...p, hidden: true };
+            const { hidden: _hidden, ...visible } = p;
+            return visible;
+          });
+          const activeProfileId = hidden && current.activeProfileId === id
+            ? pickFallbackActiveProfileId(profiles)
+            : current.activeProfileId;
+          next = { profiles, activeProfileId };
 
         } else if (payload.action === "add") {
           // 新增账号
@@ -6250,7 +6312,7 @@ const http = createServer((req, res) => {
           }
           const profiles = current.profiles.filter(p => p.id !== id);
           const activeProfileId = current.activeProfileId === id
-            ? (profiles[0]?.id ?? "p_claude")
+            ? pickFallbackActiveProfileId(profiles)
             : current.activeProfileId;
           next = { profiles, activeProfileId };
 
@@ -6275,13 +6337,17 @@ const http = createServer((req, res) => {
             forgetDispatchSessionsForProfile(p.id);
           }
         }
-        // 账号被删掉时同样作废，免得同名 id 复用时接上前一个账号的上下文
+        // 账号被删掉或隐藏时同样作废派发会话，免得继续往停用账号派单
         for (const id of beforeById.keys()) {
-          if (!(next.profiles || []).some(p => p.id === id)) forgetDispatchSessionsForProfile(id);
+          const nextProfile = (next.profiles || []).find(p => p.id === id);
+          if (!nextProfile || nextProfile.hidden) forgetDispatchSessionsForProfile(id);
         }
         writeProfiles(next);
-        // 加了个不切过去的账号（Claude 会员账号加完要先登录），当前对话的会话不受影响，别清
-        const resetSession = changed && !(payload.action === "add" && next.activeProfileId === current.activeProfileId);
+        // 加了个不切过去的账号，或隐藏/恢复非当前账号时，当前对话的会话不受影响，别清
+        const resetSession = changed && !(
+          (payload.action === "add" || payload.action === "set-hidden")
+          && next.activeProfileId === current.activeProfileId
+        );
         if (resetSession) clearSession();
         for (const removed of current.profiles) {
           if (isExtraClaudeAccount(removed) && !next.profiles.some(p => p.id === removed.id)) {

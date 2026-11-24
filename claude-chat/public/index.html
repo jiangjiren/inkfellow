@@ -2542,6 +2542,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .auth-profile-item:hover .auth-profile-actions { opacity: 1; }
 
 .auth-profile-login,
+.auth-profile-hide,
 .auth-profile-edit,
 .auth-profile-del {
   width: 26px; height: 26px;
@@ -2555,8 +2556,107 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   padding: 0;
 }
 .auth-profile-login:hover,
+.auth-profile-hide:hover,
 .auth-profile-edit:hover { background: var(--bg3); color: var(--text); }
 .auth-profile-del:hover  { background: rgba(192,57,43,0.1); color: var(--red); }
+
+.auth-hidden-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.auth-hidden-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.auth-hidden-toggle:hover { background: var(--bg2); color: var(--text); }
+.auth-hidden-chevron {
+  transition: transform 0.16s ease;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.auth-hidden-toggle[aria-expanded="true"] .auth-hidden-chevron { transform: rotate(90deg); }
+.auth-hidden-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.auth-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg2);
+  opacity: 0.85;
+}
+.auth-hidden-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.auth-hidden-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-hidden-reason {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-hidden-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.auth-hidden-pill {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.auth-hidden-pill:hover { background: var(--bg3); border-color: var(--text-dim); }
+.auth-hidden-add-claude {
+  align-self: flex-start;
+  margin: 4px 2px 0;
+  padding: 3px 6px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.auth-hidden-add-claude:hover { color: var(--text); background: var(--bg2); }
 
 /* ── Section labels in auth dialog ── */
 .auth-section-label {
@@ -3839,7 +3939,6 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
           </span>
           添加 API 账号
         </button>
-        <button id="auth-add-claude" class="auth-add-link" type="button">添加 Claude 会员账号</button>
       </div>
       
       <!-- ── 接入渠道分组（微信等） ── -->
@@ -4700,7 +4799,10 @@ checkAgyAuth();
 void fetchDispatchProviders();
 
 function getActiveProfile() {
-  return _profileData.profiles.find(p => p.id === _profileData.activeProfileId) ?? _profileData.profiles[0] ?? null;
+  return _profileData.profiles.find(p => p.id === _profileData.activeProfileId && !p.hidden)
+    ?? _profileData.profiles.find(p => !p.hidden)
+    ?? _profileData.profiles[0]
+    ?? null;
 }
 
 /** 请求里该带哪个账号 id。getActiveProfile 在 id 失效时会退到第一个账号，这里
@@ -5135,6 +5237,7 @@ const PROVIDER_LABEL = {
 
 const ICON_EDIT  = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M8.5 2L11 4.5L4.5 11H2V8.5L8.5 2Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_KEY   = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><circle cx="4.5" cy="8.5" r="2.5" stroke="currentColor" stroke-width="1.25"/><path d="M6.3 6.7L11 2M9.2 3.8l1.3 1.3M10.4 2.6l1 1" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_HIDE  = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.2 2.2l11.6 11.6M6.5 6.6a2 2 0 0 0 2.9 2.9M4.4 4.7C2.9 5.7 1.9 7.1 1.5 8c.9 2 3.4 4.2 6.5 4.2 1.2 0 2.3-.3 3.2-.8M6.8 3.9c.4-.1.8-.1 1.2-.1 3.1 0 5.6 2.2 6.5 4.2-.4.9-1.1 1.9-2.1 2.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_TRASH = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M2 3.5h9M5.5 3.5V2.5h2v1M4 3.5l.6 7.5h3.8l.6-7.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 // ── Render profile list ────────────────────────────────────
 let _providerUsageLimits = {
@@ -5342,7 +5445,7 @@ function profileStatus(p) {
     if (_claudeLoginPending.has(p.id)) return { tone: "idle", text: "等待登录 · 在弹出的终端和浏览器里完成" };
     const auth = claudeAuthFor(p);
     if (!auth) return { tone: "idle", text: "检测中…" };
-    if (!auth.authenticated) return { tone: "warn", text: "未登录 · 点右侧钥匙登录" };
+    if (!auth.authenticated) return { tone: "warn", text: isDesktopEmbed ? "未登录 · 点右侧钥匙登录" : "未登录" };
     const twin = sameClaudeAccountBefore(p, auth.email);
     if (twin) return { tone: "warn", text: `跟「${twin.name}」是同一个号 · 点钥匙换号重登`, title: auth.email };
     // 只有一个 Claude 号时邮箱是废话；有两个以上才靠它分清谁是谁
@@ -5378,19 +5481,45 @@ function profileStatus(p) {
   };
 }
 
+let _hiddenMembersExpanded = false;
+
 function isMembershipProfile(p) {
   return ["claude", "codex", "antigravity"].includes(p.provider);
+}
+
+function isMembershipUnavailable(p) {
+  if (!isMembershipProfile(p)) return false;
+  if (p.provider === "claude") {
+    if (_claudeLoginPending.has(p.id)) return false;
+    return claudeAuthFor(p)?.authenticated === false;
+  }
+  if (p.provider === "codex") {
+    return _codexAuthStatus === false || _providerUsageLimits.codex?.status === "expired";
+  }
+  if (p.provider === "antigravity") {
+    return _agyAuthStatus === false;
+  }
+  return false;
+}
+
+function isProfileFolded(p, activeId) {
+  if (!isMembershipProfile(p)) return false;
+  if (p.hidden) return true;
+  if (_claudeLoginPending.has(p.id)) return false;
+  return isMembershipUnavailable(p) && p.id !== activeId;
 }
 
 function renderProfileList(data, { adopt = false } = {}) {
   /* 谁说了算：当前对话自己记着的账号 > 本实例的 localStorage 全局默认 > 服务端
      那份。adopt 是唯一的例外——用户刚在这个面板里点了某个账号，服务端回的就是
-     他选的那个，不该再被上一条记录顶回去。 */
+     他选的那个，不该再被上一条记录顶回去。被隐藏的账号不再强行沿用。 */
   const preferredId = adopt ? null : (currentConvProfileId() ?? localStorage.getItem("activeProfileId"));
-  if (preferredId && data.profiles.some(p => p.id === preferredId)) {
-    data = { ...data, activeProfileId: preferredId };
+  const preferredProfile = preferredId ? data.profiles.find(p => p.id === preferredId && !p.hidden) : null;
+  if (preferredProfile) {
+    data = { ...data, activeProfileId: preferredProfile.id };
   }
   _profileData = data;
+  const visibleCount = data.profiles.filter(p => !p.hidden).length;
   const renderProfile = p => {
     const isActive = p.id === data.activeProfileId;
     const st = profileStatus(p);
@@ -5400,14 +5529,17 @@ function renderProfileList(data, { adopt = false } = {}) {
     // Claude 主号固定在那儿；后来加的 Claude 会员账号跟 API 账号一样能改名、能删
     const canEdit   = p.provider !== "claude" || isExtraClaudeProfile(p);
     const canDelete = canEdit;
-    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口
-    const canLogin  = p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
+    // 任意会员账号（含被封/暂不用的 Claude 主号）都支持一键隐藏，至少保留一个可见账号
+    const canHide   = isMembershipProfile(p) && visibleCount > 1;
+    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口（网页端无本机终端弹窗）
+    const canLogin  = isDesktopEmbed && p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
     const loginLabel = claudeAuthFor(p)?.authenticated ? "重新登录 / 换号" : "登录";
-    const actions = (canEdit || canDelete || canLogin) ? `
+    const actions = (canEdit || canDelete || canLogin || canHide) ? `
       <span class="auth-profile-actions">
         ${canLogin  ? `<span class="auth-profile-login" data-login="${escapeAttr(p.id)}" title="${loginLabel}" aria-label="${loginLabel}" role="button">${ICON_KEY}</span>` : ""}
-        ${canEdit   ? `<span class="auth-profile-edit" data-edit="${escapeAttr(p.id)}" title="编辑" aria-label="编辑" role="button">${ICON_EDIT}</span>` : ""}
-        ${canDelete ? `<span class="auth-profile-del"  data-del="${escapeAttr(p.id)}"  title="删除" aria-label="删除" role="button">${ICON_TRASH}</span>` : ""}
+        ${canHide   ? `<span class="auth-profile-hide"  data-hide="${escapeAttr(p.id)}"  title="隐藏此账号" aria-label="隐藏此账号" role="button">${ICON_HIDE}</span>` : ""}
+        ${canEdit   ? `<span class="auth-profile-edit"  data-edit="${escapeAttr(p.id)}"  title="编辑" aria-label="编辑" role="button">${ICON_EDIT}</span>` : ""}
+        ${canDelete ? `<span class="auth-profile-del"   data-del="${escapeAttr(p.id)}"   title="删除" aria-label="删除" role="button">${ICON_TRASH}</span>` : ""}
       </span>` : "";
     return `<button class="auth-profile-item${isActive ? " active" : ""}" data-id="${escapeAttr(p.id)}" role="option" aria-selected="${isActive}"${st.title ? ` title="${escapeAttr(st.title)}"` : ""}>
       <span class="auth-profile-check" aria-hidden="true">${isActive ? "✓" : ""}</span>
@@ -5426,10 +5558,48 @@ function renderProfileList(data, { adopt = false } = {}) {
       ${actions}
     </button>`;
   };
+  const allMembers = data.profiles.filter(isMembershipProfile);
+  const foldedMembers = allMembers.filter(p => isProfileFolded(p, data.activeProfileId));
+  const visibleMembers = allMembers.filter(p => !isProfileFolded(p, data.activeProfileId));
+  const apiProfiles = data.profiles.filter(p => !isMembershipProfile(p));
   const groups = [
-    { id: "membership", label: "会员账号", hint: "通过账号登录，使用对应会员额度", profiles: data.profiles.filter(isMembershipProfile) },
-    { id: "api", label: "API 账号", hint: "使用 API 密钥，按 API 用量计费", profiles: data.profiles.filter(p => !isMembershipProfile(p)) },
+    { id: "membership", label: "会员账号", hint: "通过账号登录，使用对应会员额度", profiles: visibleMembers },
+    { id: "api", label: "API 账号", hint: "使用 API 密钥，按 API 用量计费", profiles: apiProfiles },
   ];
+  const renderFoldedRow = p => {
+    const st = profileStatus(p);
+    const reason = p.hidden ? "已隐藏" : st.text;
+    const canLogin = isDesktopEmbed && p.provider === "claude";
+    const canDelete = p.provider === "claude" && isExtraClaudeProfile(p);
+    return `<div class="auth-hidden-row" data-hidden-id="${escapeAttr(p.id)}">
+      <span class="auth-hidden-info">
+        <span class="auth-hidden-name">${escapeHtml(p.name)}</span>
+        <span class="auth-hidden-reason">${escapeHtml(reason)}</span>
+      </span>
+      <span class="auth-hidden-actions">
+        ${p.hidden
+          ? `<button type="button" class="auth-hidden-pill auth-profile-unhide" data-unhide="${escapeAttr(p.id)}">恢复</button>`
+          : `${canLogin ? `<button type="button" class="auth-hidden-pill auth-profile-login" data-login="${escapeAttr(p.id)}">登录</button>` : ""}${visibleCount > 1 ? `<button type="button" class="auth-hidden-pill auth-profile-hide" data-hide="${escapeAttr(p.id)}">隐藏</button>` : ""}`}
+        ${canDelete ? `<button type="button" class="auth-hidden-pill auth-profile-del" data-del="${escapeAttr(p.id)}">删除</button>` : ""}
+      </span>
+    </div>`;
+  };
+  const showDisclosure = foldedMembers.length > 0 || isDesktopEmbed;
+  const disclosureLabel = foldedMembers.length > 0
+    ? `已隐藏或未登录的会员账号 (${foldedMembers.length})`
+    : "更多会员渠道";
+  const disclosureHtml = showDisclosure ? `
+    <div class="auth-hidden-section">
+      <button type="button" class="auth-hidden-toggle" aria-expanded="${_hiddenMembersExpanded}">
+        <span>${disclosureLabel}</span>
+        <svg class="auth-hidden-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3.2 2L6.8 5L3.2 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      ${_hiddenMembersExpanded ? `
+        <div class="auth-hidden-list">
+          ${foldedMembers.map(renderFoldedRow).join("")}
+          ${isDesktopEmbed ? `<button type="button" class="auth-hidden-add-claude">+ 添加 Claude 会员账号</button>` : ""}
+        </div>` : ""}
+    </div>` : "";
   authProfileList.innerHTML = groups.filter(group => group.profiles.length).map(group => `
     <div class="auth-profile-group" role="group" aria-labelledby="auth-group-${group.id}">
       <div class="auth-group-heading">
@@ -5438,7 +5608,7 @@ function renderProfileList(data, { adopt = false } = {}) {
       </div>
       ${group.profiles.map(renderProfile).join("")}
     </div>
-  `).join("");
+  `).join("") + disclosureHtml;
   renderModelOptions(getActiveProfile());
   requestSkillRefresh();
   void fetchDispatchProviders();
@@ -5497,6 +5667,33 @@ async function activateProfile(id) {
     setAuthStatus("saved", "已切换");
     setTimeout(closeAuthDialog, 600);
   } catch (err) { if (profileActivationVersions.get(owner) === version) setAuthStatus("error", err instanceof Error ? err.message : "切换失败"); }
+}
+
+async function setProfileHidden(id, hidden) {
+  const owner = currentConvId;
+  const effort = selectedEffort;
+  const wasActive = activeProfileId() === id;
+  setAuthStatus("saving", hidden ? "隐藏中…" : "恢复中…");
+  try {
+    const res = await fetch("api/auth-profile", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set-hidden", profileId: id, hidden }) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "操作失败");
+    if (hidden) {
+      forgetProfileFromConvPrefs(id);
+      if (localStorage.getItem("activeProfileId") === id && d.data?.activeProfileId) {
+        localStorage.setItem("activeProfileId", d.data.activeProfileId);
+      }
+    }
+    if (hidden && wasActive && d.data?.activeProfileId) {
+      applyConversationProfile(d.data, owner, d.data.activeProfileId, effort);
+      if (d.resetSession) resetProviderSession(owner);
+    } else {
+      renderProfileList(d.data, { adopt: hidden && wasActive });
+    }
+    setAuthStatus("saved", hidden ? "已隐藏" : "已恢复");
+  } catch (err) { setAuthStatus("error", err instanceof Error ? err.message : "操作失败"); }
 }
 
 async function deleteProfile(id) {
@@ -5653,7 +5850,7 @@ function openAccountForm(existingProfile, { claudeMember = false } = {}) {
 }
 
 addToggleBtn.addEventListener("click", () => openAccountForm(null));
-document.getElementById("auth-add-claude").addEventListener("click", () => openAccountForm(null, { claudeMember: true }));
+document.getElementById("auth-add-claude")?.addEventListener("click", () => openAccountForm(null, { claudeMember: true }));
 authBackBtn.addEventListener("click", showListView);
 
 /* 新加的 Claude 会员账号不切过去（还没登录，切过去下一条就报错），也就不动当前对话的
@@ -5776,6 +5973,19 @@ addSubmitBtn.addEventListener("click", async () => {
 
 // ── Profile list click delegation ─────────────────────────
 authProfileList.addEventListener("click", (e) => {
+  const toggleBtn = e.target.closest(".auth-hidden-toggle");
+  if (toggleBtn) {
+    e.stopPropagation();
+    _hiddenMembersExpanded = !_hiddenMembersExpanded;
+    renderProfileList(_profileData);
+    return;
+  }
+  const addClaudeBtn = e.target.closest(".auth-hidden-add-claude");
+  if (addClaudeBtn) { e.stopPropagation(); openAccountForm(null, { claudeMember: true }); return; }
+  const hideBtn = e.target.closest(".auth-profile-hide");
+  if (hideBtn) { e.stopPropagation(); void setProfileHidden(hideBtn.dataset.hide, true); return; }
+  const unhideBtn = e.target.closest(".auth-profile-unhide");
+  if (unhideBtn) { e.stopPropagation(); void setProfileHidden(unhideBtn.dataset.unhide, false); return; }
   const loginBtn = e.target.closest(".auth-profile-login");
   if (loginBtn) { e.stopPropagation(); void startClaudeLogin(loginBtn.dataset.login); return; }
   const editBtn = e.target.closest(".auth-profile-edit");
@@ -5832,6 +6042,7 @@ function openAuthDialog() {
 }
 
 function closeAuthDialog() {
+  _hiddenMembersExpanded = false;
   authDialog.classList.remove("open");
   authBackdrop.classList.remove("open");
   notifyOverlayState();

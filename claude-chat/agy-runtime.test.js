@@ -288,8 +288,7 @@ test("常驻的命令行：prompt 走 stdin，--print 必须是带等号的一�
     ["--conversation", "conv-7"]);
   assert.deepEqual(args.slice(args.indexOf("--add-dir"), args.indexOf("--add-dir") + 2),
     ["--add-dir", "D:/vault"], "不给 --add-dir 它会跑去自己的 scratch 目录动文件");
-  assert.ok(args.includes("--sandbox"), "常驻 Web 执行沿用所选权限");
-  assert.ok(!args.includes("--dangerously-skip-permissions"));
+  assert.ok(args.includes("--dangerously-skip-permissions"), "headless 下没人能点授权弹窗");
   assert.ok(!args.includes("-p"), "常驻模式不能再从命令行收 prompt");
 });
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export class AsyncMessageQueue {
   constructor() {
     this.items = [];
@@ -52,18 +54,12 @@ export function isTaskLifecycleEvent(event) {
   ].includes(event.subtype);
 }
 
-export function isTerminalTaskLifecycleEvent(event) {
-  if (!isTaskLifecycleEvent(event)) return false;
-  if (event.subtype === "task_notification") return true;
-  const status = String(event.patch?.status ?? event.status ?? "").toLowerCase();
-  return event.subtype === "task_updated"
-    && ["completed", "failed", "killed", "cancelled", "canceled"].includes(status);
-}
-
 export function updateTaskRegistry(taskIds, event) {
   if (!isTaskLifecycleEvent(event) || !event.task_id) return false;
   const before = taskIds.has(event.task_id);
-  if (isTerminalTaskLifecycleEvent(event)) {
+  const terminalUpdate = event.subtype === "task_updated"
+    && ["completed", "failed", "killed"].includes(event.patch?.status);
+  if (event.subtype === "task_notification" || terminalUpdate) {
     taskIds.delete(event.task_id);
   } else {
     taskIds.add(event.task_id);
@@ -71,80 +67,201 @@ export function updateTaskRegistry(taskIds, event) {
   return before !== taskIds.has(event.task_id);
 }
 
-// A foreground result can become idle while background Tasks are still running.
-// The Claude SDK later wakes the parent Agent automatically so it can summarize
-// those Tasks. Keep the foreground transport open across both idle states.
-export class BackgroundTaskTurnGate {
-  constructor({
-    wakeGraceMs = 5_000,
-    schedule = (callback, delay) => setTimeout(callback, delay),
-    cancel = timer => clearTimeout(timer),
-  } = {}) {
-    this.wakeGraceMs = wakeGraceMs;
-    this.schedule = schedule;
-    this.cancel = cancel;
-    this.wakePending = false;
-    this.timer = null;
-    this.finish = null;
+export class SteeringQueue {
+  constructor() {
+    this.items = [];
   }
 
-  clearWakePending() {
-    if (this.timer !== null) this.cancel(this.timer);
-    this.timer = null;
-    this.wakePending = false;
-    this.finish = null;
+  get length() {
+    return this.items.length;
   }
 
-  markForegroundStart() {
-    this.clearWakePending();
+  enqueue(item) {
+    const userMessageId = String(item?.userMessageId ?? "").trim();
+    const ownerToken = String(item?.ownerToken ?? "").trim();
+    if (!userMessageId) throw new TypeError("userMessageId is required");
+    if (!ownerToken) throw new TypeError("ownerToken is required");
+    const existing = this.items.find(entry => entry.userMessageId === userMessageId);
+    if (existing) return { item: existing, inserted: false };
+    const queued = {
+      ...item,
+      userMessageId,
+      ownerToken,
+      paused: item.paused === true,
+      state: "queued",
+      claimToken: null,
+    };
+    this.items.push(queued);
+    return { item: queued, inserted: true };
   }
 
-  reset() {
-    this.clearWakePending();
+  get(userMessageId) {
+    const id = String(userMessageId ?? "").trim();
+    return this.items.find(item => item.userMessageId === id) ?? null;
   }
 
-  handle(event, { taskCount = 0, finish } = {}) {
-    const sessionState = event?.type === "system"
-      && event.subtype === "session_state_changed"
-      ? event.state
-      : null;
+  snapshot(ownerToken = null) {
+    const items = ownerToken == null
+      ? this.items
+      : this.items.filter(item => item.ownerToken === ownerToken);
+    return items.map(item => ({ ...item }));
+  }
 
-    if (isTerminalTaskLifecycleEvent(event) && taskCount === 0) {
-      this.clearWakePending();
-      this.wakePending = true;
-      this.finish = finish;
-      this.timer = this.schedule(() => {
-        this.timer = null;
-        if (!this.wakePending) return;
-        const finishTurn = this.finish;
-        this.wakePending = false;
-        this.finish = null;
-        finishTurn?.();
-      }, this.wakeGraceMs);
-      this.timer?.unref?.();
+  update(userMessageId, patch, ownerToken = null) {
+    const item = this.get(userMessageId);
+    if (!item || item.state !== "queued") return null;
+    if (ownerToken != null && item.ownerToken !== ownerToken) return null;
+    const originalOwnerToken = item.ownerToken;
+    Object.assign(item, patch);
+    item.userMessageId = String(userMessageId).trim();
+    item.ownerToken = originalOwnerToken;
+    item.state = "queued";
+    item.claimToken = null;
+    return item;
+  }
+
+  remove(userMessageId, ownerToken = null) {
+    const id = String(userMessageId ?? "").trim();
+    const index = this.items.findIndex(item => (
+      item.userMessageId === id
+      && item.state === "queued"
+      && (ownerToken == null || item.ownerToken === ownerToken)
+    ));
+    if (index < 0) return null;
+    return this.items.splice(index, 1)[0];
+  }
+
+  removeOwner(ownerToken) {
+    const removed = [];
+    this.items = this.items.filter(item => {
+      if (item.ownerToken !== ownerToken) return true;
+      removed.push(item);
+      return false;
+    });
+    return removed;
+  }
+
+  /**
+   * 移除某个对话排着的全部插话，不论处在哪个状态。
+   *
+   * ownerToken 是「哪一轮」，跟对话不是一回事：同一个对话的两轮是两个 token。
+   * /clear 要清的是这个对话的全部，按对话清才既不漏自己的、也不碰别人的。
+   */
+  removeConversation(conversationId) {
+    const id = String(conversationId ?? "").trim();
+    if (!id) return [];
+    const removed = [];
+    this.items = this.items.filter(item => {
+      if (item.conversationId !== id) return true;
+      removed.push(item);
+      return false;
+    });
+    return removed;
+  }
+
+  reorder(ownerToken, orderedIds) {
+    if (!ownerToken || !Array.isArray(orderedIds)) return false;
+    const owned = this.items.filter(item => item.ownerToken === ownerToken && item.state === "queued");
+    if (owned.length === 0) return false;
+    const byId = new Map(owned.map(item => [item.userMessageId, item]));
+    const seen = new Set();
+    const reordered = [];
+    for (const rawId of orderedIds) {
+      const id = String(rawId ?? "").trim();
+      const item = byId.get(id);
+      if (!item || seen.has(id)) continue;
+      seen.add(id);
+      reordered.push(item);
     }
-
-    // session_state_changed/running is the canonical auto-wake signal. The
-    // parent-only event fallback also covers SDK versions that omit that frame.
-    const parentOutputStarted = !event?.parent_tool_use_id
-      && ["user", "assistant", "stream_event"].includes(event?.type);
-    if (this.wakePending && ((sessionState && sessionState !== "idle") || parentOutputStarted)) {
-      this.clearWakePending();
+    for (const item of owned) {
+      if (!seen.has(item.userMessageId)) reordered.push(item);
     }
+    let cursor = 0;
+    this.items = this.items.map(item => (
+      item.ownerToken === ownerToken && item.state === "queued"
+        ? reordered[cursor++]
+        : item
+    ));
+    return true;
+  }
 
-    if (sessionState !== "idle") return false;
-    return taskCount === 0 && !this.wakePending;
+  pauseOwner(ownerToken) {
+    const paused = [];
+    for (const item of this.items) {
+      if (item.ownerToken !== ownerToken || item.state !== "queued" || item.paused) continue;
+      item.paused = true;
+      paused.push(item);
+    }
+    return paused;
+  }
+
+  resumeOwner(ownerToken) {
+    const resumed = [];
+    for (const item of this.items) {
+      if (item.ownerToken !== ownerToken || item.state !== "queued" || !item.paused) continue;
+      item.paused = false;
+      resumed.push(item);
+    }
+    return resumed;
+  }
+
+  claimNext(ownerToken, predicate = null) {
+    const item = this.items.find(entry => (
+      entry.ownerToken === ownerToken
+      && entry.state === "queued"
+      && !entry.paused
+      && (typeof predicate !== "function" || predicate(entry))
+    ));
+    if (!item) return null;
+    item.state = "claimed";
+    item.claimToken = randomUUID();
+    return { item, claimToken: item.claimToken };
+  }
+
+  commitClaim(userMessageId, claimToken) {
+    const index = this.items.findIndex(item => (
+      item.userMessageId === userMessageId
+      && item.state === "claimed"
+      && item.claimToken === claimToken
+    ));
+    if (index < 0) return null;
+    return this.items.splice(index, 1)[0];
+  }
+
+  releaseClaim(userMessageId, claimToken, { paused = false } = {}) {
+    const item = this.items.find(entry => (
+      entry.userMessageId === userMessageId
+      && entry.state === "claimed"
+      && entry.claimToken === claimToken
+    ));
+    if (!item) return null;
+    item.state = "queued";
+    item.claimToken = null;
+    item.paused = paused;
+    return item;
+  }
+
+  hasUnpaused(ownerToken = null) {
+    return this.items.some(item => (
+      item.state === "queued"
+      && !item.paused
+      && (ownerToken == null || item.ownerToken === ownerToken)
+    ));
   }
 }
 
 export class PersistentQueryRuntime {
-  constructor({ queryFactory, onEvent, onError, onClose, onCallbackError } = {}) {
+  constructor({ queryFactory, onEvent, onError, onClose, onCallbackError, contextStore = null } = {}) {
     if (typeof queryFactory !== "function") throw new TypeError("queryFactory is required");
     this.queryFactory = queryFactory;
     this.onEvent = onEvent ?? (() => {});
     this.onError = onError ?? (() => {});
     this.onClose = onClose ?? (() => {});
     this.onCallbackError = onCallbackError ?? (() => {});
+    // AsyncLocalStorage（或任何同形状的东西）。给了就把 start() 的 context
+    // 绑到事件泵上，没给就退回原来的行为。
+    this.contextStore = contextStore;
+    this.context = null;
     this.query = null;
     this.input = null;
     this.pumpPromise = null;
@@ -153,7 +270,17 @@ export class PersistentQueryRuntime {
     this.generation = 0;
   }
 
-  start(options) {
+  /**
+   * 起一轮持久 query。
+   *
+   * context 会被绑在这个 runtime 的事件泵上：pump 里 await 出来的每个事件、
+   * 以及它触发的每个回调，都能通过 contextStore.getStore() 读到它——包括
+   * 异步子任务那些隔了几秒才回来的事件。
+   *
+   * 这是为了替掉「事件发出时回头猜它属于谁」那套做法。猜的代价是两套
+   * owner 追踪 Map 加两套 TTL 定时器，而且一旦同时有多个会话在跑必然猜错。
+   */
+  start(options, context = null) {
     if (this.query) throw new Error("Persistent query is already started");
     const input = new AsyncMessageQueue();
     let activeQuery;
@@ -166,7 +293,11 @@ export class PersistentQueryRuntime {
     const generation = ++this.generation;
     this.input = input;
     this.query = activeQuery;
-    this.pumpPromise = this.pump(activeQuery, input, generation);
+    this.context = context;
+    const runPump = () => this.pump(activeQuery, input, generation);
+    this.pumpPromise = this.contextStore && context
+      ? this.contextStore.run(context, runPump)
+      : runPump();
     return activeQuery;
   }
 
@@ -177,7 +308,7 @@ export class PersistentQueryRuntime {
   }
 
   async interrupt() {
-    if (!this.query || (!this.foregroundRunning && this.taskIds.size === 0)) return false;
+    if (!this.query || !this.foregroundRunning) return false;
     await this.query.interrupt();
     return true;
   }
@@ -188,6 +319,7 @@ export class PersistentQueryRuntime {
     this.query = null;
     this.generation += 1;
     this.input = null;
+    this.context = null;
     this.pumpPromise = null;
     this.foregroundRunning = false;
     this.taskIds.clear();

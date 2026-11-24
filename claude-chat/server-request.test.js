@@ -1,98 +1,22 @@
-// server.js 一 import 就 listen，同进程测不了——所有用例都把它拉到子进程里跑。
-// harness（reservePort / 等启动日志 / waitForMessage）借自 desktop-lite 的同名文件，
-// 用例是 main 专属的：这边没有 request_ack / DESKTOP_AGENT_TOKEN / run-state 那套。
-import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import test from "node:test";
 import { WebSocket } from "ws";
+import { fileNameFor } from "./history-store.js";
 
-const HERE = new URL(".", import.meta.url);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// 必须显式指定端口：默认 8082/8083 是生产实例，测试绝不能去抢
 async function reservePort() {
   const server = createServer();
   await new Promise((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
   const { port } = server.address();
   await new Promise(resolve => server.close(resolve));
   return port;
-}
-
-const PROBE_PROFILES = {
-  activeProfileId: "p_claude",
-  profiles: [
-    { id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", baseUrl: "" },
-    {
-      id: "p_deepseek",
-      name: "DeepSeek",
-      provider: "deepseek",
-      apiKey: "probe-key",
-      baseUrl: "https://api.deepseek.test",
-      opusModel: "deepseek-probe-opus",
-      sonnetModel: "deepseek-probe-sonnet",
-      haikuModel: "deepseek-probe-haiku",
-    },
-  ],
-};
-
-// 起一个隔离的 server.js：临时 data 目录 + 临时 auth-profile，绝不碰真实 vault/凭证
-async function startServer({ mockSdk = false } = {}) {
-  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-chat-test-"));
-  const authFile = join(scratch, "auth-profile.json");
-  await writeFile(authFile, JSON.stringify(PROBE_PROFILES), "utf8");
-  const port = await reservePort();
-
-  const child = spawn(process.execPath, [...(mockSdk ? ["--experimental-loader", new URL("fixtures/sdk-loader.mjs", HERE).pathname] : []), "server.js"], {
-    cwd: HERE,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      HOST: "127.0.0.1",
-      VAULT_PATH: scratch,
-      CLAUDE_CHAT_DATA_DIR: scratch,
-      CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  let output = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", chunk => { output += chunk; });
-  child.stderr.on("data", chunk => { output += chunk; });
-
-  const deadline = Date.now() + 15_000;
-  while (!output.includes("claude-chat listening")) {
-    if (child.exitCode != null) throw new Error(`server.js 提前退出 (${child.exitCode}): ${output}`);
-    if (Date.now() >= deadline) throw new Error(`server.js 未能启动: ${output}`);
-    await delay(20);
-  }
-
-  return {
-    port,
-    async stop() {
-      child.kill("SIGKILL");
-      await new Promise(resolve => child.once("exit", resolve));
-      await rm(scratch, { recursive: true, force: true });
-    },
-  };
-}
-
-async function connect(port) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
-  const events = [];
-  ws.on("message", raw => {
-    try { events.push(JSON.parse(raw.toString())); } catch { /* 非 JSON 帧忽略 */ }
-  });
-  await new Promise((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
-  });
-  return { ws, events };
 }
 
 async function waitForMessage(events, predicate, startIndex = 0, timeoutMs = 5000) {
@@ -103,365 +27,1153 @@ async function waitForMessage(events, predicate, startIndex = 0, timeoutMs = 500
     }
     await delay(10);
   }
-  throw new Error(`等待 WS 事件超时；已收到: ${JSON.stringify(events.slice(startIndex))}`);
+  throw new Error(`Timed out waiting for WebSocket event; received: ${JSON.stringify(events.slice(startIndex))}`);
 }
 
-// buildAgentEnv 是降级链的地基：runWithModelFallback 靠 {...profileData,
-// activeProfileId: candidate.profileId} 覆写来切换候选，覆写不生效的话降级会
-// "降"到同一个 provider 上，症状是静默的。同样跑在子进程里（import 即 listen）。
-async function evalInServer(expression) {
+test("Gemini keeps output from a turn whose final status is a connection timeout", { timeout: 30_000 }, async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-gemini-turn-"));
+  const authFile = join(scratch, "auth-profile.json");
+  const cli = join(scratch, "agy.mjs");
+  const loader = join(scratch, "loader.mjs");
+  const requestsFile = join(scratch, "requests.jsonl");
+  const releaseFile = join(scratch, "release-turn");
   const port = await reservePort();
-  const child = spawn(process.execPath, ["--input-type=module", "-e", `
-    const m = await import("./server.js");
-    const out = (${expression})(m);
-    console.log("__RESULT__" + JSON.stringify(out));
-    process.exit(0);
-  `], {
-    cwd: HERE,
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1" },
+  const token = "gemini-test-token";
+  const hostname = "daily-cloudcode-pa.googleapis.com";
+  const timeout = 'API error (attempt 2): request failed: Post "https://' + hostname
+    + '/v1internal:streamGenerateContent?alt=sse": net/http: TLS handshake timeout';
+  const outputText = "Updated the article card and verified the file.";
+  const conversationId = "gemini-partial-history";
+  const model = "gemini-4-hydrogen";
+  let child;
+  let connection;
+  const connect = async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${token}`);
+    const events = [];
+    ws.on("message", raw => events.push(JSON.parse(raw.toString())));
+    await new Promise((resolve, reject) => ws.once("open", resolve).once("error", reject));
+    return { ws, events };
+  };
+
+  try {
+    await writeFile(authFile, JSON.stringify({
+      activeProfileId: "gemini",
+      profiles: [{ id: "gemini", name: "Gemini probe", provider: "antigravity", sonnetModel: model }],
+    }));
+    await writeFile(cli, `
+      import { appendFile, access } from "node:fs/promises";
+      import { createInterface } from "node:readline";
+      import { setTimeout } from "node:timers/promises";
+      if (process.argv[2] === "models") {
+        console.log(${JSON.stringify(model + "-medium\tGemini 4 Hydrogen (Medium)")});
+        process.exit(0);
+      }
+      const conversation_id = "agy-gemini-test";
+      const emit = (event, data) => console.log(JSON.stringify({ event, [event]: { conversation_id, ...data } }));
+      const step = (step_index, step_type, state, extra) => emit("step_update", { step_index, step_type, state, ...extra });
+      process.stdin.once("end", () => process.exit(0));
+      emit("init", {});
+      for await (const line of createInterface({ input: process.stdin })) {
+        const prompt = JSON.parse(line).message.content[0].text;
+        const scenario = /scenario-([a-z]+)/.exec(prompt)?.[1];
+        await appendFile(${JSON.stringify(requestsFile)}, JSON.stringify(scenario) + "\\n");
+        if (scenario === "hold") {
+          step(1, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+          await setTimeout(15_000);
+        }
+        step(1, "error", "DONE", { error: ${JSON.stringify(timeout)} });
+        if (scenario === "partial" || scenario === "success") {
+          step(2, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+          step(2, "tool", "DONE", { tool_info: { output: "article.html was written" } });
+          step(3, "agent_response", "DONE", { text_delta: ${JSON.stringify(outputText)} });
+        }
+        if (scenario === "nooutput") step(2, "tool", "ACTIVE", { tool_name: "write_to_file", tool_info: {} });
+        if (scenario === "quota") step(2, "agent_response", "DONE", { text_delta: "Work in progress." });
+        if (scenario === "partial") {
+          while (!(await access(${JSON.stringify(releaseFile)}).then(() => true, () => false))) await setTimeout(10);
+        }
+        emit("result", scenario === "success"
+          ? { status: "SUCCESS", response: ${JSON.stringify(outputText)} }
+          : { status: "ERROR", finished_reason: "error", response: "",
+              error: scenario === "quota" ? "Individual quota reached." : ${JSON.stringify(timeout)} });
+      }
+    `);
+    await writeFile(loader, `
+      export async function load(url, context, nextLoad) {
+        if (!url.endsWith("/hidden-console.js")) return nextLoad(url, context);
+        return {
+          format: "module", shortCircuit: true,
+          source: ${JSON.stringify(`
+            import { spawn } from "node:child_process";
+            export function spawnWithHiddenConsole(_bin, args, options) {
+              return spawn(process.execPath, [${JSON.stringify(cli)}, ...args], { ...options, stdio: "pipe" });
+            }
+          `)},
+        };
+      }
+    `);
+    child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
+      cwd: process.env.INKFELLOW_TEST_SIDECAR_DIR || new URL(".", import.meta.url),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: "127.0.0.1",
+        DESKTOP_AGENT_TOKEN: token,
+        VAULT_PATH: scratch,
+        CLAUDE_CHAT_DATA_DIR: scratch,
+        CLAUDE_CHAT_HISTORY_FILE: join(scratch, "history.json"),
+        CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+        AGY_BIN: process.execPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.setEncoding("utf8").on("data", chunk => { output += chunk; });
+    }
+    const deadline = Date.now() + 15_000;
+    while (!output.includes("claude-chat listening")) {
+      if (child.exitCode != null || Date.now() >= deadline) throw new Error(`sidecar did not start: ${output}`);
+      await delay(20);
+    }
+
+    connection = await connect();
+    const retryContext = {
+      composerText: "Original draft before editing",
+      mentionedNotes: [{ path: "Notes/article.md", title: "Article" }],
+      quote: { text: "The excerpt", section: "Intro", prefix: "Before", suffix: "After" },
+      noteFile: "Notes/active.md",
+    };
+    const images = [{ mediaType: "image/png", data: "AQID" }];
+    const request = scenario => ({
+      conversationId, userMessageId: `gemini-${scenario}`, profileId: "gemini", model,
+      prompt: `scenario-${scenario}`, displayText: scenario,
+      ...(scenario === "empty" || scenario === "success" ? {
+        composerText: scenario === "success" ? "帮我润色文案：每天自动生成日报。" : "Edited request",
+        effort: "high", permissionMode: "plan", retryDraft: retryContext, images,
+      } : {}),
+    });
+    const matches = (scenario, type, fields = {}) => event => event.type === type
+      && event.userMessageId === request(scenario).userMessageId
+      && Object.entries(fields).every(([key, value]) => event[key] === value);
+    const send = scenario => connection.ws.send(JSON.stringify(request(scenario)));
+
+    send("partial");
+    await waitForMessage(connection.events, event => matches("partial", "assistant")(event)
+      && event.message.content.some(block => block.text === outputText));
+    await new Promise(resolve => {
+      connection.ws.once("close", resolve);
+      connection.ws.close();
+    });
+    connection = await connect();
+    await waitForMessage(connection.events, matches("partial", "run_attached", { running: true }));
+    await writeFile(releaseFile, "");
+    const result = await waitForMessage(connection.events, matches("partial", "result", { status: "partial" }));
+    assert.equal(result.provider, "antigravity");
+    assert.match(result.details, /TLS handshake timeout/);
+    await waitForMessage(connection.events, matches("partial", "done", { status: "partial" }));
+    assert.ok(!connection.events.some(matches("partial", "error")));
+
+    const saved = await (await fetch(`http://127.0.0.1:${port}/api/history/${conversationId}?token=${token}`)).json();
+    const assistant = saved.messages.find(message => message.role === "assistant");
+    assert.equal(assistant.status, "partial");
+    assert.equal(assistant.text, outputText);
+    assert.ok(assistant.blocks.some(block => block.type === "tool_result" && block.content === "article.html was written"));
+    assert.deepEqual(assistant.blocks.filter(block => block.type === "antigravity_partial"), [{
+      type: "antigravity_partial", message: result.text, details: result.details,
+    }]);
+    const shard = await readFile(join(scratch, "conversations", fileNameFor(conversationId)), "utf8");
+    const savedOnDisk = shard.trim().split(/\r?\n/).map(JSON.parse).filter(record => record.m?.id === assistant.id).at(-1)?.m;
+    assert.equal(savedOnDisk?.status, "partial");
+    assert.deepEqual(savedOnDisk?.blocks, assistant.blocks);
+
+    const beforeDuplicate = connection.events.length;
+    send("partial");
+    await waitForMessage(connection.events, matches("partial", "request_ack", { state: "partial" }), beforeDuplicate);
+    send("nooutput");
+    const toolStarted = await waitForMessage(connection.events, matches("nooutput", "error"));
+    assert.notEqual(toolStarted.retryable, true, "an unconfirmed tool must not prompt users to rerun the task");
+    await waitForMessage(connection.events, matches("nooutput", "done"));
+    assert.ok(!connection.events.some(matches("nooutput", "result", { status: "partial" })));
+    send("empty");
+    const empty = await waitForMessage(connection.events, matches("empty", "error", { retryable: true }));
+    assert.match(empty.details, /TLS handshake timeout/);
+    await waitForMessage(connection.events, matches("empty", "done"));
+    send("quota");
+    const quota = await waitForMessage(connection.events, matches("quota", "error"));
+    assert.notEqual(quota.retryable, true);
+    await waitForMessage(connection.events, matches("quota", "done"));
+    send("success");
+    await waitForMessage(connection.events, matches("success", "result", { subtype: "success" }));
+    await waitForMessage(connection.events, matches("success", "done"));
+    const historyUrl = `http://127.0.0.1:${port}/api/history/${conversationId}?token=${token}`;
+    const history = await (await fetch(historyUrl)).json();
+    const expectedDraft = {
+      ...retryContext, composerText: "Edited request", images,
+      model, effort: "high", permissionMode: "plan", profileId: "gemini",
+    };
+    const retryUserMessage = history.messages.find(message => message.id === "gemini-empty");
+    assert.deepEqual(retryUserMessage.retryDraft, expectedDraft);
+    assert.ok(history.messages.some(message => message.blocks?.some(block => block.retryable && block.userMessageId === retryUserMessage.id)));
+    assert.equal(history.messages.find(message => message.id === "gemini-success").retryDraft, undefined);
+    const ordinarySave = await fetch(historyUrl, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: history.messages.map(({ retryDraft, ...message }) => message) }),
+    });
+    assert.equal(ordinarySave.status, 200);
+    const refreshed = await (await fetch(historyUrl)).json();
+    assert.deepEqual(refreshed.messages.find(message => message.id === "gemini-empty").retryDraft, expectedDraft);
+    assert.deepEqual((await readFile(requestsFile, "utf8")).trim().split(/\r?\n/).map(JSON.parse),
+      ["partial", "nooutput", "empty", "quota", "success"], "a duplicate turn must never replay completed tool actions");
+
+    const ticketUrl = `http://127.0.0.1:${port}/api/orchestrator/tickets`;
+    const post = (url, body) => fetch(url, { method: "POST", headers: {
+      Authorization: `Bearer ${token}`, "Content-Type": "application/json",
+    }, body: JSON.stringify(body) });
+    const startIndex = connection.events.length;
+    const holding = await (await post(ticketUrl, { goal: "scenario-hold", writeScope: ["article.html"] })).json();
+    const heldRequest = `wrk_init_${holding.ticketId}_1`;
+    await waitForMessage(connection.events, event => event.userMessageId === heldRequest
+      && event.type === "server_tool_use", startIndex);
+    const waiting = await (await post(ticketUrl, { goal: "scenario-success", writeScope: ["article.html"] })).json();
+    assert.equal(waiting.status, "queued");
+    const stopped = await (await post(`${ticketUrl}/${holding.ticketId}/stop`, {})).json();
+    assert.equal(stopped.status, "stopped");
+    const terminal = await waitForMessage(connection.events, event => event.type === "stopped"
+      && event.userMessageId === heldRequest, startIndex);
+    const next = await waitForMessage(connection.events, event => event.type === "request_started"
+      && event.conversationId === waiting.workerConversationId, startIndex);
+    assert.ok(connection.events.indexOf(terminal) < connection.events.indexOf(next));
+  } finally {
+    connection?.ws.close();
+    if (child && child.exitCode == null) {
+      const exited = new Promise(resolve => child.once("exit", resolve));
+      child.kill();
+      await exited;
+    }
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("WebSocket requests are acknowledged and duplicate IDs are not executed twice", { timeout: 15_000 }, async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-request-ack-"));
+  const authFile = join(scratch, "auth-profile.json");
+  const codexDir = join(scratch, ".codex");
+  const loader = join(scratch, "offline-codex-loader.mjs");
+  const port = await reservePort();
+  const token = "offline-request-test-token";
+  await mkdir(codexDir);
+  await writeFile(join(codexDir, "auth.json"), JSON.stringify({ tokens: { access_token: "offline-fixture" } }));
+  const mockSdk = "export class Codex { startThread() { throw new Error('Offline test provider failure'); } }";
+  await writeFile(loader, `
+    export async function resolve(specifier, context, next) {
+      if (specifier === "@openai/codex-sdk")
+        return { url: ${JSON.stringify("data:text/javascript," + encodeURIComponent(mockSdk))}, shortCircuit: true };
+      return next(specifier, context);
+    }
+  `);
+  await writeFile(authFile, JSON.stringify({
+    activeProfileId: "p_codex",
+    profiles: [{
+      id: "p_codex",
+      name: "Codex offline probe",
+      provider: "codex",
+      apiKey: "",
+      baseUrl: "",
+      opusModel: "gpt-5.4",
+      sonnetModel: "gpt-5.4",
+      haikuModel: "gpt-5.4-mini",
+    }],
+  }), "utf8");
+
+  const child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
+    cwd: new URL(".", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      DESKTOP_AGENT_TOKEN: token,
+      HOME: scratch,
+      USERPROFILE: scratch,
+      VAULT_PATH: scratch,
+      CODEX_PERSISTENT: "0",
+      CLAUDE_CHAT_DATA_DIR: scratch,
+      CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", c => { output += c; });
-  child.stderr.on("data", c => { output += c; });
-  const code = await new Promise(resolve => child.once("exit", resolve));
-  const marker = output.indexOf("__RESULT__");
-  if (marker === -1) throw new Error(`子进程未产出结果 (exit ${code}): ${output}`);
-  return JSON.parse(output.slice(marker + "__RESULT__".length).split("\n")[0]);
-}
+  child.stdout.on("data", chunk => { output += chunk; });
+  child.stderr.on("data", chunk => { output += chunk; });
 
-test("buildAgentEnv 按 activeProfileId 覆写切换候选 profile", { timeout: 40_000 }, async () => {
-  const profiles = JSON.stringify(PROBE_PROFILES);
-  const env = await evalInServer(`m => {
-    const data = ${profiles};
-    const claude = m.buildAgentEnv(data, "medium", "claude-sonnet-5-5");
-    const deepseek = m.buildAgentEnv(
-      { ...data, activeProfileId: "p_deepseek" }, "medium", "deepseek-probe-sonnet");
-    return {
-      claudeBaseUrl: claude.ANTHROPIC_BASE_URL ?? null,
-      claudeModel: claude.ANTHROPIC_MODEL ?? null,
-      deepseekBaseUrl: deepseek.ANTHROPIC_BASE_URL ?? null,
-      deepseekModel: deepseek.ANTHROPIC_MODEL ?? null,
-      deepseekHaiku: deepseek.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? null,
-      deepseekEffort: deepseek.CLAUDE_CODE_EFFORT_LEVEL ?? null,
-    };
-  }`);
+  let ws;
+  try {
+    const deadline = Date.now() + 5000;
+    while (!output.includes("claude-chat listening")) {
+      if (child.exitCode != null) throw new Error(`sidecar exited early (${child.exitCode}): ${output}`);
+      if (Date.now() >= deadline) throw new Error(`sidecar did not start: ${output}`);
+      await delay(20);
+    }
 
-  // claude 会员档走订阅，buildAgentEnv 提前 return，不注入任何兼容变量
-  assert.equal(env.claudeBaseUrl, null);
-  assert.equal(env.claudeModel, null);
+    ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`);
+    const events = [];
+    ws.on("message", raw => events.push(JSON.parse(raw.toString())));
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
 
-  // 覆写后必须真的落到 deepseek profile 上
-  assert.equal(env.deepseekBaseUrl, "https://api.deepseek.test");
-  assert.equal(env.deepseekModel, "deepseek-probe-sonnet");
-  assert.equal(env.deepseekHaiku, "deepseek-probe-haiku");
-  assert.equal(env.deepseekEffort, "medium");
-});
+    ws.send(JSON.stringify({ reset: true, preserveMessages: true, conversationId: "provider-switch-probe" }));
+    const providerReset = await waitForMessage(events, event => event.type === "reset_complete");
+    assert.equal(providerReset.preserveMessages, true);
+    assert.equal(providerReset.conversationId, "provider-switch-probe");
+    const resetIndex = events.length;
+    ws.send(JSON.stringify({ reset: true }));
+    const clearReset = await waitForMessage(events, event => event.type === "reset_complete", resetIndex);
+    assert.equal(clearReset.preserveMessages, undefined);
 
-// 这条曾在 desktop-lite 静默失效数周：不设该变量，SDK 就不发
-// session_state_changed，长驻 Query 的回合永远结束不了，且无报错无日志。
-// 必须对所有 provider 都成立——buildAgentEnv 里按 provider 提前 return，
-// 变量放错位置会漏掉 Claude 会员通道。
-test("buildAgentEnv 对所有 provider 都开启 session_state_changed", { timeout: 40_000 }, async () => {
-  const profiles = JSON.stringify(PROBE_PROFILES);
-  const flags = await evalInServer(`m => {
-    const data = ${profiles};
-    return {
-      claude: m.buildAgentEnv(data, "medium", null).CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS ?? null,
-      deepseek: m.buildAgentEnv(
-        { ...data, activeProfileId: "p_deepseek" }, "medium", null
-      ).CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS ?? null,
-      noProfile: m.buildAgentEnv(
-        { activeProfileId: "nope", profiles: [] }, "medium", null
-      ).CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS ?? null,
-    };
-  }`);
-  assert.equal(flags.claude, "1");
-  assert.equal(flags.deepseek, "1");
-  assert.equal(flags.noProfile, "1");
-});
-
-test("buildAgentEnv 清掉继承来的 Claude 兼容环境变量，避免串档", { timeout: 40_000 }, async () => {
-  const profiles = JSON.stringify(PROBE_PROFILES);
-  const env = await evalInServer(`m => {
-    process.env.ANTHROPIC_BASE_URL = "https://stale.example";
-    process.env.ANTHROPIC_MODEL = "stale-model";
-    const out = m.buildAgentEnv(${profiles}, "medium", null);
-    return { baseUrl: out.ANTHROPIC_BASE_URL ?? null, model: out.ANTHROPIC_MODEL ?? null };
-  }`);
-  // 切回 claude 会员档时，进程里残留的第三方覆盖必须被清掉
-  assert.equal(env.baseUrl, null);
-  assert.equal(env.model, null);
-});
-
-test("Codex 只有周窗口时不会再误标成 5 小时额度", { timeout: 40_000 }, async () => {
-  const windows = await evalInServer(`m => ({
-    weeklyOnly: m.normalizeCodexUsageWindows({
-      primary_window: {
-        utilization: 0.42,
-        limit_window_seconds: 604800,
-        resets_at: 1785600000,
+    const providersResponse = await fetch(`http://127.0.0.1:${port}/api/providers?token=${encodeURIComponent(token)}`);
+    assert.equal(providersResponse.status, 200);
+    const providerPayload = await providersResponse.json();
+    assert.ok(Array.isArray(providerPayload.providers));
+    const codexProvider = providerPayload.providers.find(profile => profile.provider === "codex");
+    // 三档被强制覆盖成模型目录里的当代 GPT——具体是哪个由 ~/.codex/models_cache.json
+    // 决定，别在这里钉死某个版本，否则每次 OpenAI 上新都要来改这行
+    assert.match(codexProvider?.model || "", /^gpt-/);
+    assert.notEqual(codexProvider?.model, "gpt-5.4", "旧数据里的模型名不该留下来");
+    assert.match(codexProvider?.goodAt || "", /重构|多文件/);
+    assert.ok(providerPayload.providers.every(profile => typeof profile.goodAt === "string" && profile.goodAt.length > 0));
+    const profileUpdateResponse = await fetch(
+      `http://127.0.0.1:${port}/api/auth-profile?token=${encodeURIComponent(token)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          profile: { id: "p_codex", name: "Codex renamed probe" },
+        }),
       },
-    }),
-    swapped: m.normalizeCodexUsageWindows({
-      primary_window: { utilization: 0.2, limit_window_seconds: 604800 },
-      secondary_window: { utilization: 0.3, limit_window_seconds: 18000 },
-    }),
-    legacy: m.normalizeCodexUsageWindows({
-      primary_window: { utilization: 0.1 },
-      secondary_window: { utilization: 0.4 },
-    }),
-  })`);
+    );
+    assert.equal(profileUpdateResponse.status, 200);
+    const profileUpdatePayload = await profileUpdateResponse.json();
+    const updatedCodex = profileUpdatePayload.data?.profiles?.find(profile => profile.id === "p_codex");
+    assert.match(updatedCodex?.goodAt || "", /重构|多文件/, "profile updates must preserve goodAt");
 
-  assert.equal(windows.weeklyOnly.fiveHour, null);
-  assert.equal(windows.weeklyOnly.week.usedPercent, 42);
-  assert.equal(windows.weeklyOnly.week.windowSeconds, 604800);
-  assert.match(windows.weeklyOnly.week.resetAt, /^2026-/);
+    const request = {
+      conversationId: "conv_ack_probe",
+      userMessageId: "user_ack_probe",
+      displayText: "离线确认协议测试",
+      composerText: "提醒我进行离线确认协议测试",
+      prompt: "提醒我进行离线确认协议测试",
+      profileId: "p_codex",
+      model: "gpt-5.4",
+      permissionMode: "auto",
+      effort: "medium",
+    };
+    ws.send(JSON.stringify(request));
+    await waitForMessage(events, event => event.type === "request_ack" && event.userMessageId === request.userMessageId && event.state === "running");
+    await waitForMessage(events, event => event.type === "request_started" && event.userMessageId === request.userMessageId);
+    await waitForMessage(events, event => event.type === "done" && event.userMessageId === request.userMessageId);
+    assert.ok(events.some(event => event.type === "error" && event.userMessageId === request.userMessageId
+      && event.text.includes("Offline test provider failure")));
 
-  assert.equal(windows.swapped.fiveHour.windowSeconds, 18000);
-  assert.equal(windows.swapped.week.windowSeconds, 604800);
+    const beforeDuplicate = events.length;
+    const startedCount = events.filter(event => event.type === "request_started" && event.userMessageId === request.userMessageId).length;
+    ws.send(JSON.stringify(request));
+    await waitForMessage(
+      events,
+      event => event.type === "request_ack" && event.userMessageId === request.userMessageId && event.state === "error",
+      beforeDuplicate,
+    );
+    await delay(75);
+    assert.equal(
+      events.filter(event => event.type === "request_started" && event.userMessageId === request.userMessageId).length,
+      startedCount,
+      "an acknowledged request ID must not execute a second time",
+    );
 
-  // 老接口没有 window_seconds 时保持原来的 primary/secondary 兼容映射。
-  assert.equal(windows.legacy.fiveHour.usedPercent, 10);
-  assert.equal(windows.legacy.week.usedPercent, 40);
-});
+    const dispatchStart = events.length;
+    const dispatchRequest = {
+      ...request,
+      conversationId: "conv_dispatch_probe",
+      userMessageId: "user_dispatch_probe",
+      displayText: "@missing-vendor 验证结构化派发错误",
+      prompt: "验证结构化派发错误",
+      dispatchProvider: "missing-vendor",
+      dispatchReason: "离线协议测试",
+    };
+    ws.send(JSON.stringify(dispatchRequest));
+    await waitForMessage(
+      events,
+      event => event.type === "done" && event.userMessageId === dispatchRequest.userMessageId,
+      dispatchStart,
+    );
+    const dispatchEvents = events.slice(dispatchStart);
+    const dispatchToolUse = dispatchEvents.find(event =>
+      event.type === "assistant"
+      && event.message?.content?.some(block => block.type === "tool_use" && block.name === "dispatch_to_provider")
+    );
+    assert.equal(
+      dispatchToolUse?.message?.content?.find(block => block.name === "dispatch_to_provider")?.input?.provider,
+      "missing-vendor",
+    );
+    const dispatchToolResult = dispatchEvents.find(event =>
+      event.type === "user"
+      && event.message?.content?.some(block => block.type === "tool_result" && block.is_error)
+    );
+    assert.ok(dispatchToolResult, "manual provider dispatch must close the squad branch with an error result");
+    assert.ok(dispatchEvents.some(event =>
+      event.type === "error"
+      && /当前可用厂商/.test(event.text || "")
+      && /Codex renamed probe/.test(event.text || "")
+    ));
 
-test("Codex 网页运行默认不限时，只有正整数环境变量才启用看门狗", { timeout: 40_000 }, async () => {
-  const timeouts = await evalInServer(`m => ({
-    defaults: m.resolveCodexRunTimeouts({}),
-    configured: m.resolveCodexRunTimeouts({
-      CODEX_STREAM_STALL_MS: "600000",
-      CODEX_MAX_RUN_MS: "3600000",
-    }),
-    disabled: m.resolveCodexRunTimeouts({
-      CODEX_STREAM_STALL_MS: "0",
-      CODEX_MAX_RUN_MS: "not-a-number",
-    }),
-    overflow: m.resolveCodexRunTimeouts({
-      CODEX_STREAM_STALL_MS: "2147483648",
-      CODEX_MAX_RUN_MS: "1.5",
-    }),
-  })`);
+    const runStateResponse = await fetch(`http://127.0.0.1:${port}/api/run-state?token=${encodeURIComponent(token)}`);
+    assert.equal(runStateResponse.status, 200);
+    assert.deepEqual(await runStateResponse.json(), { running: false });
 
-  assert.deepEqual(timeouts.defaults, { stallMs: 0, maxRunMs: 0 });
-  assert.deepEqual(timeouts.configured, { stallMs: 600_000, maxRunMs: 3_600_000 });
-  assert.deepEqual(timeouts.disabled, { stallMs: 0, maxRunMs: 0 });
-  assert.deepEqual(timeouts.overflow, { stallMs: 0, maxRunMs: 0 });
-});
+    const leaseResponse = await fetch(`http://127.0.0.1:${port}/api/prepare-restart?token=${encodeURIComponent(token)}`, { method: "POST" });
+    assert.equal(leaseResponse.status, 200);
+    const lease = await leaseResponse.json();
+    assert.equal(typeof lease.lease, "string");
+    assert.ok(lease.expiresAt > Date.now());
+    const leasedRunState = await fetch(`http://127.0.0.1:${port}/api/run-state?token=${encodeURIComponent(token)}`);
+    assert.deepEqual(await leasedRunState.json(), { running: true });
 
-test("连接建立后立即下发 skill init", { timeout: 30_000 }, async () => {
-  const server = await startServer();
-  let ws;
-  try {
-    const conn = await connect(server.port);
-    ws = conn.ws;
-    const init = await waitForMessage(conn.events, e => e.type === "system" && e.subtype === "init");
-    // 活动 profile 是 claude，技能集应按该 provider 解析
-    assert.equal(init.provider, "claude");
-    assert.ok(Array.isArray(init.skills));
+    const retryStart = events.length;
+    ws.send(JSON.stringify({ ...request, userMessageId: "user_restart_retry" }));
+    await waitForMessage(
+      events,
+      event => event.type === "request_retry" && event.userMessageId === "user_restart_retry",
+      retryStart,
+    );
+    assert.equal(
+      events.slice(retryStart).some(event => event.type === "request_ack" && event.userMessageId === "user_restart_retry"),
+      false,
+      "a draining sidecar must not acknowledge a request that the restart would discard",
+    );
   } finally {
     ws?.close();
-    await server.stop();
+    if (child.exitCode == null) {
+      const exited = new Promise(resolve => child.once("exit", resolve));
+      child.kill();
+      const killTimeout = new Promise(resolve => {
+        const timer = setTimeout(resolve, 2000);
+        timer.unref?.();
+      });
+      await Promise.race([exited, killTimeout]);
+    }
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 
-test("应用层心跳 ping 得到 pong", { timeout: 30_000 }, async () => {
-  const server = await startServer();
-  let ws;
-  try {
-    const conn = await connect(server.port);
-    ws = conn.ws;
-    ws.send(JSON.stringify({ type: "ping" }));
-    const pong = await waitForMessage(conn.events, e => e.type === "pong");
-    assert.equal(pong.type, "pong");
-  } finally {
-    ws?.close();
-    await server.stop();
-  }
-});
+test("Claude steering applies at tool/idle safe points, survives reconnect, and preserves owner/history", { timeout: 25_000 }, async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-steering-"));
+  const authFile = join(scratch, "auth-profile.json");
+  const historyFile = join(scratch, "history.json");
+  const mockLogFile = join(scratch, "mock-sdk.jsonl");
+  const mockSdkFile = join(scratch, "mock-claude-sdk.mjs");
+  const loaderFile = join(scratch, "mock-claude-loader.mjs");
+  const port = await reservePort();
+  const token = "offline-steering-test-token";
+  const wsUrl = `ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`;
+  const apiUrl = `http://127.0.0.1:${port}`;
 
-test("领回未知的 run 会收到 run_not_found 而不是静默丢弃", { timeout: 30_000 }, async () => {
-  const server = await startServer();
-  let ws;
-  try {
-    const conn = await connect(server.port);
-    ws = conn.ws;
-    ws.send(JSON.stringify({ resumeRun: "run-does-not-exist" }));
-    const miss = await waitForMessage(conn.events, e => e.type === "run_not_found");
-    assert.equal(miss.runId, "run-does-not-exist");
-  } finally {
-    ws?.close();
-    await server.stop();
-  }
-});
+  await writeFile(authFile, JSON.stringify({
+    activeProfileId: "p_claude",
+    profiles: [{
+      id: "p_claude",
+      name: "Claude offline steering probe",
+      provider: "claude",
+      apiKey: "",
+      baseUrl: "",
+      opusModel: "",
+      sonnetModel: "",
+      haikuModel: "",
+    }],
+  }), "utf8");
+  await writeFile(mockLogFile, "", "utf8");
+  await writeFile(mockSdkFile, `
+    import { appendFile } from "node:fs/promises";
 
-test("相同 userMessageId 重发只回 ACK，不重复写入或执行", { timeout: 30_000 }, async () => {
-  const server = await startServer({ mockSdk: true });
-  let ws;
+    class EventQueue {
+      constructor() {
+        this.items = [];
+        this.waiters = [];
+        this.closed = false;
+      }
+      push(value) {
+        if (this.closed) return;
+        const waiter = this.waiters.shift();
+        if (waiter) waiter({ value, done: false });
+        else this.items.push(value);
+      }
+      next() {
+        if (this.items.length > 0) return Promise.resolve({ value: this.items.shift(), done: false });
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise(resolve => this.waiters.push(resolve));
+      }
+      return() {
+        this.close();
+        return Promise.resolve({ value: undefined, done: true });
+      }
+      close() {
+        if (this.closed) return;
+        this.closed = true;
+        for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
+      }
+      [Symbol.asyncIterator]() { return this; }
+    }
+
+    const log = value => appendFile(process.env.MOCK_CLAUDE_LOG_FILE, JSON.stringify(value) + "\\n", "utf8");
+    const textOf = message => {
+      const content = message?.message?.content;
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content.filter(block => block?.type === "text").map(block => block.text).join("\\n");
+    };
+
+    class FakeQuery {
+      constructor(prompt) {
+        this.events = new EventQueue();
+        this.turn = 0;
+        this.consume(prompt);
+      }
+      [Symbol.asyncIterator]() { return this.events; }
+      async setPermissionMode() {}
+      async setModel() {}
+      async interrupt() {
+        await log({ kind: "interrupt" });
+        this.events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+      }
+      close() {
+        this.events.close();
+      }
+      async consume(prompt) {
+        for await (const message of prompt) {
+          const text = textOf(message);
+          this.turn += 1;
+          await log({ kind: "prompt", turn: this.turn, text, priority: message?.priority ?? null });
+          if (this.turn === 1) {
+            this.events.push({
+              type: "system",
+              subtype: "init",
+              session_id: "11111111-1111-4111-8111-111111111111",
+              skills: [],
+            });
+            this.events.push({ type: "system", subtype: "session_state_changed", state: "running" });
+            const withTool = text.includes("[tool]");
+            this.events.push({
+              type: "assistant",
+              message: {
+                role: "assistant",
+                content: withTool
+                  ? [
+                      { type: "text", text: "partial before tool" },
+                      { type: "tool_use", id: "tool-safe-point", name: "Read", input: { file_path: "probe.txt" } },
+                    ]
+                  : [{ type: "text", text: "partial before idle" }],
+              },
+            });
+            if (withTool) setTimeout(() => this.events.push({
+              type: "user", parent_tool_use_id: "child-agent",
+              message: { role: "user", content: [
+                { type: "tool_result", tool_use_id: "child-tool", content: "child finished" },
+              ] },
+            }), 300);
+            setTimeout(() => {
+              if (withTool) {
+                this.events.push({
+                  type: "user",
+                  message: {
+                    role: "user",
+                    content: [{ type: "tool_result", tool_use_id: "tool-safe-point", content: "tool complete" }],
+                  },
+                });
+              } else {
+                this.events.push({
+                  type: "result",
+                  subtype: "success",
+                  is_error: false,
+                  result: "first segment complete",
+                  total_cost_usd: 0,
+                  usage: {},
+                });
+                this.events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+              }
+            }, 900);
+            continue;
+          }
+          this.events.push({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "continued: " + text }],
+            },
+          });
+          this.events.push({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "steering complete",
+            total_cost_usd: 0,
+            usage: {},
+          });
+          this.events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        }
+      }
+    }
+
+    export const query = ({ prompt }) => new FakeQuery(prompt);
+    export const tool = (name, description, schema, handler) => ({ name, description, schema, handler });
+    export const createSdkMcpServer = config => config;
+  `, "utf8");
+  await writeFile(loaderFile, `
+    import { pathToFileURL } from "node:url";
+    export async function resolve(specifier, context, nextResolve) {
+      if (specifier === "@anthropic-ai/claude-agent-sdk") {
+        return { url: pathToFileURL(process.env.MOCK_CLAUDE_SDK_FILE).href, shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    }
+  `, "utf8");
+
+  const child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loaderFile).href, "server.js"], {
+    cwd: new URL(".", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      DESKTOP_AGENT_TOKEN: token,
+      CLAUDE_CHAT_DATA_DIR: scratch,
+      CLAUDE_CHAT_HISTORY_FILE: historyFile,
+      CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+      MOCK_CLAUDE_LOG_FILE: mockLogFile,
+      MOCK_CLAUDE_SDK_FILE: mockSdkFile,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { output += chunk; });
+  child.stderr.on("data", chunk => { output += chunk; });
+
+  const connect = async () => {
+    const ws = new WebSocket(wsUrl);
+    const events = [];
+    ws.on("message", raw => events.push(JSON.parse(raw.toString())));
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    return { ws, events };
+  };
+
+  let connection;
   try {
-    const conn = await connect(server.port);
-    ws = conn.ws;
-    const payload = {
-      prompt: "hold",
-      displayText: "request-idempotency-probe",
-      conversationId: "conv_idempotency_probe",
-      userMessageId: "user_idempotency_probe",
-      runId: "run_idempotency_probe",
+    const deadline = Date.now() + 5000;
+    while (!output.includes("claude-chat listening")) {
+      if (child.exitCode != null) throw new Error(`sidecar exited early (${child.exitCode}): ${output}`);
+      if (Date.now() >= deadline) throw new Error(`sidecar did not start: ${output}`);
+      await delay(20);
+    }
+
+    connection = await connect();
+    const first = {
+      conversationId: "conv_tool_steering",
+      userMessageId: "user_tool_first",
+      displayText: "first tool turn",
+      prompt: "[tool] first tool turn",
       profileId: "p_claude",
       permissionMode: "auto",
-      effort: "low",
+      effort: "medium",
     };
-
-    ws.send(JSON.stringify(payload));
-    const firstAck = await waitForMessage(
-      conn.events,
-      event => event.type === "request_ack" && event.userMessageId === payload.userMessageId,
+    connection.ws.send(JSON.stringify(first));
+    await waitForMessage(
+      connection.events,
+      event => event.type === "assistant"
+        && event.userMessageId === first.userMessageId
+        && event.message?.content?.some(block => block.type === "tool_use"),
     );
-    assert.equal(firstAck.state, "running");
-    assert.equal(firstAck.runId, payload.runId);
 
-    const duplicateStart = conn.events.length;
-    ws.send(JSON.stringify(payload));
-    const duplicateAck = await waitForMessage(
-      conn.events,
-      event => event.type === "request_ack" && event.userMessageId === payload.userMessageId,
-      duplicateStart,
+    const crossConversation = {
+      ...first,
+      conversationId: "conv_cross_fallback",
+      userMessageId: "user_cross_fallback",
+      displayText: "cross conversation",
+      prompt: "[tool] cross conversation",
+      deliveryMode: "steer",
+    };
+    const steer = {
+      ...first,
+      userMessageId: "user_tool_steer",
+      displayText: "steer at tool boundary",
+      prompt: "steer at tool boundary",
+      deliveryMode: "steer",
+    };
+    connection.ws.send(JSON.stringify(crossConversation));
+    connection.ws.send(JSON.stringify(steer));
+    connection.ws.send(JSON.stringify(steer));
+    // 每个对话有自己的 runtime 之后，另一个对话直接开跑，不再挤进当前回合排队。
+    // 要守的不变量没变——它绝不能被当成当前 runtime 的 steering（见下方断言）。
+    const crossStarted = await waitForMessage(
+      connection.events,
+      event => event.type === "request_started" && event.userMessageId === crossConversation.userMessageId,
     );
-    assert.equal(duplicateAck.state, "running");
-    assert.equal(duplicateAck.runId, payload.runId);
-
-    const conversation = await fetch(
-      `http://127.0.0.1:${server.port}/api/history/${payload.conversationId}`,
-    ).then(response => response.json());
+    assert.equal(crossStarted.conversationId, crossConversation.conversationId);
     assert.equal(
-      conversation.messages.filter(message => message.id === payload.userMessageId).length,
+      connection.events.some(
+        event => event.type === "steering_queued" && event.userMessageId === crossConversation.userMessageId,
+      ),
+      false,
+      "another conversation must not be queued into the active turn's steering",
+    );
+    const queuedSteer = await waitForMessage(
+      connection.events,
+      event => event.type === "steering_queued" && event.userMessageId === steer.userMessageId,
+    );
+    assert.equal(queuedSteer.delivery, "steer");
+
+    await new Promise(resolve => {
+      connection.ws.once("close", resolve);
+      connection.ws.close();
+    });
+    connection = await connect();
+    const snapshot = await waitForMessage(
+      connection.events,
+      event => event.type === "steering_snapshot"
+        && event.items?.some(item => item.userMessageId === steer.userMessageId),
+    );
+    assert.deepEqual(
+      snapshot.items
+        .filter(item => [crossConversation.userMessageId, steer.userMessageId].includes(item.userMessageId))
+        .map(item => [item.userMessageId, item.delivery]),
+      [[steer.userMessageId, "steer"]],
+      "reconnect restores this conversation's own pending steering; the other conversation runs on its own runtime and never enters this queue",
+    );
+    const attached = connection.events.find(event => event.type === "run_attached");
+    assert.equal(attached?.userMessageId, first.userMessageId, "reconnect remains attached to the original foreground owner");
+
+    await waitForMessage(connection.events, event => event.type === "user" && event.parent_tool_use_id === "child-agent");
+    assert.equal(connection.events.some(event => event.type === "steering_applied" && event.userMessageId === steer.userMessageId), false,
+      "child-agent tool completion is not a safe point for steering the foreground conversation");
+
+    const appliedTool = await waitForMessage(
+      connection.events,
+      event => event.type === "steering_applied" && event.userMessageId === steer.userMessageId,
+    );
+    assert.equal(appliedTool.safePoint, "tool_result");
+    const continuedTool = await waitForMessage(
+      connection.events,
+      event => event.type === "assistant"
+        && event.message?.content?.some(block => block.text === "continued: steer at tool boundary"),
+    );
+    assert.equal(
+      continuedTool.userMessageId,
+      first.userMessageId,
+      "steering must not overwrite activeForegroundRequestId with the pending message id",
+    );
+    await waitForMessage(
+      connection.events,
+      event => event.type === "done" && event.userMessageId === first.userMessageId,
+    );
+    assert.equal(
+      connection.events.some(event => event.type === "steering_applied" && event.userMessageId === crossConversation.userMessageId),
+      false,
+      "cross-conversation fallback must never be reported as applied to the current runtime",
+    );
+    assert.equal(
+      connection.events.filter(event => event.type === "steering_applied" && event.userMessageId === steer.userMessageId).length,
       1,
+      "a duplicate userMessageId is applied exactly once",
     );
 
-    await fetch(`http://127.0.0.1:${server.port}/api/history/${payload.conversationId}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        id: payload.conversationId,
-        title: "客户端旧快照",
-        messages: [{ role: "user", text: "stale snapshot without stable ids" }],
-      }),
-    });
-    const afterStalePut = await fetch(
-      `http://127.0.0.1:${server.port}/api/history/${payload.conversationId}`,
-    ).then(response => response.json());
-    assert.equal(afterStalePut.messages[0].id, payload.userMessageId);
-    assert.equal(afterStalePut.messages[0].text, payload.displayText);
+    const toolHistoryResponse = await fetch(
+      `${apiUrl}/api/history/${encodeURIComponent(first.conversationId)}?token=${encodeURIComponent(token)}`,
+    );
+    assert.equal(toolHistoryResponse.status, 200);
+    const toolHistory = await toolHistoryResponse.json();
+    assert.deepEqual(toolHistory.messages.map(message => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(toolHistory.messages[0].id, first.userMessageId);
+    assert.equal(toolHistory.messages[1].text, "partial before tool");
+    assert.ok(
+      toolHistory.messages[1].blocks?.some(block => block.type === "tool_use" && block.id === "tool-safe-point"),
+      "the partial assistant segment retains its structured tool history",
+    );
+    assert.equal(toolHistory.messages[2].id, steer.userMessageId);
+    assert.equal(toolHistory.messages[2].text, steer.displayText);
+    assert.equal(toolHistory.messages[3].text, "continued: steer at tool boundary");
 
-    ws.send(JSON.stringify({ stop: true, userMessageId: payload.userMessageId }));
+    /* 这里原本断言「另一个对话必须等当前回合跑完才开始」——那是单 runtime 时代
+       排队的副产物。现在每个对话有自己的 runtime，真正并发，先后顺序不再是不变量。
+       要守的「互不污染」由上面两条断言保证：它从未进入本回合的 steering 队列、
+       也从未被报告为 applied；下面的历史断言进一步确认它没写进这个对话。 */
+    assert.equal(
+      connection.events.some(
+        event => event.type === "steering_applied" && event.userMessageId === crossConversation.userMessageId,
+      ),
+      false,
+      "the other conversation never enters this conversation's turn",
+    );
+
+    connection.ws.send(JSON.stringify({ reset: true, conversationId: crossConversation.conversationId }));
+    await waitForMessage(connection.events, event => event.type === "reset_complete");
+
+    const idleFirst = {
+      ...first,
+      conversationId: "conv_idle_steering",
+      userMessageId: "user_idle_first",
+      displayText: "first idle turn",
+      prompt: "[idle] first idle turn",
+    };
+    const idleStart = connection.events.length;
+    connection.ws.send(JSON.stringify(idleFirst));
+    await waitForMessage(
+      connection.events,
+      event => event.type === "assistant"
+        && event.userMessageId === idleFirst.userMessageId
+        && event.message?.content?.some(block => block.text === "partial before idle"),
+      idleStart,
+    );
+    const idleSteer = {
+      ...idleFirst,
+      userMessageId: "user_idle_steer",
+      displayText: "steer at idle boundary",
+      prompt: "steer at idle boundary",
+      deliveryMode: "steer",
+    };
+    connection.ws.send(JSON.stringify(idleSteer));
+    await waitForMessage(
+      connection.events,
+      event => event.type === "steering_queued" && event.userMessageId === idleSteer.userMessageId,
+      idleStart,
+    );
+    const appliedIdle = await waitForMessage(
+      connection.events,
+      event => event.type === "steering_applied" && event.userMessageId === idleSteer.userMessageId,
+      idleStart,
+    );
+    assert.equal(appliedIdle.safePoint, "idle", "a turn with no tool calls still continues at the idle boundary");
+    await waitForMessage(
+      connection.events,
+      event => event.type === "done" && event.userMessageId === idleFirst.userMessageId,
+      idleStart,
+    );
+    assert.equal(
+      connection.events.slice(idleStart).some(event => event.type === "stopped"),
+      false,
+      "sending steering messages never produces an implicit Stop",
+    );
+
+    const idleHistoryResponse = await fetch(
+      `${apiUrl}/api/history/${encodeURIComponent(idleFirst.conversationId)}?token=${encodeURIComponent(token)}`,
+    );
+    assert.equal(idleHistoryResponse.status, 200);
+    const idleHistory = await idleHistoryResponse.json();
+    assert.deepEqual(idleHistory.messages.map(message => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(idleHistory.messages[1].text, "partial before idle");
+    assert.equal(idleHistory.messages[2].id, idleSteer.userMessageId);
+    assert.equal(idleHistory.messages[3].text, "continued: steer at idle boundary");
+
+    const mockLog = (await readFile(mockLogFile, "utf8"))
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
+    assert.equal(mockLog.some(entry => entry.kind === "interrupt"), false, "steering never calls SDK interrupt");
+    const promptTexts = mockLog.filter(entry => entry.kind === "prompt").map(entry => entry.text);
+    assert.equal(promptTexts.filter(text => text === steer.prompt).length, 1, "duplicate steering is not sent twice");
+    assert.ok(promptTexts.indexOf(first.prompt) < promptTexts.indexOf(steer.prompt));
+    assert.ok(promptTexts.indexOf(idleFirst.prompt) < promptTexts.indexOf(idleSteer.prompt));
+
+    // 模拟换厂商后的原生会话重置：新的 SDK 会话必须收到 UI 中已有的历史文字。
+    const contextStart = connection.events.length;
+    connection.ws.send(JSON.stringify({ reset: true, preserveMessages: true, conversationId: idleFirst.conversationId }));
+    await waitForMessage(connection.events, event => event.type === "reset_complete", contextStart);
+    const continuation = { ...idleFirst, userMessageId: "user_after_provider_reset", prompt: "继续刚才的内容", displayText: "继续刚才的内容" };
+    connection.ws.send(JSON.stringify(continuation));
+    await waitForMessage(connection.events, event => event.type === "done" && event.userMessageId === continuation.userMessageId, contextStart);
+    const contextLog = (await readFile(mockLogFile, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const injected = contextLog.filter(entry => entry.kind === "prompt").at(-1).text;
+    assert.match(injected, /<conversation_history>/);
+    assert.ok(injected.includes(idleSteer.prompt));
+    assert.ok(injected.includes("partial before idle"));
+    assert.ok(!injected.includes("first tool turn"), "不能带入其他对话的历史");
+    assert.ok(injected.endsWith(continuation.prompt));
+    const savedContext = await (await fetch(`${apiUrl}/api/history/${idleFirst.conversationId}?token=${token}`)).json();
+    assert.equal(savedContext.messages.find(message => message.id === continuation.userMessageId).text, continuation.prompt,
+      "注入内容只发给模型，不污染聊天记录");
   } finally {
-    ws?.close();
-    await server.stop();
+    connection?.ws.close();
+    if (child.exitCode == null) {
+      const exited = new Promise(resolve => child.once("exit", resolve));
+      child.kill();
+      const killTimeout = new Promise(resolve => {
+        const timer = setTimeout(resolve, 2000);
+        timer.unref?.();
+      });
+      await Promise.race([exited, killTimeout]);
+    }
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 
-let probeId = 0;
-function probeTurn(prompt, conversationId = "lifecycle-conv") {
-  return { prompt, conversationId, userMessageId: `probe-user-${++probeId}`, runId: `probe-run-${probeId}`, profileId: "p_claude", model: "probe-model" };
-}
-async function submitTurn(conn, payload) {
-  const start = conn.events.length;
-  conn.ws.send(JSON.stringify(payload));
-  return waitForMessage(conn.events, e => e.type === "done" && e.userMessageId === payload.userMessageId, start);
-}
+// 回合终止依赖 system/session_state_changed state=idle，该事件自 SDK 0.2.83 起
+// 为 opt-in。少了这个变量，持久 Query 的前台轮永远不结束、后续消息全部排队。
+// server.js 顶层会 listen，所以放到子进程里跑（PORT=0 绑随机端口）。
+test("buildAgentEnv opts into session_state_changed for every provider", { timeout: 20_000 }, async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "inkfellow-session-state-env-"));
+  const authFile = join(scratch, "auth-profile.json");
+  const historyFile = join(scratch, "history.json");
+  let child;
+  let childClosed = false;
+  let stdout = "";
+  let stderr = "";
 
-test("persistent Claude callbacks use the second turn and survive question reconnect", { timeout: 20000 }, async () => {
-  const server = await startServer({ mockSdk: true });
-  const sockets = [];
   try {
-    const conn = await connect(server.port); sockets.push(conn.ws);
-    await submitTurn(conn, probeTurn("first"));
-    const second = probeTurn("ask");
-    conn.ws.send(JSON.stringify(second));
-    const question = await waitForMessage(conn.events, e => e.type === "ask_user_question");
-    assert.equal(question.userMessageId, second.userMessageId);
-    const resumed = await connect(server.port); sockets.push(resumed.ws);
-    resumed.ws.send(JSON.stringify({ type: "hello", conversationId: second.conversationId, lastSeq: 0, helloId: 17 }));
-    const sync = await waitForMessage(resumed.events, e => e.type === "sync");
-    const restored = await waitForMessage(resumed.events, e => e.type === "ask_user_question");
-    assert.equal(sync.helloId, 17);
-    assert.equal(sync.turn.status, "running");
-    assert.ok(resumed.events.indexOf(restored) > resumed.events.indexOf(sync));
-    resumed.ws.send(JSON.stringify({ type: "ask_user_question_response", requestId: restored.requestId, answers: { "选哪一个？": "甲" } }));
-    await waitForMessage(resumed.events, e => e.type === "done" && e.userMessageId === second.userMessageId);
-  } finally { sockets.forEach(ws => ws.close()); await server.stop(); }
-});
+    const probe = `
+      const { buildAgentEnv, resolveDispatchProfile, listDispatchProviders, rememberDispatchSession, recallDispatchSession, forgetDispatchSessions, dropDispatchSession, isDispatchInflight, markDispatchInflight, dispatchGenerationOf, forgetDispatchSessionsForProfile, historyIdOrNull } = await import(${JSON.stringify(new URL("server.js", import.meta.url).href)});
+      const KEY = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS";
+      const cases = {
+        claude: { activeProfileId: "p_claude", profiles: [{ id: "p_claude", provider: "claude" }] },
+        anthropic: { activeProfileId: "p_a", profiles: [{ id: "p_a", provider: "anthropic", apiKey: "k", opusModel: "m" }] },
+        deepseek: { activeProfileId: "p_d", profiles: [{ id: "p_d", provider: "deepseek", apiKey: "k", baseUrl: "https://x", opusModel: "m" }] },
+        openrouter: { activeProfileId: "p_o", profiles: [{ id: "p_o", provider: "openrouter", apiKey: "k", baseUrl: "https://x", opusModel: "m" }] },
+        minimax: { activeProfileId: "p_m", profiles: [{ id: "p_m", provider: "minimax", apiKey: "k", baseUrl: "https://x", opusModel: "m" }] },
+        custom: { activeProfileId: "p_custom", profiles: [{ id: "p_custom", provider: "custom", apiKey: "k", baseUrl: "https://x", opusModel: "m" }] },
+        codex: { activeProfileId: "p_codex", profiles: [{ id: "p_codex", provider: "codex" }] },
+      };
+      const out = { inherited: process.env[KEY], providers: {}, compatibility: {}, override: {} };
+      for (const [name, data] of Object.entries(cases)) {
+        const env = buildAgentEnv(data, "medium", null);
+        out.providers[name] = env[KEY];
+        out.compatibility[name] = [env.ENABLE_TOOL_SEARCH, env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS];
+      }
+      const mixed = {
+        activeProfileId: "p_claude",
+        profiles: [
+          { id: "p_claude", provider: "claude" },
+          { id: "p_d", name: "Deep Reasoner", provider: "deepseek", apiKey: "override-key", baseUrl: "https://override.example", sonnetModel: "deepseek-override", goodAt: "reasoning" },
+        ],
+      };
+      const overrideEnv = buildAgentEnv(mixed, "medium", null, mixed.profiles[1]);
+      out.override = {
+        compatibility: [overrideEnv.ENABLE_TOOL_SEARCH, overrideEnv.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS],
+        baseUrl: overrideEnv.ANTHROPIC_BASE_URL,
+        token: overrideEnv.ANTHROPIC_AUTH_TOKEN,
+        model: overrideEnv.ANTHROPIC_MODEL,
+        byProvider: resolveDispatchProfile(mixed, "deepseek")?.id,
+        byName: resolveDispatchProfile(mixed, "Deep Reasoner")?.id,
+        listedModel: listDispatchProviders(mixed).find(profile => profile.id === "p_d")?.model,
+      };
 
-test("stopping and resetting Claude settle the run; another tab cannot reset it", { timeout: 20000 }, async () => {
-  const server = await startServer({ mockSdk: true });
-  const sockets = [];
-  try {
-    const conn = await connect(server.port); sockets.push(conn.ws);
-    const hold = probeTurn("hold"); conn.ws.send(JSON.stringify(hold));
-    await waitForMessage(conn.events, e => e.type === "stream_event");
-    const other = await connect(server.port); sockets.push(other.ws);
-    other.ws.send(JSON.stringify({ reset: true }));
-    await waitForMessage(other.events, e => e.type === "reset_complete");
-    conn.ws.send(JSON.stringify({ type: "hello", conversationId: hold.conversationId, lastSeq: 0 }));
-    assert.equal((await waitForMessage(conn.events, e => e.type === "sync")).turn.status, "running");
-    const queued = probeTurn("same conversation", hold.conversationId); other.ws.send(JSON.stringify(queued));
-    assert.equal((await waitForMessage(other.events, e => e.type === "request_ack" && e.userMessageId === queued.userMessageId)).state, "queued");
-    await submitTurn(other, { ...probeTurn("parallel", "other-conversation"), userMessageId: hold.userMessageId });
-    assert.equal((await (await fetch(`http://127.0.0.1:${server.port}/api/history/${hold.conversationId}`)).json()).messages.at(-1).text, "partial before stop");
-    conn.ws.send(JSON.stringify({ stop: true }));
-    await waitForMessage(conn.events, e => e.type === "stopped");
-    const history = await (await fetch(`http://127.0.0.1:${server.port}/api/history/${hold.conversationId}`)).json();
-    assert.equal(history.messages.at(-1).text, "partial before stop");
-    assert.equal(history.messages.at(-1).status, "stopped");
-    await submitTurn(other, queued);
-    await submitTurn(conn, probeTurn("next"));
-    const resetHold = probeTurn("hold"); conn.ws.send(JSON.stringify(resetHold));
-    await waitForMessage(conn.events, e => e.type === "stream_event" && e.userMessageId === resetHold.userMessageId);
-    conn.ws.send(JSON.stringify({ reset: true }));
-    await waitForMessage(conn.events, e => e.type === "reset_complete");
-    await submitTurn(conn, probeTurn("after reset", "fresh-conversation"));
-  } finally { sockets.forEach(ws => ws.close()); await server.stop(); }
-});
+      // 派发会话续接：作用域是「对话 + 厂商」，重置一条对话不能波及另一条
+      rememberDispatchSession("conv-a", "p_d", "sess-1");
+      rememberDispatchSession("conv-b", "p_d", "sess-3");
+      out.sessions = {
+        recalled: recallDispatchSession("conv-a", "p_d") ?? null,
+        otherProvider: recallDispatchSession("conv-a", "p_codex") ?? null,
+        otherConversation: recallDispatchSession("conv-zzz", "p_d") ?? null,
+      };
+      rememberDispatchSession("conv-a", "p_d", "sess-2");
+      out.sessions.afterOverwrite = recallDispatchSession("conv-a", "p_d") ?? null;
+      forgetDispatchSessions("conv-a");
+      out.sessions.afterForget = recallDispatchSession("conv-a", "p_d") ?? null;
+      out.sessions.siblingSurvivesForget = recallDispatchSession("conv-b", "p_d") ?? null;
+      // 空 sessionId 不该被记住，否则下一轮会拿着假 id 去续接
+      rememberDispatchSession("conv-c", "p_d", null);
+      out.sessions.ignoresBlankSessionId = recallDispatchSession("conv-c", "p_d") ?? null;
 
-test("malformed WebSocket payloads cannot crash the service", { timeout: 20000 }, async () => {
-  const server = await startServer({ mockSdk: true }); let ws;
-  try {
-    const conn = await connect(server.port); ws = conn.ws;
-    for (const payload of [null, [], 4, "text", {}, { prompt: "bad", images: {} }, { prompt: "bad", images: [null] }]) ws.send(JSON.stringify(payload));
-    ws.send(JSON.stringify({ type: "ping" }));
-    await waitForMessage(conn.events, e => e.type === "pong");
-    await submitTurn(conn, probeTurn("still works"));
-  } finally { ws?.close(); await server.stop(); }
-});
+      // 坏 id 必须能单独丢弃：续接失败后留着它，之后每次都会拿同一个坏 id 去试
+      rememberDispatchSession("conv-d", "p_d", "sess-bad");
+      rememberDispatchSession("conv-d", "p_codex", "sess-keep");
+      dropDispatchSession("conv-d", "p_d");
+      out.sessions.afterDrop = recallDispatchSession("conv-d", "p_d") ?? null;
+      out.sessions.dropSparesSibling = recallDispatchSession("conv-d", "p_codex") ?? null;
 
-test("deleting a generating conversation cancels it without recreating its history", { timeout: 20000 }, async () => {
-  const server = await startServer({ mockSdk: true }); let ws;
-  try {
-    const conn = await connect(server.port); ws = conn.ws;
-    const payload = probeTurn("hold", "delete-live"); ws.send(JSON.stringify(payload));
-    await waitForMessage(conn.events, e => e.type === "stream_event");
-    const url = `http://127.0.0.1:${server.port}/api/history/delete-live`;
-    assert.equal((await fetch(url, { method: "DELETE" })).status, 200);
-    await waitForMessage(conn.events, e => e.type === "stopped");
-    await delay(50);
-    assert.equal((await fetch(url)).status, 404);
-    await submitTurn(conn, probeTurn("new", "after-delete"));
-  } finally { ws?.close(); await server.stop(); }
-});
+      // historyIdOrNull 在拿不到合法值时必须返回 null，不能像 normalizeHistoryId
+      // 那样凭空造一个——那会让「按 id 清除」静默清了个寂寞
+      out.historyId = {
+        valid: historyIdOrNull("conv-abc"),
+        empty: historyIdOrNull(""),
+        nullish: historyIdOrNull(null),
+        tooShort: historyIdOrNull("ab"),
+        illegal: historyIdOrNull("has space"),
+      };
 
-test("foreign browser origins cannot open a WebSocket or delete history", { timeout: 20000 }, async () => {
-  const server = await startServer({ mockSdk: true });
-  try {
-    const response = await fetch(`http://127.0.0.1:${server.port}/api/history/origin-test`, { method: "DELETE", headers: { Origin: "https://foreign.example" } });
-    assert.equal(response.status, 403);
-    await new Promise((resolve, reject) => {
-      const socket = new WebSocket(`ws://127.0.0.1:${server.port}`, { origin: "https://foreign.example" });
-      socket.once("open", () => { socket.close(); reject(new Error("Foreign WebSocket was accepted")); });
-      socket.once("error", error => {
-        try { assert.match(error.message, /403/); resolve(); } catch (error) { reject(error); }
+      // 在途守卫：并发派同一家时后来者不该去续接同一条 thread。
+      // 必须计数——三个并发时第一个跑完就清标记的话，第三个会误以为没人在跑
+      out.inflight = {
+        idleIsFalse: isDispatchInflight("conv-e", "p_d"),
+        blankIsFalse: isDispatchInflight(null, "p_d"),
+      };
+      const relA = markDispatchInflight("conv-e", "p_d");
+      const relB = markDispatchInflight("conv-e", "p_d");
+      out.inflight.bothHeld = isDispatchInflight("conv-e", "p_d");
+      relA();
+      out.inflight.stillHeldAfterFirstRelease = isDispatchInflight("conv-e", "p_d");
+      relA();  // 租约重复释放不能把别人的计数减掉
+      out.inflight.doubleReleaseIsNoop = isDispatchInflight("conv-e", "p_d");
+      relB();
+      out.inflight.freeAfterAllReleased = isDispatchInflight("conv-e", "p_d");
+
+      // 代际保护：reset 之后迟到的 onSession 不能把刚清掉的会话又填回去
+      const genBefore = dispatchGenerationOf("conv-f");
+      rememberDispatchSession("conv-f", "p_d", "sess-f");
+      forgetDispatchSessions("conv-f");
+      out.generation = {
+        bumpedOnForget: dispatchGenerationOf("conv-f") > genBefore,
+        blankIsZero: dispatchGenerationOf(null),
+      };
+
+      // 比对再删：并发分支写了新会话后，先来的那条失败不能把它删掉
+      rememberDispatchSession("conv-g", "p_d", "sess-old");
+      rememberDispatchSession("conv-g", "p_d", "sess-new");   // 并发分支覆盖
+      dropDispatchSession("conv-g", "p_d", "sess-old");        // 先来的失败了
+      out.cas = { keepsNewer: recallDispatchSession("conv-g", "p_d") ?? null };
+      dropDispatchSession("conv-g", "p_d", "sess-new");        // 值对得上才删
+      out.cas.dropsWhenMatched = recallDispatchSession("conv-g", "p_d") ?? null;
+      rememberDispatchSession("conv-g", "p_d", "sess-x");
+      dropDispatchSession("conv-g", "p_d");                    // 不传期望值＝无条件删
+      out.cas.unconditionalStillWorks = recallDispatchSession("conv-g", "p_d") ?? null;
+
+      // 改账号后，该 profile 在所有对话里的会话都要作废。
+      // 用独立的 profile id，免得被前面几步留下的 p_d 记录干扰计数。
+      rememberDispatchSession("conv-h", "p_wipe", "s1");
+      rememberDispatchSession("conv-i", "p_wipe", "s2");
+      rememberDispatchSession("conv-h", "p_keep", "s3");
+      const wiped = forgetDispatchSessionsForProfile("p_wipe");
+      out.profileWipe = {
+        removed: wiped,
+        convH: recallDispatchSession("conv-h", "p_wipe") ?? null,
+        convI: recallDispatchSession("conv-i", "p_wipe") ?? null,
+        otherProfileKept: recallDispatchSession("conv-h", "p_keep") ?? null,
+      };
+
+      process.stdout.write("PROBE:" + JSON.stringify(out) + "\\n", () => process.exit(0));
+    `;
+    child = spawn(process.execPath, ["--input-type=module", "-e", probe], {
+      cwd: new URL(".", import.meta.url),
+      env: {
+        ...process.env,
+        PORT: "0",
+        HOST: "127.0.0.1",
+        CLAUDE_CHAT_DATA_DIR: scratch,
+        CLAUDE_CHAT_HISTORY_FILE: historyFile,
+        CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "0",
+        ENABLE_TOOL_SEARCH: "true",
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("close", () => { childClosed = true; });
+
+    const outcome = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`probe timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+      }, 10_000);
+      timer.unref?.();
+      child.once("error", error => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("close", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code, signal });
       });
     });
-  } finally { await server.stop(); }
+    assert.equal(
+      outcome.code,
+      0,
+      `probe exited ${outcome.code ?? `via signal ${outcome.signal}`}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    );
+    const line = stdout.split(/\r?\n/).find(value => value.startsWith("PROBE:"));
+    assert.ok(line, `probe produced no result\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+    const result = JSON.parse(line.slice("PROBE:".length));
+    assert.equal(result.inherited, "0", "probe must start with the event flag disabled");
+    for (const provider of ["claude", "anthropic", "deepseek", "openrouter", "minimax", "custom", "codex"]) {
+      assert.equal(result.providers[provider], "1", `${provider} profile must opt into session state events`);
+    }
+    for (const provider of ["deepseek", "openrouter", "minimax", "custom"]) {
+      assert.deepEqual(result.compatibility[provider], ["false", "1"], `${provider} must override inherited experimental tool settings`);
+    }
+    for (const provider of ["claude", "anthropic", "codex"]) {
+      assert.deepEqual(result.compatibility[provider], ["true", "0"], `${provider} must retain its original settings`);
+    }
+    assert.deepEqual(result.override, {
+      compatibility: ["false", "1"],
+      baseUrl: "https://override.example",
+      token: "override-key",
+      model: "deepseek-override",
+      byProvider: "p_d",
+      byName: "p_d",
+      listedModel: "deepseek-override",
+    });
+    assert.deepEqual(result.sessions, {
+      recalled: "sess-1",
+      otherProvider: null,
+      otherConversation: null,
+      afterOverwrite: "sess-2",
+      afterForget: null,
+      siblingSurvivesForget: "sess-3",
+      ignoresBlankSessionId: null,
+      afterDrop: null,
+      dropSparesSibling: "sess-keep",
+    }, "派发会话必须按「对话 + 厂商」隔离，重置时整条清掉，续接失败时能单独丢弃坏 id");
+    assert.deepEqual(result.historyId, {
+      valid: "conv-abc",
+      empty: null,
+      nullish: null,
+      tooShort: null,
+      illegal: null,
+    }, "historyIdOrNull 必须在拿不到合法 id 时返回 null，否则按 id 清除会清了个寂寞");
+    assert.deepEqual(result.inflight, {
+      idleIsFalse: false,
+      blankIsFalse: false,
+      bothHeld: true,
+      stillHeldAfterFirstRelease: true,
+      doubleReleaseIsNoop: true,
+      freeAfterAllReleased: false,
+    }, "在途守卫必须计数：先完成的那个不能把还在跑的标记清掉，租约重复释放也不能");
+    assert.deepEqual(result.generation, {
+      bumpedOnForget: true,
+      blankIsZero: 0,
+    }, "清除会话必须推进代际，否则 reset 后迟到的回调会把会话又填回去");
+    assert.deepEqual(result.cas, {
+      keepsNewer: "sess-new",
+      dropsWhenMatched: null,
+      unconditionalStillWorks: null,
+    }, "丢弃会话必须比对再删，否则并发分支刚写的好会话会被先来者的失败连带删掉");
+    assert.deepEqual(result.profileWipe, {
+      removed: 2,
+      convH: null,
+      convI: null,
+      otherProfileKept: "s3",
+    }, "改账号凭据后，该 profile 在所有对话里的会话都要作废，别的 profile 不受影响");
+  } finally {
+    if (child && !childClosed) {
+      await new Promise((resolve, reject) => {
+        const forceTimer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+        const closeTimer = setTimeout(() => {
+          child.off("close", onClose);
+          reject(new Error(`probe did not close after SIGKILL\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+        }, 4_000);
+        const onClose = () => {
+          clearTimeout(forceTimer);
+          clearTimeout(closeTimer);
+          resolve();
+        };
+        child.once("close", onClose);
+        child.kill();
+      });
+    }
+    await rm(scratch, { recursive: true, force: true });
+  }
 });

@@ -5,8 +5,8 @@ import test from "node:test";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   AsyncMessageQueue,
-  BackgroundTaskTurnGate,
   PersistentQueryRuntime,
+  SteeringQueue,
   updateTaskRegistry,
 } from "./agent-session.js";
 
@@ -69,73 +69,123 @@ test("task registry stays busy until a terminal lifecycle event", () => {
   assert.equal(tasks.size, 0);
 });
 
-test("background task turn stays open until the parent Agent sends its summary", () => {
-  const scheduled = [];
-  const cancelled = new Set();
-  const gate = new BackgroundTaskTurnGate({
-    schedule: callback => {
-      scheduled.push(callback);
-      return scheduled.length;
-    },
-    cancel: timer => cancelled.add(timer),
+test("steering queue is idempotent, owner-scoped, editable, and reorderable before apply", () => {
+  const queue = new SteeringQueue();
+  const first = queue.enqueue({
+    userMessageId: "steer-1",
+    ownerToken: "conv-a|profile-a",
+    displayText: "first",
+    prompt: "first prompt",
   });
-  let finished = false;
-  const finish = () => { finished = true; };
+  queue.enqueue({
+    userMessageId: "other-1",
+    ownerToken: "conv-b|profile-a",
+    displayText: "other",
+    prompt: "other prompt",
+  });
+  queue.enqueue({
+    userMessageId: "steer-2",
+    ownerToken: "conv-a|profile-a",
+    displayText: "second",
+    prompt: "second prompt",
+  });
+  const duplicate = queue.enqueue({
+    userMessageId: "steer-1",
+    ownerToken: "conv-b|profile-b",
+    displayText: "must not replace",
+  });
 
-  assert.equal(gate.handle(
-    { type: "system", subtype: "session_state_changed", state: "idle" },
-    { taskCount: 3, finish },
-  ), false, "the first idle state must not close a turn with three live child Agents");
+  assert.equal(first.inserted, true);
+  assert.equal(duplicate.inserted, false, "a retried userMessageId must not create a second steering item");
+  assert.equal(duplicate.item.ownerToken, "conv-a|profile-a", "a duplicate ID cannot steal another owner");
+  assert.equal(duplicate.item.displayText, "first");
+  assert.equal(queue.length, 3);
 
-  gate.handle(
-    { type: "system", subtype: "task_notification", task_id: "task-1", status: "completed" },
-    { taskCount: 2, finish },
+  assert.equal(
+    queue.update("steer-1", { displayText: "hijack" }, "conv-b|profile-a"),
+    null,
+    "another conversation cannot edit a pending steering item",
   );
-  gate.handle(
-    { type: "system", subtype: "task_notification", task_id: "task-2", status: "completed" },
-    { taskCount: 1, finish },
+  const updated = queue.update(
+    "steer-1",
+    {
+      displayText: "first edited",
+      prompt: "first edited prompt",
+      userMessageId: "renamed",
+      ownerToken: "conv-b|profile-b",
+      state: "applied",
+      claimToken: "forged",
+    },
+    "conv-a|profile-a",
   );
-  gate.handle(
-    { type: "system", subtype: "task_notification", task_id: "task-3", status: "completed" },
-    { taskCount: 0, finish },
-  );
-  assert.equal(gate.handle(
-    { type: "system", subtype: "session_state_changed", state: "idle" },
-    { taskCount: 0, finish },
-  ), false, "the final task notification gets an auto-wake grace window");
+  assert.equal(updated?.userMessageId, "steer-1", "the canonical id is immutable while editing");
+  assert.equal(updated?.ownerToken, "conv-a|profile-a", "editing content cannot move an item to another owner");
+  assert.equal(updated?.state, "queued");
+  assert.equal(updated?.claimToken, null);
+  assert.equal(updated?.displayText, "first edited");
 
-  gate.handle(
-    { type: "system", subtype: "session_state_changed", state: "running" },
-    { taskCount: 0, finish },
+  assert.equal(queue.reorder("conv-a|profile-a", ["steer-2", "steer-1"]), true);
+  assert.deepEqual(
+    queue.snapshot().map(item => item.userMessageId),
+    ["steer-2", "other-1", "steer-1"],
+    "reordering one owner keeps other conversations in their original slots",
   );
-  gate.handle(
-    { type: "assistant", message: { content: [{ type: "text", text: "三个任务的汇总" }] } },
-    { taskCount: 0, finish },
+  assert.equal(queue.remove("steer-2", "conv-b|profile-a"), null);
+  assert.equal(queue.remove("steer-2", "conv-a|profile-a")?.userMessageId, "steer-2");
+  assert.deepEqual(
+    queue.snapshot("conv-a|profile-a").map(item => [item.userMessageId, item.displayText]),
+    [["steer-1", "first edited"]],
+    "the reconnect snapshot contains the latest pending content exactly once",
   );
-  assert.equal(gate.handle(
-    { type: "system", subtype: "session_state_changed", state: "idle" },
-    { taskCount: 0, finish },
-  ), true, "the idle state after the parent summary closes the turn");
-  assert.equal(finished, false, "the server owns the immediate finish after a true decision");
-  assert.ok(cancelled.has(1), "starting the parent summary cancels the grace fallback");
 });
 
-test("background task turn closes after grace when the SDK does not auto-wake", () => {
-  let scheduled;
-  let finished = false;
-  const gate = new BackgroundTaskTurnGate({
-    schedule: callback => {
-      scheduled = callback;
-      return 1;
-    },
-    cancel: () => {},
-  });
-  gate.handle(
-    { type: "system", subtype: "task_notification", task_id: "task-1", status: "completed" },
-    { taskCount: 0, finish: () => { finished = true; } },
+test("steering claims are FIFO, compare-and-delete, pausable on Stop, and isolated on reset", () => {
+  const queue = new SteeringQueue();
+  const ownerA = "conv-a|profile-a";
+  const ownerB = "conv-b|profile-b";
+  for (const [userMessageId, ownerToken] of [
+    ["a-1", ownerA],
+    ["b-1", ownerB],
+    ["a-2", ownerA],
+  ]) {
+    queue.enqueue({ userMessageId, ownerToken, displayText: userMessageId });
+  }
+
+  const claim = queue.claimNext(ownerA);
+  assert.equal(claim?.item.userMessageId, "a-1", "the first unpaused item for an owner is claimed first");
+  assert.equal(queue.update("a-1", { displayText: "too late" }, ownerA), null);
+  assert.equal(queue.remove("a-1", ownerA), null, "an applied-in-progress item cannot be removed by a stale UI command");
+  assert.equal(queue.commitClaim("a-1", "wrong-token"), null, "a stale claim cannot delete the current owner's item");
+
+  const paused = queue.pauseOwner(ownerA);
+  assert.deepEqual(paused.map(item => item.userMessageId), ["a-2"]);
+  assert.equal(queue.claimNext(ownerA), null, "Stop pauses pending work instead of automatically draining it");
+  assert.equal(queue.claimNext(ownerB)?.item.userMessageId, "b-1", "pausing one conversation does not pause another");
+
+  assert.equal(queue.releaseClaim("a-1", claim.claimToken, { paused: true })?.paused, true);
+  assert.equal(queue.hasUnpaused(ownerA), false);
+  assert.deepEqual(
+    queue.resumeOwner(ownerA).map(item => item.userMessageId),
+    ["a-1", "a-2"],
   );
-  scheduled();
-  assert.equal(finished, true);
+  assert.equal(queue.claimNext(ownerA)?.item.userMessageId, "a-1", "released work returns to its original FIFO position");
+
+  const resetRemoved = queue.removeOwner(ownerA);
+  assert.deepEqual(
+    resetRemoved.map(item => item.userMessageId).sort(),
+    ["a-1", "a-2"],
+    "reset invalidates both queued and claimed work owned by the old conversation",
+  );
+  assert.deepEqual(
+    queue.snapshot().map(item => item.userMessageId),
+    ["b-1"],
+    "reset cannot clear another conversation and leaves no old steering claim recoverable",
+  );
+  assert.equal(
+    queue.commitClaim("a-1", claim.claimToken),
+    null,
+    "a stale apply callback cannot resurrect or commit a claim invalidated by reset",
+  );
 });
 
 test("persistent runtime reuses one query across turns and preserves background tasks", async () => {
@@ -168,29 +218,6 @@ test("persistent runtime reuses one query across turns and preserves background 
   runtime.close();
 });
 
-test("follow-up priority is delivered while the foreground turn is still running", async () => {
-  let fake;
-  const runtime = new PersistentQueryRuntime({
-    queryFactory: ({ prompt }) => (fake = new FakeQuery(prompt)),
-  });
-  runtime.start({});
-  runtime.send({
-    type: "user",
-    message: { role: "user", content: "first" },
-    priority: "next",
-  });
-  runtime.send({
-    type: "user",
-    message: { role: "user", content: "steer at the next safe boundary" },
-    priority: "next",
-  });
-  await flush();
-  assert.equal(fake.received.length, 2);
-  assert.equal(fake.received[1].priority, "next");
-  assert.equal(runtime.foregroundRunning, true);
-  runtime.close();
-});
-
 test("interrupt stops the foreground turn without closing the reusable query", async () => {
   let fake;
   const runtime = new PersistentQueryRuntime({
@@ -206,22 +233,6 @@ test("interrupt stops the foreground turn without closing the reusable query", a
   runtime.send({ type: "user", message: { role: "user", content: "second" } });
   await flush();
   assert.equal(fake.received.length, 2);
-  runtime.close();
-});
-
-test("interrupt can stop background tasks after the foreground state becomes idle", async () => {
-  let fake;
-  const runtime = new PersistentQueryRuntime({
-    queryFactory: ({ prompt }) => (fake = new FakeQuery(prompt)),
-  });
-  runtime.start({});
-  runtime.send({ type: "user", message: { role: "user", content: "first" } });
-  fake.events.push({ type: "system", subtype: "task_started", task_id: "bg-1" });
-  fake.events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
-  await flush();
-  assert.equal(runtime.foregroundRunning, false);
-  assert.equal(await runtime.interrupt(), true);
-  assert.equal(fake.interruptCalls, 1);
   runtime.close();
 });
 
@@ -265,6 +276,108 @@ test("an event callback failure does not stop the query event pump", async () =>
   assert.deepEqual(seen, ["first", "second"]);
   assert.deepEqual(callbackErrors, ["renderer failed"]);
   assert.equal(runtime.started, true);
+  runtime.close();
+});
+
+test("persistent runtime forwards cross-provider dispatch events without closing the session", async () => {
+  let fake;
+  const seen = [];
+  const runtime = new PersistentQueryRuntime({
+    queryFactory: ({ prompt }) => (fake = new FakeQuery(prompt)),
+    onEvent: event => seen.push(event),
+  });
+  runtime.start({ mcpServers: { dispatch: { name: "provider-dispatch" } } });
+  runtime.send({ type: "user", message: { role: "user", content: "dispatch" } });
+  await flush();
+  fake.events.push({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "dispatch-1",
+        name: "mcp__dispatch__dispatch_to_provider",
+        input: { provider: "deepseek", task: "find root cause" },
+      }],
+    },
+  });
+  fake.events.push({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "dispatch-1",
+        content: JSON.stringify({
+          provider: "deepseek",
+          providerName: "DeepSeek",
+          model: "deepseek-v4-pro[1m]",
+          output: "root cause",
+        }),
+      }],
+    },
+  });
+  fake.events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+  await flush();
+
+  assert.deepEqual(seen.map(event => event.type), ["assistant", "user", "system"]);
+  assert.equal(runtime.started, true);
+  runtime.send({ type: "user", message: { role: "user", content: "continue" } });
+  await flush();
+  assert.equal(fake.received.length, 2, "dispatch result must not force a replacement query");
+  runtime.close();
+});
+
+test("active runtime accepts FIFO steering messages without an implicit interrupt", async () => {
+  const queries = [];
+  const seen = [];
+  const runtime = new PersistentQueryRuntime({
+    queryFactory: ({ prompt }) => {
+      const fake = new FakeQuery(prompt);
+      queries.push(fake);
+      return fake;
+    },
+    onEvent: event => seen.push(event),
+  });
+
+  runtime.start({});
+  runtime.send({ type: "user", message: { role: "user", content: "first" }, priority: "next" });
+  await waitFor(() => queries[0].received.length === 1);
+  queries[0].events.push({ type: "system", subtype: "session_state_changed", state: "running" });
+  queries[0].events.push({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "a.txt" } }],
+    },
+  });
+  queries[0].events.push({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }],
+    },
+  });
+  await waitFor(() => seen.some(event =>
+    event.type === "user"
+    && event.message?.content?.some(block => block.type === "tool_result" && block.tool_use_id === "tool-1")
+  ));
+
+  runtime.send({ type: "user", message: { role: "user", content: "steer-one" }, priority: "next" });
+  runtime.send({ type: "user", message: { role: "user", content: "steer-two" }, priority: "next" });
+  await waitFor(() => queries[0].received.length === 3);
+
+  assert.equal(queries.length, 1, "steering must reuse the active SDK query");
+  assert.equal(queries[0].interruptCalls, 0, "steering must not turn a second Enter into Stop");
+  assert.deepEqual(
+    queries[0].received.map(message => message.message.content),
+    ["first", "steer-one", "steer-two"],
+    "multiple steering messages reach the SDK in FIFO order",
+  );
+  assert.equal(runtime.foregroundRunning, true, "a steering send keeps the foreground turn owned until idle");
+
+  queries[0].events.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+  await waitFor(() => runtime.foregroundRunning === false);
   runtime.close();
 });
 
@@ -369,4 +482,21 @@ test("real SDK query keeps one CLI process open across AsyncIterable turns", asy
   assert.deepEqual(userTexts, ["first", "second"]);
   assert.equal(runtime.running, false);
   runtime.close();
+});
+
+test("removeConversation 只清这一个对话的，别人的一条不碰", () => {
+  /* /clear 走的就是这条路。steeringQueue 是全局一份，按 ownerToken 清会漏掉
+     同一对话上一轮剩下的；无差别全清则会把别的对话排着的消息一起扔掉——
+     那些消息再也发不出去，而用户根本没在那个窗口里动过手。 */
+  const queue = new SteeringQueue();
+  queue.enqueue({ userMessageId: "a1", ownerToken: "turn-1", conversationId: "conv_a" });
+  queue.enqueue({ userMessageId: "a2", ownerToken: "turn-2", conversationId: "conv_a" });
+  queue.enqueue({ userMessageId: "b1", ownerToken: "turn-3", conversationId: "conv_b" });
+  queue.claimNext("turn-3");   // 正在发送中的也算这个对话的，清 a 时不该被牵连
+
+  const removed = queue.removeConversation("conv_a");
+  assert.deepEqual(removed.map(i => i.userMessageId).sort(), ["a1", "a2"], "同一对话跨轮的都要清掉");
+  assert.deepEqual(queue.snapshot().map(i => i.userMessageId), ["b1"], "别的对话的不能动");
+
+  assert.deepEqual(queue.removeConversation(""), [], "拿不到对话 id 时什么都不清，别误伤");
 });

@@ -12,7 +12,7 @@
  *
  * 协议分四类：
  *   1. 定稿消息 assistantMessage —— 进历史，前端据此重渲染
- *   2. 流式片段 stream*         —— 用于即时展示，main 同时记录事件供断线恢复
+ *   2. 流式片段 stream*         —— 只影响当下这一屏，不进历史
  *   3. 工具生命周期 *ToolUse / toolSettled / toolProgress
  *   4. 内容块 *Block            —— 装进 assistantMessage 的 content 数组
  */
@@ -52,8 +52,8 @@ export function providerBlock(provider, kind, raw = null, extra = {}) {
 // ── 定稿消息 ──────────────────────────────────────────────────────────
 
 /**
- * 一段定稿的 assistant 输出。每段文字/工具结果最终以 assistantMessage
- * 收尾，供 main 的历史投影生成完整内容；原始流式事件也保留在事件日志里。
+ * 一段定稿的 assistant 输出。**这是唯一进历史的事件形状**——流式片段不进，
+ * 所以每段文字/工具结果最终都必须以 assistantMessage 收尾，否则刷新后就没了。
  */
 export function assistantMessage(blocks) {
   const content = Array.isArray(blocks) ? blocks : [blocks];
@@ -62,7 +62,7 @@ export function assistantMessage(blocks) {
 
 /**
  * 把前端的工具卡片从「执行中」落定成「已完成」。
- * 真正的结果已经在 assistantMessage 的 tool_result 块里了，
+ * 刻意不进历史：真正的结果已经在 assistantMessage 的 tool_result 块里了，
  * 这条只是让 UI 停止转圈。两条都发才能既有历史又有正确的 UI 状态。
  */
 export function toolSettled(toolUseId, { isError = false } = {}) {

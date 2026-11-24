@@ -272,7 +272,7 @@ test("codex 反过来问审批时必须回话，否则那一轮永远挂着", as
   proc.emitLine({ jsonrpc: "2.0", id: 900, method: "thread/execCommandApproval", params: { command: "ls" } });
   const answer = proc.sent.find(m => m.id === 900);
   assert.ok(answer, "不回话 codex 会一直等一个不会来的答复");
-  assert.equal(answer.result.decision, "denied");
+  assert.equal(answer.result.decision, "approved");
 
   proc.emitLine({ jsonrpc: "2.0", id: 901, method: "thread/somethingWeDoNotKnow", params: {} });
   const refused = proc.sent.find(m => m.id === 901);

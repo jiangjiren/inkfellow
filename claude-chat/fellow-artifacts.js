@@ -45,9 +45,7 @@ function parseRange(value, size) {
   return { start, end };
 }
 
-export function serveFellowArtifact(req, res, ticket, vault, id) {
-  const entry = artifacts(ticket, vault).find(item => item.id === id);
-  if (!entry) { res.writeHead(404).end(); return; }
+function streamSafeEntry(req, res, entry) {
   let fd;
   let size;
   try {
@@ -90,4 +88,33 @@ export function serveFellowArtifact(req, res, ticket, vault, id) {
   stream.on("error", () => res.destroy());
   res.once("close", () => stream.destroy());
   stream.pipe(res);
+}
+
+export function serveFellowArtifact(req, res, ticket, vault, id) {
+  const entry = artifacts(ticket, vault).find(item => item.id === id);
+  if (!entry) { res.writeHead(404).end(); return; }
+  streamSafeEntry(req, res, entry);
+}
+
+export function serveVaultFile(req, res, vault, requestedPath) {
+  const raw = String(requestedPath || "").trim().replace(/^["'](.+)["']$/, "$1");
+  let cleaned = raw.replace(/^file:\/\//i, "");
+  if (/^\/[a-zA-Z]:/.test(cleaned)) cleaned = cleaned.slice(1);
+  try { cleaned = decodeURIComponent(cleaned); } catch { /* keep raw */ }
+  if (!cleaned) { res.writeHead(400).end(); return; }
+  try {
+    const root = canonicalPath(vault);
+    const target = canonicalPath(cleaned, root);
+    const name = relative(root, target);
+    if (!pathWithin(target, root) || name.split(/[\\/]/).some(part => part.startsWith("."))) {
+      res.writeHead(404).end();
+      return;
+    }
+    const ext = extname(target).toLowerCase();
+    if (!Object.hasOwn(formats, ext)) { res.writeHead(404).end(); return; }
+    const mime = formats[ext];
+    streamSafeEntry(req, res, { path: target, mime: mime || "application/octet-stream", preview: Boolean(mime) });
+  } catch {
+    res.writeHead(404).end();
+  }
 }

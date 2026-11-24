@@ -1,0 +1,924 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import * as wire from "./providers/wire.js";
+import * as codex from "./providers/codex.js";
+import * as agy from "./providers/antigravity.js";
+
+/* ══════════════════════════════════════════════════════════════════
+   Wire 协议
+   这些形状前端 handleEvent 直接依赖，改了就是破坏性变更。
+   ══════════════════════════════════════════════════════════════════ */
+
+test("wire: 定稿消息永远包成 assistant/role/content 三层", () => {
+  assert.deepEqual(wire.assistantMessage([wire.textBlock("hi")]), {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+  });
+  // 单个块也接受，自动包成数组
+  assert.deepEqual(wire.assistantMessage(wire.textBlock("hi")).message.content, [
+    { type: "text", text: "hi" },
+  ]);
+});
+
+test("wire: raw 为 null 时不写进块里", () => {
+  assert.deepEqual(wire.textBlock("hi"), { type: "text", text: "hi" });
+  assert.deepEqual(wire.textBlock("hi", { a: 1 }), { type: "text", text: "hi", raw: { a: 1 } });
+  assert.deepEqual(wire.thinkingBlock("think"), { type: "thinking", thinking: "think" });
+});
+
+test("wire: toolSettled 是给 UI 落定用的，content 必须为空", () => {
+  // 真正的结果在 assistantMessage 的 tool_result 块里。这条要是带上内容，
+  // 历史里就会出现两份重复的工具输出。
+  const ev = wire.toolSettled("t1");
+  assert.equal(ev.type, "user");
+  assert.deepEqual(ev.message.content, [
+    { type: "tool_result", tool_use_id: "t1", content: "", is_error: false },
+  ]);
+});
+
+test("wire: 流式事件都包在 stream_event 里，index 固定 0", () => {
+  assert.deepEqual(wire.streamMessageStart(), {
+    type: "stream_event",
+    event: { type: "message_start" },
+  });
+  assert.deepEqual(wire.streamTextDelta("abc"), {
+    type: "stream_event",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "abc" } },
+  });
+  assert.equal(wire.streamTextStart().event.type, "content_block_start");
+  assert.equal(wire.streamTextStop().event.type, "content_block_stop");
+});
+
+test("wire: providerBlock 把 provider 私有类型编进 type", () => {
+  assert.deepEqual(wire.providerBlock("codex", "error", { r: 1 }, { message: "boom" }), {
+    type: "codex_error",
+    message: "boom",
+    raw: { r: 1 },
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Codex
+   ══════════════════════════════════════════════════════════════════ */
+
+test("codex: 工具类 item 在 started 阶段分流到 mcp / server 两种事件", () => {
+  const [mcp] = codex.itemEvents("item.started", {
+    type: "mcp_tool_call", id: "m1", tool: "search", server: "srv", arguments: { q: "x" },
+  });
+  assert.equal(mcp.type, "mcp_tool_use");
+  assert.equal(mcp.name, "search");
+  assert.equal(mcp.server_name, "srv");
+  assert.deepEqual(mcp.input, { q: "x" });
+
+  const [bash] = codex.itemEvents("item.started", { type: "command_execution", id: "c1", command: "ls" });
+  assert.equal(bash.type, "server_tool_use");
+  assert.equal(bash.name, "Bash");
+  assert.equal(bash.server_name, null);
+  assert.deepEqual(bash.input, { command: "ls" });
+  assert.equal(bash.provider, "codex");
+});
+
+test("codex: reasoning 在 started 阶段就定稿，agent_message 不在", () => {
+  // reasoning 提前发是刻意的——思考过程要即时可见，不能等 completed。
+  const started = codex.itemEvents("item.started", { type: "reasoning", text: "想一下" });
+  assert.equal(started.length, 1);
+  assert.equal(started[0].message.content[0].type, "thinking");
+
+  assert.deepEqual(codex.itemEvents("item.started", { type: "agent_message", text: "hi" }), []);
+});
+
+test("codex: updated 只对三类 item 发进度，其余静默", () => {
+  for (const type of ["command_execution", "mcp_tool_call", "todo_list"]) {
+    const [ev] = codex.itemEvents("item.updated", { type });
+    assert.equal(ev.type, "tool_progress");
+    assert.equal(ev.itemType, type);
+  }
+  assert.deepEqual(codex.itemEvents("item.updated", { type: "agent_message" }), []);
+  assert.deepEqual(codex.itemEvents("item.updated", { type: "web_search" }), []);
+});
+
+test("codex: 空文本的 item 不产生事件（否则历史里多出空气泡）", () => {
+  assert.deepEqual(codex.itemEvents("item.completed", { type: "agent_message", text: "" }), []);
+  assert.deepEqual(codex.itemEvents("item.completed", { type: "reasoning" }), []);
+  assert.deepEqual(codex.itemEvents("item.completed", null), []);
+  assert.deepEqual(codex.itemEvents("item.unknown", { type: "agent_message", text: "hi" }), []);
+});
+
+test("codex: contentBlock 覆盖各 item 类型", () => {
+  assert.equal(codex.contentBlock({ type: "agent_message", message: "from message 字段" }).text,
+    "from message 字段");
+
+  const cmd = codex.contentBlock({ type: "command_execution", aggregated_output: "out" });
+  assert.equal(cmd.type, "tool_result");
+  assert.equal(cmd.content, "out");
+
+  // mcp 结果三级回退：result.content → result → error
+  assert.equal(codex.contentBlock({ type: "mcp_tool_call", result: { content: "A" } }).content, "A");
+  assert.equal(codex.contentBlock({ type: "mcp_tool_call", result: "B" }).content, "B");
+  assert.equal(codex.contentBlock({ type: "mcp_tool_call", error: "C" }).content, "C");
+
+  assert.deepEqual(
+    { type: codex.contentBlock({ type: "error" }).type, msg: codex.contentBlock({ type: "error" }).message },
+    { type: "codex_error", msg: "Codex item error" },
+  );
+  // 没见过的类型不丢，编成 codex_<type> 让前端兜底渲染
+  assert.equal(codex.contentBlock({ type: "brand_new" }).type, "codex_brand_new");
+});
+
+test("codex: 启动期的提醒不当错误显示，真错误照旧", () => {
+  const notice = (message) => ({ id: "item_0", type: "error", message });
+
+  // 每轮都来一遍的那两条，丢掉：既不发事件，也不进历史
+  assert.equal(codex.isStartupNotice(notice("Under-development features enabled: respect_system_proxy. …")), true);
+  assert.equal(codex.isStartupNotice(notice("Skill descriptions were shortened to fit the skills context budget.")), true);
+  assert.equal(codex.contentBlock(notice("Under-development features enabled: respect_system_proxy.")), null);
+  assert.deepEqual(codex.itemEvents("item.completed", notice("Skill descriptions were shortened…")), []);
+
+  // 真错误一律照旧
+  const real = notice("stream disconnected before completion");
+  assert.equal(codex.isStartupNotice(real), false);
+  assert.equal(codex.contentBlock(real).type, "codex_error");
+  assert.equal(codex.itemEvents("item.completed", real).length, 1);
+  // 只认前缀，提到这几个字眼的真错误不该被吞掉
+  assert.equal(codex.isStartupNotice(notice("failed to load skills: Skill descriptions were shortened")), false);
+  assert.equal(codex.isStartupNotice({ type: "agent_message", message: "Under-development features enabled: x" }), false);
+});
+
+test("codex: 断流重连是状态行，不是错误", () => {
+  // release 构建里第 1 次重试是静默的，人看到的第一条永远从 2/5 开始
+  assert.equal(
+    codex.retryStatusText("Reconnecting... 2/5 (stream disconnected before completion: websocket closed by server before response.completed)"),
+    "连接中断，正在重连（2/5）…",
+  );
+  assert.equal(codex.retryStatusText("Reconnecting... waiting for network"), "等待网络恢复…");
+  assert.equal(codex.retryStatusText("Falling back from WebSockets to HTTPS transport. foo"), "连接不稳，改用 HTTPS 重试…");
+
+  // 别的 thread error 一律返回 null，交给卡片显示
+  assert.equal(codex.retryStatusText("Previous response was not found."), null);
+  assert.equal(codex.retryStatusText(""), null);
+  assert.equal(codex.retryStatusText(undefined), null);
+  // 只认开头：正文里提到重连的真错误不该被当成状态行
+  assert.equal(codex.retryStatusText("tool failed: Reconnecting... 2/5"), null);
+});
+
+test("codex: turn.failed 里那句「正在重连」换成人话", () => {
+  const exhausted = codex.turnFailureMessage("Reconnecting... 5/5 (websocket closed by server before response.completed)");
+  // 重试用尽时 codex 把 last_critical_error 原样搬进 turn.failed，于是「正在重连」
+  // 出现在已经不再重连的时刻。换掉它，但原文留着好排查。
+  assert.match(exhausted, /连接反复中断/);
+  assert.match(exhausted, /Reconnecting\.\.\. 5\/5/);
+
+  // 真错误原样送出，别加戏
+  assert.equal(codex.turnFailureMessage("rate limit exceeded"), "rate limit exceeded");
+  assert.equal(codex.turnFailureMessage(""), "Codex 请求失败");
+  assert.equal(codex.turnFailureMessage(null), "Codex 请求失败");
+});
+
+test("codex: sandbox 模式跟着权限档位走", () => {
+  assert.equal(codex.sandboxMode("plan"), "read-only");
+  assert.equal(codex.sandboxMode("bypassPermissions"), "danger-full-access");
+  assert.equal(codex.sandboxMode("auto"), "workspace-write");
+  assert.equal(codex.sandboxMode(undefined), "workspace-write");
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Codex 模型目录（~/.codex/models_cache.json → 菜单 + 三档默认值）
+   ══════════════════════════════════════════════════════════════════ */
+
+// 真实的 models_cache.json 摘录：只留下解析用得到的字段，顺序也照它给的
+const CODEX_MODELS_CACHE = {
+  fetched_at: "2026-09-06T14:10:24.576429100Z",
+  models: [
+    { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "Our most capable model.", visibility: "list", priority: 1, upgrade: null },
+    { slug: "gpt-6-sol", display_name: "GPT-6-Sol", description: "GPT-6 Sol Codex model.", visibility: "list", priority: 2, upgrade: null },
+    { slug: "gpt-6-luna", display_name: "GPT-6-Luna", description: "GPT-6 Luna Codex model.", visibility: "list", priority: 3, upgrade: null },
+    { slug: "gpt-reserve", display_name: "GPT-Reserve", description: "Internal.", visibility: "hide", priority: 3, upgrade: null },
+    { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", description: "Reliable agentic workhorse.", visibility: "list", priority: 6, upgrade: null },
+    { slug: "gpt-5.6-terra", display_name: "GPT-5.6-Terra", description: "Balanced agentic coding model.", visibility: "list", priority: 7, upgrade: null },
+    { slug: "gpt-5.6-luna", display_name: "GPT-5.6-Luna", description: "Fast and affordable.", visibility: "list", priority: 8, upgrade: null },
+    { slug: "gpt-5.5", display_name: "GPT-5.5", description: "Previous generation.", visibility: "list", priority: 12, upgrade: null },
+    { slug: "gpt-5.4-mini", display_name: "GPT-5.4-Mini", description: "Small and fast.", visibility: "list", priority: 23, upgrade: { model: "gpt-5.6-luna" } },
+  ],
+};
+
+test("codex catalog exposes the advertised efforts and Fast support per model", () => {
+  try {
+    codex.setCatalog(codex.parseModelsCache({
+      models: [
+        { slug: "gpt-6.2-sol", visibility: "list", priority: 2,
+          supported_reasoning_levels: [{ effort: "high" }, { effort: "max" }, { effort: "ultra" }], service_tiers: [{ id: "priority" }] },
+        { slug: "gpt-6-luna", visibility: "list", priority: 1,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }], service_tiers: [] },
+      ],
+    }));
+    const [luna, sol] = codex.menuModels();
+    assert.equal(codex.defaultModels().sonnetModel, "gpt-6.2-sol");
+    assert.deepEqual(sol.efforts, ["high", "max", "ultra"]);
+    assert.equal(sol.fast, true);
+    assert.deepEqual(luna.efforts, ["low", "max"]);
+    assert.equal(luna.fast, false);
+  } finally { codex._resetCatalog(); }
+});
+
+test("codex catalog retains Terra and Luna when five current-generation models are listed", () => {
+  codex._resetCatalog();
+  try {
+    const models = [
+      ["gpt-6.1-sol", "GPT-6.1-Sol"],
+      ["gpt-6-astra", "GPT-6-Astra"],
+      ["gpt-6.1-terra", "GPT-6.1 Terra"],
+      ["gpt-6-sol", "GPT-6-Sol"],
+      ["gpt-6-luna", "GPT-6-Luna"],
+    ];
+    codex.setCatalog(codex.parseModelsCache({ models: [
+      ...models.map(([slug, display_name], priority) => ({ slug, display_name, priority, visibility: "list" })),
+      { slug: "gpt-5.6-terra", priority: 8, visibility: "list" },
+      { slug: "gpt-reserve", priority: 4, visibility: "hide" },
+    ] }));
+    const menu = codex.menuModels();
+    assert.deepEqual(menu.map(item => item.model), models.map(([slug]) => slug));
+    assert.equal(menu[2].label, "GPT-6.1 Terra");
+    assert.equal(menu[2].desc, "视觉理解与写作");
+    assert.deepEqual(codex.defaultModels(), {
+      opusModel: "gpt-6.1-sol", sonnetModel: "gpt-6-astra", haikuModel: "gpt-6-luna",
+    });
+  } finally {
+    codex._resetCatalog();
+  }
+});
+
+test("codex 目录: 解析缓存文件，hide 和已弃用的不上菜单", () => {
+  const catalog = codex.parseModelsCache(CODEX_MODELS_CACHE);
+  // 全目录一个不落——对话里还选着 gpt-5.4-mini 时要认得出它
+  assert.equal(catalog.length, 9);
+  assert.equal(codex.setCatalog(catalog), true);
+  assert.equal(codex.hasLiveCatalog(), true);
+
+  const menu = codex.menuModels();
+  // 只列最新一代（GPT-6），按 priority 排：5.6 系、5.5 和被标了 upgrade 的 5.4-mini
+  // 都不上，内部模型 gpt-reserve 也不该冒出来
+  assert.deepEqual(menu.map(item => item.model), [
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+  ]);
+  assert.equal(menu[0].name, "GPT-6-Astra");
+  assert.equal(menu[0].desc, "旗舰最强");
+  assert.ok(codex.knownModels().includes("gpt-5.4-mini"));
+
+  // 三档槽位跟着目录走：opus = 最强的那个，haiku = 菜单末尾最经济的那个
+  assert.deepEqual(codex.defaultModels(), {
+    opusModel: "gpt-6-astra",
+    sonnetModel: "gpt-6-sol",
+    haikuModel: "gpt-6-luna",
+  });
+
+  codex._resetCatalog();
+});
+
+test("codex 目录: 认不出的输入不能把好目录顶掉", () => {
+  codex.setCatalog(codex.parseModelsCache(CODEX_MODELS_CACHE));
+  assert.equal(codex.parseModelsCache(null), null);
+  assert.equal(codex.parseModelsCache({}), null);
+  assert.equal(codex.parseModelsCache({ models: [{ display_name: "没有 slug" }] }), null);
+  assert.equal(codex.setCatalog([]), false);
+  assert.equal(codex.setCatalog(null), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+  codex._resetCatalog();
+});
+
+test("codex 目录: 新模型没有中文说明时退回缓存里那句英文，不把它挡在菜单外", () => {
+  codex.setCatalog(codex.parseModelsCache({
+    models: [{ slug: "gpt-7-nova", display_name: "GPT-7-Nova", description: "Next generation.", visibility: "list", priority: 1 }],
+  }));
+  const menu = codex.menuModels();
+  assert.deepEqual(menu.map(item => item.model), ["gpt-7-nova"]);
+  assert.equal(menu[0].desc, "Next generation.");
+  // 菜单只有一个模型时三档都落在它身上，不能出现空槽位
+  assert.deepEqual(codex.defaultModels(), {
+    opusModel: "gpt-7-nova", sonnetModel: "gpt-7-nova", haikuModel: "gpt-7-nova",
+  });
+  codex._resetCatalog();
+});
+
+test("codex 目录: 文件读不到时用兜底表，菜单不会空", () => {
+  codex._resetCatalog();
+  assert.equal(codex.refreshCatalog(join(tmpdir(), "inkfellow-no-such-models-cache.json")), false);
+  assert.equal(codex.hasLiveCatalog(), false);
+  const menu = codex.menuModels();
+  assert.ok(menu.length >= 4);
+  assert.ok(menu.some(item => item.model === "gpt-6.1-terra"));
+  assert.ok(codex.knownModels().includes("gpt-6.1-terra"));
+  assert.equal(codex.defaultModels().haikuModel, "gpt-6-luna");
+  assert.ok(menu.every(item => item.model && item.name && item.desc));
+  assert.equal(menu[0].model, "gpt-6-astra");
+});
+
+test("codex 目录: 从磁盘读一次就够，文件没动过不重复解析", async () => {
+  codex._resetCatalog();
+  const dir = await mkdtemp(join(tmpdir(), "inkfellow-codex-models-"));
+  const file = join(dir, "models_cache.json");
+  await writeFile(file, JSON.stringify(CODEX_MODELS_CACHE), "utf8");
+
+  assert.equal(codex.refreshCatalog(file), true);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+  // 同一个文件再读：没变化就返回 false（省掉 240KB 的重复解析），目录照旧
+  assert.equal(codex.refreshCatalog(file), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+
+  // 写坏了也不能把已经读到的目录清空
+  await writeFile(file, "{ 这不是 JSON", "utf8");
+  assert.equal(codex.refreshCatalog(file), false);
+  assert.equal(codex.menuModels()[0].model, "gpt-6-astra");
+
+  await rm(dir, { recursive: true, force: true });
+  codex._resetCatalog();
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Antigravity（agy）
+   ══════════════════════════════════════════════════════════════════ */
+
+const stepUpdate = (step) => ({ event: "step_update", step_update: step });
+
+/** 把一串 agy 事件喂给翻译器，收集所有产出。 */
+function feed(translate, steps) {
+  return steps.flatMap(step => translate(stepUpdate(step)));
+}
+
+test("agy: 文本按 step_index 累积，DONE 时定稿", () => {
+  const t = agy.createTranslator();
+  const out = feed(t, [
+    { step_index: 0, step_type: "agent_response", text_delta: "你" },
+    { step_index: 0, step_type: "agent_response", text_delta: "好" },
+    { step_index: 0, step_type: "agent_response", state: "DONE" },
+  ]);
+  assert.deepEqual(out.map(e => e.event?.type ?? e.type), [
+    "content_block_start", "content_block_delta", "content_block_delta", "content_block_stop", "assistant",
+  ]);
+  // 定稿文本是累积后的完整内容，不是最后一个 delta
+  assert.equal(out.at(-1).message.content[0].text, "你好");
+});
+
+test("agy: 工具跑完后再出文本，必须先补一条 message_start", () => {
+  // 这是最容易回归的一条：少了 message_start，前端 spinner 不清、块表不重置，
+  // 第二段回复会拼进第一段里。
+  const t = agy.createTranslator();
+  feed(t, [{ step_index: 0, step_type: "tool", tool_name: "run_command", state: "ACTIVE", tool_info: {} }]);
+  const out = feed(t, [{ step_index: 1, step_type: "agent_response", text_delta: "结果是" }]);
+  assert.deepEqual(out.map(e => e.event.type), ["message_start", "content_block_start", "content_block_delta"]);
+});
+
+test("agy: 本轮第一段文本前不发 message_start", () => {
+  const t = agy.createTranslator();
+  const out = feed(t, [{ step_index: 0, step_type: "agent_response", text_delta: "开头" }]);
+  assert.deepEqual(out.map(e => e.event.type), ["content_block_start", "content_block_delta"]);
+});
+
+test("agy: 工具 ACTIVE 重复来只发一次 tool_use", () => {
+  const t = agy.createTranslator();
+  const out = feed(t, [
+    { step_index: 2, step_type: "tool", tool_name: "view_file", state: "ACTIVE", tool_info: {} },
+    { step_index: 2, step_type: "tool", tool_name: "view_file", state: "ACTIVE", tool_info: {} },
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "server_tool_use");
+  assert.equal(out[0].name, "Read");        // view_file → Read 别名
+  assert.equal(out[0].id, "agy_2");
+  assert.equal(out[0].provider, "antigravity");
+});
+
+test("agy: 工具 DONE 发两条——进历史的结果 + 让 UI 落定的信号", () => {
+  const t = agy.createTranslator();
+  feed(t, [{ step_index: 3, step_type: "tool", tool_name: "run_command", state: "ACTIVE", tool_info: {} }]);
+  const out = feed(t, [
+    { step_index: 3, step_type: "tool", state: "DONE", tool_info: { output: "hello" } },
+  ]);
+  assert.deepEqual(out.map(e => e.type), ["assistant", "user"]);
+  const block = out[0].message.content[0];
+  assert.equal(block.type, "tool_result");
+  assert.equal(block.tool_use_id, "agy_3");   // 跟 ACTIVE 阶段的 id 配上
+  assert.equal(block.content, "hello");
+  assert.equal(out[1].message.content[0].tool_use_id, "agy_3");
+});
+
+test("agy: 没见过 ACTIVE 的工具直接 DONE 也能配出 id", () => {
+  const t = agy.createTranslator();
+  const out = feed(t, [{ step_index: 9, step_type: "tool", state: "DONE", tool_info: { output: "x" } }]);
+  assert.equal(out[0].message.content[0].tool_use_id, "agy_9");
+});
+
+test("agy: 超长工具输出截断并标注", () => {
+  const t = agy.createTranslator();
+  const [msg] = feed(t, [
+    { step_index: 0, step_type: "tool", state: "DONE", tool_info: { output: "x".repeat(20050) } },
+  ]);
+  const content = msg.message.content[0].content;
+  assert.ok(content.length < 20050);
+  assert.ok(content.endsWith("（输出已截断）"));
+});
+
+test("agy: 非 step_update 事件与畸形输入一律静默", () => {
+  const t = agy.createTranslator();
+  assert.deepEqual(t(null), []);
+  assert.deepEqual(t("nope"), []);
+  assert.deepEqual(t({ event: "something_else" }), []);
+  assert.deepEqual(t({ event: "step_update" }), []);
+  assert.deepEqual(t(stepUpdate({ step_type: "unknown_kind" })), []);
+});
+
+test("agy: 工具参数补小写别名，原字段保留", () => {
+  assert.deepEqual(
+    agy.toolInput({ parameters: { AbsolutePath: "/a/b.md", Extra: 1 } }),
+    { AbsolutePath: "/a/b.md", Extra: 1, file_path: "/a/b.md" },
+  );
+  // 已有小写键时不覆盖
+  assert.equal(agy.toolInput({ parameters: { Command: "ls", command: "keep" } }).command, "keep");
+  // 别名值不是字符串就不映射
+  assert.equal(agy.toolInput({ parameters: { Query: 123 } }).query, undefined);
+  assert.deepEqual(agy.toolInput(null), {});
+  assert.deepEqual(agy.toolInput({ parameters: "not an object" }), {});
+});
+
+test("agy: 工具输出非字符串时转 JSON", () => {
+  assert.equal(agy.toolOutput({ output: { a: 1 } }), '{"a":1}');
+  assert.equal(agy.toolOutput({ output: null }), "");
+  assert.equal(agy.toolOutput(null), "");
+  const circular = {}; circular.self = circular;
+  assert.equal(typeof agy.toolOutput({ output: circular }), "string");
+});
+
+test("agy: 工具名走别名表，未知名原样透出", () => {
+  assert.equal(agy.toolName({ tool_name: "replace_file_content" }), "Edit");
+  assert.equal(agy.toolName({ tool_info: { name: "search_web" } }), "WebSearch");
+  assert.equal(agy.toolName({ tool_name: "brand_new_tool" }), "brand_new_tool");
+  assert.equal(agy.toolName(null), "tool");
+});
+
+test("agy: effort 按模型能力就近取，medium 缺失时往下走", () => {
+  agy.setCatalog([
+    { model: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"] },
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
+    { model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)", efforts: [] },
+  ]);
+  // gemini-3.1-pro 只有 low/high：要 medium 时不能替用户升到 high（更慢更费额度）
+  assert.equal(agy.effortForModel("gemini-3.1-pro", "medium"), "low");
+  assert.equal(agy.effortForModel("gemini-3.1-pro", "high"), "high");
+  assert.equal(agy.effortForModel("gemini-3.8-flash", "max"), "high");   // max 压到 high
+  assert.equal(agy.effortForModel("claude-sonnet-4-6", "high"), null);   // 不吃 --effort
+  assert.equal(agy.effortForModel("gemini-3.8-flash-high", "low"), null); // 档位已写死在名字里
+  assert.equal(agy.effortForModel("never-seen-model", "low"), "low");     // 没见过就照传
+  assert.equal(agy.effortForModel(null, "xhigh"), "high");
+  agy._resetCatalog();
+});
+
+test("agy: 按 agy 的报错自我修正档位表", () => {
+  const model = "test-model-for-learning";
+  assert.equal(agy.effortForModel(model, "medium"), "medium");
+
+  assert.equal(agy.learnEffortsFromError(model, "requires --effort (available: low, high)"), true);
+  assert.equal(agy.effortForModel(model, "medium"), "low");
+  // 同样的报错再来一次，表没变化就返回 false，避免无谓重试
+  assert.equal(agy.learnEffortsFromError(model, "requires --effort (available: low, high)"), false);
+
+  assert.equal(agy.learnEffortsFromError(model, 'effort is not supported for model "x"'), true);
+  assert.equal(agy.effortForModel(model, "high"), null);
+  assert.equal(agy.learnEffortsFromError(model, 'effort is not supported for model "x"'), false);
+
+  assert.equal(agy.learnEffortsFromError(null, "whatever"), false);
+  assert.equal(agy.learnEffortsFromError(model, "看不懂的报错"), false);
+  agy._resetCatalog();
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Antigravity 模型目录（`agy models` → 菜单 + 档位表）
+   ══════════════════════════════════════════════════════════════════ */
+
+// 真实的 `agy models` stdout，包含它开头那行没有 TAB 的日志
+const AGY_MODELS_STDOUT = [
+  "Fetching available models...",
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+  "gemini-3.7-flash-high\tGemini 3.7 Flash (High)",
+  "gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)",
+  "gemini-3.7-flash-low\tGemini 3.7 Flash (Low)",
+  "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+  "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+  "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+  "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
+  "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+  "",
+].join("\n");
+
+test("agy: 解析 `agy models`，档位后缀合并成模型的能力表", () => {
+  const catalog = agy.parseModelsList(AGY_MODELS_STDOUT);
+  const byModel = Object.fromEntries(catalog.map(entry => [entry.model, entry]));
+
+  // 三行 -high/-medium/-low 合并成一个模型，label 去掉档位括号
+  assert.deepEqual(byModel["gemini-3.8-flash"].efforts, ["low", "medium", "high"]);
+  assert.equal(byModel["gemini-3.8-flash"].label, "Gemini 3.8 Flash");
+  // pro 只有两档，不能凭空补出 medium
+  assert.deepEqual(byModel["gemini-3.1-pro"].efforts, ["low", "high"]);
+  // 没有档位后缀 = 不吃 --effort，label 里的 (Thinking) 不是档位，要留着
+  assert.deepEqual(byModel["claude-sonnet-4-6"].efforts, []);
+  assert.equal(byModel["claude-sonnet-4-6"].label, "Claude Sonnet 4.6 (Thinking)");
+  assert.deepEqual(byModel["gpt-oss-120b"].efforts, ["medium"]);
+  // 开头那行日志没有 TAB，不能被当成模型
+  assert.equal(catalog.length, 6);
+
+  // 认不出来时返回 null，让调用方留着旧目录而不是把菜单清空
+  assert.equal(agy.parseModelsList("Fetching available models...\nsome error"), null);
+  assert.equal(agy.parseModelsList(""), null);
+  assert.equal(agy.parseModelsList(null), null);
+});
+
+test("agy: 目录换新之后，档位表和菜单跟着走", () => {
+  assert.equal(agy.hasLiveCatalog(), false);
+  assert.equal(agy.setCatalog(agy.parseModelsList(AGY_MODELS_STDOUT)), true);
+  assert.equal(agy.hasLiveCatalog(), true);
+
+  // 目录里没有 3.6 了（这份输出没列它），档位查询要落到「没见过」而不是老表里的值
+  assert.equal(agy.effortForModel("gemini-3.8-flash", "medium"), "medium");
+  assert.equal(agy.effortForModel("gemini-3.1-pro", "medium"), "low");
+
+  // 空目录不能把好目录顶掉
+  assert.equal(agy.setCatalog([]), false);
+  assert.equal(agy.setCatalog(null), false);
+  assert.equal(agy.effortForModel("gemini-3.8-flash", "medium"), "medium");
+
+  agy._resetCatalog();
+  assert.equal(agy.hasLiveCatalog(), false);
+});
+
+test("agy: 菜单隐藏旧 Gemini，保留其他系列的最新型号", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_STDOUT));
+  const menu = agy.menuModels();
+  const models = menu.map(item => item.model);
+
+  assert.deepEqual(models, ["claude-opus-4-6-thinking", "claude-sonnet-4-6"]);
+  assert.equal(agy.effortForModel("gpt-oss-120b", "high"), "medium");
+  // 菜单上的名字去掉了结尾括号和 Claude 前缀
+  assert.equal(menu.find(item => item.model === "claude-opus-4-6-thinking").name, "Opus 4.6");
+
+  agy._resetCatalog();
+});
+
+test("agy: 下线的模型顺着系列升到最新", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_STDOUT));
+
+  // 旧 Gemini 型号不能互为替代
+  assert.equal(agy.successorFor("gemini-3.5-flash"), null);
+  assert.equal(agy.successorFor("gemini-3.7-flash"), null);
+  assert.equal(agy.successorFor("gemini-3.8-flash"), null);
+  // 别家的模型名没有同系列可换，交给调用方退回默认
+  assert.equal(agy.successorFor("claude-opus-5"), null);
+  assert.equal(agy.successorFor(""), null);
+  // 只往上换：目录还没刷新就赶上一次升级时，请求里的版本比目录里的都新，
+  // 这时候必须原样放行，不能把用户选的新模型悄悄降回旧的
+  assert.equal(agy.successorFor("gemini-3.9-flash"), null);
+
+  agy._resetCatalog();
+});
+
+// 2026-11-05 `agy models` 的原样输出：Gemini 4 不再叫 -pro，Claude 也开始认档位了
+const AGY_MODELS_2026_11 = [
+  "Fetching available models...",
+  "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+  "gemini-4-argon-high\tGemini 4 Argon (High)",
+  "gemini-4-argon-low\tGemini 4 Argon (Low)",
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+  "claude-opus-5-5-low\tClaude Opus 5.5 (Low)",
+  "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)",
+  "claude-opus-5-5-high\tClaude Opus 5.5 (High)",
+  "claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)",
+  "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)",
+  "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)",
+  "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+  "",
+].join("\n");
+
+test("agy: 旗舰换了命名也认得出来，菜单和默认模型跟着走", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+  const menu = agy.menuModels();
+  assert.deepEqual(menu.map(item => item.model), ["gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5"]);
+  assert.equal(menu[0].desc, "旗舰最强");
+  assert.equal(menu[0].name, "Gemini 4 Argon");
+  assert.deepEqual(agy.defaultModels(), {
+    opusModel: "gemini-4-argon",
+    sonnetModel: "gemini-4-argon",
+    haikuModel: "gemini-4-argon",
+  });
+  // Claude 现在也认档位了，不能再当成「不吃 --effort」
+  assert.equal(agy.effortForModel("claude-opus-5-5", "medium"), "medium");
+  assert.equal(agy.effortForModel("claude-sonnet-5-5", "max"), "high");
+  assert.equal(agy.effortForModel("gpt-oss-120b", "high"), "medium");
+  agy._resetCatalog();
+});
+
+test("agy: Hydrogen 极高档合并为一项，Orchestrator 保留完整名称和固定配置", () => {
+  const rows = [
+    "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+    "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+    "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+    "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+    "gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)",
+  ];
+  const catalog = agy.parseModelsList([...rows, AGY_MODELS_2026_11].join("\n"));
+  agy.setCatalog(catalog);
+  const menu = agy.menuModels();
+  assert.deepEqual(menu.slice(0, 3).map(({ name, desc, efforts }) => ({ name, desc, efforts })), [
+    { name: "Gemini 4 Argon", desc: "旗舰最强", efforts: ["low", "medium", "high"] },
+    { name: "Gemini 4 Hydrogen", desc: "快速执行", efforts: ["low", "medium", "high", "xhigh"] },
+    { name: "Orchestrator (Argon)", desc: "规划与执行协作", efforts: [] },
+  ]);
+  assert.equal(menu.filter(item => item.name.includes("Hydrogen")).length, 1);
+  assert.equal(agy.effortForModel("gemini-4-hydrogen", "xhigh"), "xhigh");
+  assert.equal(agy.effortForModel("gemini-4-argon", "xhigh"), "high");
+  assert.equal(agy.resolveModel("gemini-4-hydrogen-xhigh"), "gemini-4-hydrogen-xhigh");
+  assert.equal(agy.effortForModel("gemini-4-hydrogen-xhigh", "low"), null);
+  assert.equal(agy.effortForModel("gemini-pro-orchestrator-g1-pro", "high"), null);
+  assert.equal(agy.defaultModels().opusModel, "gemini-4-argon");
+
+  // 安装版已有的旧格式缓存应在下一次刷新之前正确显示。
+  const oldCache = catalog.map(entry => entry.model === "gemini-4-hydrogen"
+    ? { ...entry, efforts: ["low", "medium", "high"] } : entry);
+  oldCache.push({ model: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)", efforts: [] });
+  agy.setCatalog(oldCache);
+  assert.deepEqual(agy.menuModels(), menu);
+  agy._resetCatalog();
+});
+
+test("agy: Neon is the chat default and Hydrogen replaces Flash for fast requests", () => {
+  try {
+    agy._resetCatalog();
+    assert.equal(agy.defaultModels().sonnetModel, "gemini-4-neon");
+    agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11 + [
+      "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+      "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-4-carbon-high\tGemini 4 Carbon (High)",
+      "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+      "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
+    ].join("\n")));
+    assert.deepEqual(agy.defaultModels(), {
+      opusModel: "gemini-4-argon",
+      sonnetModel: "gemini-4-neon",
+      haikuModel: "gemini-4-hydrogen",
+    });
+    assert.equal(agy.resolveModel("gemini-3.8-flash"), "gemini-4-hydrogen");
+    assert.equal(agy.resolveModel("gemini-3.8-flash-high"), "gemini-4-hydrogen");
+    assert.equal(agy.effortForModel("gemini-4-neon", "xhigh"), "xhigh");
+    agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+    assert.equal(agy.defaultModels().sonnetModel, "gemini-4-argon");
+  } finally { agy._resetCatalog(); }
+});
+
+test("agy: 没有 Gemini 旗舰时默认模型退到菜单第一个，不写死型号", () => {
+  agy.setCatalog([
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low"] },
+    { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low"] },
+  ]);
+  assert.deepEqual(agy.defaultModels(), {
+    opusModel: "claude-opus-5-5",
+    sonnetModel: "claude-opus-5-5",
+    haikuModel: "claude-opus-5-5",
+  });
+  agy._resetCatalog();
+});
+
+test("agy: 版本号写法不同也算同一个系列", () => {
+  agy.setCatalog([
+    { model: "gemini-4-flash", label: "Gemini 4 Flash", efforts: ["low"] },
+    { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low"] },
+    { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low"] },
+    { model: "claude-opus-5", label: "Claude Opus 5", efforts: ["low"] },
+  ]);
+  const models = agy.menuModels().map(item => item.model);
+  // 4 顶掉 3.8、5.5 顶掉 5：不能因为一个带小数点一个不带就并排摆两个
+  assert.deepEqual(models, ["gemini-4-flash", "claude-opus-5-5"]);
+  assert.equal(agy.successorFor("gemini-3.7-flash"), "gemini-4-flash");
+  // -thinking 只是旧命名的后缀，不是另一个系列
+  assert.equal(agy.successorFor("claude-opus-4-6-thinking"), "claude-opus-5-5");
+  agy._resetCatalog();
+});
+
+test("agy: 请求里的模型名这一轮该跑哪个", () => {
+  agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
+  // 还在目录里：原样。档位写在名字里的也算在
+  assert.equal(agy.resolveModel("gemini-4-argon"), "gemini-4-argon");
+  assert.equal(agy.resolveModel("gemini-4-argon-high"), "gemini-4-argon-high");
+  assert.equal(agy.resolveModel("gpt-oss-120b"), "gpt-oss-120b");
+  // 下线了但同系列有新的：顺着升
+  assert.equal(agy.resolveModel("gemini-3.7-flash"), "gemini-4-argon");
+  assert.equal(agy.resolveModel("claude-sonnet-4-6"), "claude-sonnet-5-5");
+  assert.equal(agy.resolveModel("claude-opus-4-6-thinking"), "claude-opus-5-5");
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-4-argon");
+  // 不是 agy 的名字
+  assert.equal(agy.resolveModel("gpt-6.1-sol"), null);
+  assert.equal(agy.resolveModel("deepseek-v4-pro"), null);
+  // 比目录还新：目录落后于这次升级，绝不能拦下或降级
+  assert.equal(agy.resolveModel("gemini-3.9-flash"), "gemini-4-argon");
+  assert.equal(agy.resolveModel("gemini-5-argon"), "gemini-5-argon");
+  assert.equal(agy.resolveModel("gemini-5-neon"), "gemini-5-neon");
+  assert.equal(agy.resolveModel("claude-opus-6"), "claude-opus-6");
+  agy._resetCatalog();
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-4-neon");
+});
+
+test("agy: 前端首帧兜底和 provider 兜底表说的是同一批模型", async () => {
+  const { readFile } = await import("node:fs/promises");
+  agy._resetCatalog();
+  const html = await readFile(new URL("./public/index.html", import.meta.url), "utf8");
+  const literal = name => new Function(`return ${new RegExp(`let ${name} = (\\[[\\s\\S]*?\\]|\\{[\\s\\S]*?\\});`).exec(html)[1]}`)();
+  assert.deepEqual(literal("AGY_MODELS").map(item => item.model), agy.menuModels().map(item => item.model));
+  assert.deepEqual(literal("AGY_EFFORT_LEVELS"), Object.fromEntries(agy.getCatalog().map(entry => [entry.model, entry.efforts])));
+});
+
+test("agy: 比兜底表还旧的磁盘缓存不能用", () => {
+  // 2026-11-05 真实发生过：升级后第一次查询正好断网，07:11 的旧清单盖掉了版本自带的新清单
+  assert.equal(agy.isCachedCatalogUsable("2026-11-04T23:11:56.595Z"), false);
+  assert.equal(agy.isCachedCatalogUsable("2026-11-05T07:47:12.000Z"), true);
+  // 没有时间或时间读不出来：不知道多旧，当作不能用
+  assert.equal(agy.isCachedCatalogUsable(undefined), false);
+  assert.equal(agy.isCachedCatalogUsable(""), false);
+  assert.equal(agy.isCachedCatalogUsable("不是时间"), false);
+});
+
+test("agy: 没查过目录时用兜底表，不至于菜单空掉", () => {
+  agy._resetCatalog();
+  const menu = agy.menuModels();
+  assert.ok(menu.length >= 4);
+  assert.ok(menu.every(item => item.model && item.name && item.desc));
+  assert.ok(menu.some(item => item.model === "gemini-4-hydrogen"));
+  assert.ok(menu.every(item => !/^gemini-[1-3]\./.test(item.model)));
+  // 藏起来的那些兜底时也不该冒出来
+  assert.equal(menu.filter(item => /^gpt-/.test(item.model)).length, 0);
+});
+
+test("agy: 权限档位映射", () => {
+  assert.equal(agy.modeFlag("plan"), "plan");
+  assert.equal(agy.modeFlag("auto"), "accept-edits");
+  assert.equal(agy.modeFlag("bypassPermissions"), "accept-edits");
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   Antigravity 用量额度
+   ══════════════════════════════════════════════════════════════════ */
+
+// 真实的 `agy -p "/usage" --output-format json` 回包，删掉了跟配额无关的字段
+const AGY_USAGE_JSON = JSON.stringify({
+  conversation_id: "",
+  status: "SUCCESS",
+  response: "Gemini Models\tWeekly Limit Remaining\t88%\t2026-08-29T07:42:01Z\n",
+  command: {
+    name: "usage",
+    data: {
+      description: "Within each group, models share a weekly limit and a 5-hour limit.",
+      groups: [
+        {
+          name: "Gemini Models",
+          buckets: [
+            { id: "gemini-weekly", name: "Weekly Limit Remaining", window: "weekly", remaining_fraction: 0.875411331653595, reset_time: "2026-08-29T07:42:01Z" },
+            { id: "gemini-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 0.9194384217262268, reset_time: "2026-08-27T13:00:43Z" },
+          ],
+        },
+        {
+          name: "Claude and GPT models",
+          buckets: [
+            { id: "3p-weekly", name: "Weekly Limit Remaining", window: "weekly", remaining_fraction: 0.7754247784614563, reset_time: "2026-09-01T03:19:13Z" },
+            { id: "3p-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 1, reset_time: "2026-08-27T17:45:26Z" },
+          ],
+        },
+      ],
+    },
+  },
+});
+
+test("agy 用量: 两组配额各自成行，百分比按剩余算", () => {
+  const groups = agy.parseUsage(AGY_USAGE_JSON);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0], {
+    key: "gemini",
+    label: "Gemini",
+    fiveHour: { usedPercent: 8, remainingPercent: 92, resetAt: "2026-08-27T13:00:43Z" },
+    week: { usedPercent: 12, remainingPercent: 88, resetAt: "2026-08-29T07:42:01Z" },
+  });
+  assert.equal(groups[1].key, "3p");
+  assert.equal(groups[1].label, "Claude/GPT");
+  assert.equal(groups[1].fiveHour.remainingPercent, 100);
+  assert.equal(groups[1].week.remainingPercent, 78);
+});
+
+test("agy 用量: 前面掺了日志行也能捞出那行 JSON", () => {
+  const noisy = `ERROR: logging before google.Init: I0827 doRefreshQuota\n{"broken":\n${AGY_USAGE_JSON}`;
+  assert.equal(agy.parseUsage(noisy)?.length, 2);
+});
+
+test("agy 用量: Pro 计划下 Argon 单独一组，只有周限额", () => {
+  // 2026-11-05 真实回包的这一组，描述原文：For paid Pro plans, Argon quota is separate.
+  const groups = agy.parseUsage(JSON.stringify({ command: { data: { groups: [{
+    name: "Gemini 4 Argon",
+    buckets: [{ id: "gemini-argon-wtu-weekly", name: "Gemini 4 Argon Weekly Limit", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-12T03:25:25Z" }],
+  }] } } }));
+  assert.deepEqual(groups, [{
+    key: "gemini-argon-wtu",
+    // 组名太长会把数字那一列挤掉，带型号的只留最后的名字
+    label: "Argon",
+    fiveHour: null,
+    week: { usedPercent: 0, remainingPercent: 100, resetAt: "2026-11-12T03:25:25Z" },
+  }]);
+});
+
+test("agy 用量: 解析不出配额时返回 null，不返回空壳", () => {
+  assert.equal(agy.parseUsage(""), null);
+  assert.equal(agy.parseUsage("not json at all"), null);
+  // 起了 agent 轮次的回包（命令没被短路）——没有 command.data.groups
+  assert.equal(agy.parseUsage(JSON.stringify({ status: "SUCCESS", response: "我不知道" })), null);
+  // groups 在但每组都缺可用窗口
+  assert.equal(agy.parseUsage(JSON.stringify({
+    command: { data: { groups: [{ name: "Gemini Models", buckets: [{ id: "gemini-weekly", window: "weekly" }] }] } },
+  })), null);
+});
+
+// ── app-server（常驻那条路）的形状归一化 ─────────────────────
+// 这几条是常驻 codex 的正确性底线：翻错了前端就渲染不出东西，或者渲染成
+// 一堆看不懂的卡片。
+
+test("app-server 的方法名翻回 SDK 的三个生命周期名", () => {
+  assert.equal(codex.fromAppServerMethod("item/started"), "item.started");
+  assert.equal(codex.fromAppServerMethod("item/updated"), "item.updated");
+  assert.equal(codex.fromAppServerMethod("item/completed"), "item.completed");
+  assert.equal(codex.fromAppServerMethod("turn/completed"), null, "不是 item 事件的一律跳过");
+  assert.equal(codex.fromAppServerMethod("thread/started"), null);
+});
+
+test("agentMessage 翻成 agent_message，文本原样", () => {
+  const item = codex.fromAppServerItem({ type: "agentMessage", id: "m1", text: "你好" });
+  assert.equal(item.type, "agent_message");
+  assert.equal(codex.itemText(item), "你好");
+  const block = codex.contentBlock(item);
+  assert.equal(block.type, "text");
+  assert.equal(block.text, "你好");
+});
+
+test("reasoning 的 content 是数组，要拼成 SDK 那样的一整段", () => {
+  const item = codex.fromAppServerItem({ type: "reasoning", id: "r1", content: ["先看这个", "再看那个"], summary: ["摘要"] });
+  assert.equal(item.type, "reasoning");
+  assert.equal(item.text, "先看这个\n再看那个", "有 content 就用 content");
+  const onlySummary = codex.fromAppServerItem({ type: "reasoning", id: "r2", content: [], summary: ["只有摘要"] });
+  assert.equal(onlySummary.text, "只有摘要", "高强度档位下只发 summary，不能因此丢掉思考过程");
+});
+
+test("commandExecution 的 aggregatedOutput 要翻成 SDK 的下划线名", () => {
+  const item = codex.fromAppServerItem({
+    type: "commandExecution", id: "c1", command: "ls -la", aggregatedOutput: "总用量 4", status: "completed",
+  });
+  assert.equal(item.type, "command_execution");
+  assert.deepEqual(codex.toolInput(item), { command: "ls -la" });
+  assert.equal(codex.toolName(item), "Bash");
+  // 翻错这个字段的话，命令跑完了工具卡片里是空的
+  assert.equal(codex.contentBlock(item).content, "总用量 4");
+});
+
+test("mcpToolCall 的字段名本来就一致，别翻坏了", () => {
+  const item = codex.fromAppServerItem({
+    type: "mcpToolCall", id: "m1", server: "chrome-devtools", tool: "take_snapshot",
+    arguments: { a: 1 }, result: { content: "ok" },
+  });
+  assert.equal(item.type, "mcp_tool_call");
+  assert.equal(codex.toolName(item), "take_snapshot");
+  assert.deepEqual(codex.toolInput(item), { a: 1 });
+});
+
+test("webSearch 和 fileChange 直接过", () => {
+  assert.equal(codex.fromAppServerItem({ type: "webSearch", id: "w", query: "天气" }).type, "web_search");
+  assert.equal(codex.fromAppServerItem({ type: "fileChange", id: "f", changes: [], status: "completed" }).type, "file_change");
+});
+
+test("认不出的 item 类型返回 null——宁可不显示，也别渲染成看不懂的卡片", () => {
+  // app-server 比 SDK 多出这些新类型，一股脑塞给前端只会是一堆噪音
+  for (const type of ["userMessage", "subAgentActivity", "imageGeneration", "contextCompaction", "hookPrompt"]) {
+    assert.equal(codex.fromAppServerItem({ type, id: "x" }), null, type);
+  }
+  assert.equal(codex.fromAppServerItem(null), null);
+  assert.equal(codex.fromAppServerItem({}), null);
+});
+
+test("翻完之后走的是原来那套 itemEvents，前端收到的事件跟 SDK 那条路一模一样", () => {
+  const appServer = codex.fromAppServerItem({ type: "commandExecution", id: "c1", command: "ls", aggregatedOutput: "" });
+  const sdk = { type: "command_execution", id: "c1", command: "ls", aggregated_output: "" };
+  const strip = ev => { const { raw, ...rest } = ev; return rest; };   // raw 是原始 item，两条路本来就不同
+  const a = codex.itemEvents("item.started", appServer);
+  const b = codex.itemEvents("item.started", sdk);
+  assert.equal(a.length, 1);
+  assert.deepEqual(a.map(strip), b.map(strip), "除了 raw，发给前端的每个字段都得对得上");
+
+  const doneA = codex.itemEvents("item.completed", codex.fromAppServerItem({ type: "agentMessage", id: "m", text: "答案" }));
+  const doneB = codex.itemEvents("item.completed", { type: "agent_message", id: "m", text: "答案" });
+  assert.equal(doneA[0].message.content[0].text, doneB[0].message.content[0].text);
+});

@@ -78,6 +78,12 @@ export function pathsOverlap(a, b) {
   return Boolean(a && b && (a === "*" || b === "*" || pathWithin(a, b) || pathWithin(b, a)));
 }
 
+export function scopesOverlap(scopeA = [], scopeB = [], cwd = "") {
+  const a = scopeA.map(p => normalizeScopePath(p, cwd));
+  const b = scopeB.map(p => normalizeScopePath(p, cwd));
+  return a.some(left => b.some(right => pathsOverlap(left, right)));
+}
+
 export function scopedWriteTarget(
   filePath,
   writeScope = [],
@@ -107,6 +113,10 @@ export function scopedWriteTarget(
   } catch {
     return null;
   }
+}
+
+export function isPathWithinScope(filePath, writeScope, cwd, vault, options) {
+  return Boolean(scopedWriteTarget(filePath, writeScope, cwd, vault, options));
 }
 
 export class WriteScopeLock {

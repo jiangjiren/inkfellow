@@ -1,12 +1,8 @@
-import { assertSuccessfulResult } from "./sdk-result.js";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import cron from "node-cron";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { Codex } from "@openai/codex-sdk";
-import { resolveCodexEffort } from "./providers/codex-models.js";
-import { buildModelCandidates, runWithModelFallback } from "./model-fallback.js";
 
 // Injected server context
 let ctx = null;
@@ -14,8 +10,6 @@ let ctx = null;
 // jobId -> cancellable handle (node-cron task or { destroy: () => clearTimeout })
 const activeTasks = new Map();
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-// 单个候选模型跑一次定时任务的上限
-const AGENT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Channel adapters: { send(peer, text) } — add feishu/telegram here later
 const channelAdapters = {};
@@ -32,45 +26,26 @@ export function init(context) {
       if (!existsSync(ctx.WECHAT_CONFIG_FILE)) throw new Error("WeChat not connected");
       const creds = JSON.parse(readFileSync(ctx.WECHAT_CONFIG_FILE, "utf8"));
       if (!creds.token || !creds.baseUrl) throw new Error("WeChat credentials incomplete");
-      const targets = typeof ctx.resolveWechatDeliveryTargets === "function"
-        ? ctx.resolveWechatDeliveryTargets(peer)
-        : (typeof ctx.resolveWechatDeliveryPeers === "function"
-          ? ctx.resolveWechatDeliveryPeers(peer).map(candidate => ({ peer: candidate }))
-          : [{ peer }]);
-      let lastErr = null;
-      for (const target of targets) {
-        const candidate = typeof target === "string" ? target : target.peer;
-        const contextToken = typeof target === "object" ? target.contextToken : undefined;
-        try {
-          await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text, contextToken, creds.botId || "");
-          if (candidate !== peer) {
-            console.log(`[Scheduler] WeChat delivery fallback succeeded: ${String(peer).slice(0, 12)}... -> ${String(candidate).slice(0, 12)}...`);
-          }
-          return;
-        } catch (err) {
-          lastErr = err;
-          // 存储的 context_token 可能已过期（网关返回 ret -2），去掉 token 重试一次
-          if (contextToken) {
-            try {
-              await ctx.sendWechatMessage(creds.baseUrl, creds.token, candidate, text, undefined, creds.botId || "");
-              console.log(`[Scheduler] WeChat delivery succeeded without stale context token: ${String(candidate).slice(0, 12)}...`);
-              return;
-            } catch (retryErr) {
-              lastErr = retryErr;
-            }
-          }
-          if (target !== targets[targets.length - 1]) {
-            console.warn(`[Scheduler] WeChat delivery to ${String(candidate).slice(0, 12)}... failed, trying fallback: ${lastErr.message}`);
-          }
+      const targetPeer = peer || creds.lastPeer || creds.userId;
+      if (!targetPeer) throw new Error("WeChat target peer unavailable");
+      const ctxToken = typeof ctx.resolveWechatPeerContextToken === "function"
+        ? ctx.resolveWechatPeerContextToken(targetPeer, creds)
+        : targetPeer === creds.lastPeer ? creds.lastContextToken : undefined;
+      try {
+        if (typeof ctx.sendWechatResponseWithMedia === "function") {
+          await ctx.sendWechatResponseWithMedia(creds.baseUrl, creds.token, targetPeer, text, ctxToken);
+        } else {
+          await ctx.sendWechatMessage(creds.baseUrl, creds.token, targetPeer, text, ctxToken);
+        }
+      } catch (err) {
+        if (!ctxToken) throw err;
+        // context_token 可能过期，去掉 token 重试一次
+        if (typeof ctx.sendWechatResponseWithMedia === "function") {
+          await ctx.sendWechatResponseWithMedia(creds.baseUrl, creds.token, targetPeer, text, undefined);
+        } else {
+          await ctx.sendWechatMessage(creds.baseUrl, creds.token, targetPeer, text, undefined);
         }
       }
-      // 全部投递失败：入待补发队列，用户下次发微信时自动补发
-      let queued = false;
-      if (typeof ctx.queueWechatPendingDelivery === "function") {
-        try { ctx.queueWechatPendingDelivery(peer, text); queued = true; } catch { }
-      }
-      const baseMsg = (lastErr || new Error("WeChat delivery failed")).message;
-      throw new Error(queued ? `${baseMsg}（已入待补发队列，用户下次发消息时自动补发）` : baseMsg);
     },
   };
 
@@ -280,11 +255,15 @@ function _validateRunAtMs(runAtMs) {
 }
 
 const executingJobs = new Set();
+
 async function _executeJob(job) {
   if (executingJobs.has(job.id)) return;
   executingJobs.add(job.id);
-  try { return await _executeJobOnce(job); }
-  finally { executingJobs.delete(job.id); }
+  try {
+    return await _executeJobOnce(job);
+  } finally {
+    executingJobs.delete(job.id);
+  }
 }
 
 async function _executeJobOnce(job) {
@@ -312,11 +291,8 @@ async function _executeJobOnce(job) {
   } catch (err) {
     status = "error";
     errorMsg = err.message;
-    const isDeliveryError = err.message.startsWith("结果投递失败");
-    console.error(`[Scheduler] Job "${job.description}" ${isDeliveryError ? "delivery" : "execution"} error:`, err.message);
-    if (!isDeliveryError) {
-      await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
-    }
+    console.error(`[Scheduler] Job "${job.description}" error:`, err.message);
+    await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
   }
 
   const durationMs = Date.now() - startMs;
@@ -355,27 +331,18 @@ async function _deliverResult(job, text) {
   }
 
   const msg = `📅 ${job.description}\n\n${text}`;
-  const failures = [];
   for (const { channel, peer } of targets) {
     const adapter = channelAdapters[channel];
     if (!adapter) {
-      const message = `No adapter for channel "${channel}"`;
-      console.warn(`[Scheduler] ${message}, skipping`);
-      failures.push(message);
+      console.warn(`[Scheduler] No adapter for channel "${channel}", skipping`);
       continue;
     }
     try {
       await adapter.send(peer, msg);
-      console.log(`[Scheduler] Delivered to ${channel}:${String(peer).slice(0, 12)}...`);
+      console.log(`[Scheduler] Delivered to ${channel}:${peer.slice(0, 12)}...`);
     } catch (err) {
-      const message = `Delivery to ${channel}:${String(peer).slice(0, 12)} failed: ${err.message}`;
-      console.error(`[Scheduler] ${message}`);
-      failures.push(message);
+      console.error(`[Scheduler] Delivery to ${channel} failed:`, err.message);
     }
-  }
-
-  if (failures.length > 0) {
-    throw new Error(`结果投递失败：${failures.join("; ")}`);
   }
 }
 
@@ -393,64 +360,13 @@ async function _runAgent(job) {
     fullPrompt += `\n\n请将任务结果以追加方式写入笔记：${job.notePath}，在文件末尾添加分隔线和日期标题后写入内容。`;
   }
 
-  const cwd = ctx.resolveAllowedCwd("");
-  const profileData = ctx.readProfiles();
-  const candidates = buildModelCandidates(profileData, {
-    providerModels: {
-      antigravity: ctx.antigravityFallbackModels?.() ?? [],
-      codex: await ctx.codexFallbackModels?.() ?? [],
-    },
-    // 定时任务与普通微信对话使用相同的偏好顺序。无人值守任务不需要
-    // 微信对话里的临时 scheduler MCP，因此三个通道都可以参与降级。
-    providerOrder: ["antigravity", "codex", "claude"],
-  });
-  return await runWithModelFallback(
-    candidates,
-    async candidate => {
-      const result = await _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd);
-      if (typeof result !== "string" || !result.trim()) {
-        const error = new Error(`${candidate.profileName}/${candidate.model} 没有返回内容`);
-        error.code = "MODEL_FALLBACK_EMPTY_RESPONSE";
-        throw error;
-      }
-      return result;
-    },
-    // 没人在等结果，所以预算给得宽：最多够两个候选各卡满一次，
-    // 再往后就该让这次任务失败、等下一个触发点，而不是无限往下试。
-    { logPrefix: `Scheduler ${job.id.slice(0, 8)}`, budgetMs: 2 * AGENT_RUN_TIMEOUT_MS },
-  );
-}
-
-// 每个候选独享完整超时预算，而不是整条链共享一份——否则前面的候选把时间耗光，
-// 真正干活的那个只剩几十秒。卡住的候选按「这条通道现在不行」处理：跳到下一个通道
-// 并记一段冷却，链条整体仍受 _runAgent 那份总预算约束。
-async function _runCandidateWithTimeout(candidate, profileData, fullPrompt, cwd) {
-  const ac = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; ac.abort(); }, AGENT_RUN_TIMEOUT_MS);
-  try {
-    if (candidate.provider === "antigravity") {
-      return await ctx.runAntigravityText({
-        prompt: fullPrompt, cwd, model: candidate.model, signal: ac.signal, stallMs: AGENT_RUN_TIMEOUT_MS,
-      });
-    }
-    return candidate.provider === "codex"
-      ? await _runCodexCandidate(candidate, fullPrompt, cwd, ac.signal)
-      : await _runClaudeCandidate(candidate, profileData, fullPrompt, cwd, ac);
-  } catch (err) {
-    if (!timedOut) throw err;
-    const error = new Error(`${candidate.profileName} 在 ${AGENT_RUN_TIMEOUT_MS / 60000} 分钟内没有完成`, { cause: err });
-    error.code = "MODEL_FALLBACK_TIMEOUT";
-    error.timeout = true;
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+  if (typeof ctx.runScheduledPrompt === "function") {
+    return await ctx.runScheduledPrompt(job, fullPrompt);
   }
-}
 
-async function _runClaudeCandidate(candidate, profileData, fullPrompt, cwd, abortController) {
-  const candidateProfiles = { ...profileData, activeProfileId: candidate.profileId };
-  const agentEnv = ctx.buildAgentEnv(candidateProfiles, "medium", candidate.model);
+  const profileData = ctx.readProfiles();
+  const agentEnv = ctx.buildAgentEnv(profileData, "medium", null);
+  const cwd = ctx.resolveAllowedCwd("");
   agentEnv.PWD = cwd;
 
   const userMsg = {
@@ -459,59 +375,53 @@ async function _runClaudeCandidate(candidate, profileData, fullPrompt, cwd, abor
     parent_tool_use_id: null,
   };
 
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 5 * 60 * 1000);
+
   let finalResult = "";
-  for await (const ev of query({
-    prompt: (async function* () { yield userMsg; })(),
-    options: {
-      cwd,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      includePartialMessages: false,
-      env: agentEnv,
-      abortController,
-      ...(candidate.provider === "claude" ? { model: candidate.model } : {}),
-    },
-  })) {
-    assertSuccessfulResult(ev);
-    if (ev.type === "assistant") {
-      const text = (ev.message?.content || ev.content || [])
-        .filter(b => b.type === "text").map(b => b.text).join("");
-      if (text) finalResult = text;
+  try {
+    for await (const ev of query({
+      prompt: (async function* () { yield userMsg; })(),
+      options: {
+        cwd,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        includePartialMessages: false,
+        env: agentEnv,
+        abortController: ac,
+      },
+    })) {
+      if (ev.type === "assistant") {
+        const text = (ev.message?.content || ev.content || [])
+          .filter(b => b.type === "text").map(b => b.text).join("");
+        if (text) finalResult = text;
+      }
+      if (ev.type === "result" && ev.subtype === "success" && ev.result) {
+        finalResult = ev.result;
+      }
     }
-    if (ev.type === "result" && ev.subtype === "success" && ev.result) {
-      finalResult = ev.result;
-    }
+  } finally {
+    clearTimeout(timeout);
   }
 
   return finalResult;
 }
 
-async function _runCodexCandidate(candidate, fullPrompt, cwd, signal) {
-  const codex = new Codex();
-  const thread = codex.startThread({
-    workingDirectory: cwd,
-    skipGitRepoCheck: true,
-    approvalPolicy: "never",
-    sandboxMode: "danger-full-access",
-    modelReasoningEffort: resolveCodexEffort("medium", candidate.model),
-    model: candidate.model,
-    networkAccessEnabled: true,
-    webSearchMode: "live",
-  });
-  const result = await thread.run(fullPrompt, { signal });
-  return result.finalResponse || "";
-}
-
 function _injectChatHistory(job, result) {
   try {
-    ctx.appendChatHistoryEntry({
+    const history = ctx.readHistory();
+    const entry = {
       id: `cron-${job.id.slice(0, 8)}-${Date.now()}`,
       title: `[定时任务] ${job.description}`,
       messages: [
-        { role: "user", text: `[定时任务自动触发] ${job.description}` },
-        { role: "assistant", text: result },
+        { role: "user", content: `[定时任务自动触发] ${job.description}` },
+        { role: "assistant", content: result },
       ],
-    });
+      createdAt: new Date().toISOString(),
+    };
+    history.unshift(entry);
+    if (history.length > 100) history.splice(100);
+    ctx.writeHistory(history);
     console.log(`[Scheduler] Injected result into chat history`);
   } catch (err) {
     console.error(`[Scheduler] Failed to inject chat history:`, err.message);

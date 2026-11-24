@@ -282,6 +282,67 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
     return structuredClone(draft);
   }
 
+  function remove(id) {
+    const key = String(id ?? "").trim();
+    if (!tickets.has(key)) return false;
+    const file = filePathFor(key);
+    try { unlinkSync(file); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    tickets.delete(key);
+    return true;
+  }
+
+  function archiveFinished(canArchive = () => true) {
+    const archivedIds = [];
+    const failedIds = [];
+    const archivedAt = new Date(now()).toISOString();
+    for (const ticket of tickets.values()) {
+      if (!TERMINAL_TICKET_STATUSES.has(ticket.status) || ticket.archivedAt || !canArchive(ticket.id)) continue;
+      try {
+        const updated = update(ticket.id, draft => { draft.archivedAt = archivedAt; });
+        if (updated) archivedIds.push(ticket.id);
+      } catch (error) {
+        console.warn(`[Orchestrator] Could not archive ticket ${ticket.id}:`, error.message);
+        failedIds.push(ticket.id);
+      }
+    }
+    return { archivedIds, failedIds };
+  }
+
+  function removeArchived(canRemove = () => true) {
+    const removedIds = [];
+    const failedIds = [];
+    for (const ticket of tickets.values()) {
+      if (!ticket.archivedAt || !TERMINAL_TICKET_STATUSES.has(ticket.status) || !canRemove(ticket.id)) continue;
+      try {
+        if (remove(ticket.id)) removedIds.push(ticket.id);
+      } catch (error) {
+        console.warn(`[Orchestrator] Could not remove archived ticket ${ticket.id}:`, error.message);
+        failedIds.push(ticket.id);
+      }
+    }
+    return { removedIds, failedIds };
+  }
+
+  function removeFinished(canRemove = () => true) {
+    const removedIds = [];
+    const failedIds = [];
+    for (const ticket of tickets.values()) {
+      if (!TERMINAL_TICKET_STATUSES.has(ticket.status) || !canRemove(ticket.id)) continue;
+      try {
+        if (remove(ticket.id)) removedIds.push(ticket.id);
+      } catch (error) {
+        console.warn(`[Orchestrator] Could not remove ticket ${ticket.id}:`, error.message);
+        failedIds.push(ticket.id);
+      }
+    }
+    return { removedIds, failedIds };
+  }
+
+  /**
+   * 列表排序按注意力优先级：
+   *   needs_attention > running > queued > 未归档终态 > 已归档终态（按时间倒序）
+   */
   function list({ status = null, parentConversationId = null, archived = "all", limit = 100 } = {}) {
     const priority = {
       needs_attention: 0,
@@ -362,6 +423,10 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
     get,
     findByWorkerConversationId,
     update,
+    remove,
+    archiveFinished,
+    removeArchived,
+    removeFinished,
     list,
     toSummary,
     reconcileOnBoot,

@@ -9,6 +9,24 @@ It supports two native subscription runtimes:
 
 Anthropic-compatible API providers are routed through the Claude runtime with provider-specific environment settings.
 
+## Messages sent while the AI is replying
+
+Each conversation owns its pending messages, edits, removal confirmations and unacknowledged requests. Switching or creating a conversation preserves the original queue; background acknowledgements and reconnect snapshots update only the owning conversation. Server-side edit, remove, reorder, resume and stop commands also verify the conversation ID.
+
+Claude streaming input receives follow-ups at a foreground tool-result boundary or when the foreground becomes idle. Codex's persistent runtime uses native `turn/steer` at a foreground tool-result boundary (or turn startup for input already queued), pinning both the thread ID and active turn ID. Child-agent tool results are excluded. Sending a follow-up never interrupts the running task. Codex SDK fallback, Antigravity and explicit provider dispatch use next-turn delivery. Changing the model or execution settings while replying also waits for the next turn, since native steering cannot change turn settings.
+
+Codex RPC acceptance does not remove the pending message: a matching native `userMessage.clientId` confirms consumption and splits the saved history before subsequent output. If the turn ends without that event, native history is checked before any fallback. Confirmed rejection or absence falls back to the next turn; uncertain delivery stays paused rather than automatically resending. While native delivery is being confirmed, the row shows `AI 正在接收` and disables editing/removal.
+
+Account changes and image reads retain their initiating conversation across async completion. Provider resets keep an owner-specific pending payload until acknowledged and resend it on reconnect without clearing chat history. Resetting or deleting one conversation leaves other conversations' request receipts and task ownership intact. Deletion waits for a successful server response, clears the visible draft/runtime when appropriate, and rejects late history saves or events that would recreate the deleted conversation. Native Codex failures report errors; cancellation waits for a valid turn ID, and child-thread or replaced-process notifications cannot settle the current turn.
+
+Stop pauses pending messages; they require an explicit resume. Reconnect retries unconfirmed messages with the same IDs, consumes completed acknowledgements, and preserves the original conversation, model and attachments.
+
+## Desktop completion alerts
+
+The desktop app shows a native system notification and plays the system notification sound when an AI turn finishes successfully while the app is in the background, minimized or hidden. The native window state is checked immediately before dispatch. While inkfellow is in the foreground, all conversations complete silently, including other chat tabs. A completion suppressed in the foreground is not replayed when switching away. Each conversation/request pair alerts once. Subtask completion, stopped/failed turns and old reconnect/history events do not generate completion alerts.
+
+Completion alerts are enabled by default. Open the AI panel's account settings and toggle `完成提醒` to turn both the popup and sound on or off; the preference is saved by the desktop shell. This control is desktop-only.
+
 ## Requirements
 
 - Node.js 20.9 or newer when used with the main inkfellow project
@@ -55,6 +73,15 @@ claude auth status
 
 The service uses the Claude Agent SDK default credential discovery. Credentials may be stored in the system keychain, so checking only `~/.claude/.credentials.json` is not reliable. Do not set a third-party `ANTHROPIC_BASE_URL` in the service environment when the Claude subscription profile should use the official login.
 
+#### Additional Claude subscriptions
+
+The built-in `p_claude` profile always uses the default Claude configuration directory (`~/.claude`, or `CLAUDE_CONFIG_DIR` when the service inherits one). **Add Claude subscription account** in the account panel creates further `claude` profiles; each one gets its own configuration directory under `<data dir>/claude-accounts/<profile id>`, and the SDK process for that profile runs with `CLAUDE_CONFIG_DIR` pointing there, so the two logins never overwrite each other or the terminal's `claude` login.
+
+- **Login.** The key button opens a terminal running `claude auth login` with that directory. Switch the browser to the account being added (or open the printed link in a private window) before authorizing. The panel polls `/api/health/claude-auth` and shows each account's email once there is more than one, and warns when two profiles are logged in to the same account. A new account is not activated until the user selects it.
+- **Shared setup.** Only credentials and account state are separate. Before each launch the account directory gets links (junctions on Windows) to the main directory's `skills`, `plugins`, `agents`, `commands`, `output-styles`, `rules` and `projects` (transcripts and auto-memory), copies of `CLAUDE.md` and `settings.json`, and the main account's user-level `mcpServers`. A real directory the account already owns is left alone.
+- **Switching.** Each account is a separate profile, so switching mid-conversation follows the same rule as switching providers: the old native session is released and the conversation history is replayed into a fresh one.
+- **Removal.** Deleting the profile closes a persistent runtime bound to it, deletes its credentials, then removes the directory without following links.
+
 ### Codex / ChatGPT subscription
 
 Log in through Codex Desktop or the CLI as the service user:
@@ -63,7 +90,7 @@ Log in through Codex Desktop or the CLI as the service user:
 codex login
 ```
 
-The service exposes the Codex profile when `auth.json` in `CODEX_HOME` (default `~/.codex`) contains usable login data. The model picker and fallback chains use the account's Codex model catalog. Successful catalog lookups are cached for five minutes, and the service reuses the last successful catalog during temporary failures. Codex conversations use persistent thread IDs and map inkfellow permission modes to Codex sandbox modes.
+The service exposes the Codex profile only when `~/.codex/auth.json` contains usable login data. Codex conversations use persistent thread IDs and map inkfellow permission modes to Codex sandbox modes.
 
 ### API providers
 
@@ -84,7 +111,6 @@ Profiles can be added, edited, activated, and removed in the UI. Claude is alway
 The panel supports:
 
 - Model selection and provider-specific reasoning/effort levels.
-- Unlimited Codex web runs by default. After three silent minutes the panel shows a non-blocking progress notice; after fifteen it offers `Continue waiting` and `Stop task`, but never cancels automatically.
 - `plan`, `acceptEdits`, `auto`, and `bypassPermissions` modes.
 - Streaming text, thinking, tool use/results, cost/usage events, and interactive questions.
 - New, resume, rename, and delete operations for locally stored conversations.
@@ -92,18 +118,6 @@ The panel supports:
 - Skills discovered from the current user's Claude or Codex skill directories and the vault-local skill directories.
 
 Permission behavior is provider-specific. `bypassPermissions` is the broadest mode and should be enabled only in a trusted, single-user environment.
-
-## Fellow
-
-Open **✦ Fellow** in the chat header to plan work and delegate it to background Workers. Use **任务** to create a ticket manually, filter tickets, open a Worker's conversation, send follow-up instructions, stop or retry work, and archive finished tickets.
-
-Each ticket has its own conversation and persists under `CLAUDE_CHAT_DATA_DIR/tickets/<PORT>`, matching the conversation log's instance boundary. Workers with non-overlapping write scopes can run concurrently. Overlapping scopes queue until the worker holding the lock exits. A ticket without an explicit scope reserves the vault's write scope. Refreshing or switching conversations leaves the work running. After a service restart, interrupted work can be reviewed and retried from the board.
-
-Fellow and its Workers support Claude, Claude-compatible API profiles, Codex, and Antigravity. Codex and Antigravity use a local MCP bridge and an isolated CLI working directory for Fellow turns. Their file tools enforce the ticket's declared write scope. Install a streaming-capable Antigravity CLI for Fellow. Ordinary Antigravity chat can fall back to its one-shot runner on older installations.
-
-When a WeChat bot is connected, messages can dispatch and check the same tickets shown in the Web board. The originating peer receives batched progress or completion reports. The account identified by the bot's configured user ID can also see Web-origin tickets. Ticket artifacts can be opened or downloaded from the authenticated task board.
-
-The Web chat supports up to 10 independent active ordinary conversations. Switching or closing a tab leaves its run active. The notification inbox can reopen a finished chat or Worker, and browser notifications can be enabled from the inbox while the Web app is open. Claude uses a persistent SDK query per conversation. Codex uses its bundled app-server by default and Antigravity uses its stream-json CLI when available.
 
 ## Scheduled Jobs
 
@@ -118,10 +132,6 @@ The chat agent receives scheduler tools when the request looks like a reminder o
 
 Cron time zones are stored per job and default to `Asia/Shanghai`. One-off times use a future Unix timestamp in milliseconds. Schedules, state, and run logs live in `CLAUDE_CHAT_DATA_DIR`.
 
-Regular WeChat conversations and scheduled jobs prefer Antigravity when its Gemini models are available, with `gemini-4-hydrogen` first when listed. Codex and Claude follow in that order. WeChat requests that need the in-process scheduler tools still skip Antigravity and Codex because neither can receive that ephemeral MCP server. Each run rebuilds its candidate chain from the currently configured provider profiles and model fields. If a candidate is unavailable, returns no content, or its credentials are rejected, the service tries the next candidate; errors from the task itself are never retried on another model.
-
-Each scheduled-job candidate gets up to five minutes. A timeout aborts that candidate and moves to the next provider; the chain has a ten-minute total budget, so it will not keep trying indefinitely.
-
 At present, WeChat is the only registered external delivery adapter. References in source comments to Feishu or Telegram are extension points, not implemented channels.
 
 ## WeChat Connection
@@ -130,17 +140,100 @@ The settings panel can start a QR-code login flow. After confirmation, the servi
 
 WeChat state and downloaded media are stored below `CLAUDE_CHAT_DATA_DIR`. Treat the bot configuration as a credential. The integration depends on the configured Tencent iLink endpoints and should not be exposed as an unauthenticated public API.
 
+## Provider Process Reuse
+
+Claude uses an Agent SDK persistent query, and Antigravity uses a persistent
+stream-json process. Antigravity waits for its previous process to close before
+restarting with changed parameters.
+
+ChatGPT membership conversations use a persistent `codex app-server` process over
+line-delimited JSON-RPC, reusing both the process and its upstream WebSocket
+across turns. Set `CODEX_PERSISTENT=0` to fall back to the Codex SDK, which spawns
+a fresh `codex exec` per turn; the two are mutually exclusive, never concurrent —
+running them side by side is what caused the active-writer conflict that retired
+this path once before. `CODEX_APP_SERVER_BIN` overrides binary discovery.
+
+Measured on one Windows machine over a system proxy: per-turn spawn costs about
+10 seconds of process startup and teardown, so a full turn takes 15-20 seconds;
+persistent turns settle at 1.5-2.0 seconds after a 7.6-8.4 second first turn.
+That 10 seconds is *not* MCP initialization — `-c mcp_servers={}` measures the
+same, because MCP servers load in parallel and do not block the request.
+
+Persistence also matters for connection stability, not just latency. Codex 0.153
+talks to ChatGPT over a WebSocket and warms the connection up before it has
+anything to send, leaving it idle for 4-7 seconds (longer as context grows) before
+the first frame. Spawning per turn re-runs that exposed window every turn; reusing
+the process runs it once per process. An idle connection survived a 4-minute gap
+in testing with no reconnect.
+
+Request parameters are layered and the layering is load-bearing: `cwd`,
+`approvalPolicy`, and `model` belong on `thread/start`, while `effort` and
+`sandboxPolicy` belong on `turn/start`. `model` is also sent on every
+`turn/start`: when the runtime keeps using the same thread no `thread/start` is
+sent at all, so a model picked mid-conversation would otherwise never apply.
+app-server silently ignores fields it does not recognize, so a misplaced key fails
+without any error — a misplaced `sandboxPolicy` means the plan permission mode is
+no longer read-only while the UI looks unchanged. `codex-persistent.test.js` pins
+this down.
+
+Idle codex runtimes are shut down after 30 minutes. That is purely to release
+memory (about 170 MB including the MCP child processes), not to keep the
+connection healthy.
+
+## Per-Conversation Model Selection
+
+Provider account, model, and reasoning effort are remembered per conversation
+rather than globally. Changing the model in one conversation does not move any
+other conversation.
+
+The selection is stored in two places. The browser keeps the most recent 60
+conversations in `localStorage` (`convModelPrefs-v1`), and each conversation
+record in the server history carries `profileId`, `model`, and `effort` next to
+its `sessionId` and `sessionProvider`. Opening a conversation prefers the local
+entry, because it is written on every change; when there is none — a different
+machine, cleared site data, or a conversation older than the local cap — the
+server record is adopted and written back to `localStorage`. A `profileId`
+pointing at a deleted account is ignored, and the conversation falls back to the
+account that supplies its model.
+
+Switching models keeps the earlier conversation. Within one account the native
+session continues: Claude applies the new model to the live query, Codex resumes
+the saved thread (and passes the new model on `turn/start`), and Antigravity
+restarts its process with `--conversation`.
+
+Each provider only remembers the turns it handled itself, so before every turn the
+server works out what the target model is missing (`conversation-context.js`).
+Every history message carries a `via` tag — provider, account, and whether it was
+a `>vendor` dispatch — written when the message is recorded.
+
+- No native session to resume (first time this account sees the conversation, a
+  reset, or a resume that silently fell back to a new Codex thread): the recent
+  conversation is prepended to the prompt.
+- A native session exists but the conversation moved on elsewhere since its last
+  reply (another vendor, or a `>vendor` dispatch): only the turns it has not seen
+  are prepended.
+- Nothing was missed: the prompt is sent unchanged.
+
+Messages without a `via` tag predate this and are treated as already seen, so old
+conversations are not re-sent. A `>vendor` dispatch gets the same treatment for its
+own dispatch session, so "continue" or "redo these 18 images" reaches it with the
+conversation behind it, and the dispatched steps are stored on the history message
+(`dispatchSteps`, invisible to the UI) so the main model later learns what was done.
+
+Accounts that run on the Claude SDK (Claude membership, Anthropic API, DeepSeek,
+OpenRouter, MiniMax, custom) share one session slot, so each slot remembers which
+account created it; a different account never resumes it and gets the full
+conversation instead. After a restart the owner is recovered from the `via` tags.
+
+The prepended text is the visible conversation plus, per assistant turn, a one-line
+summary of what it did: files changed, commands run, files read, searches, and
+whether the turn was stopped or failed. When the 24,000-character budget is
+exceeded, the most recent turns are kept, the opening user message is kept as the
+original request, and the files changed in the omitted turns are still listed.
+Tool outputs, thinking, and raw SDK payloads are never included, and the stored
+user messages are not rewritten.
+
 ## Configuration
-
-While a web-chat reply is running, new messages enter a visible pending queue above the composer. Edit, delete, or reorder them before dispatch; images, quoted text, and file references stay attached. Claude also offers an explicit immediate follow-up action. Pending queues are scoped to a conversation and saved in the current browser tab's session storage, so refreshing that tab preserves them; they do not sync across devices. Only dispatched messages enter chat history. Switching conversations retains the previous conversation's queue and processes it when you return; `/clear` removes the current conversation's pending messages.
-
-Account settings group subscriptions and API accounts, display reported plan names and expired-login states, and collapse model mappings under advanced settings when adding an account. Quota-query failures do not by themselves imply that login has expired.
-
-Antigravity is available as a managed account in the web chat account picker. Install and log in to `agy` as the same operating-system user that runs this service. The CLI must expose `--output-format`, `--mode`, and `--effort` in `agy --help`; upgrade older installations with `agy update`. `GET /api/agy/models` checks compatibility and discovers models and supported reasoning levels. A readable model catalog indicates CLI availability, not a guarantee that a model request will succeed.
-
-Antigravity supports streaming text, tool cards, image attachments, per-conversation continuation, persistent history, reconnect recovery, and cancellation. Account settings show separate Gemini and Claude/GPT quota pools from the CLI's `/usage` command. Catalog results are cached for six hours and quota results for four minutes; failed catalog checks retry after a minute. It also participates in the WeChat and scheduled-job fallback chains. The default is `gemini-4-hydrogen` when available; selections for retired models such as `gemini-3.1-pro` fall back to the current catalog, preferring Hydrogen. Supported reasoning levels, including `xhigh`, come from that catalog.
-
-For Antigravity, plan mode uses the CLI's `plan` mode; other modes use `accept-edits`. The CLI sandbox remains enabled unless the user selects `bypassPermissions`, which explicitly auto-approves tools. Operations requiring interactive approval may be refused by the CLI in headless mode. Images and long prompts use private temporary files, deleted after the turn. Stopping a turn terminates its process group; disconnecting the browser keeps the turn running and records events for recovery.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -150,15 +243,16 @@ For Antigravity, plan mode uses the CLI's `plan` mode; other modes use `accept-e
 | `CLAUDE_PERMISSION_MODE` | `auto` | Initial permission mode: `plan`, `acceptEdits`, `auto`, or `bypassPermissions`. |
 | `CLAUDE_CHAT_DATA_DIR` | `claude-chat/data` | Sessions, history, schedules, run logs, WeChat state, media, and Codex thread data. |
 | `CLAUDE_CHAT_AUTH_PROFILE_FILE` | `claude-chat/auth-profile.json` | Provider profiles and API keys. |
-| `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history-<port>.json` | Optional override for the conversation history file. |
-| `CODEX_STREAM_STALL_MS` | `0` (disabled) | Optional Codex no-event watchdog in milliseconds. Leave disabled for long-running work. |
-| `CODEX_MAX_RUN_MS` | `0` (disabled) | Optional Codex wall-clock watchdog in milliseconds. Leave disabled for long-running work. |
-| `AGY_BIN` | `agy` from PATH or the user installation directory | Antigravity CLI executable path. |
-| `AGY_PRINT_TIMEOUT` | `24h` | Antigravity CLI turn time limit (a CLI duration such as `30m` or `24h`). |
+| `CLAUDE_CHAT_HISTORY_FILE` | `<data dir>/history.json` | Optional override for the merged conversation history file. |
+| `CLAUDE_CHAT_CLAUDE_ACCOUNTS_DIR` | `<data dir>/claude-accounts` | Configuration directories (and logins) of additional Claude subscription profiles. |
+| `AGY_PRINT_TIMEOUT` | `8760h` | Per-turn timeout handed to the Antigravity CLI. The persistent process has no other deadline; stopping is the user's job. |
+| `CODEX_PERSISTENT` | `1` | Set to `0` to fall back from the persistent `codex app-server` to per-turn Codex SDK spawning. Mutually exclusive, never concurrent. |
+| `CODEX_APP_SERVER_BIN` | resolved from `@openai/codex` | Override the codex binary used by the persistent path. |
+| `DESKTOP_MODE` | empty | Set to `true` by the desktop host. Also mirrors console output to `<data dir>/sidecar.log`, since the desktop sidecar runs with a hidden console and would otherwise discard it. |
+| `DESKTOP_AGENT_TOKEN` | empty | Tauri-only access token for embedded HTTP/WebSocket requests. Set by the desktop host, not by normal deployments. |
 | `WECHAT_CDN_BASE_URL` | Tencent CDN URL | Override for WeChat media downloads. |
 | `WECHAT_MAX_INLINE_IMAGE_BYTES` | `5242880` | Maximum image size embedded directly into an agent request. |
 | `WECHAT_MAX_MEDIA_BYTES` | `26214400` | Maximum inbound or outbound WeChat media size. |
-| `WECHAT_MAX_TEXT_CHARS` | `1800` | Maximum text length per outbound WeChat message chunk. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | empty | Optional inherited credentials for the default Claude runtime. UI profiles are preferred for multiple accounts. |
 | `ANTHROPIC_BASE_URL` and model variables | provider/runtime defaults | Optional inherited Claude-compatible runtime overrides. Avoid stale global overrides when switching UI profiles. |
 
@@ -170,12 +264,14 @@ Default runtime files include:
 
 ```text
 claude-chat/auth-profile.json       provider profiles and API keys
-claude-chat/data/history-<port>.json
+claude-chat/data/history.json       merged chat history
 claude-chat/data/session-<port>.json
 claude-chat/data/codex-thread-<port>.json
 claude-chat/data/schedules-<port>.json
 claude-chat/data/schedules-state-<port>.json
 claude-chat/data/runs/               scheduler run logs
+claude-chat/data/sidecar.log         console output, desktop mode only (rotated once at 4 MB)
+claude-chat/data/claude-accounts/    login and state of additional Claude subscription profiles
 claude-chat/data/wechat-*            WeChat credentials, sync state, history, and media
 ```
 
@@ -188,10 +284,10 @@ The service exposes the panel and a small local API:
 | Path | Purpose |
 | --- | --- |
 | `/` and static files | Embedded chat UI. |
-| `/api/health/claude-auth` | Claude CLI login status. |
+| `/api/health/claude-auth` | Claude CLI login status; `accounts` lists every Claude subscription profile. |
+| `/api/claude-accounts/login` | Opens a terminal running `claude auth login` for one Claude subscription profile. |
 | `/api/health/codex-auth` | Codex login status. |
-| `/api/codex/models` | Available Codex models, default model, and supported reasoning efforts. |
-| `/api/usage-limits` | Best-effort Claude/Codex subscription usage windows. |
+| `/api/usage-limits` | Best-effort Claude/Codex subscription usage windows; additional Claude profiles under `claudeAccounts`. |
 | `/api/auth-profile` | Read and manage provider profiles. Secret values are masked in GET responses. |
 | `/api/history` | List and manage local conversation history. |
 | `/api/cron/jobs` | List, create, enable/disable, and delete scheduled jobs. |
@@ -215,19 +311,28 @@ Recommended boundaries:
 - Use long read/send timeouts for agent streams.
 - Run the process as the same user that owns the selected subscription credentials and vault.
 
+## Desktop Embedding
+
+The Tauri app packages this directory with production dependencies and a Node runtime. At launch it:
+
+1. Chooses a free loopback port.
+2. Generates a random `DESKTOP_AGENT_TOKEN`.
+3. Sets the selected vault as `VAULT_PATH`.
+4. Stores auth profiles and runtime data in the desktop application config directory.
+5. Starts `server.js` as a child process and injects the token into the embedded panel URL and WebSocket.
+
+Do not add `.env`, `auth-profile.json`, `data/`, or `node_modules` to the desktop bundle manually; `scripts/prepare-desktop-sidecar.mjs` intentionally excludes and regenerates them.
+
 ## Development and Checks
 
 ```bash
 npm ci
 node --check server.js
 node --check scheduler.js
-npm test
 npm start
 ```
 
-`npm test` runs the isolated Node test suite. The server tests reserve temporary ports and data directories so they do not touch the production instances or credentials.
-
-From the repository root, `node --test tests/git-sync.test.mjs` verifies sync conflict protection with temporary local Git repositories. Scheduler intent tests cover authored instructions versus attached note context; conversation preference tests cover switching, reloads, legacy histories, and removed accounts.
+There is currently no automated test script in `claude-chat/package.json`; the declared `npm test` intentionally exits with an error. Use syntax checks plus a local service smoke test, then run the root project checks before release.
 
 ## Security Checklist
 
@@ -242,7 +347,6 @@ From the repository root, `node --test tests/git-sync.test.mjs` verifies sync co
 
 - **Claude shows logged out:** run `claude auth status` as the exact service user and check its `HOME` and keychain access.
 - **Codex profile is missing:** complete `codex login` as the service user and confirm that `~/.codex/auth.json` exists.
-- **A long Codex task looks quiet:** the web run has no automatic deadline by default. Keep waiting or stop it from the long-run notice; check `CODEX_*_MS` only if an operator intentionally configured a watchdog.
 - **Panel loads but streaming fails:** preserve WebSocket upgrade headers and make the configured frontend port match the service port.
 - **Agent cannot see the vault:** use an absolute `VAULT_PATH` and verify filesystem permissions for the service user.
 - **A stale provider endpoint is used:** remove inherited `ANTHROPIC_*` overrides from the process manager, then restart and activate the intended UI profile.

@@ -3526,6 +3526,92 @@ export default function NotesExplorer() {
       setIsDashboardChatActive(false);
     }
   }, [activePath]);
+  // 同步沉浸全宽状态到 chat iframe
+  useEffect(() => {
+    claudeFrameRef.current?.contentWindow?.postMessage(
+      { type: "agent-maximize-state", isMaximized: isChatFocusMode },
+      window.location.origin,
+    );
+  }, [isChatFocusMode, claudeFrameTick]);
+
+  // 处理来自对齐版 chat iframe 的面板控制、文件跳转与完成通知事件
+  useEffect(() => {
+    const COMPLETION_ALERTS_KEY = "inkfellow-completion-alerts-v1";
+    const readAlertsEnabled = () => {
+      try {
+        return window.localStorage.getItem(COMPLETION_ALERTS_KEY) !== "0";
+      } catch {
+        return true;
+      }
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== window.location.origin
+        || event.source !== claudeFrameRef.current?.contentWindow
+      ) return;
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+      if (data.type === "agent-collapse-panel") {
+        setChatFocusActive(false);
+        if (isMobileViewport) setMobileAssistantSheet("closed");
+        else setAssistantPanelVisible(false);
+        return;
+      }
+      if (data.type === "agent-toggle-maximize") {
+        if (isChatFocusMode) handleExitChatFocus();
+        else enterChatFocus();
+        return;
+      }
+      if (data.type === "agent-open-note" && typeof data.path === "string" && data.path.trim()) {
+        const rawPath = data.path.trim().replace(/^\/+/, "");
+        const exactMatch = files.find((f) => f.path === rawPath);
+        const resolvedPath = exactMatch
+          ? rawPath
+          : (files.find((f) => f.path.toLowerCase() === rawPath.toLowerCase())?.path ?? rawPath);
+        setChatFocusActive(false);
+        setGitPanelOpen(false);
+        if (isMobileViewport) setMobileAssistantSheet("closed");
+        void loadNote(resolvedPath);
+        return;
+      }
+      if (data.type === "completion-notifications-preference") {
+        const enabled = data.enabled === true;
+        try { window.localStorage.setItem(COMPLETION_ALERTS_KEY, enabled ? "1" : "0"); } catch { /* ignore */ }
+        if (enabled && typeof Notification !== "undefined" && Notification.permission === "default") {
+          void Notification.requestPermission().catch(() => { /* ignore */ });
+        }
+        claudeFrameRef.current?.contentWindow?.postMessage(
+          { type: "completion-notifications-state", enabled },
+          window.location.origin,
+        );
+        return;
+      }
+      if (data.type === "ai-turn-completed" && typeof data.conversationId === "string") {
+        if (!readAlertsEnabled()) return;
+        if (!document.hidden && isAssistantPanelOpen) return;
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+        const rawTitle = typeof data.title === "string" && data.title.trim() ? data.title.trim() : "Fellow";
+        const notification = new Notification(`${rawTitle.slice(0, 60)} 已完成`, {
+          body: "点击回到该 AI 对话",
+          tag: `inkfellow-turn-${data.conversationId}`,
+        });
+        const convId = data.conversationId;
+        notification.onclick = () => {
+          window.focus();
+          if (isMobileViewport) setMobileAssistantSheet("expanded");
+          else setAssistantPanelVisible(true);
+          claudeFrameRef.current?.contentWindow?.postMessage(
+            { type: "open-conversation", conversationId: convId },
+            window.location.origin,
+          );
+          notification.close();
+        };
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [isMobileViewport, isChatFocusMode, isAssistantPanelOpen, files, loadNote, enterChatFocus, handleExitChatFocus]);
+
   // 面板收起时顺手让 iframe 里的设置/历史面板退出，
   // 否则下次展开看到的还是设置页而不是对话本身
   useEffect(() => {
@@ -4662,39 +4748,6 @@ export default function NotesExplorer() {
               title="拖拽调整面板宽度，双击恢复默认"
               tabIndex={!isMobileViewport && isAssistantPanelOpen ? 0 : -1}
             />
-            {/* 桌面端收起按钮：浮在 iframe 顶栏（44px，按钮居右）左侧空白处，
-                收起动作就近发生在面板上，而不是要回到笔记头部找 Fellow 胶囊 */}
-            {!isMobileViewport && (
-              <button
-                type="button"
-                className={`${styles.assistantPanelCollapse} ${isChildOverlayOpen ? styles.assistantPanelCollapseHidden : ""}`}
-                onClick={() => setAssistantPanelVisible(false)}
-                aria-label="收起对话面板"
-                title="收起（⌘J）"
-                tabIndex={isAssistantPanelOpen && !isChildOverlayOpen ? 0 : -1}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <polyline points="13 17 18 12 13 7" />
-                  <polyline points="6 17 11 12 6 7" />
-                </svg>
-              </button>
-            )}
-            {/* 进入专注就近放在对话面板顶部，和收起按钮同一排：开关都在对话这一侧，
-                不必回到笔记头部去找 */}
-            {!isMobileViewport && (
-              <button
-                type="button"
-                className={`${styles.assistantPanelFocus} ${isChildOverlayOpen ? styles.assistantPanelCollapseHidden : ""}`}
-                onClick={enterChatFocus}
-                aria-label="专注聊天"
-                title="专注聊天（Ctrl/⌘ + \）"
-                tabIndex={isAssistantPanelOpen && !isChildOverlayOpen ? 0 : -1}
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-                </svg>
-              </button>
-            )}
           </>
         )}
 
@@ -4742,7 +4795,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=12${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=13${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}
@@ -4751,6 +4804,16 @@ export default function NotesExplorer() {
             setClaudeFrameTick(tick => tick + 1);
             // 新文档里没有任何子面板，清掉可能残留的覆盖态
             setIsChildOverlayOpen(false);
+            let alertsEnabled = true;
+            try { alertsEnabled = window.localStorage.getItem("inkfellow-completion-alerts-v1") !== "0"; } catch { /* ignore */ }
+            claudeFrameRef.current?.contentWindow?.postMessage(
+              { type: "completion-notifications-state", enabled: alertsEnabled },
+              window.location.origin,
+            );
+            claudeFrameRef.current?.contentWindow?.postMessage(
+              { type: "agent-maximize-state", isMaximized: isChatFocusMode },
+              window.location.origin,
+            );
             // Re-send the current note context once the iframe is ready.
             // The useEffect fires when activePath changes, but the iframe may
             // still be loading at that point and miss the message.

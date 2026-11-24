@@ -73,7 +73,11 @@ export function codexRuntimeReusable(runtime, signature) {
   return Boolean(runtime.started && runtime.signature === signature);
 }
 
-// Decline unexpected approval requests. The Web client chooses a sandbox in advance.
+/* codex 会反过来问客户端问题（要不要批准这条命令、这个补丁）。approvalPolicy
+   给的是 "never"，正常不该收到；但万一收到而我们不回，那一轮就永远挂着——
+   codex 在等一个不会来的答复。所以一律回一个「同意」：
+   approvalPolicy=never 的语义本来就是「别拿这些来烦用户」，而真正的安全边界
+   是 sandbox（plan 模式是 read-only，越权的操作在那一层就被挡了）。 */
 const APPROVAL_METHODS = new Set([
   "applyPatchApproval",
   "execCommandApproval",
@@ -153,7 +157,7 @@ export class PersistentCodexRuntime {
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", chunk => { if (this.proc === proc) this._onStdout(chunk); });
     proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr = (this._stderr + chunk).slice(-16000); });
+    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr += chunk; });
     proc.on("error", err => { if (this.proc === proc) this._onExit(err); });
     proc.on("close", code => { if (this.proc === proc) this._onExit(null, code); });
     return proc;
@@ -429,11 +433,10 @@ export class PersistentCodexRuntime {
 
   _answerServerRequest(message) {
     const tail = String(message.method).split("/").pop();
-    const approvalRequest = APPROVAL_METHODS.has(tail);
-    const decision = tail === "applyPatchApproval" || tail === "execCommandApproval" ? "denied" : "decline";
+    const approved = APPROVAL_METHODS.has(tail);
     try {
-      this._send(approvalRequest && tail !== "permissionsRequestApproval"
-        ? { jsonrpc: "2.0", id: message.id, result: { decision } }
+      this._send(approved
+        ? { jsonrpc: "2.0", id: message.id, result: { decision: "approved" } }
         : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `inkfellow 不处理 ${message.method}` } });
     } catch { /* 进程没了，下面的 close 会收拾这一轮 */ }
   }

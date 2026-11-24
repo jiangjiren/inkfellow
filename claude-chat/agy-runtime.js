@@ -55,7 +55,7 @@ export function agyRuntimeSignature({ bin, cwd, model, effort, permissionMode, e
 }
 
 /** 常驻进程的命令行。跟一次性那套的区别只有：prompt 改从 stdin 来。 */
-export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId, extraAddDirs = [], extraArgs = [] }) {
+export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeConversationId, extraAddDirs = [] }) {
   const args = [
     // Go 的 flag 包要求 --print 带值；prompt 走 stdin，所以给个空的。
     // 写成分开的两个参数会被它当成「把下一个参数当 prompt」，必须是 --print= 这一坨。
@@ -64,8 +64,10 @@ export function agyPersistentArgs({ cwd, model, effort, permissionMode, resumeCo
     "--output-format", "stream-json",
     "--print-timeout", AGY_PRINT_TIMEOUT,
     "--mode", agyProvider.modeFlag(permissionMode),
+    // headless 下没人能点授权弹窗，不放行的话工具会一直等到 print-timeout。
+    // plan 模式靠上面的 --mode 限制它别动文件，而不是靠权限拦。
+    "--dangerously-skip-permissions",
   ];
-  args.push(permissionMode === "bypassPermissions" ? "--dangerously-skip-permissions" : "--sandbox", ...extraArgs);
   if (model) args.push("--model", model);
   const effortFlag = agyProvider.effortForModel(model, effort);
   if (effortFlag) args.push("--effort", effortFlag);
@@ -137,7 +139,7 @@ export class PersistentAgyRuntime {
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", chunk => { if (this.proc === proc) this._onStdout(chunk); });
     proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr = (this._stderr + chunk).slice(-16000); });
+    proc.stderr.on("data", chunk => { if (this.proc === proc) this._stderr += chunk; });
     proc.on("error", err => { if (this.proc === proc) this._onExit(err); });
     proc.on("close", code => { if (this.proc === proc) this._onExit(null, code); });
     return proc;

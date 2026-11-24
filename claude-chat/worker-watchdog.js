@@ -10,10 +10,14 @@
  * 回调（暂停或告警通知军师与用户），绝不让后台任务默默空转烧额度。
  */
 
-import { scopedWriteTarget } from "./write-scope-lock.js";
+import { isPathWithinScope, scopedWriteTarget } from "./write-scope-lock.js";
 
 export const READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "AskUserQuestion", "WebSearch", "WebFetch"];
 export const WORKER_TOOLS = [...READ_ONLY_TOOLS, "Write", "Edit", "NotebookEdit"];
+
+export function workerAllowedTools(ticket) {
+  return ticket?.mandate?.allowBash === true ? [...WORKER_TOOLS, "Bash"] : WORKER_TOOLS;
+}
 
 export function workerToolDecision(
   ticket,
@@ -124,6 +128,18 @@ export class WorkerWatchdog {
     for (const key of [...this._flagged]) {
       if (key.startsWith(`${ticketId}:`)) this._flagged.delete(key);
     }
+  }
+
+  /** 即时校验工具写操作是否越界（超出 Ticket 声明的 writeScope）。 */
+  checkWriteTool(ticket, toolName, input, cwd = "") {
+    if (!ticket || !["Write", "Edit", "NotebookEdit"].includes(toolName)) return null;
+    const writeScope = ticket.mandate?.writeScope || [];
+    const targetPath = input?.file_path || input?.path || input?.notebook_path || "";
+    if (!targetPath) return null;
+    if (isPathWithinScope(targetPath, writeScope, cwd)) return null;
+    const reason = `尝试修改工单范围之外的文件（${targetPath}，允许范围：${writeScope.join(", ")}）`;
+    this._trigger(ticket, reason, { kind: "scope_violation", targetPath });
+    return reason;
   }
 
   /** 单次全量巡检（也方便单测直接同步调用）。 */

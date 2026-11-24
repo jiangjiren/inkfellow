@@ -303,8 +303,8 @@ async function permittedHtmlAsset(note: ShareableNote, requested: string, kind: 
   const seen = new Set(assets);
   if (seen.has(match)) return match;
 
-  for (const module of modules) {
-    for (const relative of await moduleResources(module)) {
+  for (const moduleSource of modules) {
+    for (const relative of await moduleResources(moduleSource)) {
       const reference = getLocalResource(relative, base);
       if (reference) seen.add(reference);
     }

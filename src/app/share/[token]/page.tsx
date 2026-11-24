@@ -66,39 +66,13 @@ export async function generateMetadata({ params }: SharePageProps): Promise<Meta
   }
 }
 
-export default async function SharePage({ params }: SharePageProps) {
-  const { token } = await params;
-
+async function loadSharePage(token: string) {
   try {
     const { note } = await readSharedNote(token);
     const isHtml = isHtmlShare(note.path);
     const headings = isHtml ? [] : extractHeadings(note.content);
-
-    return (
-      <main className={styles.page}>
-        <div className={styles.shell}>
-          <div className={styles.contentRow}>
-            {headings.length > 0 && <PcTocSidebar headings={headings} />}
-
-            <article className={`${styles.document} ${isHtml ? styles.htmlDocument : ""}`}>
-              {isHtml ? (
-                <NotesHtml
-                  html={prepareSharedHtml(note, token)}
-                  publicSharePath={`/share/${token}`}
-                />
-              ) : (
-                <SharedNoteContent
-                  markdown={note.content}
-                  notePath={note.path}
-                  token={token}
-                  headings={headings}
-                />
-              )}
-            </article>
-          </div>
-        </div>
-      </main>
-    );
+    const html = isHtml ? prepareSharedHtml(note, token) : null;
+    return { note, headings, html };
   } catch (error) {
     if (isExpectedMissingShare(error)) {
       notFound();
@@ -106,4 +80,35 @@ export default async function SharePage({ params }: SharePageProps) {
 
     throw error;
   }
+}
+
+export default async function SharePage({ params }: SharePageProps) {
+  const { token } = await params;
+  const { note, headings, html } = await loadSharePage(token);
+
+  return (
+    <main className={styles.page}>
+      <div className={styles.shell}>
+        <div className={styles.contentRow}>
+          {headings.length > 0 && <PcTocSidebar headings={headings} />}
+
+          <article className={`${styles.document} ${html !== null ? styles.htmlDocument : ""}`}>
+            {html !== null ? (
+              <NotesHtml
+                html={html}
+                publicSharePath={`/share/${token}`}
+              />
+            ) : (
+              <SharedNoteContent
+                markdown={note.content}
+                notePath={note.path}
+                token={token}
+                headings={headings}
+              />
+            )}
+          </article>
+        </div>
+      </div>
+    </main>
+  );
 }

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import crypto from "node:crypto";
+import * as agyProvider from "./providers/antigravity.js";
 
 const html = await readFile(new URL("./public/index.html", import.meta.url), "utf8");
 const server = await readFile(new URL("./server.js", import.meta.url), "utf8");
@@ -301,10 +302,11 @@ test("Gemini follow-ups default to Hydrogen and send the displayed selection", (
   const ctx = vm.createContext({
     subtaskThreads: new Map([[thread.key, thread]]), subtaskCardRefs: new Map([[thread.key, card]]),
     subtaskProfile: () => ({ provider: "antigravity" }), subtaskKey: (c, i) => `${c}|${i}`,
+    modelOptionsForProfile: () => [{ model: "gemini-4-hydrogen" }, { model: "gemini-4-argon" }],
     subtaskItemSettled: () => true, subtaskCanFollowUp: () => true, selectedPermissionMode: "auto",
     wsSend: event => (sent.push(event), true), persistSubtaskPending() {}, updateBackgroundActivity() {},
   });
-  vm.runInContext(fn(html, "subtaskCurrentModel") + "\n" + fn(html, "pumpSubtaskThread"), ctx);
+  vm.runInContext(["upgradeLegacyAgyModel", "subtaskCurrentModel", "pumpSubtaskThread"].map(name => fn(html, name)).join("\n"), ctx);
   const send = id => {
     const item = { id, role: "user", status: "queued", text: id };
     thread.items.push(item); thread.queue.push(item); thread.inflight = null;
@@ -313,6 +315,8 @@ test("Gemini follow-ups default to Hydrogen and send the displayed selection", (
   assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "gemini-4-hydrogen");
   send("req_1");
   assert.equal(sent[0].model, "gemini-4-hydrogen");
+  s.followupModel = "gemini-3.8-flash";
+  assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "gemini-4-hydrogen");
   s.followupModel = "gemini-4-argon";
   assert.equal(ctx.subtaskCurrentModel("conv1", "task1", s), "gemini-4-argon");
   send("req_2");
@@ -396,10 +400,12 @@ test("dispatch captures completed-only Gemini and Codex tools once", async () =>
     const ctx = vm.createContext({
       DISPATCH_SESSION_WRITERS: new Set(), resolveDispatchProfile: () => ({ id: "p1", provider, name: provider }),
       isCodexAuthAvailable: () => true, isAgyAuthAvailable: () => true, isSubscriptionProvider: () => true,
+      agyProvider,
       dispatchModelForProfile: () => "model", codexSandboxMode: () => "workspace-write", CODEX_CLIENT_OPTIONS: {}, AbortController,
       codexToolName: item => item.type, codexToolInput: item => item, codexItemText: item => item.text,
       agyToolName: step => step.tool_name, agyToolInput: input => input,
-      runAgy: async ({ onEvent }) => {
+      runAgy: async ({ model, onEvent }) => {
+        assert.equal(model, "gemini-4-hydrogen");
         for (const [step_index, state] of [[0, "ACTIVE"], [0, "ACTIVE"], [0, "DONE"], [1, "DONE"]]) {
           onEvent({ event: "step_update", step_update: { step_index, step_type: "tool", state, tool_name: `tool_${step_index}`, tool_info: {} } });
         }
@@ -413,7 +419,8 @@ test("dispatch captures completed-only Gemini and Codex tools once", async () =>
       })() }; } }; } },
     });
     vm.runInContext(server.slice(server.indexOf("async function executeProviderDispatch("), server.indexOf("/* 正在跑的子任务追问")), ctx);
-    await ctx.executeProviderDispatch({ provider: "p1", profileData: {}, task: "test", cwd: ".", onStep: name => steps.push(name) });
+    const model = provider === "antigravity" ? "gemini-3.8-flash" : undefined;
+    await ctx.executeProviderDispatch({ provider: "p1", profileData: {}, task: "test", cwd: ".", model, onStep: name => steps.push(name) });
     assert.equal(steps.length, 2, `${provider} must include completed-only tools without duplicating started tools`);
   }
 });

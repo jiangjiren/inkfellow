@@ -238,6 +238,7 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
       createdAt: ts,
       updatedAt: ts,
       reportedAt: null,
+      archivedAt: null,
     };
     writeTicketToDisk(ticket);
     tickets.set(ticket.id, ticket);
@@ -291,6 +292,38 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
     return true;
   }
 
+  function archiveFinished(canArchive = () => true) {
+    const archivedIds = [];
+    const failedIds = [];
+    const archivedAt = new Date(now()).toISOString();
+    for (const ticket of tickets.values()) {
+      if (!TERMINAL_TICKET_STATUSES.has(ticket.status) || ticket.archivedAt || !canArchive(ticket.id)) continue;
+      try {
+        const updated = update(ticket.id, draft => { draft.archivedAt = archivedAt; });
+        if (updated) archivedIds.push(ticket.id);
+      } catch (error) {
+        console.warn(`[Orchestrator] Could not archive ticket ${ticket.id}:`, error.message);
+        failedIds.push(ticket.id);
+      }
+    }
+    return { archivedIds, failedIds };
+  }
+
+  function removeArchived(canRemove = () => true) {
+    const removedIds = [];
+    const failedIds = [];
+    for (const ticket of tickets.values()) {
+      if (!ticket.archivedAt || !TERMINAL_TICKET_STATUSES.has(ticket.status) || !canRemove(ticket.id)) continue;
+      try {
+        if (remove(ticket.id)) removedIds.push(ticket.id);
+      } catch (error) {
+        console.warn(`[Orchestrator] Could not remove archived ticket ${ticket.id}:`, error.message);
+        failedIds.push(ticket.id);
+      }
+    }
+    return { removedIds, failedIds };
+  }
+
   function removeFinished(canRemove = () => true) {
     const removedIds = [];
     const failedIds = [];
@@ -308,9 +341,9 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
 
   /**
    * 列表排序按注意力优先级：
-   *   needs_attention > running > queued > 其他按更新时间倒序
+   *   needs_attention > running > queued > 未归档终态 > 已归档终态（按时间倒序）
    */
-  function list({ status = null, parentConversationId = null, limit = 100 } = {}) {
+  function list({ status = null, parentConversationId = null, archived = "all", limit = 100 } = {}) {
     const priority = {
       needs_attention: 0,
       running: 1,
@@ -326,15 +359,22 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
       : (typeof status === "string" && status.trim() ? new Set([status.trim()]) : null);
 
     let items = [...tickets.values()];
+    if (archived === "active" || archived === false) {
+      items = items.filter((t) => !t.archivedAt);
+    } else if (archived === "only" || archived === true) {
+      items = items.filter((t) => Boolean(t.archivedAt));
+    }
     if (statusSet) items = items.filter((t) => statusSet.has(t.status));
     if (parentConversationId) {
       items = items.filter((t) => t.parentConversationId === parentConversationId);
     }
     items.sort((a, b) => {
-      const pa = priority[a.status] ?? 9;
-      const pb = priority[b.status] ?? 9;
+      const pa = a.archivedAt ? 20 : (priority[a.status] ?? 9);
+      const pb = b.archivedAt ? 20 : (priority[b.status] ?? 9);
       if (pa !== pb) return pa - pb;
-      return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+      const ta = a.archivedAt ? String(a.archivedAt || a.updatedAt || "") : String(a.updatedAt || "");
+      const tb = b.archivedAt ? String(b.archivedAt || b.updatedAt || "") : String(b.updatedAt || "");
+      return tb.localeCompare(ta);
     });
     return items.slice(0, Math.max(1, limit)).map((t) => structuredClone(t));
   }
@@ -373,6 +413,7 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
       pendingQuestion: ticket.result?.pendingQuestion || null,
       createdAt: ticket.createdAt,
       updatedAt: ticket.updatedAt,
+      archivedAt: ticket.archivedAt || null,
     };
   }
 
@@ -383,6 +424,8 @@ export function createTicketStore({ dir, vault = null, now = () => Date.now() })
     findByWorkerConversationId,
     update,
     remove,
+    archiveFinished,
+    removeArchived,
     removeFinished,
     list,
     toSummary,

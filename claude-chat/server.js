@@ -40,7 +40,7 @@ import { ConversationSession } from "./conversation-session.js";
 import { SessionRegistry } from "./session-registry.js";
 import { DispatchAbortRegistry } from "./dispatch-abort-registry.js";
 import { fetchMaybeViaProxy } from "./proxy-fetch.js";
-import { hasSchedulerIntent, hasSchedulerIntentForMessage } from "./scheduler-intent.js";
+import { currentScheduleTime, schedulerScopeForTurn, SCHEDULER_INTENT_GUIDANCE } from "./scheduler-intent.js";
 import { z } from "zod";
 import { handleSyncSummary } from "./sync-summary.js";
 import {
@@ -68,9 +68,16 @@ import {
   STRATEGIST_DISALLOWED_TOOLS,
   STRATEGIST_SYSTEM_PROMPT,
   appendStrategistMemory,
+  buildNonClaudeStrategistPrefix,
   buildWorkerSystemPrompt,
+  compactStrategistMemoryFile,
   createOrchestrator,
+  extractStructuredCompactionSummary,
+  extractUsageInputTokens,
+  isInternalStrategistReportPrompt,
   loadSpecialists,
+  readStrategistMemory,
+  summarizeStrategistMessageForMemory,
 } from "./orchestrator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -157,13 +164,11 @@ const WEB_SCHEDULER_PEER = `web:${PORT}`;
 
 const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
 
-当用户提到以下任一场景时，必须使用 scheduler MCP 工具处理，不能只用文字承诺：
-- 定时、每天、每周、每月、每小时、工作日、提醒我、自动
-- X分钟后、X小时后、一会儿、稍后、等会
-- 查看任务、取消任务、删除任务、暂停任务、恢复任务
+${SCHEDULER_INTENT_GUIDANCE}
 
 可用工具：
 - create_schedule：创建循环或一次性任务
+- get_schedule_time：读取当前时间和毫秒时间戳，供一次性任务换算触发时间
 - list_schedules：查看当前用户的任务
 - delete_schedule：删除任务
 - toggle_schedule：暂停或恢复任务
@@ -173,13 +178,9 @@ const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
 - 一次性任务使用 kind="once"，并填写 runAtMs，runAtMs 是 Unix 毫秒时间戳。
 - timezone 默认使用 Asia/Shanghai。
 - taskPrompt 必须是任务触发时发给 Agent 的完整执行指令，不能只写一句模糊描述。
-- 只有工具调用成功后，才能告诉用户“已创建/已删除/已设置”。
-
-禁止：
-- 不要使用 Bash、curl 或 /api/cron/jobs。
+- 通过 scheduler MCP 管理 Inkfellow 定时任务，不使用 Bash、curl 或 /api/cron/jobs 操作定时任务。
 - 不要让用户手动配置 sourceChannel/sourcePeer。
 - 不要编造任务 ID。
-- 不要只回复“好的，到时提醒你”。
 
 常用 cron：
 - 0 9 * * *：每天 9:00
@@ -189,9 +190,8 @@ const INKFELLOW_SCHEDULER_PROMPT = `【inkfellow 定时任务规则】
 - 0 0 1 * *：每月 1 日 0:00
 
 交互规则：
-- 如果用户说“每天早上提醒我复盘”，应直接创建任务。
-- 如果时间不明确，例如“明天提醒我”，需要先问具体时间。
-- 如果任务内容不明确，例如“提醒我一下”，需要先问提醒什么。
+- 用户说“每个工作日上午 9 点提醒我复盘”时，创建周期任务。
+- 用户说“明天提醒我”“每天早上提醒我”时，先问清提醒内容和具体时间。
 - 如果用户要取消、暂停或恢复任务，先 list_schedules，再根据用户描述匹配任务并调用对应工具。`;
 
 const WECHAT_OUTPUT_PROMPT = `【微信通道输出规则】
@@ -379,7 +379,8 @@ const CODEX_USE_PERSISTENT = process.env.CODEX_PERSISTENT !== "0";
 
 function reasoningEffort(value, provider) {
   if (provider === "codex" && (value === "ultra" || value === null)) return value;
-  return EFFORT_LEVELS.has(value) ? value : "medium";
+  if (EFFORT_LEVELS.has(value)) return value;
+  return provider === "codex" ? codexProvider.DEFAULT_CHAT_EFFORT : "medium";
 }
 
 function codexServiceTier(speed) {
@@ -601,7 +602,7 @@ function explainAgyFailure(raw) {
    也可能残留一个 agy 那边已经下线的版本。具体怎么分辨在 agyProvider.resolveModel，
    用不了的名字退回这个账号的默认模型。 */
 function resolveAgyModel(requested, profile) {
-  const fallback = profile?.sonnetModel || agyDefaultModels().sonnetModel;
+  const fallback = agyProvider.upgradeLegacyModel(profile?.sonnetModel || agyDefaultModels().sonnetModel);
   if (typeof requested !== "string" || !requested.trim()) return fallback;
   return agyProvider.resolveModel(requested.trim()) ?? fallback;
 }
@@ -3508,11 +3509,14 @@ async function handleWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   // 微信端快捷指令：与桌面端 ✦ Fellow 的「整理记忆」对齐（不丢长期记忆与运行中的后台任务）
   if (mediaFiles.length === 0 && /^(整理记忆|新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
     flushWechatInboundBuffer(sender);
-    const result = compactStrategistMemory();
-    const reply = result.ok
-      ? "已整理记忆并开启干净上下文（长期记忆和正在运行的后台任务均已保留）。"
-      : (result.error || "Fellow 正在回复中，请稍后再试。");
-    sendWechatMessage(baseUrl, token, sender, reply, contextToken).catch(() => {});
+    void compactStrategistMemory().then((result) => {
+      const reply = result.ok
+        ? "已整理记忆并开启干净上下文（长期记忆和正在运行的后台任务均已保留）。"
+        : (result.error || "Fellow 正在回复中，请稍后再试。");
+      return sendWechatMessage(baseUrl, token, sender, reply, contextToken);
+    }).catch((err) => {
+      sendWechatMessage(baseUrl, token, sender, `整理记忆失败：${err.message || err}`, contextToken).catch(() => {});
+    });
     return;
   }
 
@@ -3969,9 +3973,10 @@ async function executeProviderDispatch({
     throw new Error(`${targetProfile.name} 的 API Key 还没有配置。`);
   }
 
-  const model = (typeof requestedModel === "string" && requestedModel.trim())
+  const selectedModel = (typeof requestedModel === "string" && requestedModel.trim())
     ? requestedModel.trim()
     : dispatchModelForProfile(targetProfile);
+  const model = targetProfile.provider === "antigravity" ? agyProvider.upgradeLegacyModel(selectedModel) : selectedModel;
   const controller = abortController || new AbortController();
   let output = "";
   // 本轮结束后回传给调用方，让它记住以便下一轮续接
@@ -4617,9 +4622,14 @@ function _buildOrchestratorMcpServer({ parentConversationId = STRATEGIST_CONVERS
 }
 
 function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
-  const nowMs = Date.now();
-  const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
   const isCurrentJob = job => job.sourceChannel === sourceChannel && job.sourcePeer === sourcePeer;
+
+  const getScheduleTimeTool = tool(
+    "get_schedule_time",
+    "读取当前时间与 Unix 毫秒时间戳，以计算一次性定时任务的触发时间",
+    {},
+    async () => ({ content: [{ type: "text", text: JSON.stringify(currentScheduleTime()) }] })
+  );
 
   const createScheduleTool = tool(
     "create_schedule",
@@ -4629,7 +4639,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
       description: z.string().describe("任务的简短描述，如：每天提醒喝水"),
       taskPrompt: z.string().describe("任务触发时发给 Agent 的完整执行指令"),
       cronExpr: z.string().optional().describe("cron 表达式，kind=cron 时必填，如 '0 9 * * *'（Asia/Shanghai）"),
-      runAtMs: z.number().optional().describe(`Unix 毫秒时间戳，kind=once 时必填。当前时间：${nowStr}，当前毫秒戳：${nowMs}`),
+      runAtMs: z.number().optional().describe("未来触发时间的 Unix 毫秒时间戳，kind=once 时必填，可用 get_schedule_time 读取当前时间"),
       timezone: z.string().optional().describe("时区，默认 Asia/Shanghai"),
     },
     async ({ kind, description, taskPrompt, cronExpr, runAtMs, timezone }) => {
@@ -4702,7 +4712,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
   return createSdkMcpServer({
     name: "scheduler",
     instructions: INKFELLOW_SCHEDULER_PROMPT,
-    tools: [createScheduleTool, listSchedulesTool, deleteScheduleTool, toggleScheduleTool],
+    tools: [createScheduleTool, getScheduleTimeTool, listSchedulesTool, deleteScheduleTool, toggleScheduleTool],
     alwaysLoad: true,
   });
 }
@@ -4748,18 +4758,234 @@ function resolveStrategistRuntimeConfig() {
   };
 }
 
-function compactStrategistMemory({ note } = {}) {
+const STRATEGIST_AUTO_COMPACT_TURNS = Math.max(2, Number(process.env.STRATEGIST_AUTO_COMPACT_TURNS) || 36);
+const STRATEGIST_AUTO_COMPACT_TOKENS = Math.max(1000, Number(process.env.STRATEGIST_AUTO_COMPACT_TOKENS) || 120_000);
+const STRATEGIST_AUTO_COMPACT_COOLDOWN_MS = Math.max(0, Number(process.env.STRATEGIST_AUTO_COMPACT_COOLDOWN_MS ?? 120_000));
+let strategistCompacting = false;
+let lastStrategistAutoCompactAt = 0;
+
+function getStrategistContextStatus() {
+  const conv = readHistory().find(item => item.id === STRATEGIST_CONVERSATION_ID);
+  const resetIdx = Number(conv?.contextResetIndex) || 0;
+  const windowMsgs = (conv?.messages || []).slice(resetIdx).filter(m => m && (m.role === "user" || m.role === "assistant"));
+  // 后台工单自动汇报唤醒（[后台工单系统自动汇报]）不计入用户主动对话轮数，避免多任务并发完成时虚增轮数过早触发重置
+  const turnsSinceReset = windowMsgs.filter(m => m.role === "user" && !isInternalStrategistReportPrompt(m.text)).length;
+  const messagesSinceReset = windowMsgs.length;
+  const charsSinceReset = windowMsgs.reduce((sum, m) => sum + summarizeStrategistMessageForMemory(m).length, 0);
+  const estimatedTokens = Math.round(charsSinceReset * 0.65);
   const target = sessions.peek(STRATEGIST_CONVERSATION_ID);
-  if (foregroundActiveFor(target)) {
+  const reportedTokens = Number(target?.lastInputTokens) || 0;
+  const lastInputTokens = Math.max(reportedTokens, estimatedTokens);
+  const turnRatio = turnsSinceReset / STRATEGIST_AUTO_COMPACT_TURNS;
+  const tokenRatio = lastInputTokens / STRATEGIST_AUTO_COMPACT_TOKENS;
+  const ratio = Math.min(1, Math.max(turnRatio, tokenRatio));
+  const level = ratio >= 0.85 ? "high" : ratio >= 0.65 ? "warn" : "normal";
+  return {
+    turnsSinceReset,
+    messagesSinceReset,
+    lastInputTokens,
+    thresholdTurns: STRATEGIST_AUTO_COMPACT_TURNS,
+    thresholdTokens: STRATEGIST_AUTO_COMPACT_TOKENS,
+    ratio: Number(ratio.toFixed(3)),
+    level,
+  };
+}
+
+function pickSummaryApiProfile() {
+  const data = readProfiles();
+  const strategistCfg = resolveStrategistRuntimeConfig();
+  const candidates = [];
+  if (strategistCfg.profileId) {
+    const own = data.profiles.find(p => p.id === strategistCfg.profileId);
+    if (own) candidates.push(own);
+  }
+  for (const p of data.profiles || []) {
+    if (!candidates.includes(p)) candidates.push(p);
+  }
+  return candidates.find(p => p && !isSubscriptionProvider(p.provider) && p.apiKey && (p.baseUrl || p.provider === "anthropic")) || null;
+}
+
+async function synthesizeStrategistMemoryWithAI(windowMessages, existingMemory, activeTickets) {
+  if (process.env.INKFELLOW_AI_COMPACT === "0" || windowMessages.length < 4) return null;
+  const profile = pickSummaryApiProfile();
+  if (!profile) return null;
+
+  const transcript = windowMessages
+    .map(m => ({ role: m.role, text: summarizeStrategistMessageForMemory(m) }))
+    .filter(m => m.text)
+    .slice(-40)
+    .map(m => `${m.role === "user" ? "用户" : "Fellow"}：${m.text.replace(/\s+/g, " ").trim().slice(0, 320)}`)
+    .join("\n");
+  if (!transcript) return null;
+  const activeLines = (activeTickets || [])
+    .slice(0, 10)
+    .map(t => `- [${t.status}] ${t.id}「${t.title}」`)
+    .join("\n");
+
+  const promptText = [
+    "你是个人 AI 秘书 Fellow 的记忆整理器。请把「旧长期记忆」与「近期新增对话」融合去重，输出一份精炼、准确、可直接注入下一轮上下文的中文 Markdown 长期工作记忆（总字数控制在 1200 字以内，不要编造信息，不要输出多余寒暄）：",
+    "",
+    "必须只包含以下 3 个小节（没有内容的小节可省略）：",
+    "### 长期偏好与约束",
+    "### 正在推进的事项",
+    "### 关键决策与结论",
+    "",
+    existingMemory ? `【旧长期记忆】\n${existingMemory.slice(0, 3000)}\n` : "",
+    activeLines ? `【当前活跃后台任务】\n${activeLines}\n` : "",
+    `【近期新增对话】\n${transcript.slice(0, 9000)}`,
+  ].filter(Boolean).join("\n");
+
+  try {
+    const isAnthropicApi = profile.provider === "anthropic" || /anthropic/i.test(String(profile.baseUrl || ""));
+    // normalizeProfile 使用 haikuModel / sonnetModel / opusModel 三档字段，优先取轻量档模型
+    const model = profile.haikuModel || profile.sonnetModel || profile.opusModel || profile.model
+      || (isAnthropicApi ? "claude-haiku-4-5-20251001" : "deepseek-chat");
+    if (isAnthropicApi) {
+      const base = String(profile.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
+      const endpoint = base.endsWith("/v1/messages") ? base : (base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`);
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": profile.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 800,
+          messages: [{ role: "user", content: promptText }],
+        }),
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const text = Array.isArray(data?.content)
+        ? data.content.filter(b => b?.type === "text").map(b => b.text).join("\n").trim()
+        : "";
+      return text.length >= 20 ? text : null;
+    }
+
+    const base = String(profile.baseUrl || "").replace(/\/+$/, "");
+    if (!base) return null;
+    const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${profile.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 800,
+        temperature: 0.2,
+        messages: [{ role: "user", content: promptText }],
+      }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = String(data?.choices?.[0]?.message?.content || "").trim();
+    return text.length >= 20 ? text : null;
+  } catch (err) {
+    console.warn("[Fellow Compact] AI synthesis fallback:", err.message || err);
+    return null;
+  }
+}
+
+async function compactStrategistMemory({ note, auto = false } = {}) {
+  const target = sessions.peek(STRATEGIST_CONVERSATION_ID);
+  if (foregroundActiveFor(target) || strategistCompacting) {
     return { ok: false, statusCode: 409, error: "请等 Fellow 当前回复完成后再整理记忆" };
   }
-  const conv = readHistory().find(item => item.id === STRATEGIST_CONVERSATION_ID);
-  const recent = (conv?.messages || []).slice(-8)
-    .map(m => `- ${m.role === "user" ? "用户" : "Fellow"}：${String(m.text || "").replace(/\s+/g, " ").slice(0, 180)}`)
-    .join("\n");
-  const file = appendStrategistMemory(DEFAULT_CWD, note || recent || "手动整理记忆，承接活跃任务。");
-  dispatchInternalAgentMessage({ reset: true, preserveMessages: true, conversationId: STRATEGIST_CONVERSATION_ID });
-  return { ok: true, memoryFile: file };
+  strategistCompacting = true;
+  try {
+    const conv = readHistory().find(item => item.id === STRATEGIST_CONVERSATION_ID);
+    const resetIdx = Number(conv?.contextResetIndex) || 0;
+    const windowMessages = (conv?.messages || [])
+      .slice(resetIdx)
+      .filter(m => m && (m.role === "user" || m.role === "assistant"));
+    const turnsCount = windowMessages.filter(m => m.role === "user").length;
+    const activeTickets = ticketStore.list({ parentConversationId: STRATEGIST_CONVERSATION_ID, archived: "active", limit: 12 });
+
+    let file;
+    let mode = "note";
+    if (note) {
+      file = appendStrategistMemory(DEFAULT_CWD, note);
+    } else {
+      const existingMemory = readStrategistMemory(DEFAULT_CWD);
+      const aiSummary = await synthesizeStrategistMemoryWithAI(windowMessages, existingMemory, activeTickets);
+      if (aiSummary) {
+        mode = "ai";
+        file = compactStrategistMemoryFile(DEFAULT_CWD, aiSummary, { replaceAll: true });
+      } else {
+        mode = "structured";
+        const fallback = extractStructuredCompactionSummary(windowMessages, activeTickets);
+        file = compactStrategistMemoryFile(DEFAULT_CWD, fallback, { replaceAll: false });
+      }
+    }
+
+    // 异步 AI 摘要期间如果用户刚好发了新消息，已落盘的记忆保留，跳过强行重置以免打断当前回复
+    const latestTarget = sessions.peek(STRATEGIST_CONVERSATION_ID);
+    if (foregroundActiveFor(latestTarget)) {
+      return { ok: false, statusCode: 409, error: "Fellow 正在回复新消息，记忆已沉淀但跳过重置上下文" };
+    }
+
+    let divider = null;
+    const latestConv = readHistory().find(item => item.id === STRATEGIST_CONVERSATION_ID);
+    if (latestConv && (windowMessages.length > 0 || !auto)) {
+      divider = {
+        id: `ctx_compact_${Date.now()}`,
+        role: "system",
+        kind: "context_compact",
+        auto: Boolean(auto),
+        mode,
+        text: auto
+          ? `已自动整理记忆（归纳 ${turnsCount} 轮对话）并开启新上下文`
+          : "已整理记忆并开启新上下文（长期记忆与后台任务均已保留）",
+        createdAt: new Date().toISOString(),
+      };
+      if (!Array.isArray(latestConv.messages)) latestConv.messages = [];
+      latestConv.messages.push(divider);
+      persistHistoryDeferred();
+    }
+
+    dispatchInternalAgentMessage({ reset: true, preserveMessages: true, conversationId: STRATEGIST_CONVERSATION_ID });
+    if (latestTarget) {
+      latestTarget.lastInputTokens = 0;
+      latestTarget.lastStrategistBoardFingerprint = null;
+      latestTarget.lastStrategistMemoryFingerprint = null;
+    }
+    const context = getStrategistContextStatus();
+    deliver({
+      type: "strategist_compacted",
+      conversationId: STRATEGIST_CONVERSATION_ID,
+      auto: Boolean(auto),
+      mode,
+      divider,
+      context,
+    });
+    return { ok: true, memoryFile: file, mode, divider, context };
+  } finally {
+    strategistCompacting = false;
+  }
+}
+
+function maybeAutoCompactStrategist(allowAuto = true) {
+  const status = getStrategistContextStatus();
+  deliver({ type: "strategist_context", conversationId: STRATEGIST_CONVERSATION_ID, ...status });
+  if (!allowAuto || strategistCompacting) return;
+  const target = sessions.peek(STRATEGIST_CONVERSATION_ID);
+  if (foregroundActiveFor(target)) return;
+  if ((target?.queuedClientPrompts?.length || 0) > 0) return;
+  if (Date.now() - lastStrategistAutoCompactAt < STRATEGIST_AUTO_COMPACT_COOLDOWN_MS) return;
+  const reachedTurns = status.turnsSinceReset >= status.thresholdTurns;
+  const reachedTokens = status.lastInputTokens >= status.thresholdTokens && status.turnsSinceReset >= 4;
+  if (!reachedTurns && !reachedTokens) return;
+  lastStrategistAutoCompactAt = Date.now();
+  console.log(`[Fellow Compact] Auto-compacting strategist context (turns=${status.turnsSinceReset}, tokens=${status.lastInputTokens})`);
+  void compactStrategistMemory({ auto: true }).catch(err => {
+    console.warn("[Fellow Compact] Auto-compact failed:", err.message || err);
+  });
 }
 
 async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles = []) {
@@ -5231,9 +5457,13 @@ function launchLocalFile(target) {
 async function handleTicketHttp(req, res, url, method, query) {
   const reply = (status, value) => sendTicketJson(res, status, value);
   if (url === "/api/orchestrator/tickets") {
-    if (method === "GET") return reply(200, orchestrator.listTickets({
-      status: query.get("status"), parentConversationId: query.get("parentConversationId"), limit: 80,
-    }));
+    if (method === "GET") {
+      const archivedParam = query.get("archived");
+      const archived = archivedParam === "active" || archivedParam === "only" ? archivedParam : "all";
+      return reply(200, orchestrator.listTickets({
+        status: query.get("status"), parentConversationId: query.get("parentConversationId"), archived, limit: 200,
+      }));
+    }
     if (method === "POST") {
       const args = dispatchTicketSchema.parse(await readTicketJson(req));
       try {
@@ -5243,6 +5473,14 @@ async function handleTicketHttp(req, res, url, method, query) {
         return reply(400, { ok: false, error: error.message });
       }
     }
+  }
+
+  if (url === "/api/orchestrator/tickets/archive-completed" && method === "POST") {
+    return reply(200, orchestrator.archiveCompletedTickets());
+  }
+
+  if (url === "/api/orchestrator/tickets/clear-archived" && method === "POST") {
+    return reply(200, orchestrator.clearArchivedTickets());
   }
 
   if (url === "/api/orchestrator/tickets/clear-completed" && method === "POST") {
@@ -5263,7 +5501,7 @@ async function handleTicketHttp(req, res, url, method, query) {
     return reply(200, { ok: true });
   }
 
-  const match = url.match(/^\/api\/orchestrator\/tickets\/([^/]+)(?:\/(message|stop|retry|recall|config))?$/);
+  const match = url.match(/^\/api\/orchestrator\/tickets\/([^/]+)(?:\/(message|stop|retry|recall|config|archive|unarchive))?$/);
   if (match) {
     let id;
     try { id = decodeURIComponent(match[1]); } catch { /* Rejected by the format check below. */ }
@@ -5291,16 +5529,57 @@ async function handleTicketHttp(req, res, url, method, query) {
         }
       } else if (action === "stop") result = await orchestrator.stopTicket(id);
       else if (action === "retry") result = await orchestrator.retryTicket(id);
+      else if (action === "archive") result = orchestrator.setTicketArchived(id, true);
+      else if (action === "unarchive") result = orchestrator.setTicketArchived(id, false);
       if (result) return reply(result.ok ? 200 : 409, result);
     }
+  }
+
+  if (url === "/api/orchestrator/strategist/context" && method === "GET") {
+    return reply(200, { ok: true, context: getStrategistContextStatus() });
+  }
+
+  if (url === "/api/orchestrator/strategist/memory" && method === "GET") {
+    const memPath = join(DEFAULT_CWD, ".inkfellow/strategist/MEMORY.md");
+    const raw = existsSync(memPath) ? readFileSync(memPath, "utf8") : "";
+    return reply(200, {
+      ok: true,
+      content: raw,
+      injected: readStrategistMemory(DEFAULT_CWD),
+      context: getStrategistContextStatus(),
+    });
+  }
+
+  if (url === "/api/orchestrator/strategist/memory" && method === "PUT") {
+    const args = z.object({ content: z.string().max(16_000) }).strict().parse(await readTicketJson(req));
+    const root = canonicalPath(DEFAULT_CWD);
+    const memDir = join(root, ".inkfellow/strategist");
+    const memFile = canonicalPath(".inkfellow/strategist/MEMORY.md", root);
+    mkdirSync(memDir, { recursive: true });
+    const clean = args.content.trim();
+    const formatted = clean
+      ? (clean.startsWith("# ") ? `${clean}\n` : `# Fellow 工作记忆\n\n${clean}\n`)
+      : "# Fellow 工作记忆\n";
+    writeFileSync(memFile, formatted, "utf8");
+    return reply(200, {
+      ok: true,
+      content: formatted,
+      injected: readStrategistMemory(DEFAULT_CWD),
+    });
   }
 
   if (url === "/api/orchestrator/strategist/compact-memory" && method === "POST") {
     const args = z.object({ conversationId: z.literal(STRATEGIST_CONVERSATION_ID).optional(),
       note: z.string().trim().max(3960).optional() }).strict().parse(await readTicketJson(req));
-    const result = compactStrategistMemory({ note: args.note });
+    const result = await compactStrategistMemory({ note: args.note });
     if (!result.ok) return reply(result.statusCode || 409, { ok: false, error: result.error });
-    return reply(200, { ok: true, memoryFile: result.memoryFile });
+    return reply(200, {
+      ok: true,
+      memoryFile: result.memoryFile,
+      mode: result.mode,
+      divider: result.divider,
+      context: result.context,
+    });
   }
 
   return reply(404, { ok: false, error: "未知的工单接口" });
@@ -6349,6 +6628,8 @@ const CONNECTION_LEVEL_EVENTS = new Set([
   "tickets_snapshot",
   "ticket_updated",
   "ticket_action_error",
+  "strategist_context",
+  "strategist_compacted",
 ]);
 
 const deliver = (obj) => {
@@ -6405,6 +6686,10 @@ const send = (obj) => {
   const context = session.activeForegroundDeliveryContext;
   if (tagged?.type === "error" && context && tagged.userMessageId === context.requestId) {
     context.turnError = String(tagged.text || tagged.message || "执行失败");
+  }
+  if (tagged?.type === "result" && tagged.usage && tagged.conversationId === STRATEGIST_CONVERSATION_ID) {
+    const tokens = extractUsageInputTokens(tagged.usage);
+    if (tokens > 0) session.lastInputTokens = tokens;
   }
   try {
     persistOutboundAgentEvent(tagged);
@@ -6518,6 +6803,11 @@ function handleOrchestratorTurnCompleted(state, context) {
     dispatchedTickets: context.dispatchedTickets || [],
   });
   context.reportReceipt?.(state === "complete" && !context.historyError);
+  if (conversationId === STRATEGIST_CONVERSATION_ID && !context.workerAttempt) {
+    // 后台工单自动汇报轮（context.reportReceipt）只推送最新水位，不立刻触发自动重置，把汇报留给用户先看
+    const allowAuto = state === "complete" && !context.historyError && !context.reportReceipt;
+    queueMicrotask(() => maybeAutoCompactStrategist(allowAuto));
+  }
   if (!context.workerAttempt) return;
   const status = state === "stopped" ? "stopped"
     : state === "partial" || context.historyError ? "partial"
@@ -6640,7 +6930,7 @@ function buildClaudeUserMessage(msg) {
   };
 }
 
-function clientRuntimeKey(msg, provider, profile) {
+function clientRuntimeKey(msg, provider, profile, schedulerScope) {
   return crypto.createHash("sha256").update(JSON.stringify({
     provider,
     profileId: profile?.id ?? null,
@@ -6654,7 +6944,7 @@ function clientRuntimeKey(msg, provider, profile) {
     effort: reasoningEffort(msg.effort, provider),
     ...(provider === "codex" ? { codexSpeed: codexServiceTier(msg.codexSpeed) } : {}),
     model: msg.model ?? null,
-    schedulerRequest: hasSchedulerIntentForMessage(msg),
+    schedulerScope,
   })).digest("hex");
 }
 
@@ -7231,6 +7521,7 @@ wss.on("connection", (ws) => {
   });
   deliverSessionsSnapshot();
   orchestrator.pushTicketsSnapshot(null, { replace: true });
+  deliver({ type: "strategist_context", conversationId: STRATEGIST_CONVERSATION_ID, ...getStrategistContextStatus() });
 
   const drainThisConnection = (targetSession) => {
     if (activeWs !== ws) return;
@@ -7621,6 +7912,9 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
       clearSession();
       clearCodexThread();
       clearAgyConversation();
+      session.lastInputTokens = 0;
+      session.lastStrategistBoardFingerprint = null;
+      session.lastStrategistMemoryFingerprint = null;
       /* 常驻进程绑定会话，重置后关闭旧进程。
          不 kill 也不会串台（下一轮各自的复用检查都会对不上），但那样会白留
          一个进程挂在后台等指令。 */
@@ -7906,10 +8200,19 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
       ?? incomingActiveProfile?.provider
       ?? "claude";
     const incomingProfileId = incomingDispatchProfile?.id ?? incomingActiveProfile?.id ?? null;
+    const schedulerScope = schedulerScopeForTurn({
+      internalMessage,
+      sourceChannel: msg.sourceChannel,
+      sourcePeer: msg.sourcePeer,
+      workerTicket,
+      dispatchProvider: msg.dispatchProvider,
+      webPeer: WEB_SCHEDULER_PEER,
+    });
     const incomingRuntimeKey = clientRuntimeKey(
       msg,
       incomingProvider,
       incomingDispatchProfile ?? incomingActiveProfile,
+      schedulerScope,
     );
     const crossesActiveClaudeTasks = (incomingProvider === "codex" || incomingProvider === "antigravity")
       && session.claudeRuntime.taskIds.size > 0;
@@ -8087,9 +8390,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
     }
 
     const isWechatTurn = msg.sourceChannel === "wechat";
-    const schedulerRequest = (!internalMessage || isWechatTurn) && !workerTicket && !msg.dispatchProvider
-      && hasSchedulerIntentForMessage(msg)
-      && !(isWechatTurn && incomingProvider !== "claude");
+    const localSchedulerScope = incomingProvider === "codex" || incomingProvider === "antigravity" ? null : schedulerScope;
 
     // Build message content — text only, or images + text
     const images = msg.images ?? (msg.image ? [msg.image] : []);
@@ -8132,17 +8433,6 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
       scheduleQueuedClientPromptDrain();
       return rejectDelivery("运行器启动前检查失败");
     }
-    // 普通对话的 scheduler 是通过 Claude agent-sdk 进程内注入的；
-    // Fellow 主对话在三家模型下都已通过 orchestrator MCP 桥接挂载定时任务工具。
-    if (!msg.dispatchProvider && !isStrategistConv && (activeProfile?.provider === "codex" || activeProfile?.provider === "antigravity") && schedulerRequest) {
-      send({ type: "error", text: "普通直聊的定时任务目前需要 Claude 会员通道，或切换到 ✦ Fellow 主入口使用。" });
-      send({ type: "done" });
-      completeClientRequest("error", requestId);
-      session.abortCtrl = null;
-      scheduleQueuedClientPromptDrain();
-      return rejectDelivery("运行器启动前检查失败");
-    }
-
     const resolvedCwd = workerTicket ? workerTicket.execution.cwd : resolveAllowedCwd(msg.cwd);
     const conversationRole = workerTicket ? "worker" : (isStrategistConv ? "strategist" : "normal");
     const effectivePermissionMode = isStrategistConv
@@ -8393,18 +8683,9 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
         sendStep: (payload) => { try { send({ type: "dispatch_step", ...payload }); } catch { /* 连接已断则忽略 */ } },
       });
     }
-    if (schedulerRequest && !workerTicket) {
-      mcpServers.scheduler = _buildSchedulerMcpServer(isWechatTurn ? {
-        sourceChannel: "wechat",
-        sourcePeer: msg.sourcePeer || null,
-        defaultOutputs: ["wechat"],
-      } : {
-        sourceChannel: "web",
-        sourcePeer: WEB_SCHEDULER_PEER,
-        defaultOutputs: ["chat_history"],
-      });
+    if (localSchedulerScope) {
+      mcpServers.scheduler = _buildSchedulerMcpServer(localSchedulerScope);
       systemAppendParts.push(INKFELLOW_SCHEDULER_PROMPT);
-      disallowedToolsSet.add("Bash");
     }
     const options = {
       cwd: resolvedCwd,
@@ -8434,16 +8715,52 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
       if (msg.model) options.model = msg.model;
     }
 
-    // Fellow 主对话或 Worker 走 Codex / Antigravity 时没有 Claude SDK 的 systemPrompt.append，
-    // 通过首段指令注入契约；Fellow 主对话同时强制只读 plan 沙箱，并挂载原生 orchestrator MCP 桥接工具。
-    const nonClaudeStrategistNote = "\n（你已通过 orchestrator MCP 工具集挂载原生工单与定时工具：dispatch_task、list_tickets、inspect_ticket、recall_ticket_detail、message_ticket、stop_ticket、list_providers、create_schedule、list_schedules、delete_schedule、toggle_schedule。需要派发多个任务时，请直接并行多次调用 dispatch_task，不要让用户手动复制指令。）";
+    // Fellow 主对话或 Worker 走 Codex / Antigravity 时没有 Claude SDK 的 systemPrompt.append：
+    // 仅在首次起会话时注入完整角色设定与记忆；续接原生会话时只附任务盘面变化增量，避免每轮重复灌几千字提示词。
+    const nonClaudeStrategistNote = "\n（你已通过 orchestrator MCP 工具集挂载原生工单与定时工具：dispatch_task、list_tickets、inspect_ticket、recall_ticket_detail、message_ticket、stop_ticket、list_providers、create_schedule、get_schedule_time、list_schedules、delete_schedule、toggle_schedule。需要派发多个任务时，请直接并行多次调用 dispatch_task，不要让用户手动复制指令。）";
     const wechatRoleAddon = isWechatTurn ? `\n\n${WECHAT_FELLOW_PROMPT}` : "";
+    const strategistBoardBlock = isStrategistConv
+      ? orchestrator.buildStrategistTicketBoardBlock(requestConversationId)
+      : "";
+    const strategistMemoryBlock = isStrategistConv
+      ? readStrategistMemory(resolvedCwd)
+      : "";
+    const nonClaudeStrategistPrefix = isStrategistConv
+      ? buildNonClaudeStrategistPrefix({
+          nativeSession: Boolean(nativeSession),
+          systemPrompt: STRATEGIST_SYSTEM_PROMPT,
+          note: nonClaudeStrategistNote,
+          wechatAddon: wechatRoleAddon,
+          isWechatTurn,
+          contextBlock: strategistContextBlock,
+          ticketBoardBlock: strategistBoardBlock,
+          lastBoardFingerprint: session.lastStrategistBoardFingerprint,
+          memoryBlock: strategistMemoryBlock,
+          lastMemoryFingerprint: session.lastStrategistMemoryFingerprint ?? null,
+        })
+      : null;
+    if (isStrategistConv && nonClaudeStrategistPrefix) {
+      session.lastStrategistBoardFingerprint = nonClaudeStrategistPrefix.boardFingerprint;
+      session.lastStrategistMemoryFingerprint = nonClaudeStrategistPrefix.memoryFingerprint;
+    }
     const rolePromptPrefix = isStrategistConv
-      ? `${STRATEGIST_SYSTEM_PROMPT}${nonClaudeStrategistNote}${wechatRoleAddon}${strategistContextBlock ? `\n\n${strategistContextBlock}` : ""}\n\n---\n`
+      ? (nonClaudeStrategistPrefix?.prefix || "")
       : (workerTicket && !nativeSession && workerSystemAddon ? `${workerSystemAddon}\n\n---\n` : "");
-    const nonClaudePrompt = rolePromptPrefix ? `${rolePromptPrefix}${providerPrompt}` : providerPrompt;
+    const nonClaudePrompt = rolePromptPrefix + providerPrompt;
     const nonClaudeFreshPrompt = () => {
-      const prefix = workerSystemAddon ? `${workerSystemAddon}\n\n---\n` : rolePromptPrefix;
+      const prefix = workerSystemAddon
+        ? `${workerSystemAddon}\n\n---\n`
+        : (isStrategistConv
+          ? buildNonClaudeStrategistPrefix({
+              nativeSession: false,
+              systemPrompt: STRATEGIST_SYSTEM_PROMPT,
+              note: nonClaudeStrategistNote,
+              wechatAddon: wechatRoleAddon,
+              isWechatTurn,
+              contextBlock: strategistContextBlock,
+              ticketBoardBlock: strategistBoardBlock,
+            }).prefix
+          : rolePromptPrefix);
       return prefix + freshProviderPrompt();
     };
 
@@ -8574,6 +8891,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
         && session.activeForegroundRequestId === requestId
       );
       const codexImages = msg.images ?? (msg.image ? [msg.image] : []);
+      const codexModel = msg.model || activeProfile.sonnetModel || codexDefaultModels().sonnetModel;
       (async () => {
         try {
           /* 常驻 app-server：进程和 WebSocket 都跨轮复用，第二轮起省掉约 10 秒
@@ -8584,7 +8902,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
               freshPrompt: nonClaudeFreshPrompt,
               images: codexImages,
               cwd: resolvedCwd,
-              model: msg.model || null,
+              model: codexModel,
               effort,
               serviceTierForTurn: codexServiceTier(msg.codexSpeed),
               permissionMode: effectivePermissionMode,
@@ -8637,7 +8955,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
             approvalPolicy: "never",
             sandboxMode: codexSandboxMode(effectivePermissionMode),
             ...(effort ? { modelReasoningEffort: effort } : {}),
-            ...(msg.model ? { model: msg.model } : {}),
+            model: codexModel,
           };
           const thread = session.codexThreadId
             ? codex.resumeThread(session.codexThreadId, threadOptions)
@@ -8779,7 +9097,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
                 : workerToolDecision(workerTicket, name, hookInput.tool_input, DEFAULT_CWD, scopes, { allowOutsideVault: ALLOW_MACHINE_ACCESS });
             } else {
               decision = READ_ONLY_TOOLS.includes(name) || name.startsWith("mcp__orchestrator__")
-                || (schedulerRequest && name.startsWith("mcp__scheduler__"))
+                || (localSchedulerScope && name.startsWith("mcp__scheduler__"))
                 ? {} : { reason: "Fellow 主对话仅使用只读与任务调度工具" };
               if (session.activeForegroundDeliveryContext?.reportReceipt && /^mcp__orchestrator__(?:dispatch_task|stop_ticket|message_ticket)$/.test(name)) {
                 decision = { reason: "自动汇报期间不执行工单动作" };
@@ -8890,7 +9208,7 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
       sonnetModel: activeProfile?.sonnetModel ?? null,
       haikuModel: activeProfile?.haikuModel ?? null,
       allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions,
-      schedulerRequest,
+      schedulerScope: localSchedulerScope,
       conversationRole,
       workerAttempt: msg.workerAttempt || null,
     })).digest("hex");
@@ -8930,9 +9248,22 @@ function handleAgentMessage(rawOrMsg, fromQueue = false) {
           if (!isCurrentTurn()) return;
           session.claudeRuntime.start(options, { conversationId: turnConversationId, workerAttempt: msg.workerAttempt });
           noteClaudeRuntimeStarted(runtimeSignature, turnConversationId, options, turnRoute);
+          if (isStrategistConv) {
+            session.lastStrategistBoardFingerprint = strategistBoardBlock;
+            session.lastStrategistMemoryFingerprint = strategistMemoryBlock;
+          }
         } else {
           // 同一个账号接着用这个进程；模型可能换了，标注跟着更新
           session.claudeRuntimeRoute = turnRoute;
+          // 常驻 Claude 进程复用时不会重读 options.systemPrompt：若后台任务盘面发生了变化或切到了微信渠道，通过 userMsg 补入轻量增量
+          if (isStrategistConv && nonClaudeStrategistPrefix?.prefix) {
+            const firstTextBlock = Array.isArray(userMsg?.message?.content)
+              ? userMsg.message.content.find(b => b?.type === "text" && typeof b.text === "string")
+              : null;
+            if (firstTextBlock && !firstTextBlock.text.startsWith(nonClaudeStrategistPrefix.prefix)) {
+              firstTextBlock.text = `${nonClaudeStrategistPrefix.prefix}${firstTextBlock.text}`;
+            }
+          }
           /* 复用现成的进程。这两个 setter 各是一趟到子进程的同步往返，而绝大
              多数轮次这两个值跟上一轮一模一样——无条件发一遍就是白等，直接
              加在首字延迟上。所以只在真的变了才发。

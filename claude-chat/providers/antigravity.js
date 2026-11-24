@@ -78,8 +78,8 @@ const EFFORT = { low: "low", medium: "medium", high: "high", xhigh: "high", max:
 const FALLBACK_CATALOG = [
   { model: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"] },
   { model: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["low", "medium", "high", "xhigh"] },
+  { model: "gemini-4-carbon", label: "Gemini 4 Carbon", efforts: ["low", "medium", "high"] },
   { model: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high", "xhigh"] },
-  { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
   { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high"] },
   { model: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high"] },
   { model: "gpt-oss-120b", label: "GPT-OSS 120B", efforts: ["medium"] },
@@ -227,23 +227,25 @@ export function effortForModel(model, effort) {
 }
 
 /* ── 模型菜单 ────────────────────────────────────────────────
-   目录里同一个系列会同时挂着好几代（3.8 / 3.7 / 3.6 flash），菜单只放最新那个：
-   旧版本留在目录里是为了让还选着它的对话继续能跑，不是让人重新去选。
-
-   系列 key 把版本号整段抹掉算——gemini-3.8-flash 和 gemini-4-flash 都归到
-   gemini-#-flash，所以新版本出来时自动顶掉旧的，这里不用改。
+   菜单从 Gemini 4 起展示，每个系列只放最新型号。系列 key 抹掉版本号整段，
+   例如 gemini-3.8-flash 和 gemini-4-flash 都归到 gemini-#-flash。
 
    下面这张表只管排序和一句话说明，认的是「哪一类模型」而不是具体版本，
    所以模型升级同样不用动它；匹配不上的新家族排在最后，照样进菜单。
 
    Gemini 旗舰的名字会随代际变化，Flash、Hydrogen 和 Orchestrator 有各自的菜单说明。 */
 const FLASH = /-flash(?:-|$)/;
-const FLAGSHIP = /^gemini-\d(?!.*-(?:flash|hydrogen|orchestrator)(?:-|$))/;
+const FLAGSHIP = /^gemini-\d(?!.*-(?:neon|carbon|flash|hydrogen|orchestrator)(?:-|$))/;
+const NEON = /^gemini-\d+(?:[.-]\d+)*-neon$/;
+const CARBON = /^gemini-\d+(?:[.-]\d+)*-carbon$/;
 const HYDROGEN = /^gemini-\d.*-hydrogen(?:-|$)/;
 const ORCHESTRATOR = /(?:^|-)orchestrator(?:-|$)/;
+const LEGACY_GEMINI = /^gemini-[1-3](?:[.-]|$)/i;
 
 const MENU_RULES = [
   [FLAGSHIP, "旗舰最强"],
+  [NEON, "默认对话"],
+  [CARBON, "通用任务"],
   [HYDROGEN, "快速执行"],
   [ORCHESTRATOR, "规划与执行协作"],
   [FLASH, "快速通用"],
@@ -253,7 +255,8 @@ const MENU_RULES = [
 
 // 目录里有、但不摆进菜单的。这几个能跑，只是平时用不上，摆出来只会让菜单变长。
 // 注意只藏菜单，不动目录：还选着它的对话照常跑，档位选择器也照常认它。
-const MENU_HIDDEN = [/^gpt-/];
+const MENU_HIDDEN = [/^gpt-/, LEGACY_GEMINI];
+const isVisibleModel = entry => !MENU_HIDDEN.some(pattern => pattern.test(entry.model));
 
 // 版本号整段算一个 #：3.8 和 4、5-5 和 5 写法不同，但都是同一个系列的不同版本。
 // -thinking 是旧命名的后缀（claude-opus-4-6-thinking），不代表另一个系列。
@@ -278,8 +281,8 @@ function isNewer(a, b) {
 /** 菜单上要显示的模型：每个系列只留最新的一个，带好展示用的名字和说明。 */
 export function menuModels() {
   const latest = new Map();
-  for (const entry of getCatalog()) {
-    if (MENU_HIDDEN.some(pattern => pattern.test(entry.model))) continue;
+  const visible = getCatalog().filter(isVisibleModel);
+  for (const entry of visible.length ? visible : FALLBACK_CATALOG.filter(isVisibleModel)) {
     const key = ORCHESTRATOR.test(entry.model) ? entry.label : seriesKey(entry.model);
     const prev = latest.get(key);
     if (!prev || isNewer(entry.model, prev.model)) latest.set(key, entry);
@@ -302,17 +305,16 @@ export function menuModels() {
 }
 
 /**
- * 对话默认优先用目录里的 Neon。目录没有 Neon 时沿用 Flash 兜底；
- * 派发仍取旗舰档，快速档仍优先 Flash。
+ * 对话默认优先用 Neon，派发优先用旗舰，快速档优先用 Hydrogen。
  */
 export function defaultModels() {
   const menu = menuModels();
-  const neon = menu.find(item => /^gemini-\d+(?:[.-]\d+)*-neon$/.test(item.model))?.model;
+  const neon = menu.find(item => NEON.test(item.model))?.model;
+  const hydrogen = menu.find(item => HYDROGEN.test(item.model))?.model;
   const flash = menu.find(item => FLASH.test(item.model))?.model;
   const flagship = menu.find(item => FLAGSHIP.test(item.model))?.model
-    ?? menu[0]?.model
-    ?? getCatalog()[0]?.model;
-  return { opusModel: flagship, sonnetModel: neon ?? flash ?? flagship, haikuModel: flash ?? flagship };
+    ?? neon ?? hydrogen ?? flash ?? menu[0].model;
+  return { opusModel: flagship, sonnetModel: neon ?? hydrogen ?? flash ?? flagship, haikuModel: hydrogen ?? flash ?? neon ?? flagship };
 }
 
 /**
@@ -325,6 +327,7 @@ export function successorFor(model) {
   const key = seriesKey(model);
   let best = null;
   for (const entry of getCatalog()) {
+    if (LEGACY_GEMINI.test(entry.model)) continue;
     if (entry.model === model) return null;          // 还在目录里，不用换
     if (seriesKey(entry.model) !== key) continue;
     if (!best || isNewer(entry.model, best)) best = entry.model;
@@ -332,6 +335,14 @@ export function successorFor(model) {
   // 只往上换。目录还没刷新就赶上一次升级时，请求里的版本会比目录里的都新，
   // 那种情况要原样放行让 agy 自己判，绝不能把用户选的新模型悄悄降回旧的。
   return best && isNewer(best, model) ? best : null;
+}
+
+/** 历史对话和派发任务里保存的旧 Gemini 型号，在下一轮开始前切到可用型号。 */
+export function upgradeLegacyModel(model) {
+  if (!LEGACY_GEMINI.test(model)) return model;
+  const base = model.replace(EFFORT_SUFFIX, "");
+  const defaults = defaultModels();
+  return successorFor(base) ?? (FLASH.test(base) ? defaults.haikuModel : defaults.sonnetModel);
 }
 
 // 看着像 agy 的模型名。目录里找不到时用它分辨「还没收录的新模型」和「别家的名字」。
@@ -353,13 +364,15 @@ function isRetired(model) {
 /**
  * 界面或对话历史里带来的模型名，这一轮该跑哪个。返回 null 表示这个名字用不了，
  * 调用方退回默认模型。
- *   还在目录里           → 原样（包括已经从菜单上撤下来的旧版本，选着它就让它继续跑）
+ *   Gemini 4 以前的型号  → 升到可用的替代型号
+ *   还在目录里的其他型号 → 原样
  *   下线了但同系列有新的  → 顺着升上去，比一律退回默认更接近用户当初的选择
  *   整个系列都下线了      → null
  *   不是 agy 的名字       → null，传过去只会报 not recognized
  *   比目录还新            → 原样，目录刷新前不能把新模型拦下来
  */
 export function resolveModel(requested) {
+  if (LEGACY_GEMINI.test(requested)) return upgradeLegacyModel(requested);
   const base = requested.replace(EFFORT_SUFFIX, "");   // 档位可以直接写在名字里
   if (getCatalog().some(entry => entry.model === base)) return requested;
   const successor = successorFor(base);

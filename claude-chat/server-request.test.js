@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,7 +149,8 @@ test("Gemini keeps output from a turn whose final status is a connection timeout
       conversationId, userMessageId: `gemini-${scenario}`, profileId: "gemini", model,
       prompt: `scenario-${scenario}`, displayText: scenario,
       ...(scenario === "empty" || scenario === "success" ? {
-        composerText: "Edited request", effort: "high", permissionMode: "plan", retryDraft: retryContext, images,
+        composerText: scenario === "success" ? "帮我润色文案：每天自动生成日报。" : "Edited request",
+        effort: "high", permissionMode: "plan", retryDraft: retryContext, images,
       } : {}),
     });
     const matches = (scenario, type, fields = {}) => event => event.type === type
@@ -257,8 +258,20 @@ test("Gemini keeps output from a turn whose final status is a connection timeout
 test("WebSocket requests are acknowledged and duplicate IDs are not executed twice", { timeout: 15_000 }, async () => {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-request-ack-"));
   const authFile = join(scratch, "auth-profile.json");
+  const codexDir = join(scratch, ".codex");
+  const loader = join(scratch, "offline-codex-loader.mjs");
   const port = await reservePort();
   const token = "offline-request-test-token";
+  await mkdir(codexDir);
+  await writeFile(join(codexDir, "auth.json"), JSON.stringify({ tokens: { access_token: "offline-fixture" } }));
+  const mockSdk = "export class Codex { startThread() { throw new Error('Offline test provider failure'); } }";
+  await writeFile(loader, `
+    export async function resolve(specifier, context, next) {
+      if (specifier === "@openai/codex-sdk")
+        return { url: ${JSON.stringify("data:text/javascript," + encodeURIComponent(mockSdk))}, shortCircuit: true };
+      return next(specifier, context);
+    }
+  `);
   await writeFile(authFile, JSON.stringify({
     activeProfileId: "p_codex",
     profiles: [{
@@ -273,13 +286,17 @@ test("WebSocket requests are acknowledged and duplicate IDs are not executed twi
     }],
   }), "utf8");
 
-  const child = spawn(process.execPath, ["server.js"], {
+  const child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
     cwd: new URL(".", import.meta.url),
     env: {
       ...process.env,
       PORT: String(port),
       HOST: "127.0.0.1",
       DESKTOP_AGENT_TOKEN: token,
+      HOME: scratch,
+      USERPROFILE: scratch,
+      VAULT_PATH: scratch,
+      CODEX_PERSISTENT: "0",
       CLAUDE_CHAT_DATA_DIR: scratch,
       CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
     },
@@ -359,7 +376,8 @@ test("WebSocket requests are acknowledged and duplicate IDs are not executed twi
     await waitForMessage(events, event => event.type === "request_ack" && event.userMessageId === request.userMessageId && event.state === "running");
     await waitForMessage(events, event => event.type === "request_started" && event.userMessageId === request.userMessageId);
     await waitForMessage(events, event => event.type === "done" && event.userMessageId === request.userMessageId);
-    assert.ok(events.some(event => event.type === "error" && event.userMessageId === request.userMessageId));
+    assert.ok(events.some(event => event.type === "error" && event.userMessageId === request.userMessageId
+      && event.text.includes("Offline test provider failure")));
 
     const beforeDuplicate = events.length;
     const startedCount = events.filter(event => event.type === "request_started" && event.userMessageId === request.userMessageId).length;

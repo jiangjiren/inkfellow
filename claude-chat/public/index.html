@@ -3207,7 +3207,8 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
@@ -3219,23 +3220,32 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   padding: 2px;
   border-radius: 9px;
   background: var(--bg2);
+  max-width: 100%;
+  overflow-x: auto;
 }
 .stage-filter-btn {
   height: 24px;
-  padding: 0 9px;
+  padding: 0 7px;
   border-radius: 7px;
   border: none;
   background: transparent;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 .stage-filter-btn.active {
   background: var(--bg-document);
   color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.stage-filter-count {
+  margin-left: 3px;
+  font-size: 10px;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
 }
 .ticket-stage-summary { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
 .ticket-stage-feedback { padding: 5px 12px; color: var(--text-dim); font-size: 12px; }
@@ -3431,6 +3441,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
 .tk-badge.status-needs_attention { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
 .tk-badge.status-completed { color: var(--green, #22c55e); background: color-mix(in srgb, var(--green, #22c55e) 12%, transparent); }
 .tk-badge.status-failed { color: var(--red, #ef4444); background: color-mix(in srgb, var(--red, #ef4444) 12%, transparent); }
+.tk-badge.status-archived { color: var(--text-dim); background: var(--bg2); }
 .tk-card-body {
   font-size: 12px;
   color: var(--text-dim);
@@ -3482,6 +3493,170 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   background: color-mix(in srgb, var(--yellow) 10%, var(--bg));
 }
 .tk-btn.danger { color: var(--red, #ef4444); }
+
+/* 整理记忆上下文分割线 + 聊天历史分页懒加载 + 顶部水位微提示 */
+.ctx-compact-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.ctx-compact-divider::before,
+.ctx-compact-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.ctx-compact-divider span {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+}
+.history-load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px;
+}
+.history-load-more-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-document);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.history-load-more-btn:hover {
+  background: var(--bg2);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+#btn-header-compact { position: relative; }
+#btn-header-compact.has-ctx-warn::after,
+#btn-header-compact.has-ctx-high::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--yellow);
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+#btn-header-compact.has-ctx-high {
+  color: var(--yellow);
+}
+#btn-header-compact.has-ctx-high::after {
+  animation: sqBreathe 1.8s ease-in-out infinite;
+}
+
+/* Fellow 长期记忆与上下文管理面板 */
+.fellow-memory-popover {
+  position: absolute;
+  top: 48px;
+  right: 10px;
+  left: 10px;
+  max-width: 420px;
+  margin-left: auto;
+  z-index: 185;
+  background: var(--bg-document);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fellow-memory-popover[hidden] { display: none; }
+.fellow-memory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fellow-memory-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fellow-memory-meter {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fellow-memory-meter-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.fellow-memory-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.fellow-memory-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease, background 0.2s ease;
+}
+.fellow-memory-bar-fill.warn,
+.fellow-memory-bar-fill.high {
+  background: var(--yellow);
+}
+.fellow-memory-editor {
+  width: 100%;
+  min-height: 170px;
+  max-height: 44vh;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.fellow-memory-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.fellow-memory-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fellow-memory-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 </style>
 </head>
@@ -3558,7 +3733,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <span class="push-crumb-sep" aria-hidden="true">›</span>
         <span class="push-crumb-title">派出的任务</span>
       </div>
-      <button id="btn-ticket-clear-done" class="tk-btn" type="button" title="归档清理已完成、已停止或已失败的历史任务">清理已完成</button>
+      <button id="btn-ticket-clear-done" class="tk-btn" type="button" title="把已完成、已停止或已失败的任务收入「已归档」，随时可查回">归档已完成</button>
     </div>
     <div class="ticket-stage-toolbar">
       <div id="ticket-stage-filters" class="ticket-stage-filters" role="group" aria-label="任务筛选">
@@ -3566,6 +3741,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
         <button class="stage-filter-btn" data-stage-filter="active" type="button" aria-pressed="false">进行中</button>
         <button class="stage-filter-btn" data-stage-filter="attention" type="button" aria-pressed="false">需拍板</button>
         <button class="stage-filter-btn" data-stage-filter="done" type="button" aria-pressed="false">已完成</button>
+        <button class="stage-filter-btn" data-stage-filter="archived" type="button" aria-pressed="false">已归档</button>
       </div>
       <span id="ticket-stage-summary" class="ticket-stage-summary"></span>
     </div>
@@ -3574,6 +3750,30 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
   </section>
 
   <div id="role-context-bar" hidden></div>
+
+  <!-- Fellow 长期记忆与上下文管理浮层 -->
+  <div id="fellow-memory-popover" class="fellow-memory-popover" role="dialog" aria-label="Fellow 记忆与上下文" hidden>
+    <div class="fellow-memory-head">
+      <span class="fellow-memory-title">✦ Fellow 记忆与上下文</span>
+      <button id="btn-memory-compact-now" class="tk-btn primary" type="button" title="提炼近期对话要点写入长期记忆，并开启干净上下文">立即整理上下文</button>
+    </div>
+    <div class="fellow-memory-meter">
+      <div class="fellow-memory-meter-top">
+        <span id="fellow-memory-ctx-label">当前上下文：0 / 36 轮</span>
+        <span id="fellow-memory-ctx-hint">达阈值自动整理</span>
+      </div>
+      <div class="fellow-memory-bar"><div id="fellow-memory-bar-fill" class="fellow-memory-bar-fill"></div></div>
+    </div>
+    <div style="font-size:11px;color:var(--text-dim);">长期工作记忆（<code>.inkfellow/strategist/MEMORY.md</code>，每次对话自动带入最新 4000 字，可直接增删修改）：</div>
+    <textarea id="fellow-memory-textarea" class="fellow-memory-editor" placeholder="# Fellow 工作记忆&#10;&#10;在这里写下你的长期偏好、账号规则或正在推进的目标…"></textarea>
+    <div class="fellow-memory-foot">
+      <span id="fellow-memory-status" class="fellow-memory-status"></span>
+      <div style="display:flex;gap:6px;">
+        <button id="btn-memory-close" class="tk-btn" type="button">关闭</button>
+        <button id="btn-memory-save" class="tk-btn primary" type="button">保存记忆</button>
+      </div>
+    </div>
+  </div>
 
   <div id="git-banner">
     <span id="git-banner-dot"></span>
@@ -4225,8 +4425,8 @@ const CLAUDE_MODELS = [
 let AGY_MODELS = [
   { model: "gemini-4-argon",    label: "Gemini 4 Argon",   name: "Gemini 4 Argon",   desc: "旗舰最强" },
   { model: "gemini-4-neon",     label: "Gemini 4 Neon",    name: "Gemini 4 Neon",    desc: "默认对话" },
+  { model: "gemini-4-carbon",   label: "Gemini 4 Carbon",  name: "Gemini 4 Carbon",  desc: "通用任务" },
   { model: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", name: "Gemini 4 Hydrogen", desc: "快速执行" },
-  { model: "gemini-3.8-flash",  label: "Gemini 3.8 Flash", name: "Gemini 3.8 Flash", desc: "快速通用" },
   { model: "claude-opus-5-5",   label: "Opus 5.5",         name: "Opus 5.5",         desc: "Claude 旗舰" },
   { model: "claude-sonnet-5-5", label: "Sonnet 5.5",       name: "Sonnet 5.5",       desc: "Claude 均衡" },
 ];
@@ -4235,8 +4435,8 @@ let AGY_MODELS = [
 let AGY_EFFORT_LEVELS = {
   "gemini-4-neon": ["low", "medium", "high", "xhigh"],
   "gemini-4-argon": ["low", "medium", "high"],
+  "gemini-4-carbon": ["low", "medium", "high"],
   "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"],
-  "gemini-3.8-flash": ["low", "medium", "high"],
   "claude-opus-5-5": ["low", "medium", "high"],
   "claude-sonnet-5-5": ["low", "medium", "high"],
   "gpt-oss-120b": ["medium"],
@@ -4308,6 +4508,7 @@ async function loadAgyModelCatalog() {
    下面是首帧兜底，接口一到就整份换掉，所以它旧一点没关系。 */
 let CODEX_MODELS = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   name: "GPT-6-Astra",   desc: "旗舰最强" },
+  { model: "gpt-6.2-sol", label: "GPT-6.2 Sol", name: "GPT-6.2 Sol", desc: "综合可靠", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], fast: true },
   { model: "gpt-6-sol",     label: "GPT-6-Sol",     name: "GPT-6-Sol",     desc: "综合可靠" },
   { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", name: "GPT-6.1 Terra", desc: "视觉理解与写作" },
   { model: "gpt-6-luna",    label: "GPT-6-Luna",    name: "GPT-6-Luna",    desc: "快速经济" },
@@ -4503,7 +4704,8 @@ function profileIdOwningModel(model) {
     if (!p) return false;
     if (p.provider === "claude") return CLAUDE_MODELS.some(o => o.model === (MODEL_MIGRATIONS[model] ?? model));
     // 认全目录而不是菜单：从菜单上撤下来的旧版本仍然属于这个账号
-    if (p.provider === "antigravity") return Object.prototype.hasOwnProperty.call(AGY_EFFORT_LEVELS, model.replace(/-xhigh$/, ""));
+    if (p.provider === "antigravity") return /^gemini-[1-3](?:[.-]|$)/i.test(model)
+      || Object.prototype.hasOwnProperty.call(AGY_EFFORT_LEVELS, model.replace(/-xhigh$/, ""));
     // Codex 同理：菜单只露前几个，撤下来的旧版本仍然属于这个账号
     if (p.provider === "codex") return CODEX_MODEL_IDS.includes(model) || [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
     return [p.opusModel, p.sonnetModel, p.haikuModel].includes(model);
@@ -4578,10 +4780,25 @@ function modelOptionsForProfile(activeProfile) {
   return options;
 }
 
-function defaultAgyChatModel(options, profileDefault) {
-  return options.find(option => /^gemini-\d+(?:[.-]\d+)*-neon$/.test(option.model))?.model
-    ?? options.find(option => option.model === profileDefault)?.model
-    ?? options[0].model;
+function defaultChatModel(provider, options, profileDefault) {
+  if (provider === "antigravity") {
+    return options.find(option => /^gemini-\d+(?:[.-]\d+)*-neon$/.test(option.model))?.model
+      ?? options.find(option => /^gemini-\d.*-hydrogen$/.test(option.model))?.model
+      ?? options.find(option => option.model === profileDefault)?.model
+      ?? options[0].model;
+  }
+  if (provider === "codex" && options.some(option => option.model === "gpt-6.2-sol")) return "gpt-6.2-sol";
+  if (provider !== "claude" && options.some(option => option.model === profileDefault)) return profileDefault;
+  return options[0].model;
+}
+
+function upgradeLegacyAgyModel(model, options, fallback) {
+  const legacy = /^gemini-[1-3](?:[.-]\d+)*(-.*)$/i.exec(model);
+  if (!legacy) return model;
+  const suffix = legacy[1].replace(/-(low|medium|high|xhigh)$/, "");
+  return options.find(option => option.model.replace(/^gemini-\d+(?:[.-]\d+)*/, "") === suffix)?.model
+    ?? (suffix === "-flash" ? options.find(option => /^gemini-\d.*-hydrogen$/.test(option.model))?.model : null)
+    ?? fallback;
 }
 
 function renderModelOptions(activeProfile) {
@@ -4593,23 +4810,22 @@ function renderModelOptions(activeProfile) {
   /* 先认这个对话自己记着的，没有才落到全局默认。换厂商时这份记录多半不在新
      清单里，下面那句 options.some(...) 会把它退回默认，不用单独判断。 */
   const convPref = currentConvId ? convModelPrefs.get(currentConvId) : null;
-  const rawSaved = provider === "antigravity"
-    ? (convPref?.profileId === activeProfile?.id ? convPref?.model : null)
+  const rawSaved = provider === "antigravity" || provider === "codex"
+    ? (!convPref?.profileId || convPref.profileId === activeProfile?.id ? convPref?.model : null)
     : convPref?.model ?? localStorage.getItem(key);
+  const defaultModel = defaultChatModel(provider, options, activeProfile?.sonnetModel);
   let saved = provider === "claude" ? (MODEL_MIGRATIONS[rawSaved] ?? rawSaved) : rawSaved;
-  const legacyAgyBase = provider === "antigravity" ? /^(.+)-xhigh$/.exec(rawSaved)?.[1] : null;
+  if (provider === "antigravity") saved = upgradeLegacyAgyModel(saved, options, defaultModel);
+  const legacyAgyBase = provider === "antigravity" && saved === rawSaved ? /^(.+)-xhigh$/.exec(rawSaved)?.[1] : null;
   if (legacyAgyBase && AGY_EFFORT_LEVELS[legacyAgyBase]?.includes("xhigh")) saved = legacyAgyBase;
-  const profileDefault = activeProfile?.sonnetModel;
-  const defaultModel = provider === "antigravity" ? defaultAgyChatModel(options, profileDefault)
-    : provider !== "claude" && options.some(o => o.model === profileDefault)
-    ? profileDefault : options[0].model;
   selectedModel = options.some(o => o.model === saved) ? saved : defaultModel;
+  if (provider === "codex") selectedEffort = convPref?.effort ?? "high";
   if (saved !== rawSaved && selectedModel === saved) {
     if (legacyAgyBase) {
       // 旧菜单把极高档记成了独立型号。保留旧全局键里携带的档位，只迁移会话偏好。
       selectedEffort = "xhigh";
       if (convPref) convPref.effort = selectedEffort;
-    } else {
+    } else if (provider !== "antigravity") {
       localStorage.setItem(key, saved);
     }
     if (convPref) { convPref.model = saved; persistConvModelPrefs(); }
@@ -5222,17 +5438,18 @@ function applyConversationProfile(data, owner, profileId, effort) {
   const options = modelOptionsForProfile(profile);
   const provider = profile.provider || "claude";
   const previous = convModelPrefs.get(owner);
-  const raw = provider === "antigravity"
-    ? (previous?.profileId === profileId ? previous.model : null)
+  const sameProfile = !previous?.profileId || previous.profileId === profileId;
+  const raw = provider === "antigravity" || provider === "codex"
+    ? (sameProfile ? previous?.model : null)
     : previous?.model ?? localStorage.getItem(`model:${provider === "claude" ? "claude" : profile.id}`);
-  const saved = provider === "claude" ? (MODEL_MIGRATIONS[raw] ?? raw) : raw;
-  const fallback = provider === "antigravity" ? defaultAgyChatModel(options, profile.sonnetModel)
-    : provider === "claude" ? options[0].model : (profile.sonnetModel || options[0].model);
+  const fallback = defaultChatModel(provider, options, profile.sonnetModel);
+  const saved = provider === "claude" ? (MODEL_MIGRATIONS[raw] ?? raw)
+    : provider === "antigravity" ? upgradeLegacyAgyModel(raw, options, fallback) : raw;
   const pref = {
     ...previous,
     profileId,
     model: options.some(o => o.model === saved) ? saved : fallback,
-    effort: previous?.effort ?? effort,
+    effort: provider === "codex" ? (sameProfile && previous?.effort ? previous.effort : "high") : (previous?.effort ?? effort),
   };
   convModelPrefs.set(owner, pref);
   persistConvModelPrefs();
@@ -8096,8 +8313,12 @@ function subtaskVendorName(s) {
 }
 
 function subtaskCurrentModel(conversationId, itemId, s) {
-  if (s?.followupModel) return s.followupModel;
   const profile = subtaskProfile(s);
+  if (s?.followupModel) {
+    return profile?.provider === "antigravity"
+      ? upgradeLegacyAgyModel(s.followupModel, modelOptionsForProfile(profile), "gemini-4-hydrogen")
+      : s.followupModel;
+  }
   const lastModel = subtaskThreads.get(subtaskKey(conversationId, itemId))?.model;
   const originalModel = s?.origin?.model || s?.model;
   if (profile?.provider === "antigravity") {
@@ -9660,9 +9881,82 @@ function addMessage(role, text, imageUrls, id, meta = null) {
     body.appendChild(textEl);
   }
   wrap.appendChild(body);
-  messagesEl.appendChild(wrap);
-  scrollBottom();
+  if (meta?.insertBefore) messagesEl.insertBefore(wrap, meta.insertBefore);
+  else messagesEl.appendChild(wrap);
+  if (!meta?.skipScroll) scrollBottom();
   return wrap;
+}
+
+const INITIAL_HISTORY_RENDER_LIMIT = 50;
+let renderedHistoryStart = 0;
+
+function createContextDividerEl(msg) {
+  const el = document.createElement("div");
+  el.className = "ctx-compact-divider";
+  if (msg?.id) el.dataset.dividerId = msg.id;
+  const span = document.createElement("span");
+  span.textContent = msg?.text || "已整理记忆并开启新上下文";
+  el.appendChild(span);
+  return el;
+}
+
+function mountHistoryMessage(msg, { insertBefore = null, skipScroll = false } = {}) {
+  if (msg?.role === "system" && msg?.kind === "context_compact") {
+    const el = createContextDividerEl(msg);
+    if (insertBefore) messagesEl.insertBefore(el, insertBefore);
+    else messagesEl.appendChild(el);
+    if (!skipScroll) scrollBottom();
+    return el;
+  }
+  const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
+  const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text, undefined, msg.id, {
+    sourceChannel: msg.sourceChannel,
+    insertBefore,
+    skipScroll,
+  });
+  if (hasAssistantBlocks) {
+    renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
+  }
+  if (msg.role === "assistant" && msg.status !== "running") {
+    renderVideoOpenCard(el, msg.text || textFromAssistantBlocks(msg.blocks || []));
+  }
+  return el;
+}
+
+function syncLoadEarlierBanner() {
+  if (!messagesEl) return;
+  let wrap = messagesEl.querySelector(".history-load-more-wrap");
+  if (renderedHistoryStart <= 0) {
+    wrap?.remove();
+    return;
+  }
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.className = "history-load-more-wrap";
+    wrap.innerHTML = `<button type="button" class="history-load-more-btn" id="btn-load-earlier-messages"></button>`;
+    messagesEl.insertBefore(wrap, messagesEl.firstChild);
+  }
+  const btn = wrap.querySelector(".history-load-more-btn");
+  if (btn) btn.textContent = `加载更早记录（还有 ${renderedHistoryStart} 条）`;
+}
+
+function loadEarlierMessages(batchSize = INITIAL_HISTORY_RENDER_LIMIT) {
+  if (!messagesEl || renderedHistoryStart <= 0 || renderedHistoryStart > messageLog.length) {
+    renderedHistoryStart = 0;
+    syncLoadEarlierBanner();
+    return;
+  }
+  const prevHeight = messagesEl.scrollHeight;
+  const prevTop = messagesEl.scrollTop;
+  const nextStart = Math.max(0, renderedHistoryStart - batchSize);
+  const loadWrap = messagesEl.querySelector(".history-load-more-wrap");
+  const anchor = loadWrap ? loadWrap.nextSibling : messagesEl.firstChild;
+  for (let i = nextStart; i < renderedHistoryStart; i += 1) {
+    mountHistoryMessage(messageLog[i], { insertBefore: anchor, skipScroll: true });
+  }
+  renderedHistoryStart = nextStart;
+  syncLoadEarlierBanner();
+  messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
 }
 
 function makeToolEl(tool) {
@@ -11985,7 +12279,8 @@ async function deleteConversation(id) {
     restoreConversationDeliveryState(currentConvId);
     restoreComposerDraft(currentConvId);
     updateBackgroundActivity();
-    rememberConvModelPrefs();
+    if (getActiveProfile()?.provider === "codex") applyConvModelPrefs();
+    else rememberConvModelPrefs();
   }
   if (_historyCache !== null) {
     _historyCache = _historyCache.filter(h => h.id !== id);
@@ -12230,6 +12525,7 @@ function cacheCurrentConversationView() {
   convViewCache.set(currentConvId, {
     html: messagesEl.innerHTML,
     messageLog: [...messageLog],
+    renderedHistoryStart: typeof renderedHistoryStart === "number" ? Math.min(renderedHistoryStart, messageLog.length) : 0,
     scrollTop: messagesEl.scrollTop,
     followLatest: followLatestMessage,
     draft: promptEl.value,
@@ -12683,6 +12979,9 @@ async function loadConversation(conv, { restoreCurrent = false } = {}) {
     messagesEl.classList.add("view-crossfade-out");
     messagesEl.innerHTML = cached.html;
     messageLog = [...(cached.messageLog || [])];
+    if (typeof renderedHistoryStart === "number") {
+      renderedHistoryStart = Number.isFinite(cached.renderedHistoryStart) ? cached.renderedHistoryStart : 0;
+    }
     restoreConversationRuntime(cached);
     messagesEl.scrollTop = cached.scrollTop || 0;
 
@@ -12698,6 +12997,9 @@ async function loadConversation(conv, { restoreCurrent = false } = {}) {
     if (!conv.messages && cached && typeof cached.html === "string") {
       messagesEl.innerHTML = cached.html;
       messageLog = [...(cached.messageLog || [])];
+      if (typeof renderedHistoryStart === "number") {
+        renderedHistoryStart = Number.isFinite(cached.renderedHistoryStart) ? cached.renderedHistoryStart : 0;
+      }
       restoreConversationRuntime(cached);
       messagesEl.scrollTop = cached.scrollTop || 0;
       messagesEl.classList.remove("view-crossfade-out");
@@ -12718,22 +13020,31 @@ async function loadConversation(conv, { restoreCurrent = false } = {}) {
       events: m.events ?? null,
       cost: m.cost ?? null,
       status: m.status ?? null,
+      ...(m.kind ? { kind: m.kind } : {}),
+      ...(m.auto ? { auto: m.auto } : {}),
       ...(m.sourceChannel ? { sourceChannel: m.sourceChannel } : {}),
       ...(m.retryDraft ? { retryDraft: m.retryDraft } : {}),
     }));
+    const historyRenderLimit = typeof INITIAL_HISTORY_RENDER_LIMIT === "number" ? INITIAL_HISTORY_RENDER_LIMIT : 50;
+    const startIdx = Math.max(0, messageLog.length - historyRenderLimit);
+    if (typeof renderedHistoryStart === "number") renderedHistoryStart = startIdx;
     let lastAssistantEl = null;
-    for (const msg of (conv.messages || [])) {
-      if (msg.subtask) continue;
-      const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
-      const el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text, undefined, msg.id, { sourceChannel: msg.sourceChannel });
-      if (hasAssistantBlocks) {
-        renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
-      }
-      if (msg.role === "assistant" && msg.status !== "running") {
-        renderVideoOpenCard(el, msg.text || textFromAssistantBlocks(msg.blocks || []));
+    for (let i = startIdx; i < messageLog.length; i += 1) {
+      const msg = messageLog[i];
+      let el;
+      if (typeof mountHistoryMessage === "function") {
+        el = mountHistoryMessage(msg, { skipScroll: true });
+      } else {
+        const hasAssistantBlocks = msg.role === "assistant" && Array.isArray(msg.blocks) && msg.blocks.length > 0;
+        el = addMessage(msg.role, hasAssistantBlocks ? "" : msg.text, undefined, msg.id, { sourceChannel: msg.sourceChannel });
+        if (hasAssistantBlocks) renderAssistantBlocks(el.querySelector(".msg-body"), msg.blocks);
+        if (msg.role === "assistant" && msg.status !== "running") {
+          renderVideoOpenCard(el, msg.text || textFromAssistantBlocks(msg.blocks || []));
+        }
       }
       if (msg.role === "assistant") lastAssistantEl = el;
     }
+    if (typeof syncLoadEarlierBanner === "function") syncLoadEarlierBanner();
     const restoredSubtasks = restoreSubtaskCards(conv);
     for (const msg of conv.messages || []) {
       if (msg.subtask && !restoredSubtasks.has(msg.subtask.id)) renderSubtaskHistoryMessage(msg);
@@ -12863,9 +13174,8 @@ async function startNewConversation() {
   updateBackgroundActivity();
   restoreComposerDraft(currentConvId);
   scrollBottom(true);
-  /* 新窗口继承你此刻用着的那个模型——多半是接着做同一件事，
-     不该把人扔回默认再手动切一次。 */
-  rememberConvModelPrefs();
+  if (getActiveProfile()?.provider === "codex") applyConvModelPrefs();
+  else rememberConvModelPrefs();
 
   requestAnimationFrame(() => {
     messagesEl.classList.remove("view-crossfade-out");
@@ -13155,11 +13465,13 @@ const STRATEGIST_CONV_ID = "strategist";
 const orchestratorTickets = new Map(); // ticketId -> ticket summary
 const orchestratorTicketByWorker = new Map(); // workerConversationId -> ticketId
 let ticketBoardOpen = false;
-let ticketStageFilter = "all"; // all | active | attention | done
+let ticketStageFilter = "all"; // all | active | attention | done | archived
 let workerStageReturnId = null;
 let ticketStageReturnFocus = null;
 let ticketStageInertSiblings = [];
 let clearingFinishedTickets = false;
+let confirmClearArchived = false;
+let confirmClearArchivedTimer = null;
 let hasCompleteTicketSnapshot = false;
 const clearedOrchestratorTicketIds = new Set();
 
@@ -13308,7 +13620,7 @@ function updateTicketCardMarkup(card, markup) {
     const existing = current.get(part.className);
     let node = part;
     if (existing && part.className === "tk-card-actions") {
-      for (const key of ["data-enter-ticket", "data-stop-ticket", "data-retry-ticket"]) {
+      for (const key of ["data-enter-ticket", "data-stop-ticket", "data-retry-ticket", "data-archive-ticket", "data-unarchive-ticket"]) {
         const oldButton = existing.querySelector(`[${key}]`);
         const newButton = part.querySelector(`[${key}]`);
         if (oldButton && newButton && oldButton.getAttribute(key) === newButton.getAttribute(key)) {
@@ -13331,26 +13643,32 @@ function updateTicketCardMarkup(card, markup) {
 }
 
 function renderTicketCardContent(cardEl, ticket, fallbackTitle = "", { compactOrigin = false } = {}) {
-  const archived = ticket?.archived;
-  const status = archived ? "archived" : ticket?.status || "running";
+  const deleted = Boolean(ticket?.deleted || ticket?.archived);
+  const isSoftArchived = !deleted && Boolean(ticket?.archivedAt);
+  const status = deleted ? "archived" : ticket?.status || "running";
   const title = ticket?.title || fallbackTitle || "后台任务";
-  const statusText = archived ? "已归档" : TICKET_STATUS_LABEL[status] || status;
+  const statusText = deleted ? "已清空" : TICKET_STATUS_LABEL[status] || status;
   const originText = [ticket?.profileName || ticket?.provider, ticket?.model].filter(Boolean).join(" · ");
-  const isActive = ["running", "queued", "needs_attention"].includes(status);
-  const canRetry = ["failed", "interrupted", "stopped"].includes(status);
+  const isActive = !deleted && ["running", "queued", "needs_attention"].includes(status);
+  const canRetry = !deleted && ["failed", "interrupted", "stopped"].includes(status);
+  const canArchive = !deleted && !isSoftArchived && !isActive && status !== "stopping" && compactOrigin;
 
   cardEl.dataset.status = status;
   if (ticket?.id) cardEl.dataset.ticketId = ticket.id;
 
-  const originLabel = archived ? "↳ Fellow 派发 · 已归档" : status === "completed"
-    ? "✓ 已向 Fellow 交卷"
-    : status === "needs_attention"
-      ? "↳ Fellow 派发 · 等待你拍板"
-      : "↳ Fellow 已派发";
+  const originLabel = deleted
+    ? "↳ Fellow 派发 · 已清空"
+    : isSoftArchived
+      ? (status === "completed" ? "✓ 已向 Fellow 交卷 · 已归档" : "↳ Fellow 派发 · 已归档")
+      : status === "completed"
+        ? "✓ 已向 Fellow 交卷"
+        : status === "needs_attention"
+          ? "↳ Fellow 派发 · 等待你拍板"
+          : "↳ Fellow 已派发";
 
   let bodyText = "";
-  if (archived) {
-    bodyText = "工单已从执行台清理。";
+  if (deleted) {
+    bodyText = "工单记录已从归档清空（产物文件仍保留在原路径）。";
   } else if (status === "needs_attention") {
     bodyText = ticket?.attentionReason || "执行专员需要你确认下一步。";
   } else if (["failed", "interrupted", "partial"].includes(status)) {
@@ -13384,14 +13702,17 @@ function renderTicketCardContent(cardEl, ticket, fallbackTitle = "", { compactOr
       <span class="tk-status-dot" data-status="${escapeAttr(status)}"></span>
       <span class="tk-card-title" title="${escapeAttr(title)}">${esc(title)}</span>
       ${compactOrigin && originText ? `<span class="tk-badge">${esc(originText)}</span>` : ""}
+      ${isSoftArchived ? `<span class="tk-badge status-archived">已归档</span>` : ""}
       <span class="tk-badge status-${escapeAttr(status)}">${esc(statusText)}</span>
     </div>
     <div class="tk-card-body">${esc(bodyText)}</div>
     ${filesHtml ? `<div class="tk-files">${filesHtml}</div>` : ""}
     <div class="tk-card-actions">
-      ${ticket?.id && !archived ? `<button type="button" class="${enterCls}" data-enter-ticket="${escapeAttr(ticket.id)}">${enterLabel}</button>` : ""}
+      ${ticket?.id && !deleted ? `<button type="button" class="${enterCls}" data-enter-ticket="${escapeAttr(ticket.id)}">${enterLabel}</button>` : ""}
       ${ticket?.id && isActive ? `<button type="button" class="tk-btn danger" data-stop-ticket="${escapeAttr(ticket.id)}">停止</button>` : ""}
       ${ticket?.id && canRetry ? `<button type="button" class="tk-btn" data-retry-ticket="${escapeAttr(ticket.id)}">重试</button>` : ""}
+      ${ticket?.id && canArchive ? `<button type="button" class="tk-btn" data-archive-ticket="${escapeAttr(ticket.id)}">归档</button>` : ""}
+      ${ticket?.id && isSoftArchived ? `<button type="button" class="tk-btn" data-unarchive-ticket="${escapeAttr(ticket.id)}">移出归档</button>` : ""}
     </div>
   `);
 }
@@ -13427,7 +13748,7 @@ function bindInlineTicketToolResult(container, toolUseId, content, isError = fal
       status: result.status || "running",
       lastStepLabel: result.message,
       error: result.error,
-      archived: clearedOrchestratorTicketIds.has(result.ticketId) || hasCompleteTicketSnapshot,
+      deleted: clearedOrchestratorTicketIds.has(result.ticketId) || hasCompleteTicketSnapshot,
     }, card.dataset.ticketTitle);
   } else if (isError || result?.ok === false) {
     renderTicketCardContent(card, { status: "failed", title: card.dataset.ticketTitle, error: result?.error || rawText || "派单失败" });
@@ -13444,7 +13765,7 @@ function refreshInlineTicketCards(ticketId = null) {
     if (ticket) renderTicketCardContent(card, ticket, card.dataset.ticketTitle);
     else if (clearedOrchestratorTicketIds.has(id) || hasCompleteTicketSnapshot) {
       const artifactPaths = Array.from(card.querySelectorAll("[data-open-artifact]"), button => button.dataset.openArtifact);
-      renderTicketCardContent(card, { id, archived: true, artifactPaths }, card.dataset.ticketTitle);
+      renderTicketCardContent(card, { id, deleted: true, artifactPaths }, card.dataset.ticketTitle);
     }
   });
 }
@@ -13454,8 +13775,10 @@ function renderTicketBoardButton() {
   const label = document.getElementById("ticket-board-label");
   if (!btn || !label) return;
   const all = [...orchestratorTickets.values()];
-  const attention = all.filter(t => t.status === "needs_attention").length;
-  const running = all.filter(t => ["running", "queued", "stopping"].includes(t.status)).length;
+  const unarchived = all.filter(t => !t.archivedAt);
+  const archivedCount = all.length - unarchived.length;
+  const attention = unarchived.filter(t => t.status === "needs_attention").length;
+  const running = unarchived.filter(t => ["running", "queued", "stopping"].includes(t.status)).length;
 
   // 顶部「↳ 任务」归属在 Fellow 主从胶囊内：仅在真有运行中/需拍板任务时显示数字，闲置时零数字打扰
   btn.classList.toggle("has-attention", attention > 0);
@@ -13467,12 +13790,21 @@ function renderTicketBoardButton() {
   } else {
     label.textContent = "任务";
   }
-  btn.title = all.length > 0 ? `查看 Fellow 派出的执行任务（共 ${all.length} 条）` : "查看 Fellow 派出的执行任务";
+  if (unarchived.length > 0 && archivedCount > 0) {
+    btn.title = `查看 Fellow 派出的执行任务（${unarchived.length} 条，另有 ${archivedCount} 条已归档）`;
+  } else if (unarchived.length > 0) {
+    btn.title = `查看 Fellow 派出的执行任务（共 ${unarchived.length} 条）`;
+  } else if (archivedCount > 0) {
+    btn.title = `查看 Fellow 派出的执行任务（${archivedCount} 条已归档）`;
+  } else {
+    btn.title = "查看 Fellow 派出的执行任务";
+  }
 }
 
 function ticketCardSignature(ticket) {
   return JSON.stringify([
     ticket.status,
+    ticket.archivedAt || "",
     ticket.title || "",
     ticket.lastStepLabel || "",
     ticket.stepsCount || 0,
@@ -13486,38 +13818,73 @@ function ticketCardSignature(ticket) {
   ]);
 }
 
+function resetConfirmClearArchived() {
+  confirmClearArchived = false;
+  if (confirmClearArchivedTimer) {
+    clearTimeout(confirmClearArchivedTimer);
+    confirmClearArchivedTimer = null;
+  }
+}
+
 function renderTicketStage() {
   const stage = document.getElementById("ticket-stage-view");
   const listEl = document.getElementById("ticket-stage-list");
   if (!stage || !listEl || !ticketBoardOpen) return;
 
   const all = [...orchestratorTickets.values()];
-  const attention = all.filter(t => t.status === "needs_attention");
-  const running = all.filter(t => ["running", "queued", "stopping"].includes(t.status));
-  const done = all.filter(t => !["needs_attention", "running", "queued", "stopping"].includes(t.status))
+  const unarchived = all.filter(t => !t.archivedAt);
+  const archivedItems = all.filter(t => Boolean(t.archivedAt))
+    .sort((a, b) => (Date.parse(b.archivedAt || b.finishedAt || b.updatedAt || b.createdAt) || 0)
+      - (Date.parse(a.archivedAt || a.finishedAt || a.updatedAt || a.createdAt) || 0));
+
+  const attention = unarchived.filter(t => t.status === "needs_attention");
+  const running = unarchived.filter(t => ["running", "queued", "stopping"].includes(t.status));
+  const done = unarchived.filter(t => !["needs_attention", "running", "queued", "stopping"].includes(t.status))
     .sort((a, b) => (Date.parse(b.finishedAt || b.updatedAt || b.createdAt) || 0)
       - (Date.parse(a.finishedAt || a.updatedAt || a.createdAt) || 0));
 
   const filterBar = document.getElementById("ticket-stage-filters");
   if (filterBar) {
     filterBar.querySelectorAll(".stage-filter-btn").forEach((btn) => {
-      const isActive = btn.dataset.stageFilter === ticketStageFilter;
+      const key = btn.dataset.stageFilter;
+      const isActive = key === ticketStageFilter;
       btn.classList.toggle("active", isActive);
       btn.setAttribute("aria-pressed", String(isActive));
+      if (key === "archived") {
+        const html = archivedItems.length > 0
+          ? `已归档<span class="stage-filter-count">${archivedItems.length}</span>`
+          : "已归档";
+        if (btn.innerHTML !== html) btn.innerHTML = html;
+      }
     });
   }
 
   const clearBtn = document.getElementById("btn-ticket-clear-done");
-  if (clearBtn) clearBtn.disabled = clearingFinishedTickets || done.length === 0;
+  if (clearBtn) {
+    if (ticketStageFilter === "archived") {
+      clearBtn.className = "tk-btn danger";
+      clearBtn.textContent = confirmClearArchived ? "确认彻底清空？" : "清空归档";
+      clearBtn.title = "彻底删除已归档的任务记录（任务产出的文件会保留在原目录）";
+      clearBtn.disabled = clearingFinishedTickets || archivedItems.length === 0;
+    } else {
+      clearBtn.className = "tk-btn";
+      clearBtn.textContent = "归档已完成";
+      clearBtn.title = "把已完成、已停止或已失败的任务收入「已归档」，随时可查回";
+      clearBtn.disabled = clearingFinishedTickets || done.length === 0;
+    }
+  }
 
-  const allGroups = [
-    { key: "attention", title: "需要你拍板", items: attention },
-    { key: "running", title: "正在后台执行", items: running },
-    { key: "done", title: "已完成 · 已向 Fellow 交卷", items: done.filter(t => t.status === "completed") },
-    { key: "ended", title: "其他已结束任务", items: done.filter(t => t.status !== "completed") },
-  ];
+  const allGroups = ticketStageFilter === "archived"
+    ? [{ key: "archived", title: "已归档任务（可随时进入现场或移出归档）", items: archivedItems }]
+    : [
+        { key: "attention", title: "需要你拍板", items: attention },
+        { key: "running", title: "正在后台执行", items: running },
+        { key: "done", title: "已完成 · 已向 Fellow 交卷", items: done.filter(t => t.status === "completed") },
+        { key: "ended", title: "其他已结束任务", items: done.filter(t => t.status !== "completed") },
+      ];
   const visibleGroups = allGroups.filter((g) => {
     if (g.items.length === 0) return false;
+    if (ticketStageFilter === "archived") return g.key === "archived";
     if (ticketStageFilter === "active") return g.key === "attention" || g.key === "running";
     if (ticketStageFilter === "attention") return g.key === "attention";
     if (ticketStageFilter === "done") return g.key === "done" || g.key === "ended";
@@ -13527,15 +13894,25 @@ function renderTicketStage() {
   const shownCount = visibleGroups.reduce((sum, g) => sum + g.items.length, 0);
   const summaryEl = document.getElementById("ticket-stage-summary");
   if (summaryEl) {
-    summaryEl.textContent = ticketStageFilter === "all"
-      ? `共 ${all.length} 条`
-      : `${shownCount} / ${all.length} 条`;
+    if (ticketStageFilter === "archived") {
+      summaryEl.textContent = `共 ${archivedItems.length} 条归档`;
+    } else {
+      summaryEl.textContent = ticketStageFilter === "all"
+        ? `共 ${unarchived.length} 条`
+        : `${shownCount} / ${unarchived.length} 条`;
+    }
   }
 
   if (visibleGroups.length === 0) {
-    listEl.innerHTML = all.length === 0
-      ? `<div class="ticket-stage-empty"><strong>还没有派出的任务</strong>直接跟 ✦ Fellow 聊想法或交代要办的事，需要动手干活时会自动派到这里并行执行。</div>`
-      : `<div class="ticket-stage-empty"><strong>当前筛选下暂无任务</strong>可以切换到「全部」查看全部历史记录。</div>`;
+    if (ticketStageFilter === "archived") {
+      listEl.innerHTML = `<div class="ticket-stage-empty"><strong>还没有已归档的任务</strong>点击右上角「归档已完成」后，已结束的任务会收纳到这里，随时可以查回或重新进入现场。</div>`;
+    } else if (unarchived.length === 0 && archivedItems.length > 0) {
+      listEl.innerHTML = `<div class="ticket-stage-empty"><strong>当前没有待处理的任务</strong>已有 ${archivedItems.length} 条历史任务收纳在「已归档」中，随时可切换查看或重新进入现场。</div>`;
+    } else if (unarchived.length === 0) {
+      listEl.innerHTML = `<div class="ticket-stage-empty"><strong>还没有派出的任务</strong>直接跟 ✦ Fellow 聊想法或交代要办的事，需要动手干活时会自动派到这里并行执行。</div>`;
+    } else {
+      listEl.innerHTML = `<div class="ticket-stage-empty"><strong>当前筛选下暂无任务</strong>可以切换到「全部」或「已归档」查看历史记录。</div>`;
+    }
     return;
   }
 
@@ -13622,6 +13999,7 @@ function openTicketStage() {
 
 function closeTicketStage({ restoreFocus = true } = {}) {
   if (!ticketBoardOpen) return;
+  resetConfirmClearArchived();
   ticketBoardOpen = false;
   const stage = document.getElementById("ticket-stage-view");
   const btn = document.getElementById("btn-ticket-board");
@@ -13649,13 +14027,47 @@ function setTicketStageFeedback(text) {
   document.getElementById("ticket-stage-feedback").textContent = text;
 }
 
-async function clearCompletedTicketsAction() {
+async function archiveCompletedTicketsAction() {
   if (clearingFinishedTickets) return;
   clearingFinishedTickets = true;
-  setTicketStageFeedback("正在清理已结束的工单…");
+  setTicketStageFeedback("正在归档已结束的任务…");
   renderTicketStage();
   try {
-    const result = await orchestratorRequest("tickets/clear-completed", {});
+    const result = await orchestratorRequest("tickets/archive-completed", {});
+    handleOrchestratorEvent({
+      type: "tickets_snapshot",
+      tickets: result.tickets || [],
+    });
+    const failed = result.failedIds?.length || 0;
+    setTicketStageFeedback(failed
+      ? `已归档 ${result.archivedCount} 条，${failed} 条未能归档，可重试。`
+      : `已归档 ${result.archivedCount} 条任务，可在「已归档」中随时查看或重进现场。`);
+  } catch (error) {
+    setTicketStageFeedback(error.message || "归档已完成任务失败");
+  } finally {
+    clearingFinishedTickets = false;
+    renderTicketStage();
+  }
+}
+
+async function clearArchivedTicketsAction() {
+  if (clearingFinishedTickets) return;
+  if (!confirmClearArchived) {
+    confirmClearArchived = true;
+    setTicketStageFeedback("再次点击「确认彻底清空？」将删除全部已归档记录（已生成的产物文件不会删除）。");
+    confirmClearArchivedTimer = setTimeout(() => {
+      resetConfirmClearArchived();
+      if (ticketBoardOpen) renderTicketStage();
+    }, 4500);
+    renderTicketStage();
+    return;
+  }
+  resetConfirmClearArchived();
+  clearingFinishedTickets = true;
+  setTicketStageFeedback("正在清空已归档的任务记录…");
+  renderTicketStage();
+  try {
+    const result = await orchestratorRequest("tickets/clear-archived", {});
     handleOrchestratorEvent({
       type: "tickets_snapshot",
       removedIds: result.removedIds || [],
@@ -13663,10 +14075,10 @@ async function clearCompletedTicketsAction() {
     });
     const failed = result.failedIds?.length || 0;
     setTicketStageFeedback(failed
-      ? `已清理 ${result.removedCount} 条，${failed} 条未能清理，可重试。`
-      : `已清理 ${result.removedCount} 条工单。`);
+      ? `已清空 ${result.removedCount} 条归档，${failed} 条未能清空，可重试。`
+      : `已彻底清空 ${result.removedCount} 条归档记录（产物文件仍保留在原路径）。`);
   } catch (error) {
-    setTicketStageFeedback(error.message || "清理已完成任务失败");
+    setTicketStageFeedback(error.message || "清空归档失败");
   } finally {
     clearingFinishedTickets = false;
     renderTicketStage();
@@ -13688,9 +14100,14 @@ document.addEventListener("keydown", (e) => {
 async function submitTicketAction(button, ticketId, action) {
   button.disabled = true;
   try {
-    await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}/${action}`, {});
-    const result = await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}`);
-    handleOrchestratorEvent({ type: "ticket_updated", ticket: result.ticket });
+    const actionResult = await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}/${action}`, {});
+    const ticket = actionResult?.ticket || (await orchestratorRequest(`tickets/${encodeURIComponent(ticketId)}`)).ticket;
+    if (ticket) handleOrchestratorEvent({ type: "ticket_updated", ticket });
+    if (ticketBoardOpen && (action === "archive" || action === "unarchive")) {
+      setTicketStageFeedback(action === "archive"
+        ? "已移入「已归档」，随时可查回。"
+        : "已移出归档，回到任务台列表。");
+    }
   } catch (error) {
     if (ticketBoardOpen && button.closest?.("#ticket-stage-view")) setTicketStageFeedback(error.message || "工单请求未送达");
     else showInlineError(error.message || "工单请求未送达");
@@ -13738,9 +14155,9 @@ function syncStrategistChrome() {
   const compactBtn = document.getElementById("btn-header-compact");
   const bar = document.getElementById("role-context-bar");
   const role = roleForConversationId(currentConvId);
-  const archived = role === "worker" && clearedOrchestratorTicketIds.has(currentConvId.slice(4));
-  if (promptEl && promptEl.readOnly !== archived) {
-    promptEl.readOnly = archived;
+  const deleted = role === "worker" && clearedOrchestratorTicketIds.has(currentConvId.slice(4));
+  if (promptEl && promptEl.readOnly !== deleted) {
+    promptEl.readOnly = deleted;
     syncComposerAction();
   }
 
@@ -13769,8 +14186,9 @@ function syncStrategistChrome() {
 
   if (role === "worker") {
     const ticket = ticketForWorkerConversation(currentConvId);
-    const st = archived ? "已归档" : ticket ? (TICKET_STATUS_LABEL[ticket.status] || ticket.status) : "后台任务";
-    const isActive = ticket && ["running", "queued", "needs_attention"].includes(ticket.status);
+    const isSoftArchived = !deleted && Boolean(ticket?.archivedAt);
+    const st = deleted ? "已清空" : ticket ? (TICKET_STATUS_LABEL[ticket.status] || ticket.status) : "后台任务";
+    const isActive = !deleted && ticket && ["running", "queued", "needs_attention"].includes(ticket.status);
     const firstFile = (ticket?.artifactPaths?.[0] || ticket?.changedFiles?.[0]) || "";
     bar.hidden = false;
     bar.className = "role-worker";
@@ -13782,9 +14200,11 @@ function syncStrategistChrome() {
       <span class="push-crumb-sep" aria-hidden="true">›</span>
       <div class="role-bar-main">
         <span class="role-bar-title" title="${escapeAttr(ticket?.title || "后台任务")}">${esc(ticket?.title || "后台任务")}</span>
-        <span class="tk-badge status-${escapeAttr(ticket?.status || "running")}">${esc(st)}</span>
+        ${isSoftArchived ? `<span class="tk-badge status-archived">已归档</span>` : ""}
+        <span class="tk-badge status-${escapeAttr(deleted ? "archived" : ticket?.status || "running")}">${esc(st)}</span>
       </div>
       <div class="role-bar-actions">
+        ${isSoftArchived && ticket?.id ? `<button type="button" class="tk-btn" data-unarchive-ticket="${escapeAttr(ticket.id)}">移出归档</button>` : ""}
         ${firstFile ? `<button type="button" class="tk-btn" data-open-artifact="${escapeAttr(firstFile)}">打开产物</button>` : ""}
         ${ticket && isActive ? `<button type="button" class="tk-btn danger" data-stop-ticket="${escapeAttr(ticket.id)}">停止</button>` : ""}
       </div>
@@ -13794,7 +14214,11 @@ function syncStrategistChrome() {
       bar.dataset.markup = markup;
     }
     if (promptEl && !promptEl.value) {
-      promptEl.placeholder = archived ? "此工单已从执行台清理。" : "直接指挥当前执行任务（完成后自动向 Fellow 交卷）…";
+      promptEl.placeholder = deleted
+        ? "此工单记录已从归档彻底清空。"
+        : isSoftArchived
+          ? "此任务已归档——发消息会自动移出归档并继续执行…"
+          : "直接指挥当前执行任务（完成后自动向 Fellow 交卷）…";
     }
     return;
   }
@@ -13803,8 +14227,77 @@ function syncStrategistChrome() {
   bar.className = "";
 }
 
+let strategistContextStatus = null;
+
+function renderStrategistContextIndicator() {
+  const btn = document.getElementById("btn-header-compact");
+  if (!btn) return;
+  const ctx = strategistContextStatus;
+  const level = ctx?.level || "normal";
+  btn.classList.toggle("has-ctx-warn", level === "warn");
+  btn.classList.toggle("has-ctx-high", level === "high");
+  if (!btn.disabled && ctx && Number.isFinite(ctx.turnsSinceReset)) {
+    const baseTip = `记忆与上下文：当前已聊 ${ctx.turnsSinceReset} / ${ctx.thresholdTurns || 36} 轮`;
+    btn.title = level === "high"
+      ? `${baseTip}（接近上限，将自动整理，点击查看或立即整理）`
+      : level === "warn"
+        ? `${baseTip}（对话偏长，点击可查看记忆或立即整理）`
+        : `${baseTip}（点击查看/编辑长期记忆或手动整理上下文）`;
+  }
+  const labelEl = document.getElementById("fellow-memory-ctx-label");
+  const hintEl = document.getElementById("fellow-memory-ctx-hint");
+  const fillEl = document.getElementById("fellow-memory-bar-fill");
+  if (labelEl && ctx) {
+    const kTokens = ctx.lastInputTokens ? ` · 约 ${Math.max(1, Math.round(ctx.lastInputTokens / 1000))}k tokens` : "";
+    labelEl.textContent = `当前上下文：${ctx.turnsSinceReset || 0} / ${ctx.thresholdTurns || 36} 轮${kTokens}`;
+  }
+  if (hintEl && ctx) {
+    hintEl.textContent = level === "high" ? "即将自动整理" : level === "warn" ? "建议整理" : "达阈值自动整理";
+  }
+  if (fillEl && ctx) {
+    const pct = Math.max(4, Math.min(100, Math.round((ctx.ratio || 0) * 100)));
+    fillEl.style.width = `${ (ctx.turnsSinceReset || ctx.lastInputTokens) ? pct : 0 }%`;
+    fillEl.className = `fellow-memory-bar-fill ${level === "high" ? "high" : level === "warn" ? "warn" : ""}`.trim();
+  }
+}
+
+function appendStrategistCompactedDivider(divider) {
+  if (!divider) return;
+  if (currentConvId !== STRATEGIST_CONV_ID) {
+    convViewCache.delete(STRATEGIST_CONV_ID);
+    return;
+  }
+  if (divider.id && messagesEl?.querySelector(`.ctx-compact-divider[data-divider-id="${cssEscapeValue(divider.id)}"]`)) {
+    return;
+  }
+  if (!messageLog.some(m => m.id && m.id === divider.id)) {
+    messageLog.push({
+      id: divider.id || null,
+      role: "system",
+      kind: "context_compact",
+      auto: Boolean(divider.auto),
+      text: divider.text,
+    });
+  }
+  messagesEl?.appendChild(createContextDividerEl(divider));
+  if (followLatestMessage) scrollBottom();
+}
+
 function handleOrchestratorEvent(ev) {
   if (!ev || typeof ev.type !== "string") return false;
+  if (ev.type === "strategist_context") {
+    strategistContextStatus = ev;
+    if (typeof renderStrategistContextIndicator === "function") renderStrategistContextIndicator();
+    return true;
+  }
+  if (ev.type === "strategist_compacted") {
+    if (ev.context) {
+      strategistContextStatus = ev.context;
+      if (typeof renderStrategistContextIndicator === "function") renderStrategistContextIndicator();
+    }
+    if (ev.divider && typeof appendStrategistCompactedDivider === "function") appendStrategistCompactedDivider(ev.divider);
+    return true;
+  }
   if (ev.type === "tickets_snapshot") {
     const tickets = ev.tickets || [];
     let removedIds = ev.removedIds;
@@ -13858,44 +14351,155 @@ document.getElementById("btn-ticket-stage-back")?.addEventListener("click", () =
 });
 
 document.getElementById("btn-ticket-clear-done")?.addEventListener("click", () => {
-  void clearCompletedTicketsAction();
+  if (ticketStageFilter === "archived") void clearArchivedTicketsAction();
+  else void archiveCompletedTicketsAction();
 });
 
 document.getElementById("ticket-stage-filters")?.addEventListener("click", (e) => {
   const btn = e.target.closest?.(".stage-filter-btn");
   if (!btn || !btn.dataset.stageFilter) return;
+  resetConfirmClearArchived();
+  setTicketStageFeedback("");
   ticketStageFilter = btn.dataset.stageFilter;
   renderTicketStage();
 });
 
 function triggerStrategistCompactMemory(btn) {
   if (!btn || btn.disabled) return;
+  const origText = btn.textContent;
   const origTitle = btn.dataset.origTitle || btn.title || "整理记忆";
   btn.dataset.origTitle = origTitle;
   btn.disabled = true;
-  btn.title = "正在整理长期记忆…";
+  if (btn.id === "btn-memory-compact-now") btn.textContent = "正在提炼记忆…";
+  btn.title = "正在提炼并整理长期记忆…";
+  const statusEl = document.getElementById("fellow-memory-status");
+  if (statusEl) statusEl.textContent = "正在提炼本段对话并写入长期记忆…";
   void orchestratorRequest("strategist/compact-memory", { conversationId: STRATEGIST_CONV_ID })
-    .then(() => {
+    .then((res) => {
+      if (res?.divider || res?.context) {
+        handleOrchestratorEvent({
+          type: "strategist_compacted",
+          conversationId: STRATEGIST_CONV_ID,
+          auto: false,
+          divider: res.divider || null,
+          context: res.context || null,
+        });
+      }
+      void refreshFellowMemoryPopoverContent();
+      if (statusEl) {
+        statusEl.textContent = res?.mode === "ai"
+          ? "已用 AI 提炼融合长期记忆，并开启干净上下文 ✓"
+          : "已整理长期记忆，并开启干净上下文 ✓";
+      }
+      if (btn.id === "btn-memory-compact-now") btn.textContent = "已整理 ✓";
       btn.style.color = "var(--green, #22c55e)";
-      btn.title = "已将近期要点沉淀到长期记忆 ✓";
+      btn.title = res?.mode === "ai"
+        ? "已用 AI 提炼沉淀长期记忆并开启新上下文 ✓"
+        : "已整理长期记忆并开启新上下文 ✓";
       setTimeout(() => {
         btn.style.color = "";
         btn.title = origTitle;
+        if (btn.id === "btn-memory-compact-now") btn.textContent = origText || "立即整理上下文";
+        renderStrategistContextIndicator();
       }, 2400);
     }).catch(error => {
+      if (statusEl) statusEl.textContent = error.message || "整理记忆失败";
       showInlineError(error.message || "整理记忆失败");
       btn.title = origTitle;
+      if (btn.id === "btn-memory-compact-now") btn.textContent = origText || "立即整理上下文";
+      renderStrategistContextIndicator();
     }).finally(() => {
       btn.disabled = false;
     });
 }
 
+async function refreshFellowMemoryPopoverContent() {
+  const textarea = document.getElementById("fellow-memory-textarea");
+  const statusEl = document.getElementById("fellow-memory-status");
+  try {
+    const res = await orchestratorRequest("strategist/memory");
+    if (res?.context) {
+      strategistContextStatus = res.context;
+      renderStrategistContextIndicator();
+    }
+    if (textarea) textarea.value = res?.content || "";
+    if (statusEl && !statusEl.textContent.includes("✓")) {
+      statusEl.textContent = res?.content ? `已加载（注入长度 ${ (res.injected || "").length } / 4000 字）` : "暂无长期记忆记录";
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error.message || "读取记忆失败";
+  }
+}
+
+function closeFellowMemoryPopover() {
+  const pop = document.getElementById("fellow-memory-popover");
+  if (pop) pop.hidden = true;
+}
+
+function toggleFellowMemoryPopover() {
+  const pop = document.getElementById("fellow-memory-popover");
+  if (!pop) return;
+  if (!pop.hidden) {
+    pop.hidden = true;
+    return;
+  }
+  pop.hidden = false;
+  const statusEl = document.getElementById("fellow-memory-status");
+  if (statusEl) statusEl.textContent = "加载中…";
+  renderStrategistContextIndicator();
+  void refreshFellowMemoryPopoverContent();
+}
+
 document.getElementById("btn-header-compact")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleFellowMemoryPopover();
+});
+
+document.getElementById("btn-memory-compact-now")?.addEventListener("click", (e) => {
   e.stopPropagation();
   triggerStrategistCompactMemory(e.currentTarget);
 });
 
+document.getElementById("btn-memory-close")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeFellowMemoryPopover();
+});
+
+document.getElementById("btn-memory-save")?.addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const textarea = document.getElementById("fellow-memory-textarea");
+  const statusEl = document.getElementById("fellow-memory-status");
+  if (!textarea || btn.disabled) return;
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = "正在保存…";
+  try {
+    const response = await agentApiFetch("api/orchestrator/strategist/memory", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: textarea.value }),
+    });
+    const res = await response.json();
+    if (!response.ok || res?.ok === false) throw new Error(res?.error || "保存失败");
+    textarea.value = res.content || textarea.value;
+    if (statusEl) statusEl.textContent = `已保存（下轮自动同步，注入 ${(res.injected || "").length} / 4000 字）✓`;
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error.message || "保存失败";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.addEventListener("click", (e) => {
+  const memPop = document.getElementById("fellow-memory-popover");
+  if (memPop && !memPop.hidden && !e.target.closest?.("#fellow-memory-popover") && !e.target.closest?.("#btn-header-compact")) {
+    memPop.hidden = true;
+  }
+  if (e.target.closest?.("#btn-load-earlier-messages")) {
+    e.stopPropagation();
+    loadEarlierMessages();
+    return;
+  }
   const quickPromptBtn = e.target.closest?.("[data-fellow-quick-prompt]");
   if (quickPromptBtn && promptEl) {
     e.stopPropagation();
@@ -13921,6 +14525,18 @@ document.addEventListener("click", (e) => {
   if (retryBtn) {
     e.stopPropagation();
     void submitTicketAction(retryBtn, retryBtn.dataset.retryTicket, "retry");
+    return;
+  }
+  const archiveBtn = e.target.closest?.("[data-archive-ticket]");
+  if (archiveBtn) {
+    e.stopPropagation();
+    void submitTicketAction(archiveBtn, archiveBtn.dataset.archiveTicket, "archive");
+    return;
+  }
+  const unarchiveBtn = e.target.closest?.("[data-unarchive-ticket]");
+  if (unarchiveBtn) {
+    e.stopPropagation();
+    void submitTicketAction(unarchiveBtn, unarchiveBtn.dataset.unarchiveTicket, "unarchive");
     return;
   }
   const artifactBtn = e.target.closest?.("[data-open-artifact]");

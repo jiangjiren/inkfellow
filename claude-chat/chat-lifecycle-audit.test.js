@@ -40,6 +40,8 @@ function fixture(names) {
     resetAssistantState() {}, setGenerating() {}, removeTyping() {}, updateBackgroundActivity() {},
     restoreComposerDraft() { c.promptEl.value = ""; c.pendingImages = []; },
   });
+  if (names.includes("applyConversationProfile")) names.push("defaultChatModel", "upgradeLegacyAgyModel");
+  c.getActiveProfile = () => c._profileData.profiles.find(profile => profile.id === c.currentProfile);
   vm.runInContext(names.map(source).join("\n"), c);
   return c;
 }

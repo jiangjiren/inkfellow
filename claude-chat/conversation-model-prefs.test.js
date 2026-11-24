@@ -187,12 +187,12 @@ function modelPickerHarness(profiles) {
   c.loadCodexModelCatalog = () => {};
   c.loadAgyModelCatalog = () => {};
   vm.runInContext([
-    "modelOptionsForProfile", "defaultAgyChatModel", "renderModelOptions", "applyConversationProfile",
+    "modelOptionsForProfile", "defaultChatModel", "upgradeLegacyAgyModel", "renderModelOptions", "applyConversationProfile",
   ].map(source).join("\n"), c);
   return c;
 }
 
-test("switching to Gemini defaults to Neon and keeps a model already selected on that account", () => {
+test("Gemini defaults to Neon and upgrades saved Flash conversations to Hydrogen", () => {
   const gemini = { id: "p_agy", provider: "antigravity", sonnetModel: "gemini-3.8-flash" };
   const claude = { id: "p_claude", provider: "claude" };
   const c = modelPickerHarness([gemini, claude]);
@@ -200,18 +200,23 @@ test("switching to Gemini defaults to Neon and keeps a model already selected on
   c.renderModelOptions(gemini);
   assert.equal(c.selectedModel, "gemini-4-neon");
   assert.equal(c.modelLabel.textContent, "Gemini 4 Neon");
+  assert.ok(c.modelOptionsForProfile(gemini).some(option => option.model === "gemini-4-carbon"));
+  assert.ok(!c.modelOptionsForProfile(gemini).some(option => option.model === "gemini-3.8-flash"));
 
   const owner = "background-chat";
   c.convModelPrefs.set(owner, { profileId: claude.id, model: "claude-opus-5-5", effort: "high" });
   c.applyConversationProfile(c._profileData, owner, gemini.id, "medium");
   assert.equal(c.convModelPrefs.get(owner).model, "gemini-4-neon");
 
-  c.convModelPrefs.set(owner, { profileId: gemini.id, model: "gemini-3.8-flash", effort: "high" });
+  c.convModelPrefs.set(owner, { profileId: gemini.id, model: "gemini-3.8-flash", effort: "low" });
   c.applyConversationProfile(c._profileData, owner, gemini.id, "medium");
-  assert.equal(c.convModelPrefs.get(owner).model, "gemini-3.8-flash");
+  assert.equal(c.convModelPrefs.get(owner).model, "gemini-4-hydrogen");
+  c.convModelPrefs.set(owner, { profileId: gemini.id, model: "gemini-3.8-flash", effort: "low" });
   c.currentConvId = owner;
-  c.renderModelOptions(gemini);
-  assert.equal(c.selectedModel, "gemini-3.8-flash");
+  c.applyConvModelPrefs();
+  assert.equal(c.selectedModel, "gemini-4-hydrogen");
+  assert.equal(c.convModelPrefs.get(owner).model, "gemini-4-hydrogen");
+  assert.equal(c.selectedEffort, "low");
 });
 
 test("旧 Hydrogen 独立型号恢复为 Hydrogen 极高档，请求持久化时保留两者", async () => {
@@ -229,14 +234,17 @@ test("旧 Hydrogen 独立型号恢复为 Hydrogen 极高档，请求持久化时
 test("Terra selection survives model menu rendering and conversation persistence", async () => {
   const c = modelPickerHarness([{ id: "p_codex", provider: "codex", sonnetModel: "gpt-6-sol" }]);
   c.localStorage.setItem("model:p_codex", "gpt-6.1-terra");
+  c.localStorage.setItem("effort", "low");
+  c.selectedEffort = "low";
   c.renderModelOptions(c.getActiveProfile());
+  assert.equal(c.selectedModel, "gpt-6.2-sol");
+  assert.equal(c.selectedEffort, "high");
+  c.adoptServerConvPrefs({ id: "conv-0001", model: "gpt-6.1-terra", effort: "xhigh", profileId: "p_codex" });
+  c.localStorage.setItem("model:p_codex", "gpt-6-sol");
+  c.applyConvModelPrefs();
   assert.equal(c.selectedModel, "gpt-6.1-terra");
   assert.equal(c.modelLabel.textContent, "GPT-6.1 Terra");
-  c.adoptServerConvPrefs({ id: "conv-0001", model: "gpt-6.1-terra", effort: "high", profileId: "p_codex" });
-  c.localStorage.setItem("model:p_codex", "gpt-6-sol");
-  c.renderModelOptions(c.getActiveProfile());
-  assert.equal(c.selectedModel, "gpt-6.1-terra");
-  assert.equal(c.selectedEffort, "high");
+  assert.equal(c.selectedEffort, "xhigh");
   await c.saveCurrentConversation();
   assert.equal(c.puts.at(-1).body.model, "gpt-6.1-terra");
   assert.equal(c.puts.at(-1).body.profileId, "p_codex");

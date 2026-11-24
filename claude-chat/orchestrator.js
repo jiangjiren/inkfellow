@@ -18,6 +18,7 @@ import { basename, join, relative } from "node:path";
 import { canonicalPath, isSystemProtectedPath, normalizeScopePath, pathWithin, WriteScopeLock } from "./write-scope-lock.js";
 import { WorkerWatchdog } from "./worker-watchdog.js";
 import { ACTIVE_TICKET_STATUSES } from "./ticket-store.js";
+import { SCHEDULER_INTENT_GUIDANCE } from "./scheduler-intent.js";
 
 export const STRATEGIST_CONVERSATION_ID = "strategist";
 export const STRATEGIST_DISALLOWED_TOOLS = ["Edit", "Write", "Bash", "NotebookEdit"];
@@ -48,7 +49,8 @@ export const STRATEGIST_SYSTEM_PROMPT = `【inkfellow · Fellow 主控搭档（�
    - **硬性铁律**：任何对外发布（小红书、抖音、公众号、X 等）或删除重要文件等不可逆动作，必须先把**标题、正文、素材/网页预览截图**发给用户确认，等用户明确说“发吧/确认”后再调用 \`message_ticket\` 指示 Worker 执行最终发布；如遇登录二维码或安全验证，直接把截图发给用户人工处理，绝不尝试绕过验证码。
 5. **督工、返工、链式召回与定时巡检**：
    - 查全局进度用 list_tickets；查单任务结论与文件用 inspect_ticket；核对细节用 recall_ticket_detail；补充/拍板/返工用 message_ticket；中止用 stop_ticket。
-   - 用户要求定时抓取热点、晨报晚报、定时提醒时，直接调用 create_schedule / list_schedules / delete_schedule / toggle_schedule。
+   - 定时任务使用 create_schedule / list_schedules / delete_schedule / toggle_schedule。需要换算一次性任务的触发时间时可用 get_schedule_time。
+   - ${SCHEDULER_INTENT_GUIDANCE}
 6. **收到后台汇报时的风格**：
    - 收到「[后台任务汇报]」时，用简明人话总结：完成了什么、产出了哪些文件（若需在微信发送图片/视频/文档，直接附带 \`![图片](绝对路径)\`、\`[视频](绝对路径)\` 或 \`[文件](绝对路径)\`）、以及有没有需要用户拍板的卡点。`;
 
@@ -181,6 +183,226 @@ export function appendStrategistMemory(cwd, entryText) {
     throw new Error("军师记忆保存失败", { cause: error });
   }
   return file;
+}
+
+/**
+ * 归并并裁剪长期记忆文件（用于手动/自动整理记忆）：
+ * - replaceAll = true：AI 已完成新旧记忆融合去重，直接用精炼版本覆盖；
+ * - replaceAll = false：保留最近 maxEntries 条并在 maxFileChars 预算内滚动裁剪，防止磁盘无限膨胀。
+ */
+export function compactStrategistMemoryFile(
+  cwd,
+  entryText,
+  { replaceAll = false, maxEntries = 10, maxFileChars = MAX_MEMORY_INJECT_CHARS * 2 } = {},
+) {
+  if (!cwd || !entryText) return null;
+  const root = canonicalPath(cwd);
+  const file = canonicalPath(STRATEGIST_MEMORY_REL, root);
+  if (!pathWithin(file, root)) throw new Error("军师记忆路径必须位于当前 Vault 内");
+  mkdirSync(join(root, ".inkfellow/strategist"), { recursive: true });
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+  const entry = String(entryText).trim().slice(0, MAX_MEMORY_INJECT_CHARS - 64);
+  if (!entry) return null;
+
+  const header = "# Fellow 工作记忆";
+  let sections = [];
+  if (!replaceAll && existsSync(file)) {
+    try {
+      const raw = readFileSync(file, "utf8").trim();
+      const parts = raw.split(/\r?\n(?=## \d{4}-\d{2}-\d{2} \d{2}:\d{2}\b)/);
+      sections = parts
+        .map(p => p.trim())
+        .filter(p => /^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}\b/.test(p));
+    } catch {
+      sections = [];
+    }
+  }
+  sections.push(`## ${stamp}\n${entry}`);
+
+  const kept = [];
+  let totalLen = header.length + 2;
+  for (const sec of sections.reverse()) {
+    if (kept.length >= maxEntries) break;
+    if (kept.length > 0 && totalLen + sec.length + 2 > maxFileChars) break;
+    kept.unshift(sec);
+    totalLen += sec.length + 2;
+  }
+
+  const next = `${header}\n\n${kept.join("\n\n")}\n`;
+  const temp = `${file}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    writeFileSync(temp, next, { encoding: "utf8", flag: "wx" });
+    try { renameSync(temp, file); } finally {
+      if (existsSync(temp)) unlinkSync(temp);
+    }
+  } catch (error) {
+    throw new Error("军师记忆保存失败", { cause: error });
+  }
+  return file;
+}
+
+/** 统一从 Claude / Codex / Antigravity 的 usage 对象里读取本轮实际上下文输入 Token 数。 */
+export function extractUsageInputTokens(usage) {
+  if (!usage || typeof usage !== "object") return 0;
+  // Codex thread/tokenUsage/updated 把单轮真实上下文窗口用量放在 usage.last 里（total 是整条会话多轮累加）
+  const src = (usage.last && typeof usage.last === "object") ? usage.last : usage;
+  const base = Number(
+    src.input_tokens ?? src.inputTokens ?? src.prompt_tokens ?? src.promptTokenCount ?? 0
+  ) || 0;
+  const cacheRead = Number(
+    src.cache_read_input_tokens ?? src.cacheReadInputTokens ?? src.cached_input_tokens ?? src.cachedInputTokens ?? src.cachedContentTokenCount ?? 0
+  ) || 0;
+  const cacheCreate = Number(
+    src.cache_creation_input_tokens ?? src.cacheCreationInputTokens ?? 0
+  ) || 0;
+  const sum = Math.max(0, Math.round(base + cacheRead + cacheCreate));
+  if (sum > 0) return sum;
+  const totalFallback = Number(src.total_tokens ?? src.totalTokens ?? 0) || 0;
+  return Math.max(0, Math.round(totalFallback));
+}
+
+/** 判断是否为后台工单唤醒军师的内部系统汇报消息（不计入用户主动对话轮数）。 */
+export function isInternalStrategistReportPrompt(text) {
+  return /^\[后台工单系统自动汇报\]/.test(String(text || "").trim());
+}
+
+/**
+ * 提取单条消息的可见文本 + 关键工具调用摘要（dispatch_task / create_schedule / message_ticket 等），
+ * 避免 Fellow 只回复“好的已安排”而把真正派单目标藏在 blocks 里导致整理记忆时丢失。
+ */
+export function summarizeStrategistMessageForMemory(msg) {
+  if (!msg || typeof msg !== "object") return "";
+  const parts = [];
+  const rawText = String(msg.text || "").trim();
+  if (rawText && !isInternalStrategistReportPrompt(rawText)) {
+    parts.push(rawText);
+  }
+  if (Array.isArray(msg.blocks)) {
+    for (const b of msg.blocks) {
+      if (!b || b.type !== "tool_use" || !b.name) continue;
+      const name = String(b.name);
+      const inp = b.input && typeof b.input === "object" ? b.input : {};
+      if (name === "dispatch_task" || /(?:__|:|_|\/)dispatch_task$/.test(name)) {
+        const title = String(inp.title || inp.goal || "").trim().slice(0, 80);
+        const cwd = inp.cwd ? ` (目录:${inp.cwd})` : "";
+        if (title) parts.push(`[派发任务：${title}${cwd}]`);
+      } else if (name === "create_schedule" || /(?:__|:|_|\/)create_schedule$/.test(name)) {
+        const desc = String(inp.description || inp.prompt || "").trim().slice(0, 80);
+        if (desc) parts.push(`[创建定时：${desc}]`);
+      } else if (name === "message_ticket" || /(?:__|:|_|\/)message_ticket$/.test(name)) {
+        const instr = String(inp.instruction || inp.prompt || "").trim().slice(0, 80);
+        if (instr) parts.push(`[追加工单指令(${inp.ticketId || ""})：${instr}]`);
+      }
+    }
+  }
+  return parts.join(" ").trim();
+}
+
+/**
+ * 为 Codex / Antigravity 构建 Fellow 主控前置上下文：
+ * - 首次建会话（!nativeSession）：注入完整角色设定、长期记忆与任务盘面；
+ * - 续接原生会话（nativeSession = true）：不再重复灌几千字系统提示词，只在任务盘面变化或切到微信渠道时附极简增量。
+ */
+export function buildNonClaudeStrategistPrefix({
+  nativeSession = false,
+  systemPrompt = "",
+  note = "",
+  wechatAddon = "",
+  isWechatTurn = false,
+  contextBlock = "",
+  ticketBoardBlock = "",
+  lastBoardFingerprint = null,
+  memoryBlock = "",
+  lastMemoryFingerprint = null,
+} = {}) {
+  const boardFingerprint = String(ticketBoardBlock || "");
+  const memoryFingerprint = String(memoryBlock || "");
+  if (!nativeSession) {
+    const full = `${systemPrompt}${note}${wechatAddon}${contextBlock ? `\n\n${contextBlock}` : ""}\n\n---\n`;
+    return { prefix: full, boardFingerprint, memoryFingerprint };
+  }
+  const deltaParts = [];
+  if (lastMemoryFingerprint !== null && memoryFingerprint !== lastMemoryFingerprint) {
+    deltaParts.push(memoryFingerprint
+      ? `【长期工作记忆已更新（${STRATEGIST_MEMORY_REL}）】\n${memoryFingerprint}`
+      : "【长期工作记忆已更新】当前长期记忆已清空。");
+  }
+  if (boardFingerprint && boardFingerprint !== (lastBoardFingerprint || "")) {
+    deltaParts.push(`【后台任务盘面更新】\n${boardFingerprint}`);
+  } else if (!boardFingerprint && lastBoardFingerprint) {
+    deltaParts.push("【后台任务盘面更新】当前已无未归档后台任务。");
+  }
+  if (isWechatTurn) {
+    deltaParts.push("【渠道提示】本条消息来自用户微信，请保持手机端简洁易读；有产物文件时说明绝对路径以便自动回传。");
+  }
+  return {
+    prefix: deltaParts.length ? `${deltaParts.join("\n\n")}\n\n---\n` : "",
+    boardFingerprint,
+    memoryFingerprint,
+  };
+}
+
+const DECISION_SIGNAL_RE = /(?:以后|默认|记住|偏好|决定|确定|改成|不要|只用|目标|方案|结论|拍板|规则|风格|账号|目录|优先|统一|切到|保留)/;
+
+/**
+ * 无外部 API 或超时降级时，从整段对话窗口里提炼结构化记忆（偏好/决策 + 近期要点 + 当时活跃任务），
+ * 替代旧版机械截最后 8 条的做法，避免丢失前文敲定的关键约定。
+ */
+export function extractStructuredCompactionSummary(messages = [], activeTickets = []) {
+  const cleanMsgs = (Array.isArray(messages) ? messages : [])
+    .filter(m => m && (m.role === "user" || m.role === "assistant"))
+    .map(m => ({ role: m.role, summaryText: summarizeStrategistMessageForMemory(m) }))
+    .filter(m => m.summaryText);
+
+  const decisions = [];
+  const seen = new Set();
+  const pushUnique = (target, text, limit) => {
+    const norm = text.replace(/\s+/g, " ").trim();
+    if (!norm || norm.length < 4) return;
+    const key = norm.slice(0, 48);
+    if (seen.has(key) || target.length >= limit) return;
+    seen.add(key);
+    target.push(norm.length > 150 ? `${norm.slice(0, 149)}…` : norm);
+  };
+
+  // 从整段窗口抓取显式偏好与决策（倒序优先保留最新拍板）
+  for (let i = cleanMsgs.length - 1; i >= 0 && decisions.length < 8; i -= 1) {
+    const m = cleanMsgs[i];
+    const lines = String(m.summaryText || "").split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/^[-*•\d.\s]+/, "").trim();
+      if (line.length >= 6 && DECISION_SIGNAL_RE.test(line)) {
+        pushUnique(decisions, `${m.role === "user" ? "用户" : "Fellow"}：${line}`, 8);
+        if (decisions.length >= 8) break;
+      }
+    }
+  }
+
+  // 补上最近若干条关键往返，确保上下文衔接不断档
+  const recent = [];
+  for (const m of cleanMsgs.slice(-6)) {
+    const snippet = String(m.summaryText || "").replace(/\s+/g, " ").trim();
+    if (!snippet) continue;
+    pushUnique(recent, `${m.role === "user" ? "用户" : "Fellow"}：${snippet}`, 6);
+  }
+
+  const parts = [];
+  if (decisions.length) {
+    parts.push(`### 关键偏好与决策\n${decisions.reverse().map(d => `- ${d}`).join("\n")}`);
+  }
+  if (recent.length) {
+    parts.push(`### 近期讨论摘要\n${recent.map(r => `- ${r}`).join("\n")}`);
+  }
+  const active = (Array.isArray(activeTickets) ? activeTickets : [])
+    .filter(t => t && ACTIVE_TICKET_STATUSES.has(t.status))
+    .slice(0, 8);
+  if (active.length) {
+    const rows = active.map(t => `- [${t.status}] ${t.id}「${t.title}」${t.result?.attentionReason ? ` · 卡点：${t.result.attentionReason}` : ""}`);
+    parts.push(`### 进行中任务\n${rows.join("\n")}`);
+  }
+  const combined = parts.join("\n\n").trim();
+  if (!combined) return "手动整理记忆，承接活跃任务。";
+  return combined.slice(0, MAX_MEMORY_INJECT_CHARS - 128);
 }
 
 /**
@@ -368,7 +590,7 @@ export function createOrchestrator({
   function pushTicketsSnapshot(parentConversationId = null, { replace = false, removedIds } = {}) {
     if (typeof notifyClient !== "function") return;
     const complete = replace && !parentConversationId;
-    const all = ticketStore.list({ parentConversationId, limit: complete && !removedIds ? Infinity : 80 })
+    const all = ticketStore.list({ parentConversationId, limit: complete && !removedIds ? Infinity : 200 })
       .map((t) => ticketStore.toSummary(t));
     notifyClient({
       type: "tickets_snapshot",
@@ -379,9 +601,42 @@ export function createOrchestrator({
     });
   }
 
+  function archiveCompletedTickets() {
+    const { archivedIds, failedIds } = ticketStore.archiveFinished(id => !attempts.has(id) && !resetting.has(id));
+    const tickets = ticketStore.list({ limit: 200 }).map((t) => ticketStore.toSummary(t));
+    if (archivedIds.length) pushTicketsSnapshot(null, { replace: true });
+    return { ok: true, archivedCount: archivedIds.length, archivedIds, failedIds, tickets };
+  }
+
+  function setTicketArchived(ticketId, archived) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) return { ok: false, error: "未找到工单" };
+    if (archived) {
+      if (ACTIVE_TICKET_STATUSES.has(ticket.status) || attempts.has(ticket.id) || resetting.has(ticket.id)) {
+        return { ok: false, error: "仅已结束的任务可以归档。" };
+      }
+    }
+    try {
+      const updated = ticketStore.update(ticket.id, draft => {
+        draft.archivedAt = archived ? new Date(now()).toISOString() : null;
+      });
+      pushTicketUpdate(updated);
+      return { ok: true, ticket: ticketStore.toSummary(updated) };
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error) };
+    }
+  }
+
+  function clearArchivedTickets() {
+    const { removedIds, failedIds } = ticketStore.removeArchived(id => !attempts.has(id) && !resetting.has(id));
+    const tickets = ticketStore.list({ limit: 200 }).map((t) => ticketStore.toSummary(t));
+    if (removedIds.length) pushTicketsSnapshot(null, { replace: true, removedIds });
+    return { ok: true, removedCount: removedIds.length, removedIds, failedIds, tickets };
+  }
+
   function clearCompletedTickets() {
     const { removedIds, failedIds } = ticketStore.removeFinished(id => !attempts.has(id) && !resetting.has(id));
-    const tickets = ticketStore.list({ limit: 80 }).map((t) => ticketStore.toSummary(t));
+    const tickets = ticketStore.list({ limit: 200 }).map((t) => ticketStore.toSummary(t));
     if (removedIds.length) pushTicketsSnapshot(null, { replace: true, removedIds });
     return { ok: true, removedCount: removedIds.length, removedIds, failedIds, tickets };
   }
@@ -432,6 +687,7 @@ export function createOrchestrator({
         draft.result.error = null;
         draft.result.attentionReason = null;
         draft.result.pendingQuestion = null;
+        draft.archivedAt = null;
       });
       let resolve;
       const done = new Promise(complete => { resolve = complete; });
@@ -479,6 +735,7 @@ export function createOrchestrator({
     if (result.acquired) return startTicketExecution(ticket, useInstruction);
     const queued = ticketStore.update(ticket.id, draft => {
       draft.status = "queued";
+      draft.archivedAt = null;
       draft.execution.runInstruction = useInstruction;
       draft.execution.blockedBy = result.blockedBy;
       draft.result.error = null;
@@ -519,8 +776,8 @@ export function createOrchestrator({
     return dispatchReceipt(await queueOrStart(ticket));
   }
 
-  function listTickets({ status = null, parentConversationId = null, limit = 30 } = {}) {
-    const items = ticketStore.list({ status, parentConversationId, limit });
+  function listTickets({ status = null, parentConversationId = null, archived = "all", limit = 30 } = {}) {
+    const items = ticketStore.list({ status, parentConversationId, archived, limit });
     return {
       tickets: items.map((t) => ticketStore.toSummary(t)),
       specialists: loadSpecialists(defaultCwd).map(({ id, name, description, provider, model }) => ({
@@ -583,6 +840,7 @@ export function createOrchestrator({
       || attempts.get(ticket.id)?.entry?.requestId === requestId)) return { ...dispatchReceipt(ticket), delivery: "queued" };
     if (pending.length >= 20) return { ok: false, error: "补充指令已满，请等待已有指令执行。" };
     const updated = ticketStore.update(ticket.id, draft => {
+      draft.archivedAt = null;
       const entries = draft.execution.pendingInstructions || [];
       const entry = { prompt: cleanPrompt, fromUser, requestId, config, images, displayText, composerText, steering };
       draft.execution.pendingInstructions = ACTIVE_TICKET_STATUSES.has(ticket.status)
@@ -818,6 +1076,20 @@ export function createOrchestrator({
     return updated;
   }
 
+  /** 仅返回精简的活跃任务盘面文本，用于非 Claude 续接轮次做轻量增量变化对比。 */
+  function buildStrategistTicketBoardBlock(parentConversationId = STRATEGIST_CONVERSATION_ID) {
+    const tickets = ticketStore.list({ parentConversationId, archived: "active", limit: 12 });
+    if (tickets.length === 0) return "";
+    const rows = tickets.map((t) => {
+      const files = t.result?.changedFiles?.length ? ` · 改动:${t.result.changedFiles.length}个文件` : "";
+      const note = t.status === "needs_attention"
+        ? ` · 卡点:${t.result?.attentionReason || "待确认"}`
+        : (t.result?.summary ? ` · 摘要:${t.result.summary.slice(0, 80)}` : "");
+      return `- [${t.status}] ${t.id}「${t.title}」(${t.execution?.provider || "默认"})${files}${note}`;
+    });
+    return `【当前后台工单盘面（共 ${tickets.length} 条，细节用 inspect_ticket / recall_ticket_detail 按需查看）】\n${rows.join("\n")}`;
+  }
+
   /** 为军师构建极轻量的 Inline 盘面上下文（活跃工单 + 长期记忆摘录）。 */
   function buildStrategistContextBlock(parentConversationId = STRATEGIST_CONVERSATION_ID, cwd = defaultCwd) {
     const parts = [];
@@ -825,17 +1097,8 @@ export function createOrchestrator({
     if (memory) {
       parts.push(`【军师长期工作记忆（${STRATEGIST_MEMORY_REL}）】\n${memory}`);
     }
-    const tickets = ticketStore.list({ parentConversationId, limit: 12 });
-    if (tickets.length > 0) {
-      const rows = tickets.map((t) => {
-        const files = t.result?.changedFiles?.length ? ` · 改动:${t.result.changedFiles.length}个文件` : "";
-        const note = t.status === "needs_attention"
-          ? ` · 卡点:${t.result?.attentionReason || "待确认"}`
-          : (t.result?.summary ? ` · 摘要:${t.result.summary.slice(0, 80)}` : "");
-        return `- [${t.status}] ${t.id}「${t.title}」(${t.execution?.provider || "默认"})${files}${note}`;
-      });
-      parts.push(`【当前后台工单盘面（共 ${tickets.length} 条，细节用 inspect_ticket / recall_ticket_detail 按需查看）】\n${rows.join("\n")}`);
-    }
+    const board = buildStrategistTicketBoardBlock(parentConversationId);
+    if (board) parts.push(board);
     const specialists = loadSpecialists(cwd);
     if (specialists.length > 0) {
       const sRows = specialists.map((s) => `- ${s.id}（${s.name}）：${s.description || "专岗助手"}`);
@@ -879,8 +1142,12 @@ export function createOrchestrator({
     onWorkerNeedsAttention,
     onWorkerSettled,
     pushTicketsSnapshot,
+    archiveCompletedTickets,
+    setTicketArchived,
+    clearArchivedTickets,
     clearCompletedTickets,
     ownsAttempt: (ticketId, attempt) => attempts.get(ticketId)?.number === attempt && attempts.has(ticketId),
+    buildStrategistTicketBoardBlock,
     buildStrategistContextBlock,
     listProviders: () => (typeof listProviders === "function" ? listProviders() : []),
   };

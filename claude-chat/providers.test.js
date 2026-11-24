@@ -210,14 +210,15 @@ test("codex catalog exposes the advertised efforts and Fast support per model", 
   try {
     codex.setCatalog(codex.parseModelsCache({
       models: [
-        { slug: "gpt-6.2-sol", visibility: "list", priority: 0,
-          supported_reasoning_levels: [{ effort: "max" }, { effort: "ultra" }], service_tiers: [{ id: "priority" }] },
+        { slug: "gpt-6.2-sol", visibility: "list", priority: 2,
+          supported_reasoning_levels: [{ effort: "high" }, { effort: "max" }, { effort: "ultra" }], service_tiers: [{ id: "priority" }] },
         { slug: "gpt-6-luna", visibility: "list", priority: 1,
           supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }], service_tiers: [] },
       ],
     }));
-    const [sol, luna] = codex.menuModels();
-    assert.deepEqual(sol.efforts, ["max", "ultra"]);
+    const [luna, sol] = codex.menuModels();
+    assert.equal(codex.defaultModels().sonnetModel, "gpt-6.2-sol");
+    assert.deepEqual(sol.efforts, ["high", "max", "ultra"]);
     assert.equal(sol.fast, true);
     assert.deepEqual(luna.efforts, ["low", "max"]);
     assert.equal(luna.fast, false);
@@ -553,26 +554,15 @@ test("agy: 目录换新之后，档位表和菜单跟着走", () => {
   assert.equal(agy.hasLiveCatalog(), false);
 });
 
-test("agy: 菜单每个系列只留最新的一个", () => {
+test("agy: 菜单隐藏旧 Gemini，保留其他系列的最新型号", () => {
   agy.setCatalog(agy.parseModelsList(AGY_MODELS_STDOUT));
   const menu = agy.menuModels();
   const models = menu.map(item => item.model);
 
-  // 3.8 顶掉 3.7：同一个系列不该在菜单里出现两代
-  // gpt-oss 平时用不上，藏起来——但它还在目录里，选着它的对话照样能跑
-  assert.deepEqual(models, [
-    "gemini-3.1-pro",
-    "gemini-3.8-flash",
-    "claude-opus-4-6-thinking",
-    "claude-sonnet-4-6",
-  ]);
+  assert.deepEqual(models, ["claude-opus-4-6-thinking", "claude-sonnet-4-6"]);
   assert.equal(agy.effortForModel("gpt-oss-120b", "high"), "medium");
   // 菜单上的名字去掉了结尾括号和 Claude 前缀
   assert.equal(menu.find(item => item.model === "claude-opus-4-6-thinking").name, "Opus 4.6");
-  assert.equal(menu.find(item => item.model === "gemini-3.8-flash").name, "Gemini 3.8 Flash");
-  assert.equal(menu.find(item => item.model === "gemini-3.1-pro").desc, "旗舰最强");
-  // 档位一起带过去，前端不用再查第二张表
-  assert.deepEqual(menu.find(item => item.model === "gemini-3.1-pro").efforts, ["low", "high"]);
 
   agy._resetCatalog();
 });
@@ -580,9 +570,8 @@ test("agy: 菜单每个系列只留最新的一个", () => {
 test("agy: 下线的模型顺着系列升到最新", () => {
   agy.setCatalog(agy.parseModelsList(AGY_MODELS_STDOUT));
 
-  // 3.5 已经从 agy 那边撤了，用户还选着它 → 升到同系列最新的 3.8
-  assert.equal(agy.successorFor("gemini-3.5-flash"), "gemini-3.8-flash");
-  // 3.7 还在目录里（只是不在菜单上），不该被换掉
+  // 旧 Gemini 型号不能互为替代
+  assert.equal(agy.successorFor("gemini-3.5-flash"), null);
   assert.equal(agy.successorFor("gemini-3.7-flash"), null);
   assert.equal(agy.successorFor("gemini-3.8-flash"), null);
   // 别家的模型名没有同系列可换，交给调用方退回默认
@@ -617,14 +606,13 @@ const AGY_MODELS_2026_11 = [
 test("agy: 旗舰换了命名也认得出来，菜单和默认模型跟着走", () => {
   agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
   const menu = agy.menuModels();
-  assert.deepEqual(menu.map(item => item.model), ["gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5"]);
+  assert.deepEqual(menu.map(item => item.model), ["gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5"]);
   assert.equal(menu[0].desc, "旗舰最强");
   assert.equal(menu[0].name, "Gemini 4 Argon");
-  // opus 档给旗舰（派发默认用它），sonnet/haiku 给 Flash（新对话默认用它，别平白烧 Argon 的周额度）
   assert.deepEqual(agy.defaultModels(), {
     opusModel: "gemini-4-argon",
-    sonnetModel: "gemini-3.8-flash",
-    haikuModel: "gemini-3.8-flash",
+    sonnetModel: "gemini-4-argon",
+    haikuModel: "gemini-4-argon",
   });
   // Claude 现在也认档位了，不能再当成「不吃 --effort」
   assert.equal(agy.effortForModel("claude-opus-5-5", "medium"), "medium");
@@ -666,23 +654,27 @@ test("agy: Hydrogen 极高档合并为一项，Orchestrator 保留完整名称�
   agy._resetCatalog();
 });
 
-test("agy: Neon is the chat default on supported catalogs and Flash remains the fast model", () => {
+test("agy: Neon is the chat default and Hydrogen replaces Flash for fast requests", () => {
   try {
     agy._resetCatalog();
     assert.equal(agy.defaultModels().sonnetModel, "gemini-4-neon");
     agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11 + [
       "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
       "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-4-carbon-high\tGemini 4 Carbon (High)",
+      "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
       "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
     ].join("\n")));
     assert.deepEqual(agy.defaultModels(), {
       opusModel: "gemini-4-argon",
       sonnetModel: "gemini-4-neon",
-      haikuModel: "gemini-3.8-flash",
+      haikuModel: "gemini-4-hydrogen",
     });
+    assert.equal(agy.resolveModel("gemini-3.8-flash"), "gemini-4-hydrogen");
+    assert.equal(agy.resolveModel("gemini-3.8-flash-high"), "gemini-4-hydrogen");
     assert.equal(agy.effortForModel("gemini-4-neon", "xhigh"), "xhigh");
     agy.setCatalog(agy.parseModelsList(AGY_MODELS_2026_11));
-    assert.equal(agy.defaultModels().sonnetModel, "gemini-3.8-flash");
+    assert.equal(agy.defaultModels().sonnetModel, "gemini-4-argon");
   } finally { agy._resetCatalog(); }
 });
 
@@ -692,9 +684,9 @@ test("agy: 没有 Gemini 旗舰时默认模型退到菜单第一个，不写死�
     { model: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low"] },
   ]);
   assert.deepEqual(agy.defaultModels(), {
-    opusModel: "gemini-3.8-flash",
-    sonnetModel: "gemini-3.8-flash",
-    haikuModel: "gemini-3.8-flash",
+    opusModel: "claude-opus-5-5",
+    sonnetModel: "claude-opus-5-5",
+    haikuModel: "claude-opus-5-5",
   });
   agy._resetCatalog();
 });
@@ -722,22 +714,20 @@ test("agy: 请求里的模型名这一轮该跑哪个", () => {
   assert.equal(agy.resolveModel("gemini-4-argon-high"), "gemini-4-argon-high");
   assert.equal(agy.resolveModel("gpt-oss-120b"), "gpt-oss-120b");
   // 下线了但同系列有新的：顺着升
-  assert.equal(agy.resolveModel("gemini-3.7-flash"), "gemini-3.8-flash");
+  assert.equal(agy.resolveModel("gemini-3.7-flash"), "gemini-4-argon");
   assert.equal(agy.resolveModel("claude-sonnet-4-6"), "claude-sonnet-5-5");
   assert.equal(agy.resolveModel("claude-opus-4-6-thinking"), "claude-opus-5-5");
-  // 整个系列都没了（3.1 Pro）：agy 会直接拒绝启动，只能交给调用方退回默认
-  assert.equal(agy.resolveModel("gemini-3.1-pro"), null);
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-4-argon");
   // 不是 agy 的名字
   assert.equal(agy.resolveModel("gpt-6.1-sol"), null);
   assert.equal(agy.resolveModel("deepseek-v4-pro"), null);
   // 比目录还新：目录落后于这次升级，绝不能拦下或降级
-  assert.equal(agy.resolveModel("gemini-3.9-flash"), "gemini-3.9-flash");
+  assert.equal(agy.resolveModel("gemini-3.9-flash"), "gemini-4-argon");
   assert.equal(agy.resolveModel("gemini-5-argon"), "gemini-5-argon");
   assert.equal(agy.resolveModel("gemini-5-neon"), "gemini-5-neon");
   assert.equal(agy.resolveModel("claude-opus-6"), "claude-opus-6");
   agy._resetCatalog();
-  // 还没查过真目录时不敢断定下线，放行让 agy 自己判
-  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-3.1-pro");
+  assert.equal(agy.resolveModel("gemini-3.1-pro"), "gemini-4-neon");
 });
 
 test("agy: 前端首帧兜底和 provider 兜底表说的是同一批模型", async () => {
@@ -764,8 +754,8 @@ test("agy: 没查过目录时用兜底表，不至于菜单空掉", () => {
   const menu = agy.menuModels();
   assert.ok(menu.length >= 4);
   assert.ok(menu.every(item => item.model && item.name && item.desc));
-  // 兜底表里同系列也只露最新的一个
-  assert.equal(menu.filter(item => /-flash$/.test(item.model)).length, 1);
+  assert.ok(menu.some(item => item.model === "gemini-4-hydrogen"));
+  assert.ok(menu.every(item => !/^gemini-[1-3]\./.test(item.model)));
   // 藏起来的那些兜底时也不该冒出来
   assert.equal(menu.filter(item => /^gpt-/.test(item.model)).length, 0);
 });

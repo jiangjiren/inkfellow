@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
@@ -21,10 +21,16 @@ import {
   STRATEGIST_CONVERSATION_ID,
   STRATEGIST_DISALLOWED_TOOLS,
   appendStrategistMemory,
+  buildNonClaudeStrategistPrefix,
+  compactStrategistMemoryFile,
   createOrchestrator,
+  extractStructuredCompactionSummary,
+  extractUsageInputTokens,
+  isInternalStrategistReportPrompt,
   loadSpecialists,
   ReportBatcher,
   readStrategistMemory,
+  summarizeStrategistMessageForMemory,
   summarizeWorkerOutput,
 } from "./orchestrator.js";
 
@@ -335,6 +341,24 @@ test("frontend index.html orchestrator helpers parse and track strategist/worker
   ctx.renderTicketCardContent(warnCard, { id: "tk_10", status: "needs_attention", title: "发小红书" });
   assert.match(warnCard.innerHTML, /去拍板/);
 
+  // 软归档卡片仍保留「进入现场」与产物，并提供「移出归档」
+  const softArchivedCard = { dataset: {} };
+  ctx.renderTicketCardContent(softArchivedCard, {
+    id: "tk_11", status: "completed", title: "已归档任务", archivedAt: "2026-11-23T12:00:00.000Z",
+    artifactPaths: ["notes/done.md"],
+  });
+  assert.match(softArchivedCard.innerHTML, /已归档/);
+  assert.match(softArchivedCard.innerHTML, /进入现场/);
+  assert.match(softArchivedCard.innerHTML, /移出归档/);
+  assert.match(softArchivedCard.innerHTML, /data-open-artifact="notes\/done\.md"/);
+
+  // 彻底清空的卡片隐藏「进入现场」但保留产物快捷入口
+  const deletedCard = { dataset: {} };
+  ctx.renderTicketCardContent(deletedCard, { id: "tk_12", deleted: true, title: "已清空", artifactPaths: ["notes/old.md"] });
+  assert.match(deletedCard.innerHTML, /已清空/);
+  assert.doesNotMatch(deletedCard.innerHTML, /data-enter-ticket/);
+  assert.match(deletedCard.innerHTML, /data-open-artifact="notes\/old\.md"/);
+
   ctx.handleOrchestratorEvent({ type: "ticket_updated", ticket: {
     id: "tk_new", workerConversationId: "wrk_tk_new", status: "running", revision: 5,
   } });
@@ -565,6 +589,148 @@ test("strategist memory includes the latest complete entries after crossing the 
   });
 });
 
+test("Fellow context management avoids repeated non-Claude prompt bloat, extracts structured decisions, and prunes MEMORY.md", async () => {
+  await withTempDir(dir => {
+    // 1. Codex / Antigravity 首轮完整注入，续接轮次不重复灌系统提示词与记忆，仅在盘面变化时附增量
+    const first = buildNonClaudeStrategistPrefix({
+      nativeSession: false,
+      systemPrompt: "SYS_PROMPT",
+      note: "MCP_NOTE",
+      contextBlock: "LONG_MEMORY_AND_BOARD",
+      ticketBoardBlock: "BOARD_V1",
+    });
+    assert.match(first.prefix, /SYS_PROMPT/);
+    assert.match(first.prefix, /LONG_MEMORY_AND_BOARD/);
+
+    const resumedSame = buildNonClaudeStrategistPrefix({
+      nativeSession: true,
+      systemPrompt: "SYS_PROMPT",
+      note: "MCP_NOTE",
+      contextBlock: "LONG_MEMORY_AND_BOARD",
+      ticketBoardBlock: "BOARD_V1",
+      lastBoardFingerprint: first.boardFingerprint,
+    });
+    assert.equal(resumedSame.prefix, "");
+
+    const resumedChanged = buildNonClaudeStrategistPrefix({
+      nativeSession: true,
+      systemPrompt: "SYS_PROMPT",
+      note: "MCP_NOTE",
+      contextBlock: "LONG_MEMORY_AND_BOARD",
+      ticketBoardBlock: "BOARD_V2",
+      lastBoardFingerprint: first.boardFingerprint,
+    });
+    assert.doesNotMatch(resumedChanged.prefix, /SYS_PROMPT/);
+    assert.doesNotMatch(resumedChanged.prefix, /LONG_MEMORY_AND_BOARD/);
+    assert.match(resumedChanged.prefix, /BOARD_V2/);
+
+    // 2. 统一 Token 读取兼容 Claude / Codex (含嵌套 tokenUsage.last) / Antigravity
+    assert.equal(extractUsageInputTokens({ input_tokens: 1000, cache_read_input_tokens: 45000, cache_creation_input_tokens: 500 }), 46500);
+    assert.equal(extractUsageInputTokens({ promptTokenCount: 28000 }), 28000);
+    assert.equal(extractUsageInputTokens({
+      last: { inputTokens: 12000, cachedInputTokens: 30000, totalTokens: 42800 },
+      total: { inputTokens: 180000, cachedInputTokens: 400000 },
+    }), 42000);
+
+    // 2b. 长期记忆在会话中途被用户编辑后，续接轮次也会自动附带记忆更新增量
+    const resumedMemChanged = buildNonClaudeStrategistPrefix({
+      nativeSession: true,
+      ticketBoardBlock: "BOARD_V1",
+      lastBoardFingerprint: "BOARD_V1",
+      memoryBlock: "NEW_EDITED_MEMORY",
+      lastMemoryFingerprint: "OLD_MEMORY",
+    });
+    assert.match(resumedMemChanged.prefix, /长期工作记忆已更新/);
+    assert.match(resumedMemChanged.prefix, /NEW_EDITED_MEMORY/);
+
+    // 3. 结构化提炼能从更早轮次抓到偏好与决策 + 提取 blocks 里的派单动作，且忽略内部自动汇报固定头
+    assert.equal(isInternalStrategistReportPrompt("[后台工单系统自动汇报]\n工单已完成"), true);
+    const msgWithBlocks = {
+      role: "assistant",
+      text: "好的，已为你安排。",
+      blocks: [{ type: "tool_use", name: "dispatch_task", input: { title: "剪辑大理旅居视频", cwd: "D:/videos" } }],
+    };
+    assert.match(summarizeStrategistMessageForMemory(msgWithBlocks), /派发任务：剪辑大理旅居视频/);
+    const longWindow = [
+      { role: "user", text: "以后所有小红书稿件默认先生成预览卡片，不要直接发布。" },
+      msgWithBlocks,
+      ...Array.from({ length: 12 }, (_, idx) => ({ role: idx % 2 === 0 ? "user" : "assistant", text: `普通闲聊第 ${idx + 1} 轮` })),
+    ];
+    const summary = extractStructuredCompactionSummary(longWindow, [
+      { id: "tk_live_1", title: "剪旅居视频", status: "running", result: {} },
+    ]);
+    assert.match(summary, /关键偏好与决策/);
+    assert.match(summary, /不要直接发布/);
+    assert.match(summary, /派发任务：剪辑大理旅居视频/);
+    assert.match(summary, /剪旅居视频/);
+
+    // 4. 记忆文件滚动裁剪防止无限增长，且支持 AI 融合覆盖模式
+    for (let i = 0; i < 15; i += 1) {
+      compactStrategistMemoryFile(dir, `第 ${i + 1} 批决定：${"x".repeat(300)}`, { maxEntries: 5 });
+    }
+    const rawPruned = readFileSync(join(dir, ".inkfellow/strategist/MEMORY.md"), "utf8");
+    assert.ok((rawPruned.match(/^## \d{4}-\d{2}-\d{2}/gm) || []).length <= 5);
+    compactStrategistMemoryFile(dir, "### 长期偏好与约束\n- 精简融合版记忆", { replaceAll: true });
+    const merged = readStrategistMemory(dir);
+    assert.match(merged, /精简融合版记忆/);
+    assert.doesNotMatch(merged, /第 15 批/);
+  });
+});
+
+test("Fellow automatically compacts context on turn threshold, inserts a divider, and exposes /strategist/context", { timeout: 20_000 }, async () => {
+  await withTempDir(async dir => {
+    await withSidecar(dir, "ctx-token", async port => {
+      const base = `http://127.0.0.1:${port}`;
+      const headers = { Authorization: "Bearer ctx-token", "Content-Type": "application/json" };
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/?token=ctx-token`);
+      const events = [];
+      socket.on("message", raw => events.push(JSON.parse(raw.toString())));
+      await once(socket, "open");
+      try {
+        // 连续 2 轮对话触发阈值（extraEnv 设为 STRATEGIST_AUTO_COMPACT_TURNS=2）
+        socket.send(JSON.stringify({ conversationId: "strategist", userMessageId: "auto-c-1", prompt: "以后周报默认每周五发给我" }));
+        await waitFor(() => events.find(e => e.type === "done" && e.userMessageId === "auto-c-1"));
+        socket.send(JSON.stringify({ conversationId: "strategist", userMessageId: "auto-c-2", prompt: "顺便帮我记住偏好" }));
+        await waitFor(() => events.find(e => e.type === "done" && e.userMessageId === "auto-c-2"));
+
+        // 自动整理触发并广播 strategist_compacted + 写入分割线 + 沉淀 MEMORY.md
+        const compacted = await waitFor(() => events.find(e => e.type === "strategist_compacted" && e.auto === true), 6000);
+        assert.equal(compacted.context.turnsSinceReset, 0);
+        assert.equal(compacted.divider.kind, "context_compact");
+        assert.match(readStrategistMemory(dir), /每周五发给我/);
+
+        const ctxRes = await (await fetch(`${base}/api/orchestrator/strategist/context`, { headers })).json();
+        assert.equal(ctxRes.ok, true);
+        assert.equal(ctxRes.context.turnsSinceReset, 0);
+        assert.equal(ctxRes.context.level, "normal");
+
+        // 可通过 /strategist/memory 直接读取与编辑 MEMORY.md
+        const getMem = await (await fetch(`${base}/api/orchestrator/strategist/memory`, { headers })).json();
+        assert.equal(getMem.ok, true);
+        assert.match(getMem.content, /每周五发给我/);
+        const putMem = await (await fetch(`${base}/api/orchestrator/strategist/memory`, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({ content: "# Fellow 工作记忆\n\n## 2026-11-23 21:00\n- 用户手动修订：所有视频默认加中文字幕" }),
+        })).json();
+        assert.equal(putMem.ok, true);
+        assert.match(putMem.injected, /所有视频默认加中文字幕/);
+
+        const hist = await (await fetch(`${base}/api/history/strategist`, { headers })).json();
+        assert.ok(hist.messages.some(m => m.role === "system" && m.kind === "context_compact" && m.auto === true));
+      } finally {
+        socket.terminate();
+      }
+    }, {
+      extraEnv: {
+        STRATEGIST_AUTO_COMPACT_TURNS: "2",
+        STRATEGIST_AUTO_COMPACT_COOLDOWN_MS: "0",
+        INKFELLOW_AI_COMPACT: "0",
+      },
+    });
+  });
+});
+
 
 const TEST_SDK = `
   import { writeFileSync } from "node:fs";
@@ -588,6 +754,20 @@ const TEST_SDK = `
               await dispatchTool.handler({ title: "微信派单任务", goal: "写一篇文章", writeScope: ["wiki/"] });
             }
             yield { type: "assistant", message: { content: [{ type: "text", text: "已为你派出微信测试任务" }] } };
+          } else if (text.includes("schedule-routing-probe")) {
+            const scheduler = options.mcpServers?.scheduler;
+            if (!scheduler) throw new Error("Direct chat must have scheduler tools available to the model");
+            if (options.disallowedTools?.includes("Bash")) throw new Error("Direct chat must keep its normal tools");
+            if (text.includes("confirmed-time")) {
+              const findTool = name => scheduler.tools.find(tool => tool.name === name).handler;
+              const clock = await findTool("get_schedule_time")({});
+              const { timestampMs } = JSON.parse(clock.content[0].text);
+              const result = await findTool("create_schedule")({
+                kind: "once", description: "测试提醒", taskPrompt: "提醒用户复盘", runAtMs: timestampMs + 600_000,
+              });
+              if (result.isError) throw new Error(result.content[0].text);
+            }
+            yield { type: "assistant", message: { content: [{ type: "text", text: "Model processed scheduler probe" }] } };
           } else {
             yield { type: "assistant", message: { content: [{ type: "text", text: "Report received" }] } };
           }
@@ -688,6 +868,7 @@ test("a token-protected sidecar validates REST input and routes direct commands 
       const detail = async id => (await (await http(`${endpoint}/${id}`)).json()).ticket;
       for (const [path, method] of [[endpoint, "GET"], [endpoint, "POST"],
         [endpoint + "/tk_sample/recall", "GET"], [endpoint + "/tk_sample/retry", "POST"],
+        [endpoint + "/archive-completed", "POST"], [endpoint + "/clear-archived", "POST"],
         [endpoint + "/clear-completed", "POST"],
         ["/api/orchestrator/strategist/compact-memory", "POST"]]) {
         assert.equal((await fetch(base + path, { method })).status, 403);
@@ -763,15 +944,35 @@ test("a token-protected sidecar validates REST input and routes direct commands 
         const queued = await (await post(endpoint, { goal: "wait for wiki", writeScope: ["wiki"] })).json();
         assert.equal(active.status, "running");
         assert.equal(queued.status, "queued");
+        // 先归档已完成任务：工单仍可查询和进入现场，活跃/排队任务不受影响
+        const archived = await (await post(endpoint + "/archive-completed", {})).json();
+        assert.equal(archived.ok, true);
+        assert.ok(archived.archivedIds.includes(workerA.ticketId));
+        assert.ok(archived.archivedIds.includes(workerB.ticketId));
+        assert.ok(archived.archivedIds.includes(bashTicketData.ticketId));
+        assert.deepEqual(archived.failedIds, []);
+        assert.ok((await detail(workerA.ticketId)).archivedAt);
+        assert.equal((await detail(active.ticketId)).archivedAt, null);
+        // 移出归档再单独归档
+        const unarchived = await (await post(`${endpoint}/${workerA.ticketId}/unarchive`, {})).json();
+        assert.equal(unarchived.ok, true);
+        assert.equal(unarchived.ticket.archivedAt, null);
+        assert.equal((await post(`${endpoint}/${active.ticketId}/archive`, {})).status, 409);
+        // 清空归档只删除已归档的工单，未归档的 workerA 与活跃任务保留
+        const clearedArchived = await (await post(endpoint + "/clear-archived", {})).json();
+        assert.equal(clearedArchived.ok, true);
+        assert.ok(clearedArchived.removedIds.includes(workerB.ticketId));
+        assert.ok(!clearedArchived.removedIds.includes(workerA.ticketId));
+        assert.equal((await http(`${endpoint}/${workerB.ticketId}`)).status, 404);
+        assert.equal((await detail(workerA.ticketId)).status, "stopped");
         const clear = await (await post(endpoint + "/clear-completed", {})).json();
         assert.ok(clear.removedIds.includes(workerA.ticketId));
-        assert.ok(clear.removedIds.includes(workerB.ticketId));
         assert.deepEqual(clear.failedIds, []);
         assert.equal((await detail(active.ticketId)).status, "running");
         assert.equal((await detail(queued.ticketId)).status, "queued");
-        assert.equal((await http(`${endpoint}/${workerB.ticketId}`)).status, 404);
+        assert.equal((await http(`${endpoint}/${workerA.ticketId}`)).status, 404);
         const snapshot = await waitFor(() => events.find(event => event.type === "tickets_snapshot"
-          && event.removedIds?.includes(workerB.ticketId)));
+          && event.removedIds?.includes(workerA.ticketId)));
         assert.equal(snapshot.replace, true);
         assert.ok(snapshot.tickets.some(ticket => ticket.id === active.ticketId));
       } finally {
@@ -1133,6 +1334,98 @@ test("clearing terminal tickets reports filesystem failures and leaves all activ
   });
 });
 
+test("archive mechanism hides finished tickets from active list/context, persists across reload, and auto-unarchives on follow-up", async () => {
+  await withTempDir(async dir => {
+    const store = createTicketStore({ dir: join(dir, "tickets"), vault: dir });
+    const launched = [];
+    const messaged = [];
+    const orch = createOrchestrator({
+      ticketStore: store,
+      defaultCwd: dir,
+      batchDelayMs: 0,
+      launchWorker: async (ticket) => { launched.push(ticket.id); },
+      messageWorker: async (ticket, prompt) => { messaged.push({ id: ticket.id, prompt }); },
+      stopWorker: async () => {},
+      readWorkerMessages: () => [],
+    });
+    try {
+      const done = await orch.dispatchTask({ title: "小红书选题", goal: "整理本周选题", writeScope: ["notes"] });
+      orch.onWorkerSettled(done.workerConversationId, { attempt: 1, status: "completed", output: "已完成选题" });
+      const active = await orch.dispatchTask({ title: "视频剪辑", goal: "剪辑旅居vlog", writeScope: ["videos"] });
+
+      // 归档已完成：不删盘、只打 archivedAt，活跃任务不受影响
+      const archived = orch.archiveCompletedTickets();
+      assert.equal(archived.ok, true);
+      assert.equal(archived.archivedCount, 1);
+      assert.deepEqual(archived.archivedIds, [done.ticketId]);
+      assert.ok(store.get(done.ticketId)?.archivedAt);
+      assert.equal(store.get(active.ticketId)?.archivedAt, null);
+
+      // 军师上下文不注入已归档任务，但仍可按 ID 查证详情
+      const ctxBlock = orch.buildStrategistContextBlock(STRATEGIST_CONVERSATION_ID, dir);
+      assert.doesNotMatch(ctxBlock, /小红书选题/);
+      assert.match(ctxBlock, /视频剪辑/);
+      assert.equal(orch.inspectTicket(done.ticketId).ok, true);
+
+      // 重启重新加载后归档状态持久化，且 list 支持按 archived 过滤
+      const reloaded = createTicketStore({ dir: join(dir, "tickets"), vault: dir });
+      assert.equal(reloaded.list({ archived: "active" }).length, 1);
+      assert.equal(reloaded.list({ archived: "only" }).length, 1);
+      assert.equal(reloaded.list({ archived: "all" }).length, 2);
+
+      // 对已归档任务发追问，自动移出归档并恢复执行
+      const follow = await orch.messageTicket(done.ticketId, "顺便补两条备选标题");
+      assert.equal(follow.ok, true);
+      assert.equal(store.get(done.ticketId)?.archivedAt, null);
+      assert.equal(messaged.length, 1);
+
+      // 再次完成后归档，再彻底清空归档
+      orch.onWorkerSettled(done.workerConversationId, { attempt: 2, status: "completed", output: "已补充" });
+      assert.equal(orch.setTicketArchived(done.ticketId, true).ok, true);
+      const purged = orch.clearArchivedTickets();
+      assert.equal(purged.removedCount, 1);
+      assert.equal(store.get(done.ticketId), null);
+      assert.ok(store.get(active.ticketId));
+    } finally {
+      orch.stop();
+    }
+  });
+});
+
+test("Claude receives ordinary scheduler-related text and can act on a follow-up using its tools", { timeout: 20_000 }, async () => {
+  await withTempDir(async dir => {
+    await withSidecar(dir, "scheduler-probe", async port => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=scheduler-probe`);
+      const events = [];
+      ws.on("message", raw => events.push(JSON.parse(raw)));
+      try {
+        await once(ws, "open");
+        const send = async (userMessageId, prompt) => {
+          ws.send(JSON.stringify({ conversationId: "scheduler-probe", userMessageId, prompt, profileId: "local-claude" }));
+          await waitFor(() => events.find(event => event.userMessageId === userMessageId && event.type === "done"));
+          assert.ok(events.some(event => event.userMessageId === userMessageId && event.type === "result" && event.subtype === "success"));
+        };
+        const listJobs = async () => {
+          const response = await fetch(`http://127.0.0.1:${port}/api/cron/jobs?token=scheduler-probe`);
+          assert.ok(response.ok);
+          return response.json();
+        };
+        await send("quote", "schedule-routing-probe 请润色这句话：每天定时发送日报。");
+        assert.deepEqual(await listJobs(), []);
+        await send("time", "schedule-routing-probe 10 分钟后提醒我。");
+        assert.deepEqual(await listJobs(), []);
+        await send("confirm", "schedule-routing-probe confirmed-time 提醒我复盘。");
+        const [job] = await listJobs();
+        assert.equal(job.description, "测试提醒");
+        assert.equal(job.sourceChannel, "web");
+        assert.equal(job.sourcePeer, `web:${port}`);
+      } finally {
+        ws.terminate();
+      }
+    });
+  });
+});
+
 test("orchestrator-mcp-bridge supports cross-model scheduler tools and WeChat quick status + debounce", { timeout: 25_000 }, async () => {
   await withTempDir(async dir => {
     const sentMessages = [];
@@ -1225,6 +1518,8 @@ test("orchestrator-mcp-bridge supports cross-model scheduler tools and WeChat qu
         };
         try {
           await rpc(1, "initialize", { protocolVersion: "2024-11-05" });
+          const clock = await rpc("clock", "tools/call", { name: "get_schedule_time", arguments: {} });
+          assert.ok(Math.abs(JSON.parse(clock.result.content[0].text).timestampMs - Date.now()) < 5000);
           const created = await rpc(2, "tools/call", {
             name: "create_schedule",
             arguments: { kind: "cron", description: "每日热点晨报", cronExpr: "30 8 * * *", prompt: "抓热点" },

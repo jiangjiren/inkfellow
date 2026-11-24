@@ -12,6 +12,8 @@
  * /api/orchestrator/* 接口（携带桌面端鉴权令牌），让三家模型都能原生并发派单。
  */
 
+import { currentScheduleTime } from "./scheduler-intent.js";
+
 const API_BASE = (process.env.INKFELLOW_API_BASE || "").replace(/\/+$/, "");
 const DESKTOP_TOKEN = process.env.INKFELLOW_DESKTOP_TOKEN || "";
 const PARENT_CONV_ID = process.env.INKFELLOW_PARENT_CONV_ID || "strategist";
@@ -106,20 +108,25 @@ const TOOLS = [
   },
   {
     name: "create_schedule",
-    description: "创建周期性或一次性定时任务（例如每日热点晨报、定时巡检或延时提醒），到期自动执行并推送结果。",
+    description: "仅在用户明确要求未来自动执行或提醒，且时间与内容清楚时，创建周期性或一次性定时任务。讨论、引用文案、描述计划、自动汇报或要求现在做事时不用此工具。",
     inputSchema: {
       type: "object",
       properties: {
         kind: { type: "string", enum: ["cron", "once"], description: "cron=周期性定时任务，once=一次性定时提醒" },
         description: { type: "string", description: "任务简短中文名称，如「每日AI热点晨报」" },
         cronExpr: { type: "string", description: "kind=cron 时必填，标准 5 位 cron 表达式（如 '30 8 * * *' 表示每天 8:30）" },
-        runAtMs: { type: "integer", description: "kind=once 时必填，未来触发时间的毫秒时间戳" },
+        runAtMs: { type: "integer", description: "kind=once 时必填，未来触发时间的毫秒时间戳，可用 get_schedule_time 读取当前时间" },
         prompt: { type: "string", description: "触发时要执行的完整指令" },
         timezone: { type: "string", description: "可选时区，默认 Asia/Shanghai" },
         outputs: { type: "array", items: { type: "string" }, description: "可选输出目标，如 ['wechat'] 或 ['chat_history']" },
       },
       required: ["kind", "description", "prompt"],
     },
+  },
+  {
+    name: "get_schedule_time",
+    description: "读取当前时间与 Unix 毫秒时间戳，以计算一次性定时任务的触发时间。",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "list_schedules",
@@ -245,6 +252,9 @@ async function executeTool(name, args = {}) {
     };
     const res = await apiJson(endpoint, { method: "POST", body: payload });
     return { isError: !res.ok, text: JSON.stringify(res.data) };
+  }
+  if (name === "get_schedule_time") {
+    return { text: JSON.stringify(currentScheduleTime()) };
   }
   if (name === "list_schedules") {
     const res = await apiJson("/api/cron/jobs");

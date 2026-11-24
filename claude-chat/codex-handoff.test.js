@@ -7,8 +7,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
 import { WebSocket } from "ws";
+import * as codexProvider from "./providers/codex.js";
 
 test("server uses SDK only for text → image → text and resumes the same thread", { timeout: 20_000 }, async () => {
+  codexProvider.refreshCatalog();
+  const codexDefaultModel = codexProvider.defaultModels().sonnetModel;
   const scratch = await mkdtemp(join(tmpdir(), "codex-handoff-"));
   const net = createServer();
   await new Promise(resolve => net.listen(0, "127.0.0.1", resolve));
@@ -56,7 +59,8 @@ test("server uses SDK only for text → image → text and resumes the same thre
         return thread(id);
       }
       startThread(options) {
-        if (options.modelReasoningEffort !== 'max') throw Error('incorrect initial SDK effort');
+        if (options.modelReasoningEffort !== 'high') throw Error('incorrect default SDK effort');
+        if (options.model !== process.env.TEST_DEFAULT_CODEX_MODEL) throw Error('incorrect default SDK model');
         if (rounds !== 0) throw Error('unexpected replacement conversation');
         return thread('handoff-thread');
       }
@@ -73,7 +77,7 @@ test("server uses SDK only for text → image → text and resumes the same thre
   await writeFile(auth, JSON.stringify({ activeProfileId: "codex", profiles: [{id: "codex", name: "Codex", provider: "codex"}] }));
   const child = spawn(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "server.js"], {
     cwd: new URL(".", import.meta.url), windowsHide: true,
-    env: {...process.env, PORT: String(port), HOST: "127.0.0.1", DESKTOP_AGENT_TOKEN: "test", CLAUDE_CHAT_DATA_DIR: scratch, CLAUDE_CHAT_AUTH_PROFILE_FILE: auth, CODEX_APP_SERVER_BIN: "mock", CODEX_PERSISTENT: "0"},
+    env: {...process.env, PORT: String(port), HOST: "127.0.0.1", DESKTOP_AGENT_TOKEN: "test", CLAUDE_CHAT_DATA_DIR: scratch, CLAUDE_CHAT_AUTH_PROFILE_FILE: auth, CODEX_APP_SERVER_BIN: "mock", CODEX_PERSISTENT: "0", TEST_DEFAULT_CODEX_MODEL: codexDefaultModel},
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "", ws;
@@ -92,8 +96,9 @@ test("server uses SDK only for text → image → text and resumes the same thre
     await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
     for (let i = 0; i < 3; i++) {
       const start = events.length;
-      ws.send(JSON.stringify({prompt: 'question ' + i, conversationId: 'handoff', userMessageId: 'q' + i,
-        effort: i === 1 ? 'ultra' : 'max', codexSpeed: i === 1 ? 'fast' : 'standard',
+      const prompt = i === 0 ? "question 0 请润色这句文案：每天自动生成日报。" : "question " + i;
+      ws.send(JSON.stringify({prompt, conversationId: 'handoff', userMessageId: 'q' + i,
+        effort: i === 0 ? undefined : i === 1 ? 'ultra' : 'max', codexSpeed: i === 1 ? 'fast' : 'standard',
         ...(i === 1 ? {images: [{mediaType: 'image/png', data: 'aGVsbG8='}]} : {})}));
       const end = Date.now() + 4000;
       while (!events.slice(start).some(e => e.type === 'done')) {

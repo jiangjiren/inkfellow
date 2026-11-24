@@ -15,6 +15,8 @@ import { join } from "node:path";
 import * as wire from "./wire.js";
 
 export const PROVIDER_ID = "codex";
+export const DEFAULT_CHAT_MODEL = "gpt-6.2-sol";
+export const DEFAULT_CHAT_EFFORT = "high";
 const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const FALLBACK_EFFORTS = REASONING_LEVELS.slice(0, 4);
 const FALLBACK_FAST_MODELS = new Set(["gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"]);
@@ -64,10 +66,10 @@ export function sandboxMode(permissionMode) {
 
 export const MODELS_CACHE_FILE = join(homedir(), ".codex", "models_cache.json");
 
-/* 兜底表：只有「没装 Codex CLI 或那个缓存文件读不出来」时才用得上。
-   2026-10-27 补充官方已发布的 GPT-6.1 Terra；正常情况下仍以本地缓存为准。 */
+/* 兜底表：只有「没装 Codex CLI 或那个缓存文件读不出来」时才用得上。 */
 const FALLBACK_CATALOG = [
   { model: "gpt-6-astra",   label: "GPT-6-Astra",   desc: "Our most capable model for complex, demanding work.", rank: 1,  listed: true },
+  { model: DEFAULT_CHAT_MODEL, label: "GPT-6.2 Sol", desc: "Fast, go-to model for coding and everyday work.", rank: 2, listed: true, efforts: REASONING_LEVELS, fast: true },
   { model: "gpt-6-sol",     label: "GPT-6-Sol",     desc: "GPT-6 Sol Codex model.",                              rank: 2,  listed: true },
   { model: "gpt-6.1-terra", label: "GPT-6.1 Terra", desc: "Fast, efficient visual reasoning, computer use, and clear writing.", rank: 3, listed: true },
   { model: "gpt-6-luna",    label: "GPT-6-Luna",    desc: "GPT-6 Luna Codex model.",                             rank: 4,  listed: true },
@@ -221,7 +223,7 @@ export function defaultModels() {
   const first = menu[0]?.model ?? FALLBACK_CATALOG[0].model;
   return {
     opusModel: first,
-    sonnetModel: menu[1]?.model ?? first,
+    sonnetModel: menu.find(item => item.model === DEFAULT_CHAT_MODEL)?.model ?? menu[1]?.model ?? first,
     haikuModel: menu[menu.length - 1]?.model ?? first,
   };
 }

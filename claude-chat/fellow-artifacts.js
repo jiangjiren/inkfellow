@@ -7,7 +7,8 @@ const formats = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
   ".avif": "image/avif", ".pdf": "application/pdf", ".mp4": "video/mp4", ".webm": "video/webm",
   ".mov": "video/quicktime", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
-  ".md": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".csv": "text/plain; charset=utf-8",
+  ".md": "text/plain; charset=utf-8", ".markdown": "text/plain; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8", ".csv": "text/plain; charset=utf-8",
   ".json": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
   ".docx": "", ".xlsx": "", ".pptx": "", ".zip": "", ".html": "", ".svg": "",
 };
@@ -96,11 +97,14 @@ export function serveFellowArtifact(req, res, ticket, vault, id) {
   streamSafeEntry(req, res, entry);
 }
 
-export function serveVaultFile(req, res, vault, requestedPath) {
+export function serveVaultFile(req, res, vault, requestedPath, { forbiddenPaths = [] } = {}) {
   const raw = String(requestedPath || "").trim().replace(/^["'](.+)["']$/, "$1");
-  let cleaned = raw.replace(/^file:\/\//i, "");
-  if (/^\/[a-zA-Z]:/.test(cleaned)) cleaned = cleaned.slice(1);
-  try { cleaned = decodeURIComponent(cleaned); } catch { /* keep raw */ }
+  let cleaned = raw;
+  if (/^file:\/\//i.test(cleaned)) {
+    cleaned = cleaned.replace(/^file:\/\//i, "");
+    if (/^\/[a-zA-Z]:/.test(cleaned)) cleaned = cleaned.slice(1);
+    try { cleaned = decodeURIComponent(cleaned); } catch { /* keep raw */ }
+  }
   if (!cleaned) { res.writeHead(400).end(); return; }
   try {
     const root = canonicalPath(vault);
@@ -109,6 +113,16 @@ export function serveVaultFile(req, res, vault, requestedPath) {
     if (!pathWithin(target, root) || name.split(/[\\/]/).some(part => part.startsWith("."))) {
       res.writeHead(404).end();
       return;
+    }
+    for (const blocked of forbiddenPaths) {
+      if (!blocked) continue;
+      try {
+        const canonicalBlocked = canonicalPath(blocked);
+        if (target === canonicalBlocked || pathWithin(target, canonicalBlocked)) {
+          res.writeHead(404).end();
+          return;
+        }
+      } catch { /* ignore invalid blocked path */ }
     }
     const ext = extname(target).toLowerCase();
     if (!Object.hasOwn(formats, ext)) { res.writeHead(404).end(); return; }

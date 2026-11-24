@@ -39,6 +39,7 @@ function fixture(names) {
     conversationSwitchVersion: 0, errorCompletionTimer: null, pendingRequestDraft: null, requestRetryTimer: null,
     resetAssistantState() {}, setGenerating() {}, removeTyping() {}, updateBackgroundActivity() {},
     restoreComposerDraft() { c.promptEl.value = ""; c.pendingImages = []; },
+    agentApiFetch(...args) { return c.fetch(...args); },
   });
   if (names.includes("applyConversationProfile")) names.push("defaultChatModel", "upgradeLegacyAgyModel");
   c.getActiveProfile = () => c._profileData.profiles.find(profile => profile.id === c.currentProfile);

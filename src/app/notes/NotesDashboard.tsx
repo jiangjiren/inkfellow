@@ -7,7 +7,7 @@ export interface OpenedNoteEntry {
   at: number;
 }
 
-interface ActiveTicketSummary {
+export interface ActiveTicketSummary {
   id: string;
   title: string;
   status: string;
@@ -16,6 +16,7 @@ interface ActiveTicketSummary {
 interface NotesDashboardProps {
   files: NotesFileNode[];
   openedNotes: OpenedNoteEntry[];
+  liveTickets?: ActiveTicketSummary[] | null;
   onSelectNote: (path: string) => void;
   onQuickCapture: () => void;
   onCreateNote: () => void;
@@ -53,6 +54,7 @@ function formatRelativeTime(timestampMs: number, now = Date.now()): string {
 export default function NotesDashboard({
   files,
   openedNotes,
+  liveTickets: propLiveTickets = null,
   onSelectNote,
   onQuickCapture,
   onCreateNote,
@@ -61,8 +63,8 @@ export default function NotesDashboard({
   onToggleFellow,
   onOpenFellowStage,
 }: NotesDashboardProps) {
-  const [sortMode, setSortMode] = useState<"recent" | "updated">("recent");
-  const [liveTickets, setLiveTickets] = useState<ActiveTicketSummary[]>([]);
+  const [sortMode, setSortMode] = useState<"recent" | "updated">(() => (openedNotes.length > 0 ? "recent" : "updated"));
+  const [fetchedTickets, setFetchedTickets] = useState<ActiveTicketSummary[]>([]);
 
   const noteFiles = useMemo(
     () => files.filter((f) => !IMAGE_EXT_RE.test(f.name)),
@@ -73,6 +75,8 @@ export default function NotesDashboard({
   const dateLine = useMemo(() => formatDateLine(), []);
 
   useEffect(() => {
+    // 已有来自 Fellow iframe 的实时工单快照时，不再需要额外请求兜底
+    if (propLiveTickets !== null) return;
     let active = true;
     const loadTickets = async () => {
       try {
@@ -87,7 +91,7 @@ export default function NotesDashboard({
             title: String(t.title || "后台任务"),
             status: String(t.status),
           }));
-        if (active) setLiveTickets(filtered);
+        if (active) setFetchedTickets(filtered);
       } catch {
         /* 后台服务不可达时保持静默 */
       }
@@ -99,13 +103,15 @@ export default function NotesDashboard({
       active = false;
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [propLiveTickets]);
+
+  const liveTickets = propLiveTickets ?? fetchedTickets;
 
   const displayFiles = useMemo(() => {
-    const byUpdated = [...noteFiles].sort(
-      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
-    );
     if (sortMode === "updated") {
+      const byUpdated = [...noteFiles].sort(
+        (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+      );
       return byUpdated.slice(0, 8).map((file) => ({
         file,
         touchedAt: Date.parse(file.updatedAt),
@@ -120,13 +126,6 @@ export default function NotesDashboard({
       if (found && !seen.has(found.path)) {
         seen.add(found.path);
         result.push({ file: found, touchedAt: entry.at });
-      }
-    }
-    for (const file of byUpdated) {
-      if (result.length >= 8) break;
-      if (!seen.has(file.path)) {
-        seen.add(file.path);
-        result.push({ file, touchedAt: Date.parse(file.updatedAt) });
       }
     }
     return result;
@@ -240,7 +239,18 @@ export default function NotesDashboard({
           </div>
 
           <div className={styles.dashboardRecentSheet}>
-            {displayFiles.map(({ file, touchedAt }, idx) => {
+            {displayFiles.length === 0 ? (
+              <div className={styles.dashboardSheetEmpty}>
+                <span>还没有最近打开的笔记</span>
+                <button
+                  type="button"
+                  className={styles.dashboardSheetEmptyAction}
+                  onClick={() => setSortMode("updated")}
+                >
+                  查看最近修改
+                </button>
+              </div>
+            ) : displayFiles.map(({ file, touchedAt }, idx) => {
               const folder = file.path.split("/").slice(0, -1).pop() ?? "";
               const title = file.name.replace(/\.(md|html?)$/i, "");
               const timeLabel = formatRelativeTime(touchedAt);

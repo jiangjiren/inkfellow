@@ -90,6 +90,7 @@ test("历史记录存得下并取得回这条对话用的厂商和模型", { tim
   const port = await reservePort();
   const { child } = await bootServer(scratch, port);
   const base = `http://127.0.0.1:${port}`;
+  const authHeaders = { Authorization: "Bearer test" };
   try {
     const saved = {
       title: "青松项目", date: "2026-01-01T00:00:00.000Z",
@@ -98,12 +99,12 @@ test("历史记录存得下并取得回这条对话用的厂商和模型", { tim
       messages: [{ id: "u1", role: "user", text: "项目叫青松" }],
     };
     const put = await fetch(`${base}/api/history/conv-0001`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(saved),
+      method: "PUT", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify(saved),
     });
     assert.equal(put.status, 200);
 
     // 列表摘要要带上——切对话时前端拿的就是这一份
-    const [summary] = await (await fetch(`${base}/api/history`)).json();
+    const [summary] = await (await fetch(`${base}/api/history`, { headers: authHeaders })).json();
     assert.equal(summary.id, "conv-0001");
     assert.equal(summary.model, "gpt-5.4");
     assert.equal(summary.effort, "high");
@@ -111,16 +112,16 @@ test("历史记录存得下并取得回这条对话用的厂商和模型", { tim
     assert.equal(summary.sessionProvider, "codex");
 
     // 单条详情同样要带
-    const full = await (await fetch(`${base}/api/history/conv-0001`)).json();
+    const full = await (await fetch(`${base}/api/history/conv-0001`, { headers: authHeaders })).json();
     assert.equal(full.model, "gpt-5.4");
     assert.equal(full.profileId, "p_codex");
 
     // 只改模型、带原来的 date：不该把这条对话顶到列表最前面，也不该丢消息
     await fetch(`${base}/api/history/conv-0001`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
+      method: "PUT", headers: { ...authHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "gpt-5.4-codex", effort: "medium", profileId: "p_codex", date: saved.date }),
     });
-    const after = await (await fetch(`${base}/api/history/conv-0001`)).json();
+    const after = await (await fetch(`${base}/api/history/conv-0001`, { headers: authHeaders })).json();
     assert.equal(after.model, "gpt-5.4-codex");
     assert.equal(after.effort, "medium");
     assert.equal(after.date, saved.date);
@@ -140,7 +141,7 @@ test("换到没有原生会话的模型时，prompt 带上之前聊过的内容"
   try {
     // 这条对话此前在别家聊过，Codex 这边没有 thread 可续接
     await fetch(`${base}/api/history/conv-0001`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
+      method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
       body: JSON.stringify({
         title: "青松项目", sessionProvider: "antigravity",
         messages: [

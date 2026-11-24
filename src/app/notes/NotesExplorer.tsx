@@ -18,7 +18,7 @@ import NotesMarkdown from "./NotesMarkdown";
 import ShareDialog from "./ShareDialog";
 import { NoteTabs, useNoteTabs } from "./NoteTabs";
 import NotesGit from "./NotesGit";
-import NotesDashboard, { type OpenedNoteEntry } from "./NotesDashboard";
+import NotesDashboard, { type ActiveTicketSummary, type OpenedNoteEntry } from "./NotesDashboard";
 import TreeItem from "./TreeItem";
 import QuickSwitcher from "./QuickSwitcher";
 import { isImagePath, isPdfPath, stripNoteExtension, type TreeActionTarget } from "./noteFileUtils";
@@ -67,6 +67,7 @@ const MAX_SIDEBAR_WIDTH = 400;
 type NotesShellStyle = CSSProperties & {
   "--assistant-panel-width": string;
   "--sidebar-width": string;
+  "--sidebar-occupied-width": string;
   "--keyboard-height": string;
 };
 
@@ -843,6 +844,7 @@ export default function NotesExplorer() {
   // iframe 是否已 load 完：load 前 postMessage 会丢，指令先暂存，就绪后补投
   const claudeFrameReadyRef = useRef(false);
   const pendingOpenTicketStageRef = useRef(false);
+  const [fellowLiveTickets, setFellowLiveTickets] = useState<ActiveTicketSummary[] | null>(null);
   const [openedNotes, setOpenedNotes] = useState<OpenedNoteEntry[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -1329,7 +1331,7 @@ export default function NotesExplorer() {
   }, [shareModalOpen, deleteConfirmOpen, moreMenuOpen, renameTarget, treeMenuTarget, treeSheetTarget, globalCreateMenuOpen, importError]);
 
   // CSS 把面板压在 --assistant-panel-max-vw（桌面 72vw、平板横屏 60vw）以内，
-  // 同时为左侧正文区留出至少 MIN_READER_SPLIT_WIDTH（320px），避免分屏被压塌；
+  // 同时扣除可见侧栏宽度并为左侧正文区留出至少 MIN_READER_SPLIT_WIDTH（320px），避免分屏被压塌；
   // 想要 100% 铺满时点击顶栏「沉浸全宽」按钮即可。
   const getMaxAssistantPanelWidth = useCallback(() => {
     const el = assistantPanelRef.current;
@@ -1339,11 +1341,12 @@ export default function NotesExplorer() {
     const ratioCap = Number.isFinite(ratio)
       ? (window.innerWidth * ratio) / 100
       : Number.POSITIVE_INFINITY;
-    const readerSafeCap = window.innerWidth - MIN_READER_SPLIT_WIDTH;
+    const occupiedSidebar = !isMobileViewport && sidebarVisible ? sidebarWidth : 0;
+    const readerSafeCap = window.innerWidth - occupiedSidebar - MIN_READER_SPLIT_WIDTH;
     const viewportCap = Math.min(ratioCap, readerSafeCap);
     // 视口极窄时上限可能低于 MIN，取 max 防止上下限倒挂（clamp 里 max 会压过 min）
     return Math.max(MIN_ASSISTANT_PANEL_WIDTH, Math.min(MAX_ASSISTANT_PANEL_WIDTH, viewportCap));
-  }, []);
+  }, [isMobileViewport, sidebarVisible, sidebarWidth]);
 
   useEffect(() => {
     if (!isResizingAssistantPanel) {
@@ -3481,12 +3484,13 @@ export default function NotesExplorer() {
       setDeleteLoading(false);
     }
   }, [activePath, deleteTarget, deleteEntry]);
+  const isDesktopSidebarHidden = !isMobileViewport && !sidebarVisible;
   const shellStyle: NotesShellStyle = {
     "--assistant-panel-width": `${assistantPanelWidth}px`,
     "--sidebar-width": `${sidebarWidth}px`,
+    "--sidebar-occupied-width": isDesktopSidebarHidden || isMobileViewport ? "0px" : `${sidebarWidth}px`,
     "--keyboard-height": `${keyboardHeight}px`,
   };
-  const isDesktopSidebarHidden = !isMobileViewport && !sidebarVisible;
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
   const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
@@ -3588,6 +3592,17 @@ export default function NotesExplorer() {
         else enterChatFocus();
         return;
       }
+      if (data.type === "fellow-tickets-summary" && Array.isArray(data.tickets)) {
+        const next: ActiveTicketSummary[] = data.tickets
+          .filter((t: { id?: unknown; status?: unknown }) => typeof t?.id === "string" && typeof t?.status === "string")
+          .map((t: { id: string; title?: unknown; status: string }) => ({
+            id: t.id,
+            title: typeof t.title === "string" && t.title.trim() ? t.title : "后台任务",
+            status: t.status,
+          }));
+        setFellowLiveTickets(next);
+        return;
+      }
       if (data.type === "agent-open-note" && typeof data.path === "string" && data.path.trim()) {
         const rawPath = data.path.trim().replace(/^\/+/, "");
         const exactMatch = files.find((f) => f.path === rawPath);
@@ -3597,7 +3612,7 @@ export default function NotesExplorer() {
         setChatFocusActive(false);
         setGitPanelOpen(false);
         if (isMobileViewport) setMobileAssistantSheet("closed");
-        void loadNote(resolvedPath);
+        handleSelect(resolvedPath);
         return;
       }
       if (data.type === "completion-notifications-preference") {
@@ -3636,7 +3651,7 @@ export default function NotesExplorer() {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [isMobileViewport, isChatFocusMode, isAssistantPanelOpen, files, loadNote, enterChatFocus, handleExitChatFocus]);
+  }, [isMobileViewport, isChatFocusMode, isAssistantPanelOpen, files, handleSelect, enterChatFocus, handleExitChatFocus]);
 
   // 面板收起时顺手让 iframe 里的设置/历史面板退出，
   // 否则下次展开看到的还是设置页而不是对话本身
@@ -4532,6 +4547,7 @@ export default function NotesExplorer() {
               <NotesDashboard
                 files={files}
                 openedNotes={openedNotes}
+                liveTickets={fellowLiveTickets}
                 onSelectNote={handleSelect}
                 onQuickCapture={handleQuickCapture}
                 onCreateNote={() => handleNewNote()}
@@ -4790,7 +4806,7 @@ export default function NotesExplorer() {
           ref={claudeFrameRef}
           className={styles.assistantPanelFrame}
           title="Claude Chat"
-          src={`/notes-claude/?v=14${isMobileViewport ? "&mobile=1" : ""}${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
+          src={`/notes-claude/?v=14${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT ? `&wsPort=${process.env.NEXT_PUBLIC_CLAUDE_CHAT_PORT}` : ""}`}
           allow="clipboard-read; clipboard-write"
           referrerPolicy="same-origin"
           tabIndex={isAssistantPanelOpen ? 0 : -1}

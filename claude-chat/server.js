@@ -307,7 +307,9 @@ const WECHAT_IMAGE_MIME_BY_EXT = {
   ".webp": "image/webp",
 };
 
-const ALLOW_MACHINE_ACCESS = process.env.INKFELLOW_MACHINE_ACCESS !== "0";
+const ALLOW_MACHINE_ACCESS = process.env.DESKTOP_MODE === "true"
+  ? process.env.INKFELLOW_MACHINE_ACCESS !== "0"
+  : process.env.INKFELLOW_MACHINE_ACCESS === "1";
 const WECHAT_DEBOUNCE_MS = Math.max(0, Number.parseInt(process.env.WECHAT_DEBOUNCE_MS ?? "3000", 10) || 0);
 const WECHAT_MIME_BY_EXT = {
   ...WECHAT_IMAGE_MIME_BY_EXT,
@@ -1355,7 +1357,10 @@ function isProfileReadyForFallback(p) {
   if (!p || p.hidden) return false;
   if (p.provider === "antigravity") return isAgyAuthAvailable();
   if (p.provider === "codex") return isCodexAuthAvailable();
-  if (p.provider === "claude") return hasLocalClaudeCredentials(claudeAccountConfigDir(p, CLAUDE_ACCOUNTS_DIR));
+  if (p.provider === "claude") {
+    const configDir = claudeAccountConfigDir(p, CLAUDE_ACCOUNTS_DIR) || mainClaudeConfigDir();
+    return Boolean(configDir) && hasLocalClaudeCredentials(configDir);
+  }
   return Boolean(p.apiKey);
 }
 
@@ -2014,8 +2019,8 @@ const HISTORY_MIGRATION_MARKER = join(DATA_DIR, ".history-port-migration-v2");
    加载，而不是把这个数字继续往上调。 */
 const MAX_SERVER_HISTORY = 1000;
 // 会话分片目录跟着 HISTORY_FILE 走，这样测试用 CLAUDE_CHAT_HISTORY_FILE
-// 指到临时目录时，分片也一起被隔离掉；Web 多实例共享默认 DATA_DIR 时按 PORT 隔离。
-const USE_PORT_ISOLATION = process.env.DESKTOP_MODE !== "true" && !process.env.CLAUDE_CHAT_DATA_DIR;
+// 指到临时目录时，分片也一起被隔离掉；Web 模式（无桌面标记/令牌）下始终按 PORT 隔离。
+const USE_PORT_ISOLATION = process.env.DESKTOP_MODE !== "true" && !DESKTOP_AGENT_TOKEN;
 const HISTORY_DIR = CUSTOM_HISTORY_FILE || !USE_PORT_ISOLATION
   ? join(dirname(HISTORY_FILE), "conversations")
   : join(DATA_DIR, `conversations-${PORT}`);
@@ -2104,18 +2109,34 @@ function migrateLegacyHistoryFiles() {
   const sourceFiles = [];
 
   try {
-    for (const name of readdirSync(DATA_DIR).sort()) {
-      if (!LEGACY_HISTORY_FILE_RE.test(name)) continue;
-      const filePath = join(DATA_DIR, name);
-      const records = readHistoryFile(filePath);
-      if (records.length === 0) continue;
-      legacyGroups.push(records);
-      sourceFiles.push(name);
+    if (USE_PORT_ISOLATION) {
+      // Web 多实例隔离：只迁移属于当前 PORT 的旧 history-<PORT>.json，不跨端口混并
+      const portLegacyName = `history-${PORT}.json`;
+      const portLegacyPath = join(DATA_DIR, portLegacyName);
+      const records = readHistoryFile(portLegacyPath);
+      if (records.length > 0) {
+        legacyGroups.push(records);
+        sourceFiles.push(portLegacyName);
+      }
+    } else {
+      for (const name of readdirSync(DATA_DIR).sort()) {
+        if (!LEGACY_HISTORY_FILE_RE.test(name)) continue;
+        const filePath = join(DATA_DIR, name);
+        const records = readHistoryFile(filePath);
+        if (records.length === 0) continue;
+        legacyGroups.push(records);
+        sourceFiles.push(name);
+      }
     }
   } catch { }
 
   if (legacyGroups.length === 0) {
     if (!existsSync(HISTORY_FILE)) writeJsonFile(HISTORY_FILE, []);
+    return;
+  }
+
+  if (USE_PORT_ISOLATION) {
+    // Web 模式下直接把本端口旧文件留给 shardStore 一次性导入，不污染共享 history.json
     return;
   }
 
@@ -2133,19 +2154,20 @@ migrateLegacyHistoryFiles();
 // 历史从「一个 history.json 装全部」改成「每会话一个分片日志」。
 // 迁移只在分片目录还空着时做一次，做完把 history.json 改名留底。
 const shardStore = createHistoryStore({ dir: HISTORY_DIR });
+const PORT_HISTORY_SOURCE = USE_PORT_ISOLATION && !CUSTOM_HISTORY_FILE
+  ? join(DATA_DIR, `history-${PORT}.json`)
+  : HISTORY_FILE;
 if (shardStore.isEmpty()) {
-  const migrated = shardStore.migrateFrom(HISTORY_FILE);
+  const migrated = shardStore.migrateFrom(PORT_HISTORY_SOURCE);
   if (migrated > 0) console.log(`History migrated to per-conversation shards: ${migrated} conversation(s)`);
 } else {
-  // migrateLegacyHistoryFiles() 每次启动都会把 history-<PORT>.json 残留重新
-  // 合并成一份 history.json。分片建立之后就没人读那份了，所以这里再捞一次：
-  // 只补分片没见过的会话，已有的不动。
-  const merged = shardStore.mergeFrom(HISTORY_FILE);
+  const merged = shardStore.mergeFrom(PORT_HISTORY_SOURCE);
   if (merged > 0) console.log(`History shards picked up ${merged} conversation(s) from legacy file`);
 }
 // 兼容旧版 main（event-log.js）存在 DATA_DIR/conversations/<PORT>/ 下的对话：
-// 仅补齐 shardStore 里尚不存在的会话，避免升级后丢历史。
-if (!CUSTOM_HISTORY_FILE && existsSync(join(DATA_DIR, "conversations", String(PORT)))) {
+// 仅按端口一次性导入并落盘标记，避免已删除对话在重启后复活。
+const EVENTLOG_MIGRATION_MARKER = join(DATA_DIR, `.eventlog-migrated-${PORT}`);
+if (!CUSTOM_HISTORY_FILE && !existsSync(EVENTLOG_MIGRATION_MARKER) && existsSync(join(DATA_DIR, "conversations", String(PORT)))) {
   try {
     legacyEventLog.configure({ dataDir: DATA_DIR, port: PORT });
     const existingIds = new Set(shardStore.load().map(item => item.id));
@@ -2158,6 +2180,7 @@ if (!CUSTOM_HISTORY_FILE && existsSync(join(DATA_DIR, "conversations", String(PO
       existingIds.add(projected.id);
       imported += 1;
     }
+    writeJsonFile(EVENTLOG_MIGRATION_MARKER, { migratedAt: new Date().toISOString(), imported });
     if (imported > 0) console.log(`History imported from legacy Web event-log: ${imported} conversation(s)`);
   } catch (err) {
     console.warn(`[History] Legacy event-log migration skipped: ${err?.message || err}`);
@@ -3664,7 +3687,7 @@ const DISPATCH_ALIASES = {
 export function resolveDispatchProfile(profileData, selector) {
   const wanted = normalizeProviderSelector(selector);
   if (!wanted) return null;
-  const profiles = Array.isArray(profileData?.profiles) ? profileData.profiles : [];
+  const profiles = (Array.isArray(profileData?.profiles) ? profileData.profiles : []).filter(p => !p?.hidden);
   const aliased = DISPATCH_ALIASES[wanted];
   return profiles.find(profile => normalizeProviderSelector(profile.id) === wanted)
     ?? profiles.find(profile => normalizeProviderSelector(profile.provider) === wanted)
@@ -5138,7 +5161,21 @@ async function runScheduledPrompt(job, fullPrompt) {
   const convId = `cron_run_${crypto.randomBytes(6).toString("hex")}`;
   const requestId = `cron_${crypto.randomUUID()}`;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("定时任务执行超时")), 5 * 60 * 1000);
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        dispatchInternalAgentMessage({ conversationId: convId, userMessageId: requestId, stop: true });
+      } catch { /* ignore */ }
+      setTimeout(() => { try { disposeConversationState(convId); } catch { /* ignore */ } }, 1500).unref?.();
+      finish(new Error("定时任务执行超时"));
+    }, 5 * 60 * 1000);
     timer.unref?.();
     const receipt = dispatchInternalAgentMessage({
       conversationId: convId,
@@ -5151,14 +5188,16 @@ async function runScheduledPrompt(job, fullPrompt) {
       permissionMode: "bypassPermissions",
       cwd: resolveAllowedCwd(""),
       turnComplete: (info) => {
-        clearTimeout(timer);
-        if (info?.state === "error") reject(new Error(info.error || "定时任务执行失败"));
-        else resolve(String(info?.output || "").trim());
+        setTimeout(() => { try { disposeConversationState(convId); } catch { /* ignore */ } }, 200).unref?.();
+        if (info?.state !== "complete") {
+          finish(new Error(info?.error || `定时任务未完整完成（${info?.state || "unknown"}）`));
+        } else {
+          finish(null, String(info?.output || "").trim());
+        }
       },
     });
     if (receipt?.state === "rejected") {
-      clearTimeout(timer);
-      reject(new Error(receipt.error || "无法启动定时任务"));
+      finish(new Error(receipt.error || "无法启动定时任务"));
     }
   });
 }
@@ -5177,11 +5216,32 @@ scheduler.init({
   readProfiles,
   readHistory,
   writeHistory,
+  upsertHistoryConversation,
   resolveAllowedCwd,
 });
 
 // ── Orchestrator init (军师 + 后台工单控制面) ───────────────
 const TICKETS_DIR = USE_PORT_ISOLATION ? join(DATA_DIR, `tickets-${PORT}`) : join(DATA_DIR, "tickets");
+// 兼容旧版 main（fellow.js）存在 DATA_DIR/tickets/<PORT>/ 下的工单：按端口一次性迁入 TICKETS_DIR
+const LEGACY_TICKETS_DIR = join(DATA_DIR, "tickets", String(PORT));
+const TICKETS_MIGRATION_MARKER = join(DATA_DIR, `.tickets-migrated-${PORT}`);
+if (USE_PORT_ISOLATION && !existsSync(TICKETS_MIGRATION_MARKER) && existsSync(LEGACY_TICKETS_DIR)) {
+  try {
+    mkdirSync(TICKETS_DIR, { recursive: true });
+    let migratedTickets = 0;
+    for (const name of readdirSync(LEGACY_TICKETS_DIR)) {
+      if (!name.endsWith(".json")) continue;
+      const dest = join(TICKETS_DIR, name);
+      if (existsSync(dest)) continue;
+      writeFileSync(dest, readFileSync(join(LEGACY_TICKETS_DIR, name)));
+      migratedTickets += 1;
+    }
+    writeJsonFile(TICKETS_MIGRATION_MARKER, { migratedAt: new Date().toISOString(), migratedTickets });
+    if (migratedTickets > 0) console.log(`Tickets migrated from legacy Web dir: ${migratedTickets} ticket(s)`);
+  } catch (err) {
+    console.warn(`[Tickets] Legacy migration skipped: ${err?.message || err}`);
+  }
+}
 const ticketStore = createTicketStore({ dir: TICKETS_DIR, vault: DEFAULT_CWD });
 const INTERNAL_AGENT_MESSAGE = Symbol("internalAgentMessage");
 const ticketText = z.string().trim().min(1).max(32_000);
@@ -5208,7 +5268,7 @@ const dispatchTicketSchema = z.object({
 function validateWorkerExecution(config) {
   const profiles = readProfiles();
   const profile = profiles.profiles.find(item => item.id === config.profileId);
-  if (!profile || profile.provider !== config.provider) throw new Error("工单执行账号已失效，请在现场选择可用账号");
+  if (!profile || profile.hidden || profile.provider !== config.provider) throw new Error("工单执行账号已失效，请在现场选择可用账号");
   if (!isSubscriptionProvider(profile.provider) && !profile.apiKey) {
     throw new Error(`${profile.name || profile.provider} 缺少 API Key，请先在账号设置里保存`);
   }
@@ -5223,7 +5283,7 @@ function validateWorkerExecution(config) {
 function workerConfiguration(args) {
   const profiles = readProfiles();
   const profile = args.dispatchProvider ? resolveDispatchProfile(profiles, args.dispatchProvider)
-    : profiles.profiles.find(item => item.id === args.profileId);
+    : profiles.profiles.find(item => item.id === args.profileId && !item.hidden);
   if (!profile) throw new Error("找不到工单执行账号");
   return {
     profileId: profile.id, profileName: profile.name, provider: profile.provider,
@@ -5237,9 +5297,9 @@ async function dispatchConfiguredTicket(input, { parentConversationId = STRATEGI
   const requestedCwd = args.cwd || cwd || DEFAULT_CWD;
   const specialist = args.specialistId && loadSpecialists(DEFAULT_CWD).find(item => item.id === args.specialistId);
   const selector = args.provider || specialist?.provider;
-  const profile = args.profileId ? profiles.profiles.find(item => item.id === args.profileId)
+  const profile = args.profileId ? profiles.profiles.find(item => item.id === args.profileId && !item.hidden)
     : selector ? resolveDispatchProfile(profiles, selector) : getActiveProfile(profiles);
-  if (!profile || (args.profileId && selector && resolveDispatchProfile(profiles, selector)?.id !== profile.id)) {
+  if (!profile || profile.hidden || (args.profileId && selector && resolveDispatchProfile(profiles, selector)?.id !== profile.id)) {
     throw new Error("找不到指定的工单执行账号");
   }
   const parentCtx = sessions.peek(parentConversationId)?.activeForegroundDeliveryContext || null;
@@ -5663,6 +5723,19 @@ const http = createServer((req, res) => {
   ) {
     res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Forbidden");
+    return;
+  }
+
+  // Desktop mode with token: uniformly enforce token on all /api/* routes.
+  if (
+    DESKTOP_AGENT_TOKEN
+    && url.startsWith("/api/")
+    && url !== "/api/sync-summary"
+    && url !== "/api/run-state"
+    && url !== "/api/prepare-restart"
+    && !hasDesktopApiAccess(req, queryParams)
+  ) {
+    sendTicketJson(res, 403, { ok: false, error: "需要桌面访问令牌" });
     return;
   }
 
@@ -6109,7 +6182,13 @@ const http = createServer((req, res) => {
       sendTicketJson(res, 403, { ok: false, error: "需要桌面访问令牌" });
       return;
     }
-    serveVaultFile(req, res, DEFAULT_CWD, queryParams.get("path"));
+    if (!process.env.VAULT_PATH?.trim() && resolve(DEFAULT_CWD) === resolve(__dirname)) {
+      sendTicketJson(res, 404, { ok: false, error: "未配置笔记库路径" });
+      return;
+    }
+    serveVaultFile(req, res, DEFAULT_CWD, queryParams.get("path"), {
+      forbiddenPaths: [DATA_DIR, AUTH_PROFILE_FILE, CLAUDE_ACCOUNTS_DIR],
+    });
     return;
   }
 
@@ -6302,7 +6381,7 @@ const http = createServer((req, res) => {
           next = { ...current, profiles: current.profiles.map(p => p.id === id ? updated : p) };
 
         } else if (payload.action === "delete") {
-          // 删除账号（不能删 Claude 主号 / 不能删到空；额外加的 Claude 会员账号可以删）
+          // 删除账号（不能删 Claude 主号 / 不能删到没有可见账号；额外加的 Claude 会员账号可以删）
           const id = String(payload.profileId ?? "");
           const target = current.profiles.find(p => p.id === id);
           if (!target || (target.provider === "claude" && !isExtraClaudeAccount(target))) {
@@ -6311,6 +6390,11 @@ const http = createServer((req, res) => {
             return;
           }
           const profiles = current.profiles.filter(p => p.id !== id);
+          if (!target.hidden && profiles.filter(p => !p.hidden).length === 0) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "至少保留一个可见账号" }));
+            return;
+          }
           const activeProfileId = current.activeProfileId === id
             ? pickFallbackActiveProfileId(profiles)
             : current.activeProfileId;
@@ -6553,6 +6637,8 @@ function makeAbortError(message) {
 // question, turn bookkeeping) now sits on `session`; what stays here is what belongs
 // to the connection or the process, not to any one conversation.
 let activeWs = null;
+const webClients = new Set();
+const IS_SINGLE_CLIENT_DESKTOP = process.env.DESKTOP_MODE === "true";
 let activeQueuedPromptDrainer = null;
 const DETACHED_BUFFER_MAX = 2000;
 let detachedBuffer = [];
@@ -6785,7 +6871,25 @@ const deliver = (obj) => {
     if (boundId) obj = { ...obj, conversationId: boundId };
   }
 
-  if (activeWs && activeWs.readyState === activeWs.OPEN) {
+  if (!IS_SINGLE_CLIENT_DESKTOP && webClients.size > 0) {
+    const serialized = JSON.stringify(obj);
+    let delivered = false;
+    for (const client of [...webClients]) {
+      if (client.readyState !== client.OPEN) {
+        webClients.delete(client);
+        continue;
+      }
+      try {
+        client.send(serialized);
+        delivered = true;
+      } catch (error) {
+        console.warn("[Web Agent] WebSocket delivery failed for tab; dropping client:", String(error));
+        webClients.delete(client);
+      }
+    }
+    if (delivered) return;
+    activeWs = null;
+  } else if (activeWs && activeWs.readyState === activeWs.OPEN) {
     try {
       activeWs.send(JSON.stringify(obj));
       return;
@@ -7575,11 +7679,22 @@ const clearPendingAskUserQuestion = (reason = "cancelled") => {
   };
 
 wss.on("connection", (ws) => {
-  // Last connection wins; any previous socket is stale (single-user desktop app).
-  const previousWs = activeWs;
-  activeWs = ws;
-  if (previousWs && previousWs !== ws && previousWs.readyState === previousWs.OPEN) {
-    previousWs.close(1000, "replaced by newer connection");
+  ws.on("error", (err) => {
+    console.warn("[Web Agent] WebSocket error:", String(err?.message || err));
+    try { ws.terminate(); } catch { /* ignore */ }
+  });
+
+  if (IS_SINGLE_CLIENT_DESKTOP) {
+    // Last connection wins; any previous socket is stale (single-user desktop app).
+    const previousWs = activeWs;
+    activeWs = ws;
+    if (previousWs && previousWs !== ws && previousWs.readyState === previousWs.OPEN) {
+      previousWs.close(1000, "replaced by newer connection");
+    }
+  } else {
+    // Web mode supports multiple concurrent browser tabs without kicking earlier tabs.
+    webClients.add(ws);
+    activeWs = ws;
   }
 
   // Application-level heartbeat: browser JS can't observe protocol-level pings,
@@ -7663,12 +7778,13 @@ wss.on("connection", (ws) => {
   orchestrator.pushTicketsSnapshot(null, { replace: true });
   deliver({ type: "strategist_context", conversationId: STRATEGIST_CONVERSATION_ID, ...getStrategistContextStatus() });
 
+  const isLiveSocket = () => (IS_SINGLE_CLIENT_DESKTOP ? activeWs === ws : webClients.has(ws));
   const drainThisConnection = (targetSession) => {
-    if (activeWs !== ws) return;
+    if (!isLiveSocket()) return;
     drainQueuedPromptsForSession(targetSession);
   };
   ws.on("message", (raw) => {
-    if (activeWs !== ws) return;
+    if (!isLiveSocket()) return;
     handleAgentMessage(raw, false);
   });
   activeQueuedPromptDrainer = drainThisConnection;
@@ -7680,12 +7796,13 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     clearInterval(pingTimer);
+    webClients.delete(ws);
     if (activeWs === ws) {
-      activeWs = null;
+      activeWs = IS_SINGLE_CLIENT_DESKTOP ? null : ([...webClients].at(-1) ?? null);
       if (activeQueuedPromptDrainer === drainThisConnection) activeQueuedPromptDrainer = drainQueuedPromptsForSession;
       // Do NOT abort or clear the pending question: the run keeps going in the
       // background and reattaches when the client reconnects.
-      if (isAgentRunActive()) {
+      if (!activeWs && isAgentRunActive()) {
         console.log("[Web Agent] Client detached; run continues in background, events buffered until reconnect.");
       }
     }

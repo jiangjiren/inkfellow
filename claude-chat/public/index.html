@@ -4598,7 +4598,7 @@ async function loadAgyModelCatalog() {
   if (Date.now() - _agyModelsLoadedAt < AGY_MODELS_RELOAD_MS) return;
   _agyModelsLoadedAt = Date.now();
   try {
-    const res = await fetch("api/agy/models?wait=1", { cache: "no-store" });
+    const res = await agentApiFetch("api/agy/models?wait=1", { cache: "no-store" });
     if (!res.ok) { retryAgyModelCatalogSoon(); return; }
     const data = await res.json();
     if (!Array.isArray(data?.models) || !data.models.length) { retryAgyModelCatalogSoon(); return; }
@@ -4643,7 +4643,7 @@ async function loadCodexModelCatalog() {
   if (_codexModelsLoaded) return;
   _codexModelsLoaded = true;
   try {
-    const res = await fetch("api/codex/models", { cache: "no-store" });
+    const res = await agentApiFetch("api/codex/models", { cache: "no-store" });
     if (!res.ok) throw new Error("Codex model catalog unavailable");
     const data = await res.json();
     if (!Array.isArray(data?.models) || !data.models.length) throw new Error("Empty Codex model catalog");
@@ -4714,7 +4714,7 @@ let _dispatchProvidersLoaded = false;
 
 async function fetchDispatchProviders() {
   try {
-    const res = await fetch("api/providers", { cache: "no-store" });
+    const res = await agentApiFetch("api/providers", { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     if (res.ok && Array.isArray(data.providers)) {
       _dispatchProviders = data.providers;
@@ -4752,7 +4752,7 @@ function looksLikeDispatchAttempt(value) {
 
 async function checkClaudeAuth() {
   try {
-    const res = await fetch("api/health/claude-auth", { cache: "no-store" });
+    const res = await agentApiFetch("api/health/claude-auth", { cache: "no-store" });
     const d = await res.json().catch(() => ({}));
     _claudeAuthStatus = !!d.authenticated;
     _claudeAccountAuth = d.accounts && typeof d.accounts === "object" ? d.accounts : {};
@@ -4779,7 +4779,7 @@ async function checkClaudeAuth() {
 
 async function checkCodexAuth() {
   try {
-    const res = await fetch("api/health/codex-auth");
+    const res = await agentApiFetch("api/health/codex-auth");
     const d = await res.json().catch(() => ({}));
     _codexAuthStatus = !!d.authenticated;
   } catch {
@@ -4790,7 +4790,7 @@ async function checkCodexAuth() {
 
 async function checkAgyAuth() {
   try {
-    const res = await fetch("api/health/agy-auth");
+    const res = await agentApiFetch("api/health/agy-auth");
     const d = await res.json().catch(() => ({}));
     _agyAuthStatus = !!d.authenticated;
   } catch {
@@ -5384,7 +5384,7 @@ async function checkProviderUsageLimits({ silent = false, agyAttempt = 0 } = {})
     renderProfileList(_profileData);
   }
   try {
-    const res = await fetch("api/usage-limits", { cache: "no-store" });
+    const res = await agentApiFetch("api/usage-limits", { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     if (seq !== _usageLimitsRequestSeq) return;
     if (!res.ok) throw new Error(data.error || "usage query failed");
@@ -5537,8 +5537,8 @@ function renderProfileList(data, { adopt = false } = {}) {
     const canDelete = canEdit;
     // 任意会员账号（含被封/暂不用的 Claude 主号）都支持一键隐藏，至少保留一个可见账号
     const canHide   = isMembershipProfile(p) && visibleCount > 1;
-    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口（网页端无本机终端弹窗）
-    const canLogin  = isDesktopEmbed && p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
+    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口（无终端时后端会返回可复制命令）
+    const canLogin  = p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
     const loginLabel = claudeAuthFor(p)?.authenticated ? "重新登录 / 换号" : "登录";
     const actions = (canEdit || canDelete || canLogin || canHide) ? `
       <span class="auth-profile-actions">
@@ -5575,8 +5575,9 @@ function renderProfileList(data, { adopt = false } = {}) {
   const renderFoldedRow = p => {
     const st = profileStatus(p);
     const reason = p.hidden ? "已隐藏" : st.text;
-    const canLogin = isDesktopEmbed && p.provider === "claude";
-    const canDelete = p.provider === "claude" && isExtraClaudeProfile(p);
+    const canLogin = p.provider === "claude";
+    const canEdit = p.provider !== "claude" || isExtraClaudeProfile(p);
+    const canDelete = canEdit && (p.hidden || visibleCount > 1);
     return `<div class="auth-hidden-row" data-hidden-id="${escapeAttr(p.id)}">
       <span class="auth-hidden-info">
         <span class="auth-hidden-name">${escapeHtml(p.name)}</span>
@@ -5586,15 +5587,15 @@ function renderProfileList(data, { adopt = false } = {}) {
         ${p.hidden
           ? `<button type="button" class="auth-hidden-pill auth-profile-unhide" data-unhide="${escapeAttr(p.id)}">恢复</button>`
           : `${canLogin ? `<button type="button" class="auth-hidden-pill auth-profile-login" data-login="${escapeAttr(p.id)}">登录</button>` : ""}${visibleCount > 1 ? `<button type="button" class="auth-hidden-pill auth-profile-hide" data-hide="${escapeAttr(p.id)}">隐藏</button>` : ""}`}
+        ${canEdit ? `<button type="button" class="auth-hidden-pill auth-profile-edit" data-edit="${escapeAttr(p.id)}">编辑</button>` : ""}
         ${canDelete ? `<button type="button" class="auth-hidden-pill auth-profile-del" data-del="${escapeAttr(p.id)}">删除</button>` : ""}
       </span>
     </div>`;
   };
-  const showDisclosure = foldedMembers.length > 0 || isDesktopEmbed;
   const disclosureLabel = foldedMembers.length > 0
     ? `已隐藏或未登录的会员账号 (${foldedMembers.length})`
     : "更多会员渠道";
-  const disclosureHtml = showDisclosure ? `
+  const disclosureHtml = `
     <div class="auth-hidden-section">
       <button type="button" class="auth-hidden-toggle" aria-expanded="${_hiddenMembersExpanded}">
         <span>${disclosureLabel}</span>
@@ -5603,9 +5604,9 @@ function renderProfileList(data, { adopt = false } = {}) {
       ${_hiddenMembersExpanded ? `
         <div class="auth-hidden-list">
           ${foldedMembers.map(renderFoldedRow).join("")}
-          ${isDesktopEmbed ? `<button type="button" class="auth-hidden-add-claude">+ 添加 Claude 会员账号</button>` : ""}
+          <button type="button" class="auth-hidden-add-claude">+ 添加 Claude 会员账号</button>
         </div>` : ""}
-    </div>` : "";
+    </div>`;
   authProfileList.innerHTML = groups.filter(group => group.profiles.length).map(group => `
     <div class="auth-profile-group" role="group" aria-labelledby="auth-group-${group.id}">
       <div class="auth-group-heading">
@@ -5661,7 +5662,7 @@ async function activateProfile(id) {
   profileActivationVersions.set(owner, version);
   setAuthStatus("saving", "切换中…");
   try {
-    const res = await fetch("api/auth-profile", { method: "PUT",
+    const res = await agentApiFetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "activate", profileId: id }) });
     const d = await res.json().catch(() => ({}));
@@ -5681,7 +5682,7 @@ async function setProfileHidden(id, hidden) {
   const wasActive = activeProfileId() === id;
   setAuthStatus("saving", hidden ? "隐藏中…" : "恢复中…");
   try {
-    const res = await fetch("api/auth-profile", { method: "PUT",
+    const res = await agentApiFetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "set-hidden", profileId: id, hidden }) });
     const d = await res.json().catch(() => ({}));
@@ -5707,7 +5708,7 @@ async function deleteProfile(id) {
   const wasActive = activeProfileId() === id;
   setAuthStatus("saving", "删除中…");
   try {
-    const res = await fetch("api/auth-profile", { method: "PUT",
+    const res = await agentApiFetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "delete", profileId: id }) });
     const d = await res.json().catch(() => ({}));
@@ -5867,7 +5868,7 @@ async function addClaudeMemberAccount() {
   addErrorEl.textContent = "";
   addSubmitBtn.disabled = true;
   try {
-    const res = await fetch("api/auth-profile", { method: "PUT",
+    const res = await agentApiFetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "add", profile: { name, provider: "claude", goodAt } }) });
     const d = await res.json().catch(() => ({}));
@@ -5905,7 +5906,7 @@ async function startClaudeLogin(id) {
   if (!profile) return;
   setAuthStatus("saving", "正在打开登录窗口…");
   try {
-    const res = await fetch("api/claude-accounts/login", { method: "POST",
+    const res = await agentApiFetch("api/claude-accounts/login", { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profileId: id }) });
     const d = await res.json().catch(() => ({}));
@@ -5958,7 +5959,7 @@ addSubmitBtn.addEventListener("click", async () => {
     const profilePayload = isEdit
       ? { id: editingProfileId, name, opusModel, sonnetModel, haikuModel, goodAt, ...(apiKey ? { apiKey } : {}), ...(provider === "custom" ? { baseUrl } : {}) }
       : { name, provider, apiKey, opusModel, sonnetModel, haikuModel, baseUrl, goodAt };
-    const res = await fetch("api/auth-profile", { method: "PUT",
+    const res = await agentApiFetch("api/auth-profile", { method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: isEdit ? "update" : "add", profile: profilePayload }) });
     const d = await res.json().catch(() => ({}));
@@ -6013,7 +6014,7 @@ authProfileList.addEventListener("click", (e) => {
 // ── Dialog open/close ─────────────────────────────────────
 async function fetchProfiles() {
   try {
-    const res = await fetch("api/auth-profile", { cache: "no-store" });
+    const res = await agentApiFetch("api/auth-profile", { cache: "no-store" });
     if (res.ok) {
       renderProfileList(await res.json());
       // 先恢复账号和模型，再给新对话记录选择；首帧默认值不能覆盖上次的选择。
@@ -6040,6 +6041,7 @@ function openAuthDialog() {
   void fetchProfiles();
   checkClaudeAuth();
   checkCodexAuth();
+  checkAgyAuth();
   startUsageLimitPolling();
   if (typeof checkWechatStatus === "function") {
     stopWechatPolling();
@@ -6079,7 +6081,7 @@ async function checkWechatStatus() {
   const settingsArea = document.getElementById("wechat-settings-area");
   const notifySelect = document.getElementById("wechat-notify-mode");
   try {
-    const res = await fetch("api/wechat/status");
+    const res = await agentApiFetch("api/wechat/status");
     const data = await res.json();
     if (data.connected) {
       setWechatStatus("ok", `已连接${data.botId ? ` · ${data.botId}` : ""}`);
@@ -6139,7 +6141,7 @@ async function startWechatLogin() {
   setWechatStatus("idle", "正在生成二维码…");
 
   try {
-    const res = await fetch("api/wechat/login/start", { method: "POST" });
+    const res = await agentApiFetch("api/wechat/login/start", { method: "POST" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error);
 
@@ -6164,7 +6166,7 @@ async function pollWechatStatus(verifyCode = "") {
   if (verifyCode) url += `&verifyCode=${encodeURIComponent(verifyCode)}`;
 
   try {
-    const res = await fetch(url);
+    const res = await agentApiFetch(url);
     const data = await res.json();
     const verifyArea = document.getElementById("wechat-verify-area");
 
@@ -6204,7 +6206,7 @@ document.getElementById("wechat-action-btn").addEventListener("click", async (e)
   if (btn.classList.contains("danger")) {
     if (!confirm("确认断开此实例的微信连接吗？这会停止微信端的消息助手回复。")) return;
     try {
-      await fetch("api/wechat/logout", { method: "POST" });
+      await agentApiFetch("api/wechat/logout", { method: "POST" });
       checkWechatStatus();
     } catch (err) {
       alert(`断开失败: ${err.message}`);
@@ -6848,6 +6850,12 @@ window.addEventListener("message", (e) => {
   if (e.data?.type === "open-ticket-stage") {
     closeAuthDialog();
     closeHistoryPanel();
+    ticketStageFilter = "active";
+    document.querySelectorAll("#ticket-stage-filters .ticket-filter-chip").forEach((chip) => {
+      const active = chip.dataset.filter === "active";
+      chip.classList.toggle("active", active);
+      chip.setAttribute("aria-pressed", String(active));
+    });
     openTicketStage();
     return;
   }
@@ -12038,7 +12046,7 @@ async function openLocalFileLink(href) {
   if (!isDesktopEmbed) {
     const cleaned = path.replace(/^file:\/\//i, "");
     const absolutePath = /^(?:[a-z]:[\\/]|[\\/])/i.test(cleaned);
-    if (isWebEmbed && !absolutePath && /\.(?:md|markdown|txt|html)$/i.test(cleaned)) {
+    if (isWebEmbed && !absolutePath && /\.(?:md|html?)$/i.test(cleaned)) {
       postParentMessage({ type: "agent-open-note", path: cleaned });
       return;
     }
@@ -12046,7 +12054,7 @@ async function openLocalFileLink(href) {
     return;
   }
   try {
-    const res = await fetch("api/open-file", {
+    const res = await agentApiFetch("api/open-file", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: href }),
@@ -13809,8 +13817,8 @@ function openArtifactInDesktop(filePath) {
   const path = String(filePath || "").trim();
   if (!path) return;
   const absolutePath = /^(?:[a-z]:[\\/]|[\\/])/i.test(path);
-  if ((isDesktopEmbed || isWebEmbed) && !absolutePath && /\.(?:md|markdown|txt|html|css|js|ts|json|ya?ml|csv|png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path)) {
-    if (isDesktopEmbed || /\.(?:md|markdown|txt|html)$/i.test(path)) {
+  if ((isDesktopEmbed || isWebEmbed) && !absolutePath && /\.(?:md|markdown|txt|html?|css|js|ts|json|ya?ml|csv|png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path)) {
+    if (isDesktopEmbed || /\.(?:md|html?)$/i.test(path)) {
       postParentMessage({ type: "agent-open-note", path });
       return;
     }
@@ -14562,6 +14570,14 @@ function appendStrategistCompactedDivider(divider) {
   if (followLatestMessage) scrollBottom();
 }
 
+function pushFellowTicketsSummaryToParent() {
+  const liveStatuses = new Set(["running", "queued", "needs_attention", "partial"]);
+  const tickets = [...orchestratorTickets.values()]
+    .filter(t => t && !t.archivedAt && liveStatuses.has(String(t.status || "")))
+    .map(t => ({ id: t.id, title: String(t.title || "后台任务"), status: String(t.status) }));
+  postParentMessage({ type: "fellow-tickets-summary", tickets });
+}
+
 function handleOrchestratorEvent(ev) {
   if (!ev || typeof ev.type !== "string") return false;
   if (ev.type === "strategist_context") {
@@ -14594,12 +14610,14 @@ function handleOrchestratorEvent(ev) {
     for (const t of tickets) upsertOrchestratorTicket(t);
     refreshInlineTicketCards();
     syncStrategistChrome();
+    if (typeof pushFellowTicketsSummaryToParent === "function") pushFellowTicketsSummaryToParent();
     return true;
   }
   if (ev.type === "ticket_updated" && ev.ticket) {
     upsertOrchestratorTicket(ev.ticket);
     refreshInlineTicketCards(ev.ticket.id);
     syncStrategistChrome();
+    if (typeof pushFellowTicketsSummaryToParent === "function") pushFellowTicketsSummaryToParent();
     return true;
   }
   if (ev.type === "ticket_reset_rejected" && ev.conversationId) {

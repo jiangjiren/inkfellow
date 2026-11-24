@@ -1181,7 +1181,7 @@ test("WeChat routes through Fellow, shares history/memory, tags tickets, and pus
       await withSidecar(dir, "wx-test-token", async port => {
         const headers = { Authorization: "Bearer wx-test-token", "Content-Type": "application/json" };
         // 1. WeChat 状态接口返回默认通知模式
-        const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/wechat/status`)).json();
+        const statusRes = await (await fetch(`http://127.0.0.1:${port}/api/wechat/status`, { headers })).json();
         assert.equal(statusRes.connected, true);
         assert.equal(statusRes.notifyTicketsMode, "wechat");
 

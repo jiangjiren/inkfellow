@@ -85,7 +85,7 @@ test("title-only rename survives stale saves and process restart without changin
     }
   };
   const api = (method = "GET", body, id = "conv-title") => fetch(`http://127.0.0.1:${port}/api/history/${id}`, {
-    method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}),
+    method, headers: { "Content-Type": "application/json", Authorization: "Bearer test" }, ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const initial = {
     title: "Legacy manual title", date: "2026-01-01T00:00:00.000Z",
@@ -124,7 +124,9 @@ test("title-only rename survives stale saves and process restart without changin
     await stop();
     await boot();
     assert.equal((await (await api()).json()).title, "手动命名后的对话");
-    const summaries = await (await fetch(`http://127.0.0.1:${port}/api/history`)).json();
+    const summaries = await (await fetch(`http://127.0.0.1:${port}/api/history`, {
+      headers: { Authorization: "Bearer test" },
+    })).json();
     assert.equal(summaries.find(c => c.id === "conv-title").title, "手动命名后的对话");
     await api("DELETE");
     assert.equal((await api("PATCH", { title: "Resurrected" })).status, 410);

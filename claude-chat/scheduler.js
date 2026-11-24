@@ -291,8 +291,11 @@ async function _executeJobOnce(job) {
   } catch (err) {
     status = "error";
     errorMsg = err.message;
-    console.error(`[Scheduler] Job "${job.description}" error:`, err.message);
-    await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
+    const isDeliveryError = err.message.startsWith("结果投递失败");
+    console.error(`[Scheduler] Job "${job.description}" ${isDeliveryError ? "delivery" : "execution"} error:`, err.message);
+    if (!isDeliveryError) {
+      await _deliverResult(job, `⚠️ 定时任务「${job.description}」执行失败：${err.message}`).catch(() => {});
+    }
   }
 
   const durationMs = Date.now() - startMs;
@@ -331,6 +334,7 @@ async function _deliverResult(job, text) {
   }
 
   const msg = `📅 ${job.description}\n\n${text}`;
+  const deliveryErrors = [];
   for (const { channel, peer } of targets) {
     const adapter = channelAdapters[channel];
     if (!adapter) {
@@ -342,7 +346,11 @@ async function _deliverResult(job, text) {
       console.log(`[Scheduler] Delivered to ${channel}:${peer.slice(0, 12)}...`);
     } catch (err) {
       console.error(`[Scheduler] Delivery to ${channel} failed:`, err.message);
+      deliveryErrors.push(`${channel}: ${err.message}`);
     }
+  }
+  if (deliveryErrors.length > 0) {
+    throw new Error(`结果投递失败：${deliveryErrors.join("；")}`);
   }
 }
 
@@ -409,19 +417,24 @@ async function _runAgent(job) {
 
 function _injectChatHistory(job, result) {
   try {
-    const history = ctx.readHistory();
+    const now = new Date().toISOString();
+    const id = `cron-${job.id.slice(0, 8)}-${Date.now()}`;
     const entry = {
-      id: `cron-${job.id.slice(0, 8)}-${Date.now()}`,
+      id,
       title: `[定时任务] ${job.description}`,
+      date: now,
       messages: [
-        { role: "user", content: `[定时任务自动触发] ${job.description}` },
-        { role: "assistant", content: result },
+        { id: `${id}_u`, role: "user", text: `[定时任务自动触发] ${job.description}`, createdAt: now },
+        { id: `${id}_a`, role: "assistant", text: result, blocks: [{ type: "text", text: result }], status: "complete", createdAt: now },
       ],
-      createdAt: new Date().toISOString(),
     };
-    history.unshift(entry);
-    if (history.length > 100) history.splice(100);
-    ctx.writeHistory(history);
+    if (typeof ctx.upsertHistoryConversation === "function") {
+      ctx.upsertHistoryConversation(entry);
+    } else {
+      const history = ctx.readHistory();
+      history.unshift(entry);
+      ctx.writeHistory(history);
+    }
     console.log(`[Scheduler] Injected result into chat history`);
   } catch (err) {
     console.error(`[Scheduler] Failed to inject chat history:`, err.message);

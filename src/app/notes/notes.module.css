@@ -1281,7 +1281,7 @@
   /* 分屏流式上限：桌面端最高可拖到视口 72%（支持 5:5 / 7:3 对照），同时由 JS 保底正文 ≥ 320px；
      想要 100% 铺满时走「沉浸全宽」。比例抽成变量供拖动逻辑读取，避免拖出死区。 */
   --assistant-panel-max-vw: 72;
-  width: min(var(--assistant-panel-width, 520px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - 320px));
+  width: min(var(--assistant-panel-width, 520px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - var(--sidebar-occupied-width, 0px) - 320px));
   flex: 0 0 auto;
   min-width: 0;
   display: flex;
@@ -3979,7 +3979,7 @@
 @media (orientation: landscape) and (min-width: 901px) and (max-width: 1260px) {
   .assistantPanel {
     --assistant-panel-max-vw: 60;
-    width: min(var(--assistant-panel-width, 460px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - 320px));
+    width: min(var(--assistant-panel-width, 460px), calc(var(--assistant-panel-max-vw) * 1vw), calc(100vw - var(--sidebar-occupied-width, 0px) - 320px));
   }
 }
 
@@ -5155,6 +5155,7 @@
   margin: 0 auto;
   padding: 52px 32px 88px;
   box-sizing: border-box;
+  container-type: inline-size;
   animation: fadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -5338,12 +5339,22 @@
 .dashboardFellowStripTag {
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--notes-accent-warm);
+  color: #a64112;
   flex-shrink: 0;
 }
 
 .dashboardFellowStripReady .dashboardFellowStripTag {
-  color: #1e8e4e;
+  color: #167942;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dashboardFellowStripTag {
+    color: #f39562;
+  }
+
+  .dashboardFellowStripReady .dashboardFellowStripTag {
+    color: #5cd48f;
+  }
 }
 
 .dashboardFellowStripText {
@@ -5382,7 +5393,7 @@
 .dashboardSectionTitle {
   font-size: 12px;
   font-weight: 600;
-  color: var(--notes-text-muted);
+  color: var(--notes-text-secondary);
   letter-spacing: 0.02em;
   margin: 0;
 }
@@ -5500,10 +5511,46 @@
 
 .dashboardTimeLabel {
   font-size: 12px;
-  color: var(--notes-text-muted);
+  color: var(--notes-text-secondary);
   font-variant-numeric: tabular-nums;
   min-width: 68px;
   text-align: right;
+}
+
+.dashboardSheetEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 16px;
+  font-size: 13px;
+  color: var(--notes-text-secondary);
+}
+
+.dashboardSheetEmptyAction {
+  border: 1px solid var(--notes-border-strong);
+  background: transparent;
+  color: var(--notes-text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.dashboardSheetEmptyAction:hover {
+  background: var(--notes-bg-app);
+}
+
+@container (max-width: 460px) {
+  .dashboardFolderTag {
+    display: none;
+  }
+
+  .dashboardTimeLabel {
+    min-width: auto;
+  }
 }
 
 .dashboardEmptyCard {

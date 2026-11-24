@@ -3444,6 +3444,7 @@ function broadcastFellow(event) {
 
 const fellow = createFellow({
   dataDir: DATA_DIR,
+  port: PORT,
   cwd: DEFAULT_CWD,
   readProfiles,
   readMessages: id => eventLog.project(id)?.messages ?? [],

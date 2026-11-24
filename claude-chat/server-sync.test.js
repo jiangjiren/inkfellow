@@ -28,7 +28,7 @@ const PROBE_PROFILES = {
   profiles: [{ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", baseUrl: "" }],
 };
 
-async function startServer({ mockFellow = false } = {}) {
+async function startServer({ mockFellow = false, sharedScratch = null } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-sync-test-"));
   const authFile = join(scratch, "auth-profile.json");
   await writeFile(authFile, JSON.stringify(PROBE_PROFILES), "utf8");
@@ -43,8 +43,8 @@ async function startServer({ mockFellow = false } = {}) {
       ...process.env,
       PORT: String(port),
       HOST: "127.0.0.1",
-      VAULT_PATH: scratch,
-      CLAUDE_CHAT_DATA_DIR: scratch,
+      VAULT_PATH: sharedScratch || scratch,
+      CLAUDE_CHAT_DATA_DIR: sharedScratch || scratch,
       CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -227,6 +227,28 @@ test("hello 带 lastSeq=0 时回放整段会话", { timeout: 30_000 }, async () 
     ws.close();
   } finally {
     await server.stop();
+  }
+});
+
+test("Fellow tickets stay with their chat instance when two ports share a data directory", { timeout: 30_000 }, async () => {
+  const first = await startServer({ mockFellow: true });
+  let second;
+  try {
+    const base = instance => `http://127.0.0.1:${instance.port}/api/fellow/tickets`;
+    const response = await fetch(base(first), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "实例一", brief: "hold-instance", writeScope: ["a.md"] }),
+    });
+    const ticket = await response.json();
+    assert.equal(ticket.status, "running");
+    second = await startServer({ mockFellow: true, sharedScratch: first.scratch });
+    const secondBoard = await (await fetch(base(second))).json();
+    assert.deepEqual(secondBoard.tickets, []);
+    const firstTicket = await (await fetch(`${base(first)}/${ticket.ticketId}`)).json();
+    assert.equal(firstTicket.ticket.status, "running");
+  } finally {
+    await second?.stop();
+    await first.stop();
   }
 });
 

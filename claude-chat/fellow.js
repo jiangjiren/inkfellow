@@ -30,8 +30,8 @@ const instructionSchema = z.object({
   })).max(5).optional(),
 });
 
-export function createFellow({ dataDir, cwd, readProfiles, launch, stop, readMessages, hasRequest, notify, report }) {
-  const tickets = createTicketStore({ dir: join(dataDir, "tickets"), vault: cwd });
+export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, readMessages, hasRequest, notify, report }) {
+  const tickets = createTicketStore({ dir: join(dataDir, "tickets", String(port)), vault: cwd });
 
   function listProfiles() {
     return readProfiles().profiles.filter(profile => (

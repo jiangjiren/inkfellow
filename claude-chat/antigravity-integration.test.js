@@ -10,7 +10,7 @@ import { WebSocket } from "ws";
 
 test("Antigravity WebSocket turns persist, resume by conversation, recover, and stop", { timeout: 20000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "claw-agy-integration-"));
-  const binary = join(dir, "agy");
+  const binary = join(dir, "agy.cjs");
   const log = join(dir, "calls.jsonl");
   mkdirSync(join(dir, "vault"));
   writeFileSync(binary, `#!${process.execPath}

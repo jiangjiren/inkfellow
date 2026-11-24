@@ -99,7 +99,11 @@ Open **✦ Fellow** in the chat header to plan work and delegate it to backgroun
 
 Each ticket has its own conversation and persists under `CLAUDE_CHAT_DATA_DIR/tickets/<PORT>`, matching the conversation log's instance boundary. Workers with non-overlapping write scopes can run concurrently. Overlapping scopes queue until the worker holding the lock exits. A ticket without an explicit scope reserves the vault's write scope. Refreshing or switching conversations leaves the work running. After a service restart, interrupted work can be reviewed and retried from the board.
 
-Fellow and its Workers use Claude or a configured Claude-compatible profile. Workers operate on vault files through scoped tools. The chat service retains its existing Codex, Antigravity, and WeChat routes for ordinary conversations.
+Fellow and its Workers support Claude, Claude-compatible API profiles, Codex, and Antigravity. Codex and Antigravity use a local MCP bridge and an isolated CLI working directory for Fellow turns. Their file tools enforce the ticket's declared write scope. Install a streaming-capable Antigravity CLI for Fellow. Ordinary Antigravity chat can fall back to its one-shot runner on older installations.
+
+When a WeChat bot is connected, messages can dispatch and check the same tickets shown in the Web board. The originating peer receives batched progress or completion reports. The account identified by the bot's configured user ID can also see Web-origin tickets. Ticket artifacts can be opened or downloaded from the authenticated task board.
+
+The Web chat supports up to 10 independent active ordinary conversations. Switching or closing a tab leaves its run active. The notification inbox can reopen a finished chat or Worker, and browser notifications can be enabled from the inbox while the Web app is open. Claude uses a persistent SDK query per conversation. Codex uses its bundled app-server by default and Antigravity uses its stream-json CLI when available.
 
 ## Scheduled Jobs
 

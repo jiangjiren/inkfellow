@@ -38,6 +38,12 @@ export function findBinary() {
   return _binaryCache;
 }
 
+export function binaryCommand() {
+  const binary = findBinary();
+  if (binary && /\.[cm]?js$/i.test(binary)) return { executable: process.execPath, args: [binary] };
+  return { executable: binary, args: [] };
+}
+
 /** 测试用：清掉二进制路径缓存。 */
 export function _resetBinaryCache() { _binaryCache = undefined; }
 

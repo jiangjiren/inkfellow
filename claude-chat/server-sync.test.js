@@ -6,8 +6,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -28,11 +30,22 @@ const PROBE_PROFILES = {
   profiles: [{ id: "p_claude", name: "Claude 会员", provider: "claude", apiKey: "", baseUrl: "" }],
 };
 
-async function startServer({ mockFellow = false, sharedScratch = null } = {}) {
+async function startServer({ mockFellow = false, sharedScratch = null, nativeFellow = false, wechatGateway = null } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "inkfellow-sync-test-"));
   const authFile = join(scratch, "auth-profile.json");
   await writeFile(authFile, JSON.stringify(PROBE_PROFILES), "utf8");
   const port = await reservePort();
+  const cli = fileURLToPath(new URL("fixtures/fake-fellow-native.mjs", HERE));
+  if (nativeFellow) {
+    await mkdir(join(scratch, "codex"));
+    await mkdir(join(scratch, ".gemini", "antigravity-cli"), { recursive: true });
+    await writeFile(join(scratch, "codex", "auth.json"), JSON.stringify({ OPENAI_API_KEY: "fixture-key" }));
+  }
+  if (wechatGateway) {
+    await writeFile(join(scratch, `wechat-bot-${port}.json`), JSON.stringify({
+      token: "fixture-token", baseUrl: wechatGateway, userId: "owner@im.wechat",
+    }));
+  }
 
   const child = spawn(process.execPath, [
     ...(mockFellow ? ["--experimental-loader", "./fixtures/sdk-loader.mjs"] : []),
@@ -46,6 +59,10 @@ async function startServer({ mockFellow = false, sharedScratch = null } = {}) {
       VAULT_PATH: sharedScratch || scratch,
       CLAUDE_CHAT_DATA_DIR: sharedScratch || scratch,
       CLAUDE_CHAT_AUTH_PROFILE_FILE: authFile,
+      ...(nativeFellow ? {
+        AGY_BIN: cli, CODEX_BIN: cli, CODEX_HOME: join(scratch, "codex"),
+        HOME: scratch, USERPROFILE: scratch, CODEX_PERSISTENT: "1",
+      } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -97,6 +114,16 @@ async function waitForMessage(events, predicate, startIndex = 0, timeoutMs = 500
     await delay(10);
   }
   throw new Error(`等待 WS 事件超时；已收到: ${JSON.stringify(events.slice(startIndex))}`);
+}
+
+async function waitFor(check, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = await check();
+    if (found) return found;
+    await delay(30);
+  }
+  throw new Error("Timed out waiting for Fellow state");
 }
 
 // 用 REST 造一个有内容的会话，避免依赖真实模型调用
@@ -249,6 +276,96 @@ test("Fellow tickets stay with their chat instance when two ports share a data d
   } finally {
     await second?.stop();
     await first.stop();
+  }
+});
+
+test("Codex and Gemini Fellow dispatch through native MCP, write in scope, and reuse the Web runtime", { timeout: 30_000 }, async () => {
+  const server = await startServer({ mockFellow: true, nativeFellow: true });
+  const clients = [];
+  try {
+    const base = `http://127.0.0.1:${server.port}/api`;
+    for (const [index, profileId] of ["p_codex", "p_antigravity"].entries()) {
+      const client = await connect(server.port);
+      clients.push(client.ws);
+      async function send(conversationId, prompt, n) {
+        const start = client.events.length;
+        client.ws.send(JSON.stringify({ conversationId, prompt, profileId, permissionMode: "plan", userMessageId: `p01_${index}_${n}` }));
+        await waitForMessage(client.events, event => event.type === "done" && event.conversationId === conversationId, start, 8000);
+        assert.deepEqual(client.events.slice(start).filter(event => event.type === "error"), []);
+      }
+      await send("strategist", "派出原生测试", 0);
+      const ticket = await waitFor(async () => {
+        const { tickets } = await (await fetch(`${base}/fellow/tickets`)).json();
+        const match = tickets.find(item => item.title === `原生任务 ${profileId}`);
+        if (match?.status === "failed") throw new Error(match.error);
+        return match?.status === "completed" && match;
+      });
+      assert.equal(await readFile(join(server.scratch, `原生任务 ${profileId}.md`), "utf8"), "abcdef\n");
+      await assert.rejects(readFile(join(server.scratch, "越界文件.md")), { code: "ENOENT" });
+      const artifactBase = `${base}/fellow/tickets/${ticket.id}/artifacts`;
+      const { artifacts } = await (await fetch(artifactBase)).json();
+      assert.equal(artifacts.length, 1);
+      const delivery = await fetch(`${artifactBase}/${artifacts[0].id}?download=1`, { headers: { Range: "bytes=2-4" } });
+      assert.equal(delivery.status, 206);
+      assert.match(delivery.headers.get("content-disposition"), /^attachment/);
+      assert.equal(await delivery.text(), "cde");
+      const crossSite = await fetch(`${artifactBase}/${artifacts[0].id}`, { headers: { Origin: "https://foreign.example" } });
+      assert.equal(crossSite.status, 403);
+
+      const conversationId = `normal_native_${profileId}`;
+      await send(conversationId, "first", 1);
+      await send(conversationId, "second", 2);
+      const history = await (await fetch(`${base}/history/${conversationId}`)).json();
+      const runtimeIds = history.messages.filter(message => message.role === "assistant")
+        .map(message => /runtime:(\d+)/.exec(message.text)?.[1]).filter(Boolean);
+      assert.equal(runtimeIds.length, 2);
+      assert.equal(runtimeIds[0], runtimeIds[1]);
+    }
+  } finally {
+    for (const ws of clients) ws.terminate();
+    await server.stop();
+  }
+});
+
+test("WeChat dispatches into the Web ticket board and only the originating peer receives the report", { timeout: 30_000 }, async () => {
+  let polled = false;
+  const deliveries = [];
+  const gateway = createHttpServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const message = JSON.parse(body || "{}");
+    let reply = {};
+    if (request.url.endsWith("getupdates")) {
+      if (!polled) {
+        polled = true;
+        reply = { msgs: [{
+          from_user_id: "owner@im.wechat", context_token: "owner-context", item_list: [{ type: 1, text_item: { text: "微信派单演练" } }],
+        }, {
+          from_user_id: "other@im.wechat", context_token: "other-context", item_list: [{ type: 1, text_item: { text: "你好" } }],
+        }] };
+      } else await delay(100);
+    } else if (request.url.endsWith("sendmessage")) deliveries.push(message);
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(reply));
+  });
+  await new Promise(resolve => gateway.listen(0, "127.0.0.1", resolve));
+  let server;
+  try {
+    server = await startServer({ mockFellow: true, nativeFellow: true, wechatGateway: `http://127.0.0.1:${gateway.address().port}` });
+    const endpoint = `http://127.0.0.1:${server.port}/api/fellow/tickets`;
+    await waitFor(async () => {
+      const { tickets } = await (await fetch(endpoint)).json();
+      const ticket = tickets.find(item => item.title === "微信原生工单");
+      if (ticket?.status === "failed") throw new Error(ticket.error);
+      return ticket?.status === "completed";
+    });
+    const report = await waitFor(() => deliveries.find(item => JSON.stringify(item).includes("Fellow 后台任务汇报")));
+    assert.match(JSON.stringify(report), /owner@im.wechat/);
+    assert.match(JSON.stringify(report), /owner-context/);
+    assert.doesNotMatch(JSON.stringify(report), /other@im.wechat|other-context/);
+  } finally {
+    await server?.stop();
+    gateway.closeAllConnections();
+    await new Promise(resolve => gateway.close(resolve));
   }
 });
 

@@ -406,8 +406,10 @@ test("stopping and resetting Claude settle the run; another tab cannot reset it"
     await waitForMessage(other.events, e => e.type === "reset_complete");
     conn.ws.send(JSON.stringify({ type: "hello", conversationId: hold.conversationId, lastSeq: 0 }));
     assert.equal((await waitForMessage(conn.events, e => e.type === "sync")).turn.status, "running");
-    const queued = probeTurn("other", "other-conversation"); other.ws.send(JSON.stringify(queued));
+    const queued = probeTurn("same conversation", hold.conversationId); other.ws.send(JSON.stringify(queued));
     assert.equal((await waitForMessage(other.events, e => e.type === "request_ack" && e.userMessageId === queued.userMessageId)).state, "queued");
+    await submitTurn(other, { ...probeTurn("parallel", "other-conversation"), userMessageId: hold.userMessageId });
+    assert.equal((await (await fetch(`http://127.0.0.1:${server.port}/api/history/${hold.conversationId}`)).json()).messages.at(-1).text, "partial before stop");
     conn.ws.send(JSON.stringify({ stop: true }));
     await waitForMessage(conn.events, e => e.type === "stopped");
     const history = await (await fetch(`http://127.0.0.1:${server.port}/api/history/${hold.conversationId}`)).json();

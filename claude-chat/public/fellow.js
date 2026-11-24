@@ -36,6 +36,7 @@ function syncFellowNavigation() {
   document.getElementById("fellow-back").hidden = !isWorker;
   document.getElementById("fellow-context-label").textContent = isWorker ? ticket?.title || "Worker 现场" : isManager ? "总管" : "";
   document.getElementById("fellow-context-status").textContent = ticket ? (fellowStatusLabels[ticket.status] || "") : "";
+  document.getElementById("fellow-context-artifacts").hidden = !ticket?.artifactPaths?.length && !ticket?.changedFiles?.length;
   document.getElementById("app").dataset.fellowView = isWorker ? "worker" : isManager ? "manager" : "chat";
   promptEl.placeholder = isWorker ? "给这张工单补充要求…" : isManager ? "跟 Fellow 聊想法，或交代要派发的任务…" : "发消息给 Fellow…";
 
@@ -74,6 +75,7 @@ async function refreshFellowTickets() {
     const previous = fellowTickets.get(ticket.id);
     if (!previous || ticket.revision >= previous.revision) fellowTickets.set(ticket.id, ticket);
   }
+  globalThis.collectTicketNotices?.([...fellowTickets.values()]);
   syncFellowNavigation();
   if (fellowBoard.open) renderFellowTickets();
 }
@@ -108,6 +110,7 @@ function buildFellowRow(ticket) {
   if (ticket.changedFiles?.length) row.append(element("p", "", ticket.changedFiles.slice(0, 5).join("\n")));
   const actions = element("div", "fellow-ticket-actions");
   actions.append(ticketButton("进入现场", "open"));
+  if (ticket.artifactPaths?.length || ticket.changedFiles?.length) actions.append(ticketButton("产物", "artifacts"));
   if (fellowLive.has(ticket.status) && ticket.status !== "stopping") actions.append(ticketButton("停止", "stop"));
   if (["failed", "stopped", "interrupted"].includes(ticket.status)) actions.append(ticketButton("重试", "retry"));
   if (!fellowLive.has(ticket.status)) actions.append(ticketButton(ticket.archivedAt ? "取消归档" : "归档", ticket.archivedAt ? "unarchive" : "archive"));
@@ -257,6 +260,10 @@ fellowList.addEventListener("click", async event => {
   const ticket = fellowTickets.get(button?.closest("[data-ticket-id]")?.dataset.ticketId);
   if (!ticket) return;
   const action = button.dataset.fellowAction;
+  if (action === "artifacts") {
+    void openFellowArtifacts(ticket);
+    return;
+  }
   if (action === "open") {
     if (fellowOpeningWorker) return;
     fellowOpeningWorker = true;
@@ -274,6 +281,46 @@ fellowList.addEventListener("click", async event => {
   } catch (error) { fellowBoardStatus(error.message); }
   finally { button.disabled = false; }
 });
+
+const artifactDialog = document.getElementById("fellow-artifact-dialog");
+const artifactList = document.getElementById("fellow-artifact-list");
+let artifactRequest = 0;
+document.getElementById("fellow-artifact-close").addEventListener("click", () => artifactDialog.close());
+document.getElementById("fellow-context-artifacts").addEventListener("click", () => {
+  const ticket = currentFellowTicket();
+  if (ticket) void openFellowArtifacts(ticket);
+});
+
+async function openFellowArtifacts(ticket) {
+  const request = ++artifactRequest;
+  if (!artifactDialog.open) artifactDialog.showModal();
+  document.getElementById("fellow-artifact-title").textContent = `工单产物 · ${ticket.title}`;
+  artifactList.replaceChildren(element("li", "", "正在加载…"));
+  try {
+    const data = await fellowRequest(`tickets/${ticket.id}/artifacts`);
+    if (request !== artifactRequest || !artifactDialog.open) return;
+    artifactList.replaceChildren();
+    if (!data.artifacts.length) artifactList.append(element("li", "", "暂无可访问的产物。"));
+    for (const entry of data.artifacts) {
+      const row = element("li");
+      row.append(element("span", "artifact-name", entry.name));
+      const href = `api/fellow/tickets/${ticket.id}/artifacts/${entry.id}`;
+      if (entry.preview) {
+        const preview = element("a", "", "预览");
+        preview.href = href;
+        preview.target = "_blank";
+        preview.rel = "noopener";
+        row.append(preview);
+      }
+      const download = element("a", "", "下载");
+      download.href = href + "?download=1";
+      row.append(download);
+      artifactList.append(row);
+    }
+  } catch (error) {
+    if (request === artifactRequest && artifactDialog.open) artifactList.replaceChildren(element("li", "", error.message));
+  }
+}
 
 syncFellowNavigation();
 void refreshFellowTickets().catch(() => {});

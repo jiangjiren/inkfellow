@@ -30,8 +30,33 @@ function browser() {
   evaluate(readFileSync(new URL("node_modules/dompurify/dist/purify.min.js", import.meta.url), "utf8"));
   for (const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) if (match[1].trim()) evaluate(match[1]);
   evaluate(readFileSync(new URL("public/fellow.js", import.meta.url), "utf8"));
+  evaluate(readFileSync(new URL("public/chat-workspace.js", import.meta.url), "utf8"));
   return { dom, w, sent, run: code => evaluate(code), close: async () => { await new Promise(resolve => setImmediate(resolve)); w.close(); } };
 }
+
+test("ordinary tabs switch without stopping work and completion notices reopen the owning conversation", async () => {
+  const h = browser();
+  try {
+    const doc = h.w.document;
+    const tick = () => new Promise(resolve => setImmediate(resolve));
+    await tick();
+    h.w.fetch = async url => ({ ok: true, json: async () => url.startsWith("api/history/")
+      ? { id: url.split("/").at(-1), title: "对话甲", messages: [] } : { tickets: [] } });
+    h.run('ws = new WebSocket(); currentConvId = "chat_a"; trackChatTab(currentConvId, "对话甲", true); promptEl.value = "甲的草稿"');
+    h.run('handleEvent({type:"chat_activity",conversationId:"chat_a",title:"对话甲",status:"running"})');
+    await h.run("startNewConversation()");
+    assert.notEqual(h.run("currentConvId"), "chat_a");
+    assert.ok(!h.sent.some(frame => frame.reset || frame.stop));
+    assert.equal(doc.querySelector('[role="tab"][data-chat-tab-id="chat_a"]').dataset.running, "true");
+    h.run('handleEvent({type:"chat_activity",conversationId:"chat_a",title:"对话甲",status:"complete",requestId:"first"})');
+    doc.getElementById("chat-notices-open").click();
+    doc.querySelector("#chat-notice-list button").click();
+    await tick();
+    assert.equal(h.run("currentConvId"), "chat_a");
+    assert.equal(h.run("promptEl.value"), "甲的草稿");
+    assert.equal(doc.getElementById("chat-unread").hidden, true);
+  } finally { await h.close(); }
+});
 
 test("Fellow board opens an isolated worker and preserves unrelated row focus on live updates", async () => {
   const h = browser();

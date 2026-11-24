@@ -2,6 +2,8 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { join } from "node:path";
 import { z } from "zod";
 import { createOrchestrator, STRATEGIST_CONVERSATION_ID } from "./orchestrator.js";
+import { callOperation, operation } from "./fellow-bridge.js";
+import { listFellowArtifacts, serveFellowArtifact } from "./fellow-artifacts.js";
 import { createTicketStore, TICKET_ID_PATTERN } from "./ticket-store.js";
 
 const text = z.string().trim().min(1).max(32_000);
@@ -30,12 +32,12 @@ const instructionSchema = z.object({
   })).max(5).optional(),
 });
 
-export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, readMessages, hasRequest, notify, report }) {
+export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, answer, readMessages, hasRequest, notify, report }) {
   const tickets = createTicketStore({ dir: join(dataDir, "tickets", String(port)), vault: cwd });
 
   function listProfiles() {
     return readProfiles().profiles.filter(profile => (
-      !["codex", "antigravity"].includes(profile.provider) && (profile.provider === "claude" || profile.apiKey)
+      ["claude", "codex", "antigravity"].includes(profile.provider) || profile.apiKey
     ));
   }
 
@@ -43,7 +45,7 @@ export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, r
     const profiles = listProfiles();
     const found = id ? profiles.find(profile => profile.id === id) :
       profiles.find(profile => profile.provider === (provider || "claude"));
-    if (!found) throw new Error("请选择已配置的 Claude 或 Claude 兼容账号执行 Fellow 工单。");
+    if (!found) throw new Error("请选择已配置的模型账号执行 Fellow 工单。");
     return found;
   }
 
@@ -60,7 +62,7 @@ export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, r
     wakeStrategist: report,
   });
 
-  async function dispatch(args, defaultProfileId) {
+  async function dispatch(args, defaultProfileId, source = null) {
     const input = dispatchSchema.parse(args);
     const profile = input.profileId || !input.specialistId
       ? selectProfile(input.profileId || defaultProfileId)
@@ -68,40 +70,49 @@ export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, r
     return orchestrator.dispatchTask({
       ...input,
       ...(profile ? { profileId: profile.id, provider: profile.provider, profileName: profile.name } : {}),
-      sourceChannel: "web",
+      sourceChannel: source ? "wechat" : "web",
+      sourcePeer: source?.peer || null,
       parentConversationId: STRATEGIST_CONVERSATION_ID,
     });
   }
 
-  function tools(profileId) {
+  function visible(ticket, source) {
+    return ticket && (!source || ticket.sourcePeer === source.peer
+      || (source.includeWeb && ticket.sourceChannel === "web"));
+  }
+
+  function operations(profileId, source = null) {
     const ticketId = z.string().regex(TICKET_ID_PATTERN);
     const limit = z.number().int().min(1).max(80);
-    function fellowTool(name, description, fields, action) {
-      return tool(name, description, fields, async args => {
-        try {
-          const result = await action(args);
-          return { content: [{ type: "text", text: JSON.stringify(result) }], isError: result?.ok === false };
-        } catch (error) {
-          return { content: [{ type: "text", text: error.message }], isError: true };
-        }
-      });
+    function onTicket(id, action) {
+      if (!visible(tickets.get(id), source)) return { ok: false, error: "工单不存在。" };
+      return action(id);
     }
+    return [
+      operation("dispatch_task", "异步派出工单。可连续派出多个独立任务。", dispatchFields, args => dispatch(args, profileId, source)),
+      operation("list_tickets", "查看工单盘面。", { status: z.string().optional(), limit: limit.optional() }, args => {
+        const board = orchestrator.listTickets({ ...args, parentConversationId: STRATEGIST_CONVERSATION_ID, limit: Infinity });
+        return { ...board, tickets: board.tickets.filter(ticket => visible(tickets.get(ticket.id), source)).slice(0, args.limit ?? 30) };
+      }),
+      operation("inspect_ticket", "查看工单结果和近期执行步骤。", { ticketId },
+        args => onTicket(args.ticketId, id => orchestrator.inspectTicket(id))),
+      operation("recall_ticket_detail", "读取 Worker 的历史消息。", {
+        ticketId, offset: z.number().int().nonnegative().optional(), limit: limit.optional(),
+      }, args => onTicket(args.ticketId, id => orchestrator.recallTicketDetail(id, args))),
+      operation("message_ticket", "向工单转达用户的新要求。", { ticketId, instruction: text },
+        args => onTicket(args.ticketId, id => orchestrator.messageTicket(id, args.instruction))),
+      operation("answer_ticket", "把用户已给出的答复交给正在等待澄清的 Worker。", { ticketId, response: text },
+        args => onTicket(args.ticketId, id => answer(tickets.get(id), args.response))),
+      operation("stop_ticket", "停止工单并等待执行器退出。", { ticketId },
+        args => onTicket(args.ticketId, id => orchestrator.stopTicket(id))),
+      operation("list_providers", "列出可执行工单的账号。", {}, orchestrator.listProviders),
+    ];
+  }
+
+  function tools(profileId, source) {
     return createSdkMcpServer({
       name: "orchestrator",
-      tools: [
-        fellowTool("dispatch_task", "异步派出工单，返回编号后可继续派其他任务或回复用户。", dispatchFields, args => dispatch(args, profileId)),
-        fellowTool("list_tickets", "查看工单盘面。", {
-          status: z.string().optional(), limit: limit.optional(),
-        }, args => orchestrator.listTickets({ ...args, parentConversationId: STRATEGIST_CONVERSATION_ID })),
-        fellowTool("inspect_ticket", "查看工单结果和近期执行步骤。", { ticketId }, args => orchestrator.inspectTicket(args.ticketId)),
-        fellowTool("recall_ticket_detail", "读取 Worker 的历史消息。", {
-          ticketId, offset: z.number().int().nonnegative().optional(), limit: limit.optional(),
-        }, args => orchestrator.recallTicketDetail(args.ticketId, args)),
-        fellowTool("message_ticket", "向工单转达用户的新增要求。", { ticketId, instruction: text },
-          args => orchestrator.messageTicket(args.ticketId, args.instruction)),
-        fellowTool("stop_ticket", "停止工单并等待执行器退出。", { ticketId }, args => orchestrator.stopTicket(args.ticketId)),
-        fellowTool("list_providers", "列出可执行工单的账号。", {}, orchestrator.listProviders),
-      ],
+      tools: operations(profileId, source).map(op => tool(op.name, op.description, op.fields, args => callOperation(op, args))),
     });
   }
 
@@ -119,6 +130,13 @@ export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, r
         }
       }
       if (url === "/api/fellow/profiles" && method === "GET") return reply(200, orchestrator.listProviders());
+      const artifactMatch = url.match(/^\/api\/fellow\/tickets\/(tk_[a-z0-9_-]{1,80})\/artifacts(?:\/([a-f0-9]{32}))?$/i);
+      if (artifactMatch && ["GET", "HEAD"].includes(method)) {
+        const ticket = tickets.get(artifactMatch[1]);
+        if (!ticket) return reply(404, { error: "工单不存在。" });
+        if (artifactMatch[2]) return serveFellowArtifact(req, res, ticket, cwd, artifactMatch[2]);
+        return reply(200, { artifacts: listFellowArtifacts(ticket, cwd) });
+      }
       const match = url.match(/^\/api\/fellow\/tickets\/(tk_[a-z0-9_-]{1,80})(?:\/(message|stop|retry|archive|unarchive))?$/i);
       if (!match) return reply(404, { error: "工单接口不存在。" });
       const [, id, action] = match;
@@ -146,7 +164,7 @@ export function createFellow({ dataDir, port, cwd, readProfiles, launch, stop, r
     }
   }
 
-  return { orchestrator, selectProfile, tools, handle, getWorkerTicket: tickets.findByWorkerConversationId };
+  return { orchestrator, selectProfile, operations, tools, handle, getTicket: tickets.get, getWorkerTicket: tickets.findByWorkerConversationId };
 }
 
 async function readJson(req) {

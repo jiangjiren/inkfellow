@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 import * as provider from "./providers/antigravity.js";
 
 const exec = promisify(execFile);
+function agyExec(args, options) {
+  const command = provider.binaryCommand();
+  return exec(command.executable, [...command.args, ...args], options);
+}
 const children = new Set();
 function kill(proc) {
   if (!proc.pid) return;
@@ -31,16 +35,20 @@ export async function getCatalog({ force = false } = {}) {
     try {
       if (!binary) return catalogSnapshot();
       const options = { timeout: 45_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, NO_COLOR: "1" } };
-      const help = await exec(binary, ["--help"], options);
+      const help = await agyExec(["--help"], options);
       if (!["--output-format", "--mode", "--effort"].every(flag => (help.stdout + help.stderr).includes(flag))) {
         health.message = "Antigravity CLI 版本不支持流式接口，请运行 agy update 后重试。";
         return catalogSnapshot();
       }
-      const { stdout } = await exec(binary, ["models"], options);
+      const { stdout } = await agyExec(["models"], options);
       const models = provider.parseModelsList(stdout);
       if (!models?.length) throw new Error("CLI 未返回可用模型，请先运行 agy 完成登录。");
       provider.setCatalog(models);
-      health = { installed: true, ready: true, message: "CLI 可用，已读取模型目录" };
+      health = {
+        installed: true, ready: true,
+        persistent: (help.stdout + help.stderr).includes("--input-format"),
+        message: "CLI 可用，已读取模型目录",
+      };
     } catch (err) {
       health.message = String(err.stderr || err.message).slice(0, 600);
     } finally { checkedAt = Date.now(); }
@@ -62,7 +70,7 @@ export function getUsage() {
       try {
         const state = await getCatalog();
         if (!state.ready) throw new Error(state.message);
-        const { stdout } = await exec(provider.findBinary(), ["-p", "/usage", "--output-format", "json"], {
+        const { stdout } = await agyExec(["-p", "/usage", "--output-format", "json"], {
           timeout: 45_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, NO_COLOR: "1" },
         });
         const groups = provider.parseUsage(stdout);
@@ -116,7 +124,8 @@ export async function runAntigravity({ prompt, images = [], cwd, model, effort, 
     if (mappedEffort) args.push("--effort", mappedEffort);
     if (resumeConversationId) args.push("--conversation", resumeConversationId);
     return await new Promise((resolve, reject) => {
-      const proc = spawn(provider.findBinary(), args, { cwd, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PWD: cwd, NO_COLOR: "1", TERM: "dumb" } });
+      const command = provider.binaryCommand();
+      const proc = spawn(command.executable, [...command.args, ...args], { cwd, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PWD: cwd, NO_COLOR: "1", TERM: "dumb" } });
       children.add(proc);
       let buffer = "", stderr = "", result = null, conversationId = resumeConversationId, failure = null;
       const abort = () => kill(proc);

@@ -25,9 +25,11 @@ import { codexAuthFile, getCodexCatalog, resolveCodexEffort } from "./providers/
 import { getCatalog as getAgyCatalog, getUsage as getAgyUsage, runAntigravity, resolveModel as resolveAgyModel } from "./antigravity-runtime.js";
 import { z } from "zod";
 import { createFellow } from "./fellow.js";
-import { STRATEGIST_CONVERSATION_ID, STRATEGIST_SYSTEM_PROMPT } from "./orchestrator.js";
+import { formatBatchedReport, STRATEGIST_CONVERSATION_ID, STRATEGIST_SYSTEM_PROMPT } from "./orchestrator.js";
 import { workerToolDecision, workerToolEvents } from "./worker-watchdog.js";
 import { canonicalPath, pathWithin } from "./write-scope-lock.js";
+import { closeNativeChat, runPersistentAntigravity, runPersistentCodex } from "./native-chat.js";
+import { callOperation, openFellowBridge, operation } from "./fellow-bridge.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.PORT || "8082", 10);
@@ -345,6 +347,28 @@ function codexItemText(item) {
   if (typeof item.text === "string") return item.text;
   if (typeof item.message === "string") return item.message;
   return "";
+}
+
+const CODEX_APP_ITEMS = {
+  agentMessage: "agent_message", reasoning: "reasoning", commandExecution: "command_execution",
+  mcpToolCall: "mcp_tool_call", webSearch: "web_search", fileChange: "file_change", plan: "todo_list",
+};
+
+function codexAppEvent(method, params, send) {
+  if (method === "turn/started") {
+    send({ type: "system", subtype: "status", status: "requesting" });
+    return null;
+  }
+  if (!["item/started", "item/updated", "item/completed"].includes(method)) return null;
+  const item = params.item;
+  const type = CODEX_APP_ITEMS[item?.type];
+  if (!type) return null;
+  const normalized = { ...item, type, aggregated_output: item.aggregatedOutput };
+  if (type === "reasoning" && Array.isArray(item.content ?? item.summary)) {
+    normalized.text = (item.content?.length ? item.content : item.summary)?.join("\n");
+  }
+  sendCodexItemEvent(send, method.replace("/", "."), normalized);
+  return method === "item/completed" && type === "agent_message" ? codexItemText(normalized) : null;
 }
 
 function codexToolName(item) {
@@ -1077,6 +1101,7 @@ function beginRunHistory(run, msg) {
     },
     { kind: "turn", payload: { turnId: run.turnId, status: "running", requestId: run.requestId ?? null } },
   ]);
+  if (isOrdinaryChat(conversationId)) broadcastFellow(chatActivity(run, "running"));
   return conversationId;
 }
 
@@ -1105,20 +1130,6 @@ function finalizeRunHistory(run, status = "complete", cost = null) {
 function persistRunEvent(run, event) {
   const convId = run?.historyConversationId;
   if (!convId || !event?.type) return null;
-
-  // 后台任务的事件可能跨轮次回来，靠这张表找回它原来那条 run
-  if (event.type?.includes("tool_result") || event.type === "tool_progress"
-    || (event.type === "system" && CLIENT_VISIBLE_SYSTEM_SUBTYPES.has(event.subtype))) {
-    const taskId = event.task_id ?? event.taskId ?? null;
-    if (taskId) {
-      backgroundHistoryRuns.set(String(taskId), run);
-      const status = String(event.status ?? event.patch?.status ?? "").toLowerCase();
-      if (event.subtype === "task_notification"
-        || ["completed", "failed", "killed", "cancelled", "canceled"].includes(status)) {
-        backgroundHistoryRuns.delete(String(taskId));
-      }
-    }
-  }
 
   if (!PERSISTED_EVENT_TYPES(event)) return null;
   if (event.type === "session" && event.sessionId) {
@@ -1229,6 +1240,7 @@ let wechatPollingController = null;
 // 结构 Map<sender, { turns: [{role, content}], lastAt: number, contextToken?: string }>
 // 微信同样走 Claude Agent SDK query()，确保 cwd 始终是 VAULT_PATH。
 const wechatSenderSessions = new Map();
+const wechatFellowRuns = new Map();
 const WECHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 分钟无消息自动开启新对话
 const WECHAT_MAX_HISTORY_TURNS = 10;           // 最多保留 10 轮（5 来 5 回）
 const WECHAT_HISTORY_FILE = join(DATA_DIR, `wechat-history-${PORT}.json`);
@@ -1308,21 +1320,22 @@ async function flushWechatPendingDeliveries(baseUrl, token, sender, contextToken
   const items = readWechatPending();
   if (items.length === 0) return;
   const now = Date.now();
-  const keep = [];
+  const sent = new Set();
+  const key = item => JSON.stringify([item.peer, item.queuedAtMs, item.text]);
   let flushed = 0;
   for (const item of items) {
     if (now - (item.queuedAtMs || 0) > WECHAT_PENDING_MAX_AGE_MS) continue;
-    if (item.peer !== sender) { keep.push(item); continue; }
+    if (item.peer !== sender) continue;
     const queuedAt = new Date(item.queuedAtMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
     try {
       await sendWechatMessage(baseUrl, token, sender, `📬 补发离线消息（原定 ${queuedAt}）\n\n${item.text}`, contextToken);
+      sent.add(key(item));
       flushed++;
     } catch (err) {
       console.warn(`[WeChat Pending] Flush to ${sender.slice(0, 12)}... failed, will retry later: ${err.message}`);
-      keep.push(item);
     }
   }
-  writeWechatPending(keep);
+  writeWechatPending(readWechatPending().filter(item => now - (item.queuedAtMs || 0) <= WECHAT_PENDING_MAX_AGE_MS && !sent.has(key(item))));
   if (flushed > 0) console.log(`[WeChat Pending] Flushed ${flushed} pending message(s) to ${sender.slice(0, 12)}...`);
 }
 
@@ -1903,6 +1916,7 @@ async function processWechatInboundMessage(baseUrl, token, msg, abortSignal) {
   if (mediaFiles.length === 0 && /^(新对话|new|\/new|重新开始|清除记忆)$/i.test(prompt)) {
     const current = normalizeWechatSessionEntry(wechatSenderSessions.get(sender));
     wechatSenderSessions.set(sender, { ...current, turns: [], lastAt: Date.now() });
+    for (const key of wechatFellowRuns.keys()) if (key.startsWith(`${sender}|`)) wechatFellowRuns.delete(key);
     saveWechatHistory();
     sendWechatMessage(baseUrl, token, sender, "已开启新对话，之前的上下文已清除。", contextToken).catch(() => {});
     return;
@@ -1961,11 +1975,11 @@ async function startWechatPolling(baseUrl, token, initialBuf = "") {
   })();
 }
 
-function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
+function schedulerOperations({ sourceChannel, sourcePeer, defaultOutputs = [] }) {
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
 
-  const createScheduleTool = tool(
+  const createScheduleTool = operation(
     "create_schedule",
     "创建全局定时任务（循环或一次性）。sourceChannel 和 sourcePeer 仅用于结果投递，由系统固定注入，不需要传入。",
     {
@@ -2001,7 +2015,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     }
   );
 
-  const listSchedulesTool = tool(
+  const listSchedulesTool = operation(
     "list_schedules",
     "列出所有全局定时任务",
     {},
@@ -2022,7 +2036,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     }
   );
 
-  const deleteScheduleTool = tool(
+  const deleteScheduleTool = operation(
     "delete_schedule",
     "删除指定 ID 的定时任务",
     { id: z.string().describe("要删除的任务 ID（从 list_schedules 获取）") },
@@ -2036,7 +2050,7 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     }
   );
 
-  const toggleScheduleTool = tool(
+  const toggleScheduleTool = operation(
     "toggle_schedule",
     "暂停或恢复指定 ID 的定时任务",
     {
@@ -2053,12 +2067,17 @@ function _buildSchedulerMcpServer({ sourceChannel, sourcePeer, defaultOutputs = 
     }
   );
 
+  return [createScheduleTool, listSchedulesTool, deleteScheduleTool, toggleScheduleTool];
+}
+
+function sdkOperations(name, operations, extra = {}) {
   return createSdkMcpServer({
-    name: "scheduler",
-    instructions: INKFELLOW_SCHEDULER_PROMPT,
-    tools: [createScheduleTool, listSchedulesTool, deleteScheduleTool, toggleScheduleTool],
-    alwaysLoad: true,
+    name, ...extra, tools: operations.map(op => tool(op.name, op.description, op.fields, args => callOperation(op, args))),
   });
+}
+
+function _buildSchedulerMcpServer(source) {
+  return sdkOperations("scheduler", schedulerOperations(source), { instructions: INKFELLOW_SCHEDULER_PROMPT, alwaysLoad: true });
 }
 
 /**
@@ -2147,24 +2166,6 @@ async function codexFallbackModels() {
   return [catalog.defaultModel, ...catalog.models.map(entry => entry.model).filter(model => model !== catalog.defaultModel)];
 }
 
-async function runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs }) {
-  const attachmentSummary = formatWechatMediaSummary(mediaFiles);
-  const images = mediaFiles
-    .filter(file =>
-      file.kind === "image" &&
-      Object.values(WECHAT_IMAGE_MIME_BY_EXT).includes(file.mime) &&
-      file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES)
-    .map(file => ({ mediaType: file.mime, data: file.data.toString("base64") }));
-  return await runAntigravityText({
-    prompt: `${wechatSystemPrompt}\n\n${fullPrompt}${attachmentSummary ? `\n\n附件：\n${attachmentSummary}` : ""}`,
-    images,
-    cwd: wechatCwd,
-    model: candidate.model,
-    signal: abortSignal,
-    stallMs,
-  });
-}
-
 async function runWechatClaudeCandidate({
   candidate,
   profileData,
@@ -2174,11 +2175,11 @@ async function runWechatClaudeCandidate({
   abortSignal,
   extraMcpServers,
   wechatSystemPrompt,
-  hasScheduler,
   stallMs = STREAM_STALL_MS,
 }) {
   const candidateProfiles = { ...profileData, activeProfileId: candidate.profileId };
   const agentEnv = buildAgentEnv(candidateProfiles, "medium", candidate.model);
+  if (!["claude", "anthropic"].includes(candidate.provider)) agentEnv.ENABLE_TOOL_SEARCH = "false";
   agentEnv.PWD = wechatCwd;
   const agentUserContent = buildWechatUserContent(fullPrompt, mediaFiles, {
     includeImageBlocks: candidate.provider !== "deepseek",
@@ -2211,15 +2212,17 @@ async function runWechatClaudeCandidate({
       prompt: (async function* () { yield userMsg; })(),
       options: {
         cwd: wechatCwd,
-        permissionMode: "auto",
-        allowDangerouslySkipPermissions: true,
+        permissionMode: "dontAsk",
+        strictMcpConfig: true,
+        settingSources: [],
+        tools: ["Read", "Glob", "Grep"],
+        allowedTools: ["Read", "Glob", "Grep", "mcp__orchestrator__*", "mcp__scheduler__*"],
         includePartialMessages: false,
         env: agentEnv,
         abortController: queryAbortController,
         mcpServers: extraMcpServers,
         systemPrompt: { type: "preset", preset: "claude_code", append: wechatSystemPrompt },
         ...(candidate.provider === "claude" ? { model: candidate.model } : {}),
-        ...(hasScheduler ? { disallowedTools: ["Bash"] } : {}),
       },
     });
     resetStall();
@@ -2254,75 +2257,48 @@ async function runWechatClaudeCandidate({
   }
 }
 
-async function runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs = STREAM_STALL_MS }) {
-  const codex = new Codex();
-  const thread = codex.startThread({
-    workingDirectory: wechatCwd,
-    skipGitRepoCheck: true,
-    approvalPolicy: "never",
-    sandboxMode: "workspace-write",
-    modelReasoningEffort: resolveCodexEffort("medium", candidate.model),
-    model: candidate.model,
-    networkAccessEnabled: true,
-    webSearchMode: "live",
-  });
-  const controller = new AbortController();
-  let timedOut = false;
-  let toolRunning = false;
-  let stallTimer = null;
-  const onAbort = () => controller.abort();
-  const resetStall = () => {
-    clearTimeout(stallTimer);
-    if (toolRunning) return;
-    stallTimer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, stallMs);
+function wechatFellowSource(peer) {
+  let primary;
+  try { primary = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8")).userId; } catch { }
+  return { peer, includeWeb: primary === peer };
+}
+
+const WECHAT_MUTATING_FELLOW_TOOLS = new Set([
+  "dispatch_task", "message_ticket", "stop_ticket", "answer_ticket",
+  "create_schedule", "delete_schedule", "toggle_schedule",
+]);
+
+async function runWechatFellowNative({ candidate, source, text, mediaFiles, operations, signal, stallMs }) {
+  const images = mediaFiles.filter(file => file.kind === "image" && file.data && file.size <= WECHAT_MAX_INLINE_IMAGE_BYTES)
+    .map(file => ({ mediaType: file.mime, data: file.data.toString("base64") }));
+  const deadline = new AbortController();
+  let timer;
+  const pulse = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => deadline.abort(), stallMs);
+    timer.unref?.();
   };
-  if (abortSignal.aborted) controller.abort();
-  else abortSignal.addEventListener("abort", onAbort, { once: true });
-
-  const attachmentSummary = formatWechatMediaSummary(mediaFiles);
-  const text = `${wechatSystemPrompt}\n\n${fullPrompt}${attachmentSummary ? `\n\n附件：\n${attachmentSummary}` : ""}`;
-  const images = mediaFiles
-    .filter(file => file.kind === "image" && file.filePath)
-    .map(file => ({ type: "local_image", path: file.filePath }));
-  const input = images.length > 0 ? [...images, { type: "text", text }] : text;
-
+  pulse();
   try {
-    const codexToolItems = new Set(["command_execution", "mcp_tool_call", "web_search", "file_change"]);
-    const { events } = await thread.runStreamed(input, { signal: controller.signal });
-    let finalResponse = "";
-    resetStall();
-    for await (const event of events) {
-      if (event.type === "item.started" && codexToolItems.has(event.item?.type)) {
-        toolRunning = true;
-        clearTimeout(stallTimer);
-      } else if (event.type === "item.completed" && codexToolItems.has(event.item?.type)) {
-        toolRunning = false;
-      }
-      resetStall();
-      if (event.type === "item.completed" && event.item?.type === "agent_message") {
-        finalResponse = codexItemText(event.item) || finalResponse;
-      } else if (event.type === "turn.failed") {
-        throw new Error(event.error?.message || "Codex 请求失败");
-      } else if (event.type === "error") {
-        throw new Error(event.message || "Codex 请求失败");
-      }
+    const id = "wechat_" + crypto.createHash("sha256").update(source.peer).digest("hex").slice(0, 28);
+    const key = `${source.peer}|${candidate.profileId}|${candidate.model}`;
+    const existing = wechatFellowRuns.get(key);
+    let sessionId = existing && Date.now() - existing.at < WECHAT_SESSION_TTL_MS ? existing.sessionId : null;
+    const result = await runFellowNative({
+      conversationId: id, provider: candidate.provider, model: candidate.model,
+      effort: normalizeEffort("medium", candidate.provider, candidate.model), sessionId,
+      prompt: text, images, operations, signal: AbortSignal.any([signal, deadline.signal]), onEvent: pulse,
+      onSession: id => { sessionId = id; },
+    });
+    if (sessionId) wechatFellowRuns.set(key, { sessionId, at: Date.now() });
+    for (const [oldKey, entry] of wechatFellowRuns) {
+      if (Date.now() - entry.at >= WECHAT_SESSION_TTL_MS) wechatFellowRuns.delete(oldKey);
     }
-    return finalResponse;
+    return result.text;
   } catch (error) {
-    if (timedOut && error?.name === "AbortError") {
-      const stallError = new Error("AI 响应超时，请稍后重试。", { cause: error });
-      stallError.code = "WECHAT_STALL_TIMEOUT";
-      stallError.timeout = true;
-      throw stallError;
-    }
+    if (deadline.signal.aborted && !signal.aborted) throw Object.assign(new Error("AI 响应超时。"), { code: "WECHAT_STALL_TIMEOUT", timeout: true });
     throw error;
-  } finally {
-    clearTimeout(stallTimer);
-    abortSignal.removeEventListener("abort", onAbort);
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, abortSignal, mediaFiles = []) {
@@ -2342,9 +2318,13 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
 
     const hasScheduler = hasSchedulerIntent(prompt);
     const historyPrompt = summarizeWechatHistoryPrompt(prompt, mediaFiles);
-    const wechatSystemPrompt = hasScheduler
-      ? `${WECHAT_OUTPUT_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`
-      : WECHAT_OUTPUT_PROMPT;
+    const wechatSystemPrompt = [
+      WECHAT_OUTPUT_PROMPT, STRATEGIST_SYSTEM_PROMPT,
+      "用户回复已有工单的澄清问题时，先查看工单，再用 answer_ticket 转达答案。",
+      ...(hasScheduler ? [INKFELLOW_SCHEDULER_PROMPT] : []),
+    ].join("\n\n");
+    const source = wechatFellowSource(sender);
+    const scheduleSource = { sourceChannel: "wechat", sourcePeer: sender };
 
     const typingInterval = setInterval(() => {
       sendWechatTyping(baseUrl, token, sender, 1, contextToken);
@@ -2360,18 +2340,10 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         const historyText = history.map(t => `${t.role === "user" ? "用户" : "助手"}：${t.content}`).join("\n");
         fullPrompt = `以下是本次对话的历史记录：\n${historyText}\n\n用户：${prompt}`;
       }
-      const extraMcpServers = hasScheduler
-        ? { scheduler: _buildSchedulerMcpServer({ sourceChannel: "wechat", sourcePeer: sender }) }
-        : {};
-      // Codex SDK 和 agy 都注入不了这个进程内的 scheduler MCP，涉及定时任务时把
-      // 两条通道都跳过——不跳的话定时任务会在这些通道上静默失效。
-      // 其余场景仍按动态配置把它们排进降级链。
-      // 普通微信对话优先 Antigravity（Gemini 4 Hydrogen），再尝试 Codex 和 Claude。
       const candidates = buildModelCandidates(profileData, {
-        excludedProviders: hasScheduler ? ["codex", "antigravity"] : [],
         providerModels: {
           antigravity: antigravityFallbackModels(),
-          codex: hasScheduler ? [] : await codexFallbackModels(),
+          codex: await codexFallbackModels(),
         },
         providerOrder: ["antigravity", "codex", "claude"],
       });
@@ -2380,31 +2352,41 @@ async function processWechatQuery(baseUrl, token, sender, prompt, contextToken, 
         async (candidate, info) => {
           answeredBy = candidate;
           const stallMs = wechatStallMs(info.remainingMs);
-          let response;
-          if (candidate.provider === "codex") {
-            response = await runWechatCodexCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
-          } else if (candidate.provider === "antigravity") {
-            response = await runWechatAntigravityCandidate({ candidate, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs });
-          } else {
-            response = await runWechatClaudeCandidate({
-              candidate,
-              profileData,
-              fullPrompt,
-              mediaFiles,
-              wechatCwd,
-              abortSignal,
-              extraMcpServers,
-              wechatSystemPrompt,
-              hasScheduler,
-              stallMs,
-            });
+          let toolCalled = false;
+          const guarded = operations => operations.map(op => ({
+            ...op,
+            run(args) {
+              if (WECHAT_MUTATING_FELLOW_TOOLS.has(op.name)) toolCalled = true;
+              return op.run(args);
+            },
+          }));
+          const managerTools = guarded(fellow.operations(candidate.profileId, source));
+          const scheduleTools = hasScheduler ? guarded(schedulerOperations(scheduleSource)) : [];
+          try {
+            let response;
+            if (["codex", "antigravity"].includes(candidate.provider)) {
+              response = await runWechatFellowNative({
+                candidate, source, mediaFiles, stallMs, signal: abortSignal,
+                text: `${wechatSystemPrompt}\n\n${summarizeWechatHistoryPrompt(fullPrompt, mediaFiles)}`,
+                operations: [...managerTools, ...scheduleTools, ...fellowFileOperations(wechatCwd)],
+              });
+            } else {
+              response = await runWechatClaudeCandidate({
+                candidate, profileData, fullPrompt, mediaFiles, wechatCwd, abortSignal, wechatSystemPrompt, stallMs,
+                extraMcpServers: {
+                  orchestrator: sdkOperations("orchestrator", managerTools),
+                  ...(hasScheduler ? { scheduler: sdkOperations("scheduler", scheduleTools) } : {}),
+                },
+              });
+            }
+            if (typeof response !== "string" || !response.trim()) {
+              throw Object.assign(new Error(`${candidate.profileName}/${candidate.model} 没有返回内容`), { code: "MODEL_FALLBACK_EMPTY_RESPONSE" });
+            }
+            return response;
+          } catch (error) {
+            if (!toolCalled || abortSignal.aborted) throw error;
+            throw Object.assign(new Error("本轮已调用工单或定时工具。请先打开任务台确认结果。"), { code: "FELLOW_TOOL_CALLED", cause: error });
           }
-          if (typeof response !== "string" || !response.trim()) {
-            const error = new Error(`${candidate.profileName}/${candidate.model} 没有返回内容`);
-            error.code = "MODEL_FALLBACK_EMPTY_RESPONSE";
-            throw error;
-          }
-          return response;
         },
         {
           logPrefix: "WeChat Agent",
@@ -2939,6 +2921,8 @@ const http = createServer((req, res) => {
         live.ac.abort();
         live.finish();
       }
+      retireClaudeLane(id);
+      closeNativeChat(id);
       eventLog.deleteConversation(id);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -3043,7 +3027,6 @@ function makeAbortError(message) {
 // 输出缓存在 buffer 里，客户端在宽限期内带 runId 重连即可无缝领回
 //（包括断线期间已完成的完整回答）。宽限期后只清 buffer，计算继续写日志。
 const orphanRuns = new Map(); // runId -> run
-const backgroundHistoryRuns = new Map(); // taskId -> owning run，后台完成事件仍写回原回答
 const liveRunsByConversation = new Map(); // convId -> run，只放还没结束的轮次
 
 // 重连时回答"这个会话还在跑吗"。
@@ -3067,6 +3050,26 @@ function currentTurnSnapshot(convId, meta = eventLog.getMeta(convId)) {
   }
   return turn.status === "running" ? { ...turn, status: "interrupted" } : turn;
 }
+
+function isOrdinaryChat(id) {
+  return Boolean(id && id !== STRATEGIST_CONVERSATION_ID && !id.startsWith("wrk_tk_"));
+}
+
+function chatActivity(run, status) {
+  const meta = eventLog.getMeta(run.historyConversationId);
+  return {
+    type: "chat_activity", conversationId: run.historyConversationId, status,
+    requestId: run.requestId, title: meta?.title || "对话", completedAt: meta?.date,
+  };
+}
+
+function recentChatCompletions() {
+  return eventLog.listConversations().filter(chat => isOrdinaryChat(chat.id)).slice(0, 30).flatMap(chat => {
+    const turn = eventLog.getMeta(chat.id)?.turn;
+    if (turn?.status !== "complete" || !turn.requestId || liveRunsByConversation.has(chat.id)) return [];
+    return [chatActivity({ historyConversationId: chat.id, requestId: turn.requestId }, "complete")];
+  });
+}
 const CLIENT_REQUEST_STATE_MAX = 500;
 const clientRequestStates = new Map(); // userMessageId -> { state, runId, updatedAt }
 
@@ -3075,9 +3078,17 @@ function clientRequestId(msg) {
   return value ? normalizeHistoryId(value) : null;
 }
 
-function rememberClientRequest(requestId, state, runId = null) {
+function requestStateKey(requestId, conversationId) {
+  return `${conversationId || ""}:${requestId}`;
+}
+
+function getClientRequest(requestId, conversationId) {
+  return clientRequestStates.get(requestStateKey(requestId, conversationId));
+}
+
+function rememberClientRequest(requestId, state, runId = null, conversationId = null) {
   if (!requestId) return;
-  clientRequestStates.set(requestId, { state, runId, updatedAt: Date.now() });
+  clientRequestStates.set(requestStateKey(requestId, conversationId), { state, runId, updatedAt: Date.now() });
   if (clientRequestStates.size <= CLIENT_REQUEST_STATE_MAX) return;
   for (const [id, entry] of clientRequestStates) {
     if (entry.state === "queued" || entry.state === "running" || entry.state === "steering") continue;
@@ -3113,25 +3124,12 @@ function buildUserMessage(msg) {
 // options 在 start() 时固化，所以 cwd/权限/模型等一变就得重启 runtime，
 // 用 signature 判定。前台轮的事件路由目标是 claudeTurn，而不是 start() 时
 // 捕获的那个 run——否则第二轮的事件会发给第一轮的连接。
-let claudeTurn = null;          // { epoch, onEvent, finish, fail }
-let claudeTurnEpoch = 0;
-let claudeRuntimeSignature = null;
-const claudeTurnGate = new BackgroundTaskTurnGate();
-
-// 需要透传到前端的 system 事件：后台任务生命周期 + 子代理。
+const claudeLanes = new Map();
+const CHAT_IDLE_MS = 15 * 60_000;
+const MAX_ACTIVE_CHATS = 10;
 const CLIENT_VISIBLE_SYSTEM_SUBTYPES = new Set([
-  "task_started",
-  "task_progress",
-  "task_updated",
-  "task_notification",
+  "task_started", "task_progress", "task_updated", "task_notification",
 ]);
-
-// 后台任务在前台轮结束后仍会继续产出 system/task_* 事件，此时 claudeTurn 已是
-// null，按回合路由就会被丢弃 —— 前端的后台活动条于是永远停在"仍在运行"，
-// 收不到那条让它合流的 task_notification。这个 sink 让这类事件绕过回合路由
-// 直达当前连接。刻意不经过 run.send()：不带 runId，前端才不会把它当成"被新
-// 请求取代的旧 run 的迟到事件"丢掉。
-let backgroundEventSink = null;
 
 function claudeRuntimeSignatureOf(options) {
   return JSON.stringify({
@@ -3160,85 +3158,94 @@ function claudeRuntimeSignatureOf(options) {
 // 任何报错、日志或测试失败，只有用户手动发第二条消息才暴露。看门狗把这种
 // 失效变成可见信号：result 之后短时间内没等到 idle 就告警。纯观察，不改行为。
 const TURN_IDLE_WATCHDOG_MS = 3_000;
-let turnIdleWatchdog = null;
 
-function armTurnIdleWatchdog() {
-  clearTimeout(turnIdleWatchdog);
-  if (!claudeTurn) return;
-  const epoch = claudeTurn.epoch;
-  turnIdleWatchdog = setTimeout(() => {
-    turnIdleWatchdog = null;
-    if (!claudeTurn || claudeTurn.epoch !== epoch) return; // 已换代 = 正常时序
-    console.warn(
-      `[Web Agent] result 后 ${TURN_IDLE_WATCHDOG_MS}ms 未收到 session_state_changed/idle：`
-      + "本轮无法结束，后续消息将被排队。检查 SDK 是否仍支持 "
-      + "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1（见 buildAgentEnv）。"
-    );
-  }, TURN_IDLE_WATCHDOG_MS);
-  turnIdleWatchdog.unref?.();
-}
-
-const claudeRuntime = new PersistentQueryRuntime({
-  queryFactory: ({ prompt, options }) => query({ prompt, options }),
-  onEvent: (ev) => {
-    const turn = claudeTurn;
-    if (!turn) {
-      // 无前台轮时到达的多是后台任务事件，由 UI 侧的活动条呈现。只放行这批
-      // 生命周期事件；其余（尤其 session_state_changed）是服务端的回合控制
-      // 信号，继续丢弃，不该泄给 UI。
-      if (ev.type === "system" && CLIENT_VISIBLE_SYSTEM_SUBTYPES.has(ev.subtype)) {
-        try { backgroundEventSink?.(ev); } catch { }
+function claudeLane(conversationId) {
+  if (claudeLanes.has(conversationId)) return claudeLanes.get(conversationId);
+  const lane = {
+    turn: null, epoch: 0, signature: null, sessionId: null, lastRun: null,
+    gate: new BackgroundTaskTurnGate(), watchdog: null, idleTimer: null,
+  };
+  lane.runtime = new PersistentQueryRuntime({
+    queryFactory: ({ prompt, options }) => query({ prompt, options }),
+    onEvent(ev) {
+      const turn = lane.turn;
+      if (!turn) {
+        if (ev.type === "system" && CLIENT_VISIBLE_SYSTEM_SUBTYPES.has(ev.subtype) && lane.lastRun) {
+          publishBackgroundConversationEvent(lane.lastRun, ev);
+        }
+        return;
       }
-      return;
-    }
-    turn.onEvent(ev);
-    const finishCurrentTurn = () => {
-      clearTimeout(turnIdleWatchdog);
-      if (claudeTurn?.epoch === turn.epoch) turn.finish();
-    };
-    if (claudeTurnGate.handle(ev, {
-      taskCount: claudeRuntime.taskIds.size,
-      finish: finishCurrentTurn,
-    })) {
-      finishCurrentTurn();
-      return;
-    }
-    // origin 非空 = 后台任务的自动续写，不是用户轮的收尾，不进看门狗避免误报
-    if (ev.type === "result" && !ev.origin) armTurnIdleWatchdog();
-  },
-  onError: (err) => { claudeTurn?.fail(err); },
-  onClose: () => {
-    claudeRuntimeSignature = null;
-    claudeTurn?.fail(makeAbortError("会话已关闭"));
-  },
-});
-
-async function collectCurrentClaudeQuestion(input, context) {
-  if (!claudeTurn?.collectQuestion) throw makeAbortError("当前没有等待输入的对话轮次");
-  return claudeTurn.collectQuestion(input, context);
+      turn.onEvent(ev);
+      const finishTurn = () => {
+        clearTimeout(lane.watchdog);
+        if (lane.turn?.epoch === turn.epoch) turn.finish();
+      };
+      if (lane.gate.handle(ev, { taskCount: lane.runtime.taskIds.size, finish: finishTurn })) {
+        finishTurn();
+      } else if (ev.type === "result" && !ev.origin) {
+        clearTimeout(lane.watchdog);
+        lane.watchdog = setTimeout(() => {
+          if (lane.turn?.epoch === turn.epoch) console.warn("[Web Agent] Claude result did not reach idle", conversationId);
+        }, TURN_IDLE_WATCHDOG_MS);
+        lane.watchdog.unref?.();
+      }
+    },
+    onError: error => lane.turn?.fail(error),
+    onClose() {
+      lane.signature = null;
+      lane.turn?.fail(makeAbortError("会话已关闭"));
+    },
+  });
+  claudeLanes.set(conversationId, lane);
+  return lane;
 }
 
-function resetClaudeRuntime() {
-  claudeTurn?.fail(makeAbortError("会话已重置"));
-  claudeTurnEpoch += 1;
-  claudeTurn = null;
-  claudeTurnGate.reset();
-  clearTimeout(turnIdleWatchdog);
-  claudeRuntimeSignature = null;
-  claudeRuntimeAbort = null;
-  if (claudeRuntime.started) claudeRuntime.close();
+function publishBackgroundConversationEvent(run, event) {
+  const conversationId = run.historyConversationId;
+  const seq = persistRunEvent(run, { ...event, conversationId });
+  const payload = JSON.stringify({ ...event, conversationId, ...(seq == null ? {} : { seq }) });
+  for (const client of wss.clients) {
+    if (client.chatConversationId === conversationId && client.readyState === client.OPEN) {
+      try { client.send(payload); } catch { client.terminate(); }
+    }
+  }
 }
 
-// 长驻 query 的 AbortController 属于 runtime 而不是某一轮：用每轮的 ac 会导致
-// 第一轮结束时把整条会话一起 abort 掉。停止单轮走 interrupt()。
-let claudeRuntimeAbort = null;
-let claudeRuntimeConversationId = null;
+function resetClaudeRuntime(lane) {
+  lane.turn?.fail(makeAbortError("会话已重置"));
+  lane.epoch++;
+  lane.turn = null;
+  lane.gate.reset();
+  clearTimeout(lane.watchdog);
+  clearTimeout(lane.idleTimer);
+  lane.signature = null;
+  lane.sessionId = null;
+  lane.runtime.close();
+}
+
+function retireClaudeLane(id) {
+  const lane = claudeLanes.get(id);
+  if (!lane) return;
+  claudeLanes.delete(id);
+  resetClaudeRuntime(lane);
+}
+
+function parkClaudeLane(id, lane) {
+  if (claudeLanes.get(id) !== lane) return;
+  clearTimeout(lane.idleTimer);
+  lane.idleTimer = setTimeout(() => {
+    if (lane.turn || lane.runtime.taskIds.size) { parkClaudeLane(id, lane); return; }
+    if (claudeLanes.get(id) === lane) retireClaudeLane(id);
+  }, CHAT_IDLE_MS);
+  lane.idleTimer.unref?.();
+}
 
 function createRun(runId, ws, ac) {
   const startedAt = Date.now();
   return {
     id: runId,
     requestId: null,
+    requestScope: null,
     provider: null,
     model: null,
     effort: null,
@@ -3261,8 +3268,8 @@ function createRun(runId, ws, ac) {
       const tagged = { ...obj, runId: this.id, conversationId: this.historyConversationId ?? null };
       if (this.requestId && !tagged.userMessageId) tagged.userMessageId = this.requestId;
       if (this.turnId && !tagged.turnId) tagged.turnId = this.turnId;
-      if (obj.type === "error" && this.requestId) rememberClientRequest(this.requestId, "error", this.id);
-      if (obj.type === "stopped" && this.requestId) rememberClientRequest(this.requestId, "stopped", this.id);
+      if (obj.type === "error" && this.requestId) rememberClientRequest(this.requestId, "error", this.id, this.requestScope);
+      if (obj.type === "stopped" && this.requestId) rememberClientRequest(this.requestId, "stopped", this.id, this.requestScope);
       // 先落盘拿 seq 再发：保证客户端见过的 seq 一定已经持久化，
       // 否则断线重连时游标会指向一条服务端并不存在的事件。
       const seq = persistRunEvent(this, tagged);
@@ -3331,20 +3338,24 @@ function createRun(runId, ws, ac) {
       // 轮次没有正常收到 result 就结束了（abort/异常），也要在日志里留下终点，
       // 否则 meta.turn 会永远停在 running。
       if (!this.turnFinalized && this.historyConversationId) {
-        finalizeRunHistory(this, clientRequestStates.get(this.requestId)?.state === "stopped" ? "stopped" : "error");
+        finalizeRunHistory(this, getClientRequest(this.requestId, this.requestScope)?.state === "stopped" ? "stopped" : "error");
       }
       if (!this.discarded && this.requestId) {
-        const previous = clientRequestStates.get(this.requestId)?.state;
+        const previous = getClientRequest(this.requestId, this.requestScope)?.state;
         const state = previous === "stopped" || previous === "error" ? previous : "complete";
-        rememberClientRequest(this.requestId, state, this.id);
+        rememberClientRequest(this.requestId, state, this.id, this.requestScope);
       }
       for (const steeringId of this.discarded ? [] : this.steeringRequestIds) {
-        const previous = clientRequestStates.get(steeringId)?.state;
-        rememberClientRequest(steeringId, previous === "error" ? "error" : "complete", this.id);
+        const previous = getClientRequest(steeringId, this.requestScope)?.state;
+        rememberClientRequest(steeringId, previous === "error" ? "error" : "complete", this.id, this.requestScope);
       }
       if (this.ws) {
         clearTimeout(this.graceTimer);
         orphanRuns.delete(this.id);
+      }
+      if (isOrdinaryChat(this.historyConversationId)) {
+        const state = this.discarded ? "stopped" : getClientRequest(this.requestId, this.requestScope)?.state;
+        broadcastFellow(chatActivity(this, state || "stopped"));
       }
       // 已断线的 run：保留 buffer 到宽限期结束，等客户端重连领取完整结果
     },
@@ -3434,12 +3445,138 @@ function fellowFilePath(path, cwd) {
   return target;
 }
 
+function readFellowText(target) {
+  const stat = statSync(target);
+  if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error("只能读取 1 MB 以内的文本文件。");
+  return readFileSync(target, "utf8");
+}
+
+async function askFellowWorker(run, input, toolUseID) {
+  const questions = normalizeAskUserQuestions(input);
+  if (!questions.length) throw new Error("澄清问题缺少有效选项。");
+  const id = run.historyConversationId;
+  fellow.orchestrator.onWorkerNeedsAttention(id, { attempt: run.ticketAttempt, reason: questions[0].question, question: questions });
+  try {
+    return await waitForAskUserQuestionAnswer(run, input, { signal: run.ac.signal, toolUseID });
+  } finally {
+    fellow.orchestrator.onWorkerResumed(id, run.ticketAttempt);
+  }
+}
+
+function fellowFileOperations(cwd, { ticket, run } = {}) {
+  const filePath = z.string().trim().min(1).max(2048);
+  const contents = z.string().max(1024 * 1024);
+  const ops = [
+    operation("list_files", "列出笔记库内目录中的文件和目录。", { path: filePath.optional() }, ({ path }) => (
+      readdirSync(fellowFilePath(path, cwd), { withFileTypes: true })
+        .filter(entry => !entry.name.startsWith(".") && (entry.isFile() || entry.isDirectory()))
+        .slice(0, 300).map(entry => ({ name: entry.name, directory: entry.isDirectory() }))
+    )),
+    operation("read_file", "读取笔记库内的 UTF-8 文本。", { path: filePath }, ({ path }) => readFellowText(fellowFilePath(path, cwd))),
+  ];
+  if (!ticket) return ops;
+
+  function write(path, transform) {
+    run.ac.signal.throwIfAborted();
+    const target = fellowFilePath(path, cwd);
+    const attempt = run.ticketAttempt;
+    const scopes = fellow.orchestrator.attemptScopes(ticket.id, attempt);
+    if (!scopes) throw new Error("工单已结束。");
+    const decision = workerToolDecision(ticket, "Write", { file_path: target }, DEFAULT_CWD, scopes);
+    if (decision.reason) throw new Error(decision.reason);
+    const text = transform(target);
+    mkdirSync(dirname(target), { recursive: true });
+    const temp = join(dirname(target), `.inkfellow-write-${crypto.randomUUID()}.tmp`);
+    try {
+      writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
+      renameSync(temp, target);
+    } finally {
+      if (existsSync(temp)) unlinkSync(temp);
+    }
+    const step = { attempt, id: crypto.randomUUID() };
+    fellow.orchestrator.recordWorkerStep(run.historyConversationId, "Write", { file_path: target }, step);
+    fellow.orchestrator.recordWorkerStep(run.historyConversationId, "Write", {}, { ...step, phase: "result" });
+    return { path: relative(DEFAULT_CWD, target), writtenBytes: Buffer.byteLength(text) };
+  }
+
+  ops.push(
+    operation("write_file", "在工单写入范围内创建文件或覆盖完整 UTF-8 文本。", { path: filePath, text: contents },
+      ({ path, text }) => write(path, () => text)),
+    operation("replace_text", "当旧文本恰好出现一次时，修改工单范围内的文件。", { path: filePath, oldText: contents.min(1), newText: contents },
+      ({ path, oldText, newText }) => write(path, target => {
+        const source = readFellowText(target);
+        const index = source.indexOf(oldText);
+        if (index < 0 || source.indexOf(oldText, index + oldText.length) >= 0) throw new Error("旧文本必须恰好出现一次。");
+        return source.slice(0, index) + newText + source.slice(index + oldText.length);
+      })),
+    operation("ask_user", "停下来询问用户，并等待答案。", {
+      questions: z.array(z.object({
+        question: z.string().min(1).max(1000), header: z.string().max(80).optional(),
+        options: z.array(z.object({ label: z.string().min(1).max(150), description: z.string().max(500).optional() })).min(2).max(6),
+        multiSelect: z.boolean().optional(),
+      })).min(1).max(4),
+    }, input => askFellowWorker(run, input)),
+  );
+  return ops;
+}
+
+async function runFellowNative({
+  conversationId, provider, model, effort, sessionId, prompt, freshPrompt, images, operations, signal, onEvent, onSession,
+}) {
+  const bridge = await openFellowBridge(`${provider}:${conversationId}`, operations);
+  try {
+    if (provider === "codex") {
+      let text = "";
+      const result = await runPersistentCodex({
+        conversationId, model, effort, sessionId, prompt, freshPrompt, images,
+        cwd: bridge.cwd, extraArgs: bridge.codexArgs, sandbox: "read-only", signal, onSession,
+        onEvent(method, params) { text = codexAppEvent(method, params, onEvent) || text; },
+      });
+      return { text, usage: result.usage };
+    }
+    await getAgyCatalog();
+    const translate = agyProvider.createTranslator();
+    return await runPersistentAntigravity({
+      conversationId, model: resolveAgyModel(model), effort, sessionId, prompt, images,
+      cwd: bridge.cwd, extraArgs: bridge.agyArgs, permissionMode: "plan", signal, onSession,
+      onEvent(event) { for (const normalized of translate(event)) onEvent(normalized); },
+    });
+  } finally { bridge.end(); }
+}
+
 function broadcastFellow(event) {
   const payload = JSON.stringify(event);
   for (const client of wss.clients) {
     if (client.readyState !== client.OPEN) continue;
     try { client.send(payload); } catch { client.terminate(); }
   }
+}
+
+async function reportFellowToWechat(reports) {
+  let credentials;
+  try { credentials = JSON.parse(readFileSync(WECHAT_CONFIG_FILE, "utf8")); } catch { return; }
+  if (!credentials?.baseUrl || !credentials?.token) return;
+  const perPeer = new Map();
+  for (const report of reports) {
+    const ticket = fellow.getTicket(report.ticketId);
+    const primary = credentials.userId;
+    const peer = ticket?.sourceChannel === "wechat" ? ticket.sourcePeer
+      : wechatSenderSessions.has(primary) ? primary : null;
+    if (!peer) continue;
+    if (!perPeer.has(peer)) perPeer.set(peer, []);
+    perPeer.get(peer).push(report);
+  }
+  await Promise.all([...perPeer].map(async ([peer, items]) => {
+    const text = `Fellow 后台任务汇报\n\n${formatBatchedReport(items)}`;
+    const context = normalizeWechatSessionEntry(wechatSenderSessions.get(peer)).contextToken;
+    if (context) {
+      try {
+        await sendWechatMessage(credentials.baseUrl, credentials.token, peer, text, context);
+        return;
+      } catch { /* the next inbound message supplies a fresh context */ }
+    }
+    queueWechatPendingDelivery(peer, text);
+  }));
 }
 
 const fellow = createFellow({
@@ -3450,7 +3587,7 @@ const fellow = createFellow({
   readMessages: id => eventLog.project(id)?.messages ?? [],
   hasRequest: (id, requestId) => Boolean(eventLog.getRequestState(id, requestId)),
   notify: broadcastFellow,
-  report(id, _reports, text) {
+  async report(id, reports, text) {
     if (liveRunsByConversation.has(id)) return false;
     eventLog.ensureConversation(id, { title: "Fellow" });
     eventLog.appendEvents(id, [
@@ -3459,6 +3596,7 @@ const fellow = createFellow({
     ]);
     eventLog.refreshMessageCount(id);
     broadcastFellow({ type: "fellow_report", conversationId: id });
+    await reportFellowToWechat(reports);
     return true;
   },
   launch(ticket, { instruction, requestId, displayText, images, workerSystemPrompt }) {
@@ -3480,6 +3618,13 @@ const fellow = createFellow({
     const run = liveRunsByConversation.get(ticket.workerConversationId);
     if (run?.ticketAttempt === ticket.execution.attempt) run.ac.abort();
   },
+  answer(ticket, response) {
+    const run = liveRunsByConversation.get(ticket.workerConversationId);
+    const question = run?.pendingAskUserQuestion;
+    if (!question || run.ticketAttempt !== ticket.execution.attempt) return { ok: false, error: "当前工单没有等待澄清。" };
+    question.resolve({ response });
+    return { ok: true };
+  },
 });
 
 function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket = null, ws = null }) {
@@ -3487,12 +3632,14 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
   const run = createRun(msg.runId || crypto.randomUUID(), ws, ac);
   const conversationId = msg.conversationId;
   run.requestId = msg.userMessageId;
+  run.requestScope = conversationId;
   run.profileId = profile.id;
   run.provider = profile.provider;
   run.model = msg.model || null;
   run.effort = normalizeEffort(msg.effort, profile.provider, run.model);
   run.ticketAttempt = ticket?.execution.attempt;
   run.bufferExpired = !ws;
+  const native = ["codex", "antigravity"].includes(profile.provider);
   const previous = eventLog.project(conversationId);
   const context = prepareConversationContext(previous, {
     provider: profile.provider, profileId: profile.id, model: run.model, prompt: msg.prompt,
@@ -3517,7 +3664,7 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
     ...(run.model && profile.provider === "claude" ? { model: run.model } : {}),
     ...(context.sessionId ? { resume: context.sessionId } : {}),
   };
-  if (!ticket) {
+  if (!ticket && !native) {
     options.mcpServers = {
       orchestrator: fellow.tools(profile.id),
       scheduler: _buildSchedulerMcpServer({ sourceChannel: "web", sourcePeer: WEB_SCHEDULER_PEER, defaultOutputs: ["chat_history"] }),
@@ -3530,17 +3677,8 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
       if (!toolNames.includes(name)) throw new Error("当前会话没有此工具的权限。");
       if (ticket && name === ASK_USER_QUESTION_TOOL) {
         if (input?.answers || input?.response) return {};
-        const questions = normalizeAskUserQuestions(input);
-        if (!questions.length) throw new Error("澄清问题缺少有效选项。");
-        fellow.orchestrator.onWorkerNeedsAttention(conversationId, {
-          attempt: run.ticketAttempt, reason: questions[0].question, question: questions,
-        });
-        try {
-          const answer = await waitForAskUserQuestionAnswer(run, input, { signal: ac.signal, toolUseID });
-          return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input, ...answer } } };
-        } finally {
-          fellow.orchestrator.onWorkerResumed(conversationId, run.ticketAttempt);
-        }
+        const answer = await askFellowWorker(run, input, toolUseID);
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input, ...answer } } };
       }
       if (FELLOW_READ_TOOLS.includes(name)) {
         fellowFilePath(input?.file_path || input?.path, cwd);
@@ -3557,16 +3695,18 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
     }
   }] }] };
 
-  async function* messages() {
-    const prompt = ticket ? context.prompt : [
-      fellow.orchestrator.buildStrategistContextBlock(conversationId, cwd), context.prompt,
+  function fellowPrompt(prompt) {
+    return ticket ? prompt : [
+      fellow.orchestrator.buildStrategistContextBlock(conversationId, cwd), prompt,
     ].filter(Boolean).join("\n\n");
-    yield buildUserMessage({ ...msg, prompt });
+  }
+  async function* messages() {
+    yield buildUserMessage({ ...msg, prompt: fellowPrompt(context.prompt) });
   }
 
   eventLog.ensureConversation(conversationId, { title: ticket?.title || "Fellow" });
   beginRunHistory(run, msg);
-  rememberClientRequest(run.requestId, "running", run.id);
+  rememberClientRequest(run.requestId, "running", run.id, run.requestScope);
   run.send({ type: "request_ack", state: "running" });
   run.send({ type: "request_started", startedAt: run.startedAt, provider: run.provider, model: run.model, effort: run.effort });
 
@@ -3575,6 +3715,38 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
     let output = "";
     let failure = null;
     try {
+      if (native) {
+        let hasAnswer = false;
+        const bridgeInstructions = `${systemPrompt}\n\n文件和工单均通过 fellow MCP 工具操作。文件路径以当前工单工作目录为基准。工作目录为 ${cwd}。`;
+        const result = await runFellowNative({
+          conversationId, provider: run.provider, model: run.model, effort: run.effort, sessionId: context.sessionId,
+          prompt: `${bridgeInstructions}\n\n${fellowPrompt(context.prompt)}`,
+          freshPrompt: () => `${bridgeInstructions}\n\n${fellowPrompt(prepareConversationContext(
+            { ...previous, sessionBinding: null, sessionId: null },
+            { provider: run.provider, profileId: run.profileId, model: run.model, prompt: msg.prompt },
+          ).prompt)}`,
+          images: msg.images ?? (msg.image ? [msg.image] : []),
+          operations: ticket ? fellowFileOperations(cwd, { ticket, run })
+            : [
+              ...fellow.operations(profile.id), ...fellowFileOperations(cwd),
+              ...schedulerOperations({ sourceChannel: "web", sourcePeer: WEB_SCHEDULER_PEER, defaultOutputs: ["chat_history"] }),
+            ],
+          signal: ac.signal,
+          onSession: id => run.send({ type: "session", sessionId: id, provider: run.provider, model: run.model }),
+          onEvent(event) {
+            if (ticket) fellow.orchestrator.onWorkerActivity(conversationId, run.ticketAttempt);
+            if (event.type === "assistant" && event.message?.content?.some(block => block.type === "text")) hasAnswer = true;
+            run.send(event);
+          },
+        });
+        output = result.text;
+        if (!output?.trim()) throw new Error("Fellow 执行器结束时没有返回答复或交付结果。");
+        if (!hasAnswer && output) run.send({ type: "assistant", message: { content: [{ type: "text", text: output }] } });
+        run.send({ type: "result", subtype: "success", provider: run.provider, usage: result.usage });
+        run.send({ type: "done" });
+        status = "completed";
+        return;
+      }
       let result = null;
       for await (const event of query({ prompt: messages(), options })) {
         ac.signal.throwIfAborted();
@@ -3636,27 +3808,14 @@ wss.on("connection", (ws) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
-  // 前台轮之外到达的后台任务事件推给这条连接。多标签页时后连接者接管即可：
-  // 活动条只是提示，不参与回合控制，丢给谁都不影响正确性。
-  const backgroundSink = (event) => {
-    const taskId = event?.task_id ?? event?.taskId ?? null;
-    const owner = taskId ? backgroundHistoryRuns.get(String(taskId)) : null;
-    if (!owner) {
-      send(event);
-      return;
-    }
-    const seq = persistRunEvent(owner, event);
-    send(seq == null ? event : {
-      ...event,
-      conversationId: owner.historyConversationId,
-      seq,
-    });
-  };
-  backgroundEventSink = backgroundSink;
-
   // Send the persisted default first; the browser sends a profile-specific refresh
   // after it loads its local activeProfileId.
   sendSkillInit(send, getActiveProfile(readProfiles())?.provider);
+  send({ type: "chat_activity_snapshot",
+    chats: [...liveRunsByConversation.values()]
+      .filter(run => isOrdinaryChat(run.historyConversationId)).map(run => chatActivity(run, "running")),
+    completed: recentChatCompletions(),
+  });
 
   ws.on("message", (raw) => {
     let msg;
@@ -3691,6 +3850,7 @@ wss.on("connection", (ws) => {
         }
       };
       const convId = eventLog.normalizeConvId(msg.conversationId);
+      ws.chatConversationId = convId;
       if (!convId) {
         sendSync({ type: "sync", conversationId: msg.conversationId ?? null, lastSeq: 0, turn: null, events: [] });
         return;
@@ -3788,8 +3948,10 @@ wss.on("connection", (ws) => {
         activeRun.discarded = true;
         finalizeRunHistory(activeRun, "stopped");
       }
-      if (activeRun && claudeTurn?.run === activeRun) resetClaudeRuntime();
-      if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id);
+      if (activeRun && claudeLanes.get(activeRun.historyConversationId)?.turn?.run === activeRun) {
+        retireClaudeLane(activeRun.historyConversationId);
+      }
+      if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id, activeRun.requestScope);
       if (activeRun && !activeRun.finished) activeRun.ac.abort();
       activeRun = null;
       send({ type: "reset_complete" });
@@ -3811,7 +3973,7 @@ wss.on("connection", (ws) => {
         return;
       }
       clearPendingAskUserQuestion(activeRun, "用户停止了生成");
-      if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id);
+      if (activeRun?.requestId) rememberClientRequest(activeRun.requestId, "stopped", activeRun.id, activeRun.requestScope);
       // Cancel only this run. Claude closes its iterator and resumes the saved native session next turn.
       if (activeRun && !activeRun.finished) { activeRun.ac.abort(); }
       else send({ type: "stopped" });
@@ -3831,7 +3993,8 @@ wss.on("connection", (ws) => {
 
     const requestId = clientRequestId(msg) ?? `user_${crypto.randomUUID()}`;
     msg.userMessageId = requestId;
-    const inMemoryRequest = clientRequestStates.get(requestId);
+    const requestScope = eventLog.normalizeConvId(msg.conversationId);
+    const inMemoryRequest = getClientRequest(requestId, requestScope);
     const savedRequest = inMemoryRequest ? null : eventLog.getRequestState(msg.conversationId, requestId);
     const knownRequest = inMemoryRequest || (savedRequest ? {
       state: savedRequest === "running" || savedRequest === "continued" ? "stopped" : savedRequest, runId: null,
@@ -3842,6 +4005,7 @@ wss.on("connection", (ws) => {
         userMessageId: requestId,
         state: knownRequest.state,
         runId: knownRequest.runId,
+        conversationId: requestScope,
       });
       return;
     }
@@ -3856,7 +4020,7 @@ wss.on("connection", (ws) => {
         const profile = fellow.selectProfile(msg.profileId);
         const live = liveRunsByConversation.get(STRATEGIST_CONVERSATION_ID);
         if (live && !live.finished) {
-          rememberClientRequest(requestId, "queued");
+          rememberClientRequest(requestId, "queued", null, requestScope);
           send({ type: "request_ack", userMessageId: requestId, state: "queued", conversationId: msg.conversationId });
           send({ type: "request_queued", userMessageId: requestId, reason: "busy", conversationId: msg.conversationId });
           return;
@@ -3866,14 +4030,14 @@ wss.on("connection", (ws) => {
           profile, ws, systemPrompt: `${STRATEGIST_SYSTEM_PROMPT}\n\n${INKFELLOW_SCHEDULER_PROMPT}`,
         });
       } catch (error) {
-        rememberClientRequest(requestId, "error");
+        rememberClientRequest(requestId, "error", null, requestScope);
         send({ type: "request_ack", userMessageId: requestId, state: "error", conversationId: msg.conversationId });
         send({ type: "error", text: error.message, userMessageId: requestId, conversationId: msg.conversationId });
       }
       return;
     }
     if (msg.profileId && !incomingProfileData.profiles.some(profile => profile.id === msg.profileId)) {
-      rememberClientRequest(requestId, "error");
+      rememberClientRequest(requestId, "error", null, requestScope);
       send({ type: "request_ack", state: "error", userMessageId: requestId, conversationId: msg.conversationId });
       send({ type: "error", text: "所选账号已不存在，请重新选择账号。", userMessageId: requestId, conversationId: msg.conversationId });
       return;
@@ -3882,11 +4046,23 @@ wss.on("connection", (ws) => {
       incomingProfileData.activeProfileId = msg.profileId;
     }
     const incomingProvider = getActiveProfile(incomingProfileData)?.provider ?? "claude";
-    const requestedLive = liveRunsByConversation.get(eventLog.normalizeConvId(msg.conversationId));
-    const runtimeBusy = !["codex", "antigravity"].includes(incomingProvider) && claudeTurn?.run;
-    if ((requestedLive && !requestedLive.finished && requestedLive !== activeRun)
-      || (runtimeBusy && runtimeBusy !== activeRun)) {
-      rememberClientRequest(requestId, "queued");
+    const conversationId = msg.conversationId = normalizeHistoryId(msg.conversationId);
+    if (activeRun && activeRun.historyConversationId !== conversationId) {
+      if (!activeRun.finished && activeRun.ws === ws) activeRun.detach();
+      activeRun = null;
+    }
+    const requestedLive = liveRunsByConversation.get(conversationId);
+    const lane = !["codex", "antigravity"].includes(incomingProvider) ? claudeLane(conversationId) : null;
+    if (lane) clearTimeout(lane.idleTimer);
+    if (!requestedLive && [...liveRunsByConversation.keys()].filter(isOrdinaryChat).length >= MAX_ACTIVE_CHATS) {
+      if (lane) parkClaudeLane(conversationId, lane);
+      rememberClientRequest(requestId, "error", null, requestScope);
+      send({ type: "request_ack", state: "error", userMessageId: requestId, conversationId });
+      send({ type: "error", text: "已有 10 个普通对话在运行，请等一个结束。", userMessageId: requestId, conversationId });
+      return;
+    }
+    if (requestedLive && !requestedLive.finished && requestedLive !== activeRun) {
+      rememberClientRequest(requestId, "queued", null, requestScope);
       send({ type: "request_ack", userMessageId: requestId, state: "queued", conversationId: msg.conversationId });
       send({ type: "request_queued", userMessageId: requestId, reason: "busy", conversationId: msg.conversationId });
       return;
@@ -3902,12 +4078,12 @@ wss.on("connection", (ws) => {
         && activeRun.model === (typeof msg.model === "string" && msg.model ? msg.model : null)
         && activeRun.permissionMode === (PERMISSION_MODES.has(msg.permissionMode) ? msg.permissionMode : DEFAULT_PERMISSION_MODE)
         && activeRun.effort === normalizeEffort(msg.effort, incomingProvider, msg.model)
-        && claudeRuntime.started
-        && !!claudeTurn
+        && lane?.runtime.started
+        && !!lane.turn
         && !activeRun.pendingAskUserQuestion;
       if (canSteerClaude) {
         beginSteeringHistory(activeRun, msg);
-        rememberClientRequest(requestId, "steering", activeRun.id);
+        rememberClientRequest(requestId, "steering", activeRun.id, requestScope);
         activeRun.steeringRequestIds.add(requestId);
         activeRun.send({
           type: "request_ack",
@@ -3915,15 +4091,15 @@ wss.on("connection", (ws) => {
           state: "steering",
         });
         try {
-          claudeTurnGate.markForegroundStart();
-          claudeRuntime.send(buildUserMessage(msg));
+          lane.gate.markForegroundStart();
+          lane.runtime.send(buildUserMessage(msg));
           activeRun.send({
             type: "follow_up_accepted",
             userMessageId: requestId,
             mode: "next",
           });
         } catch (error) {
-          rememberClientRequest(requestId, "error", activeRun.id);
+          rememberClientRequest(requestId, "error", activeRun.id, requestScope);
           activeRun.send({
             type: "follow_up_rejected",
             userMessageId: requestId,
@@ -3936,7 +4112,7 @@ wss.on("connection", (ws) => {
       // Codex SDK 的 runStreamed 是单轮流，不能在工具边界注入。让浏览器持有
       // payload，当前轮 done 后用同一 userMessageId 重发；服务端只登记状态，
       // 因而断线重试和双击都不会把它执行两次。
-      rememberClientRequest(requestId, "queued");
+      rememberClientRequest(requestId, "queued", null, requestScope);
       send({
         type: "request_ack",
         userMessageId: requestId,
@@ -3961,6 +4137,7 @@ wss.on("connection", (ws) => {
     const runId = typeof msg.runId === "string" && msg.runId ? msg.runId.slice(0, 64) : crypto.randomUUID();
     const run = createRun(runId, ws, ac);
     run.requestId = requestId;
+    run.requestScope = requestScope;
     activeRun = run;
     const permissionMode = PERMISSION_MODES.has(msg.permissionMode)
       ? msg.permissionMode
@@ -3982,17 +4159,15 @@ wss.on("connection", (ws) => {
     const context = prepareConversationContext(previousConversation, {
       provider: run.provider, profileId: run.profileId, model: run.model, prompt: msg.prompt,
     });
-    // Never take the global persisted ID as the identity of this request.
-    if (context.sessionProvider === "claude") {
-      if (claudeRuntimeConversationId !== previousId || !context.sessionId || sessionId !== context.sessionId) resetClaudeRuntime();
-      if (context.sessionId) saveSession(context.sessionId);
-      else clearSession();
-      claudeRuntimeConversationId = previousId;
+    if (lane && lane.sessionId !== context.sessionId) {
+      resetClaudeRuntime(lane);
+      lane.sessionId = context.sessionId;
     }
+    ws.chatConversationId = conversationId;
     const userMsg = buildUserMessage({ ...msg, prompt: context.prompt });
     const content = userMsg.message.content;
     msg.conversationId = beginRunHistory(run, msg);
-    rememberClientRequest(requestId, "running", run.id);
+    rememberClientRequest(requestId, "running", run.id, requestScope);
     run.send({ type: "request_ack", userMessageId: requestId, state: "running" });
     run.send({
       type: "request_started",
@@ -4034,11 +4209,12 @@ wss.on("connection", (ws) => {
           eventLog.updateMeta(msg.conversationId, { model, profileId: activeProfile.id });
           const translate = agyProvider.createTranslator();
           let hasAnswer = false;
-          const result = await runAntigravity({
+          const result = await runPersistentAntigravity({
+            conversationId: msg.conversationId,
             prompt: content.filter(b => b.type === "text").map(b => b.text).join("\n\n"),
             images: content.filter(b => b.type === "image").map(b => ({ mediaType: b.source.media_type, data: b.source.data })),
             cwd: resolvedCwd, model, effort, permissionMode, signal: ac.signal,
-            resumeConversationId: context.sessionId,
+            sessionId: context.sessionId,
             onSession: id => run.send({ type: "session", sessionId: id, provider: "antigravity", model }),
             onEvent: ev => {
               for (const event of translate(ev)) {
@@ -4116,6 +4292,35 @@ wss.on("connection", (ws) => {
         const CODEX_TOOL_ITEMS = new Set(["command_execution", "mcp_tool_call", "web_search", "file_change"]);
         resetHardTimer();
         try {
+          if (process.env.CODEX_PERSISTENT !== "0") {
+            resetStall();
+            const result = await runPersistentCodex({
+              conversationId, sessionId: context.sessionId, prompt: context.prompt,
+              freshPrompt: () => prepareConversationContext(
+                { ...previousConversation, sessionBinding: null, sessionId: null },
+                { provider: "codex", profileId: run.profileId, model: run.model, prompt: msg.prompt },
+              ).prompt,
+              images: msg.images ?? (msg.image ? [msg.image] : []),
+              cwd: resolvedCwd, model: run.model, effort, sandbox: codexSandboxMode(permissionMode), signal: ac.signal,
+              onSession: id => run.send({ type: "session", sessionId: id, provider: "codex" }),
+              onEvent(method, params) {
+                const type = CODEX_APP_ITEMS[params.item?.type];
+                if (CODEX_TOOL_ITEMS.has(type) && method === "item/started") {
+                  toolRunning = true;
+                  clearTimeout(stallTimer);
+                  clearTimeout(hardTimer);
+                } else if (CODEX_TOOL_ITEMS.has(type) && method === "item/completed") {
+                  toolRunning = false;
+                  resetHardTimer();
+                }
+                resetStall();
+                codexAppEvent(method, params, send);
+              },
+            });
+            send({ type: "result", subtype: "success", usage: result.usage, provider: "codex" });
+            send({ type: "done" });
+            return;
+          }
           const codex = new Codex();
           const threadOptions = {
             workingDirectory: resolvedCwd,
@@ -4306,7 +4511,7 @@ wss.on("connection", (ws) => {
                   },
                 };
               }
-              const updatedInput = await collectCurrentClaudeQuestion(existingInput, {
+              const updatedInput = await lane.turn.collectQuestion(existingInput, {
                 signal: hookContext.signal,
                 toolUseID: hookInput.tool_use_id ?? toolUseID,
               });
@@ -4340,7 +4545,7 @@ wss.on("connection", (ws) => {
 
         return {
           behavior: "allow",
-          updatedInput: await collectCurrentClaudeQuestion(input, context),
+          updatedInput: await lane.turn.collectQuestion(input, context),
           decisionClassification: "user_temporary",
         };
       };
@@ -4350,34 +4555,35 @@ wss.on("connection", (ws) => {
       // query 迭代结束——后者在长驻模式下只有会话彻底关闭时才会发生。
       const runQuery = (promptMsg, queryOptions) => new Promise((resolve, reject) => {
         const signature = claudeRuntimeSignatureOf(queryOptions);
-        if (!claudeRuntime.started || claudeRuntimeSignature !== signature) {
-          if (claudeRuntime.started) claudeRuntime.close();
+        if (!lane.runtime.started || lane.signature !== signature) {
+          if (lane.runtime.started) lane.runtime.close();
           // 用 runtime 自己的 controller，不要用本轮的 ac——否则第一轮收尾时
           // 会把整条长驻会话一起 abort 掉。
-          claudeRuntimeAbort = new AbortController();
-          claudeRuntime.start({ ...queryOptions, abortController: claudeRuntimeAbort });
-          claudeRuntimeSignature = signature;
+          const runtimeAbort = new AbortController();
+          lane.runtime.start({ ...queryOptions, abortController: runtimeAbort });
+          lane.signature = signature;
         }
 
-        const epoch = ++claudeTurnEpoch;
+        const epoch = ++lane.epoch;
         let settled = false;
         const settle = (fn, arg) => {
           if (settled) return;
           settled = true;
           ac.signal.removeEventListener("abort", onAbort);
-          if (claudeTurn?.epoch === epoch) {
-            claudeTurn = null;
-            claudeTurnGate.reset();
+          if (lane.turn?.epoch === epoch) {
+            lane.turn = null;
+            lane.gate.reset();
           }
           fn(arg);
         };
 
         const onAbort = () => {
-          const ownsRuntime = claudeTurn?.epoch === epoch;
+          const ownsRuntime = lane.turn?.epoch === epoch;
           settle(reject, makeAbortError("用户停止了生成"));
-          if (ownsRuntime) resetClaudeRuntime();
+          if (ownsRuntime) resetClaudeRuntime(lane);
         };
-        claudeTurn = {
+        lane.lastRun = run;
+        lane.turn = {
           epoch,
           run,
           collectQuestion: collectAskUserQuestionInput,
@@ -4389,8 +4595,8 @@ wss.on("connection", (ws) => {
         ac.signal.addEventListener("abort", onAbort, { once: true });
         if (ac.signal.aborted) { onAbort(); return; }
         try {
-          claudeTurnGate.markForegroundStart();
-          claudeRuntime.send(promptMsg);
+          lane.gate.markForegroundStart();
+          lane.runtime.send(promptMsg);
         } catch (err) {
           settle(reject, err);
         }
@@ -4401,7 +4607,7 @@ wss.on("connection", (ws) => {
       const handleClaudeEvent = (ev) => {
         assertSuccessfulResult(ev);
         if (ev.type === "system" && ev.subtype === "session_state_changed") {
-          if (ev.state === "idle" && claudeRuntime.taskIds.size > 0) {
+          if (ev.state === "idle" && lane.runtime.taskIds.size > 0) {
             backgroundOnlyWaiting = true;
             clearTimeout(stallTimer);
             clearTimeout(hardTimer);
@@ -4416,7 +4622,7 @@ wss.on("connection", (ws) => {
         // sits idle and the browser receives nothing. Real progress resets it.
         if (!(ev.type === "system" && ev.subtype === "api_retry")) resetStall();
         if (ev.type === "system" && ev.subtype === "init") {
-          saveSession(ev.session_id);
+          lane.sessionId = ev.session_id;
           send({ type: "session", sessionId: ev.session_id, provider: "claude" });
           // ev.skills = skill slugs only; ev.slash_commands = skills + built-in names
           const skillsFromSdk = Array.isArray(ev.skills) && ev.skills.length > 0
@@ -4457,7 +4663,7 @@ wss.on("connection", (ws) => {
       // conversation as injected text — preserving context while shedding the
       // corrupted thinking blocks. Mirrors the WeChat path's history injection.
       const buildRecoveryMsg = () => {
-        const history = extractSessionTextHistory(sessionId);
+        const history = extractSessionTextHistory(lane.sessionId || context.sessionId);
         if (history.length === 0) return null;
         const historyText = history
           .map(t => `${t.role === "user" ? "用户" : "助手"}：${t.text}`)
@@ -4479,8 +4685,7 @@ wss.on("connection", (ws) => {
           // fresh session with text-injected history, instead of losing all context.
           if (!isThinkingSignatureError(err) || ac.signal.aborted) throw err;
           const recoveryMsg = buildRecoveryMsg();
-          resetClaudeRuntime();
-          clearSession(); // abandon the corrupted session; the retry starts a clean one
+          resetClaudeRuntime(lane);
           if (!recoveryMsg) throw err; // nothing to inject → surface the original error
           console.warn("[Web Agent] Thinking-signature error; recovering with text-injected history.");
           const recoveryOptions = { ...options };
@@ -4508,7 +4713,7 @@ wss.on("connection", (ws) => {
         clearTimeout(stallTimer);
         clearTimeout(hardTimer);
         clearPendingAskUserQuestion(run, "请求已结束");
-        run.finish();
+        try { run.finish(); } finally { parkClaudeLane(conversationId, lane); }
         if (activeRun === run) activeRun = null;
       }
     })();
@@ -4520,8 +4725,6 @@ wss.on("connection", (ws) => {
       activeRun.detach();
     }
     activeRun = null;
-    // 只在自己仍是当前 sink 时摘掉，别把后连上来的那条连接一起解绑
-    if (backgroundEventSink === backgroundSink) backgroundEventSink = null;
   });
 });
 

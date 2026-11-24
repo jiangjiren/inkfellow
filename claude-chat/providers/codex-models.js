@@ -12,6 +12,11 @@ const RETRY_MS = 30_000;
 const QUERY_TIMEOUT_MS = 12_000;
 const FALLBACK_ULTRA_MODELS = new Set(["gpt-6-astra", "gpt-6.1-sol"]);
 const requireFromSdk = createRequire(import.meta.resolve("@openai/codex-sdk"));
+export function codexCommand() {
+  const configured = process.env.CODEX_BIN;
+  if (configured && !/\.[cm]?js$/i.test(configured)) return { executable: configured, args: [] };
+  return { executable: process.execPath, args: [configured || requireFromSdk.resolve("@openai/codex/bin/codex.js")] };
+}
 let cache;
 
 function catalogCache() {
@@ -28,8 +33,8 @@ function catalogCache() {
 
 async function queryCatalog() {
   // Use the CLI installed with the SDK so discovery and execution use the same runtime.
-  const cli = requireFromSdk.resolve("@openai/codex/bin/codex.js");
-  const child = spawn(process.execPath, [cli, "app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+  const command = codexCommand();
+  const child = spawn(command.executable, [...command.args, "app-server"], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
   child.on("error", () => {});
   child.stdin.on("error", () => {});
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });

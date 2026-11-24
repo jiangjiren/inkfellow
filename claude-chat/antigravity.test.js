@@ -71,7 +71,7 @@ test("usage keeps independent pools and ignores missing percentages", () => {
 
 test("CLI runner resumes explicitly, parses final lines, rejects incomplete runs, and aborts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "claw-agy-test-"));
-  const binary = join(dir, "agy");
+  const binary = join(dir, "agy.cjs");
   const original = process.env.AGY_BIN;
   writeFileSync(binary, `#!${process.execPath}
 const fs = require('node:fs');

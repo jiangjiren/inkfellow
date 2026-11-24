@@ -16,6 +16,7 @@
 <script src="pending-queue.js"></script>
 <script src="account-status.js"></script>
 <link rel="stylesheet" href="fellow.css">
+<link rel="stylesheet" href="chat-workspace.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -2302,6 +2303,7 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
     <nav id="fellow-navigation" aria-label="Fellow">
       <button id="fellow-open" class="header-btn" type="button" aria-pressed="false">✦ Fellow</button>
       <button id="fellow-board-open" class="header-btn" type="button" aria-haspopup="dialog">任务 <span id="fellow-active-count" hidden></span></button>
+      <button id="chat-notices-open" class="header-btn" type="button" aria-haspopup="dialog">通知 <span id="chat-unread" hidden></span></button>
     </nav>
     <div id="header-actions">
       <button id="btn-settings" class="header-btn" title="账号设置" aria-label="账号设置">
@@ -2317,10 +2319,21 @@ details[open]:not(.thinking-active) .thinking-chevron { transform: rotate(90deg)
       </button>
     </div>
   </header>
+  <div id="chat-tabs" role="tablist" aria-label="打开的 AI 对话" hidden></div>
+  <dialog id="chat-notices" aria-labelledby="chat-notice-title">
+    <div class="fellow-board-head"><h2 id="chat-notice-title">通知</h2><button id="chat-notices-close" type="button">关闭</button></div>
+    <button id="chat-notification-permission" type="button">开启浏览器通知</button>
+    <ul id="chat-notice-list"></ul>
+  </dialog>
+  <dialog id="fellow-artifact-dialog" aria-labelledby="fellow-artifact-title">
+    <div class="fellow-board-head"><h2 id="fellow-artifact-title">工单产物</h2><button id="fellow-artifact-close" type="button">关闭</button></div>
+    <ul id="fellow-artifact-list"></ul>
+  </dialog>
   <div id="fellow-context" hidden>
     <button id="fellow-back" type="button" hidden>‹ 任务台</button>
     <span id="fellow-context-label"></span>
     <span id="fellow-context-status" role="status"></span>
+    <button id="fellow-context-artifacts" type="button" hidden>产物</button>
   </div>
   <dialog id="fellow-board" aria-labelledby="fellow-board-title">
     <div class="fellow-board-head">
@@ -2891,11 +2904,6 @@ function rememberConvModelPrefs({ create = false } = {}) {
 function currentConvProfileId() {
   const pref = currentConvId ? convModelPrefs.get(currentConvId) : null;
   const candidate = pref?.profileId ?? currentConversationMeta?.profileId;
-  if (currentConvId === "strategist") {
-    const profile = _profileData.profiles.find(p => p.id === candidate);
-    return profile && !["codex", "antigravity"].includes(profile.provider)
-      ? profile.id : _profileData.profiles.find(p => p.provider === "claude")?.id ?? null;
-  }
   if (_profileData.profiles.some(p => p.id === candidate)) return candidate;
   // Older histories may only name the SDK provider, without an account ID.
   if (!pref && currentConversationMeta?.sessionProvider) {
@@ -2923,10 +2931,6 @@ function forgetProfileFromConvPrefs(id) {
 }
 
 function selectConversationProfile(id) {
-  if (currentConvId === "strategist" && _profileData.profiles.some(p => p.id === id && ["codex", "antigravity"].includes(p.provider))) {
-    showInlineError("Fellow 总管使用 Claude 或 Claude 兼容账号。");
-    return;
-  }
   rememberConvModelPrefs({ create: true });
   const pref = convModelPrefs.get(currentConvId) ?? {};
   convModelPrefs.set(currentConvId, { profileId: id, effort: pref.effort ?? selectedEffort });
@@ -5667,6 +5671,7 @@ function handleSyncEvent(ev) {
   }
 
   if (ev.metadata) currentConversationMeta = ev.metadata;
+  globalThis.trackChatTab?.(currentConvId, ev.metadata?.title, Number(ev.lastSeq) > 0);
   applyConvModelPrefs();
   applySyncTurn(ev.turn);
   globalThis.syncFellowNavigation?.();
@@ -5782,6 +5787,7 @@ function handleEvent(ev) {
   lastWsEventAt = Date.now();
 
   if (ev.type === "pong" || ev.type === "ping") return;
+  if (globalThis.handleWorkspaceEvent?.(ev)) return;
   if (globalThis.handleFellowEvent?.(ev)) return;
 
   if (ev.type === "sync") {
@@ -7027,6 +7033,7 @@ function send() {
     currentConvId = genId();
     resetCursor(currentConvId);
   }
+  globalThis.trackChatTab?.(currentConvId, text.slice(0, 60));
   rememberConvModelPrefs();
   const imagePreviewUrls = pendingImages.map(img => img.previewUrl);
   if (!isFollowUp) {
@@ -7539,6 +7546,7 @@ function renderConversationMessages(conv) {
 
 async function loadConversation(conv) {
   const loadVersion = ++conversationLoadVersion;
+  globalThis.saveChatDraft?.(currentConvId);
   rememberConvModelPrefs();
   await saveCurrentConversation();
   if (loadVersion !== conversationLoadVersion) return;
@@ -7563,6 +7571,8 @@ async function loadConversation(conv) {
   currentConversationMeta = conv;
   renderConversationMessages(conv);
   currentConvId = conv.id;
+  globalThis.restoreChatDraft?.(currentConvId);
+  globalThis.trackChatTab?.(currentConvId, conv.title, conv.messages.length > 0);
   globalThis.syncFellowNavigation?.();
   editingQueuedId = null;
   renderQueuedFollowUps();
@@ -7585,8 +7595,8 @@ async function loadConversation(conv) {
 }
 
 async function startNewConversation() {
-  const fromFellow = currentConvId === "strategist" || currentConvId?.startsWith("wrk_tk_");
   const loadVersion = ++conversationLoadVersion;
+  globalThis.saveChatDraft?.(currentConvId);
   editingQueuedId = null;
   rememberConvModelPrefs();
   await saveCurrentConversation();
@@ -7600,16 +7610,13 @@ async function startNewConversation() {
   currentSessionId = null;
   currentSessionProvider = null;
   currentSessionModel = null;
-  if (fromFellow) {
-    currentRunId = null;
-    activeRequestId = null;
-    setGenerating(false);
-    sendHello();
-    return;
-  }
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ reset: true }));
-  }
+  currentRunId = null;
+  activeRequestId = null;
+  resetAssistantState();
+  setGenerating(false);
+  globalThis.restoreChatDraft?.(currentConvId);
+  globalThis.trackChatTab?.(currentConvId);
+  sendHello();
 }
 
 async function openHistoryPanel() {
@@ -7890,5 +7897,6 @@ historyBackdrop.addEventListener("click", closeHistoryPanel);
 
 </script>
 <script src="fellow.js"></script>
+<script src="chat-workspace.js"></script>
 </body>
 </html>

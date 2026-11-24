@@ -144,6 +144,8 @@ function errorText(error) {
  * kind 决定链条怎么走，reason 只用来给人看（日志和微信里那行小字）。
  */
 export function classifyCandidateError(error) {
+  if (error?.code === "FELLOW_RUNTIME_UNAVAILABLE") return { kind: "channel", reason: "unavailable" };
+  if (error?.code === "FELLOW_TOOL_CALLED") return { kind: "task", reason: "task" };
   if (error?.code === "MODEL_FALLBACK_TIMEOUT" || error?.timeout === true) {
     return { kind: "timeout", reason: "timeout" };
   }

@@ -80,27 +80,32 @@ export async function openFellowBridge(key, operations) {
   if (!lease) {
     const root = mkdtempSync(join(tmpdir(), "inkfellow-fellow-"));
     const cwd = join(root, "workspace");
-    const plugins = join(root, "plugins");
-    const plugin = join(plugins, ".agents", "plugins", "inkfellow-fellow");
-    mkdirSync(cwd);
-    mkdirSync(plugin, { recursive: true });
+    const agyConfig = join(cwd, ".agents");
+    mkdirSync(agyConfig, { recursive: true });
     const token = crypto.randomBytes(32).toString("hex");
     const server = {
       command: process.execPath, args: [bridgeScript],
       env: { INKFELLOW_FELLOW_BRIDGE: endpoint, INKFELLOW_FELLOW_TOKEN: token },
     };
-    writeFileSync(join(plugin, "plugin.json"), JSON.stringify({ name: "inkfellow-fellow" }), { mode: 0o600 });
-    writeFileSync(join(plugin, "mcp_config.json"), JSON.stringify({ mcpServers: { fellow: server } }), { mode: 0o600 });
+    writeFileSync(join(agyConfig, "mcp_config.json"), JSON.stringify({ mcpServers: { fellow: server } }), { mode: 0o600 });
     const literal = value => JSON.stringify(value);
-    const settings = `{fellow={command=${literal(server.command)},args=[${literal(bridgeScript)}],env={INKFELLOW_FELLOW_BRIDGE=${literal(endpoint)},INKFELLOW_FELLOW_TOKEN=${literal(token)}},tool_timeout_sec=1800}}`;
-    lease = { root, cwd, plugins, key, token, codexArgs: ["-c", `mcp_servers=${settings}`], timer: null, operations: null };
+    const settings = `{fellow={command=${literal(server.command)},args=[${literal(bridgeScript)}],env={INKFELLOW_FELLOW_BRIDGE=${literal(endpoint)},INKFELLOW_FELLOW_TOKEN=${literal(token)}},tool_timeout_sec=1800,default_tools_approval_mode="approve"}}`;
+    const agySettings = JSON.stringify({ permissions: {
+      allow: ["mcp(fellow/*)"],
+      deny: ["command(*)", "execute_url(*)", "write_file(*)", "read_file(.agents/)"],
+    } });
+    lease = {
+      root, cwd, key, token, timer: null, operations: null,
+      codexArgs: ["-c", `mcp_servers=${settings}`],
+      agyArgs: ["--disable-slash-commands", "--settings", agySettings],
+    };
     leases.set(key, lease);
     tokens.set(token, lease);
   }
   clearTimeout(lease.timer);
   lease.operations = operations;
   return {
-    cwd: lease.cwd, agyDirs: [lease.plugins], codexArgs: lease.codexArgs,
+    cwd: lease.cwd, codexArgs: lease.codexArgs, agyArgs: lease.agyArgs,
     end() {
       if (lease.operations !== operations) return;
       lease.operations = null;

@@ -3231,6 +3231,7 @@ function retireClaudeLane(id) {
 }
 
 function parkClaudeLane(id, lane) {
+  if (claudeLanes.get(id) !== lane) return;
   clearTimeout(lane.idleTimer);
   lane.idleTimer = setTimeout(() => {
     if (lane.turn || lane.runtime.taskIds.size) { parkClaudeLane(id, lane); return; }
@@ -3537,7 +3538,7 @@ async function runFellowNative({
     const translate = agyProvider.createTranslator();
     return await runPersistentAntigravity({
       conversationId, model: resolveAgyModel(model), effort, sessionId, prompt, images,
-      cwd: bridge.cwd, extraAddDirs: bridge.agyDirs, extraArgs: ["--disable-slash-commands"], permissionMode: "plan", signal, onSession,
+      cwd: bridge.cwd, extraArgs: bridge.agyArgs, permissionMode: "plan", signal, onSession,
       onEvent(event) { for (const normalized of translate(event)) onEvent(normalized); },
     });
   } finally { bridge.end(); }
@@ -3739,6 +3740,7 @@ function startFellowRun(msg, { profile, cwd = DEFAULT_CWD, systemPrompt, ticket 
           },
         });
         output = result.text;
+        if (!output?.trim()) throw new Error("Fellow 执行器结束时没有返回答复或交付结果。");
         if (!hasAnswer && output) run.send({ type: "assistant", message: { content: [{ type: "text", text: output }] } });
         run.send({ type: "result", subtype: "success", provider: run.provider, usage: result.usage });
         run.send({ type: "done" });

@@ -24,17 +24,21 @@ function toolConfig() {
   if (isCodex) {
     const config = args.find(arg => arg.startsWith("mcp_servers=")) || "";
     const find = key => JSON.parse(config.match(new RegExp(`${key}=("(?:[^"\\\\]|\\\\.)*")`))?.[1] || "null");
-    if (!config) throw new Error("Missing Codex MCP configuration");
+    if (!config.includes('default_tools_approval_mode="approve"')) throw new Error("Missing scoped Codex MCP approval");
     return {
       command: find("command"), args: JSON.parse(config.match(/args=(\[[^\]]*\])/)[1]),
       env: { INKFELLOW_FELLOW_BRIDGE: find("INKFELLOW_FELLOW_BRIDGE"), INKFELLOW_FELLOW_TOKEN: find("INKFELLOW_FELLOW_TOKEN") },
     };
   }
   if (!args.includes("--sandbox") || args[args.indexOf("--mode") + 1] !== "plan") throw new Error("Unscoped Gemini runtime");
+  const permissions = JSON.parse(args[args.indexOf("--settings") + 1])?.permissions;
+  if (!permissions?.allow?.includes("mcp(fellow/*)") || !permissions?.deny?.includes("command(*)")) {
+    throw new Error("Missing scoped Gemini MCP approval");
+  }
   for (let i = 0; i < args.length; i++) {
     if (args[i] !== "--add-dir") continue;
     try {
-      return JSON.parse(readFileSync(join(args[i + 1], ".agents/plugins/inkfellow-fellow/mcp_config.json"), "utf8")).mcpServers.fellow;
+      return JSON.parse(readFileSync(join(args[i + 1], ".agents/mcp_config.json"), "utf8")).mcpServers.fellow;
     } catch { /* this is another workspace root */ }
   }
   throw new Error("Missing Gemini MCP configuration");

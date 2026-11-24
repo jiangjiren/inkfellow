@@ -5146,142 +5146,225 @@
 
 
 
-/* ── Dashboard ─────────────────────────────────── */
+/* ── Dashboard (Plan A · Quiet Creation Desk) ─────────────────────── */
 .dashboardContainer {
   display: flex;
   flex-direction: column;
-  padding: 8vh 12% 10vh;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 52px 32px 88px;
   box-sizing: border-box;
-  /* min-height: 100%; removed for iOS Safari bug */
-  animation: fadeIn 0.4s ease-out;
+  animation: fadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-.dashboardHero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  margin-bottom: 60px;
 }
 
 .dashboardContainer * {
   box-sizing: border-box;
 }
 
-.dashboardSubtitle {
-  font-size: 15px;
-  color: var(--notes-text-muted);
-  margin: 0 0 20px 0;
-  max-width: 480px;
-}
-
-.dashboardSearchBox {
+.dashboardMasthead {
   display: flex;
   align-items: flex-end;
-  width: 100%;
-  max-width: 580px;
-  padding: 11px 12px 11px 20px;
-  background: var(--notes-bg-sidebar);
-  border: 1px solid var(--notes-border);
-  border-radius: 28px;
-  cursor: text;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
-.dashboardSearchBox:hover,
-.dashboardSearchBox:focus-within {
-  border-color: var(--notes-accent);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
-  transform: translateY(-1px);
+.dashboardMastheadText {
+  min-width: 0;
 }
 
-.dashboardSearchInput {
-  flex: 1;
-  text-align: left;
-  font-size: 15px;
-  font-family: inherit;
-  line-height: 24px;
-  color: var(--notes-text-primary);
-  background: transparent;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 4px 0;
-  margin-right: 12px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.dashboardSearchInput::placeholder {
+.dashboardDate {
+  font-size: 12px;
+  font-weight: 500;
   color: var(--notes-text-muted);
+  letter-spacing: 0.01em;
+  margin-bottom: 6px;
 }
 
-.dashboardSendBtn {
+.dashboardHeading {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+  color: var(--notes-text-primary);
+}
+
+.dashboardActions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 50%;
-  background: var(--notes-accent);
-  color: #fff;
-  cursor: pointer;
-  transition: transform 0.15s ease, filter 0.2s ease;
-}
-
-.dashboardSendBtn svg {
-  width: 16px;
-  height: 16px;
-}
-
-.dashboardSendBtn:hover {
-  filter: brightness(1.08);
-  transform: scale(1.05);
-}
-
-.dashboardSendBtn:active {
-  transform: scale(0.96);
-}
-
-/* ── 建议提示词 chips ─────────────────────────────── */
-.dashboardPromptChips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
   gap: 8px;
-  margin-top: 14px;
+  flex-shrink: 0;
 }
 
-.dashboardPromptChip {
-  background: transparent;
-  border: 1px solid var(--notes-border);
-  border-radius: 16px;
-  padding: 6px 14px;
-  font-size: 13px;
+.dashboardPrimaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 9px;
+  background: var(--notes-text-primary);
+  color: var(--notes-bg-document);
   font-family: inherit;
-  color: var(--notes-text-secondary);
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
   cursor: pointer;
-  max-width: 280px;
+  transition: transform 0.14s ease, opacity 0.14s ease;
+}
+
+.dashboardPrimaryBtn:hover {
+  opacity: 0.88;
+  transform: translateY(-0.5px);
+}
+
+.dashboardPrimaryBtn:active {
+  transform: translateY(0);
+}
+
+.dashboardSecondaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--notes-border-strong);
+  border-radius: 9px;
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.dashboardSecondaryBtn:hover {
+  border-color: var(--notes-text-muted);
+  background: var(--notes-bg-app);
+}
+
+.dashboardSearchBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--notes-border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.dashboardSearchBtn:hover {
+  background: var(--notes-bg-sidebar);
+  color: var(--notes-text-primary);
+  border-color: var(--notes-border-strong);
+}
+
+.dashboardKbd {
+  font-family: var(--notes-font-mono);
+  font-size: 11px;
+  color: var(--notes-text-muted);
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--notes-bg-sidebar);
+}
+
+/* ── Conditional Fellow Live Strip ───────────────────────────── */
+.dashboardFellowStrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  margin-bottom: 22px;
+  border-radius: 12px;
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  box-shadow: var(--notes-shadow-card);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+
+.dashboardFellowStrip:hover {
+  border-color: var(--notes-border-strong);
+  transform: translateY(-0.5px);
+}
+
+.dashboardPulseDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--notes-accent-warm);
+  animation: dashboardPulse 2s ease-in-out infinite;
+}
+
+.dashboardFellowStripReady .dashboardPulseDot {
+  background: #1e8e4e;
+  animation: none;
+  box-shadow: 0 0 0 3px rgba(30, 142, 78, 0.14);
+}
+
+@keyframes dashboardPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(196, 82, 28, 0.35); }
+  50%      { box-shadow: 0 0 0 5px rgba(196, 82, 28, 0); }
+}
+
+.dashboardFellowStripBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dashboardFellowStripTag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--notes-accent-warm);
+  flex-shrink: 0;
+}
+
+.dashboardFellowStripReady .dashboardFellowStripTag {
+  color: #1e8e4e;
+}
+
+.dashboardFellowStripText {
+  font-size: 13px;
+  color: var(--notes-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: all 0.2s ease;
 }
 
-.dashboardPromptChip:hover {
-  border-color: var(--notes-accent);
-  color: var(--notes-accent);
-  background: var(--notes-accent-bg);
+.dashboardFellowStripCta {
+  font-size: 12px;
+  color: var(--notes-text-muted);
+  flex-shrink: 0;
 }
 
+.dashboardFellowStrip:hover .dashboardFellowStripCta {
+  color: var(--notes-text-primary);
+}
+
+/* ── Continue Working (Compact High-Signal Sheet) ────────────── */
 .dashboardSection {
   display: flex;
   flex-direction: column;
@@ -5292,107 +5375,221 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 10px;
+  padding: 0 2px;
 }
 
 .dashboardSectionTitle {
-  font-size: 18px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--notes-text-primary);
+  color: var(--notes-text-muted);
+  letter-spacing: 0.02em;
   margin: 0;
 }
 
-.dashboardRecentGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 20px;
-  min-width: 0;
-}
-
-.dashboardRecentCard {
-  display: flex;
-  align-items: flex-start;
-  text-align: left;
+.dashboardFilterGroup {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
   background: var(--notes-bg-sidebar);
-  border: 1px solid var(--notes-border);
-  border-radius: 16px;
-  padding: 16px 18px;
+}
+
+.dashboardFilterTab {
+  border: none;
+  background: transparent;
+  color: var(--notes-text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 5px;
   cursor: pointer;
-  transition: all 0.2s ease;
-  height: 100%;
-  min-width: 0;
+  transition: all 0.14s ease;
 }
 
-.dashboardRecentCard:hover {
-  border-color: var(--notes-accent);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-  transform: translateY(-2px);
+.dashboardFilterTabActive {
+  background: var(--notes-bg-document);
+  color: var(--notes-text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
-.dashboardRecentCardContent {
+.dashboardRecentSheet {
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  border-radius: 14px;
+  box-shadow: var(--notes-shadow-card);
+  overflow: hidden;
+}
+
+.dashboardRecentRow {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid var(--notes-border);
+  background: transparent;
+  color: var(--notes-text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.dashboardRecentRow:last-child {
+  border-bottom: none;
+}
+
+.dashboardRecentRow:hover {
+  background: var(--notes-bg-app);
+}
+
+.dashboardRecentRow:focus-visible {
+  outline: 2px solid var(--notes-accent);
+  outline-offset: -2px;
+}
+
+.dashboardRowIcon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: var(--notes-text-muted);
+  display: grid;
+  place-items: center;
+}
+
+.dashboardRecentRow:hover .dashboardRowIcon {
+  color: var(--notes-text-primary);
+}
+
+.dashboardRowIconTop {
+  color: var(--notes-accent-warm);
+}
+
+.dashboardRowTitle {
   flex: 1;
   min-width: 0;
-}
-
-.dashboardRecentCardTitle {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 540;
   color: var(--notes-text-primary);
-  margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 单行元信息「文件夹 · 日期」：路径与日期各占一行的旧版信息密度过低 */
-.dashboardRecentCardMeta {
+.dashboardRowMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.dashboardFolderTag {
+  font-size: 11.5px;
+  color: var(--notes-text-secondary);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--notes-bg-sidebar);
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboardTimeLabel {
   font-size: 12px;
   color: var(--notes-text-muted);
-  margin: 5px 0 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  min-width: 68px;
+  text-align: right;
+}
+
+.dashboardEmptyCard {
+  background: var(--notes-bg-document);
+  border: 1px solid var(--notes-border);
+  border-radius: 14px;
+  padding: 28px 24px;
+  box-shadow: var(--notes-shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboardEmptyText {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--notes-text-secondary);
+}
+
+.dashboardEmptyActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dashboardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  color: var(--notes-text-muted);
+}
+
+.dashboardFooterLinks {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.dashboardSubtleLink {
+  border: none;
+  background: none;
+  color: var(--notes-text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.14s ease;
+}
+
+.dashboardSubtleLink:hover {
+  color: var(--notes-text-primary);
 }
 
 @media (max-width: 900px), (orientation: portrait) {
   .dashboardContainer {
-    padding: 6vh 20px 10vh;
-  }
-  
-  .dashboardSubtitle {
-    font-size: 14px;
-    margin-bottom: 16px;
-  }
-  
-  .dashboardSearchBox {
-    padding: 9px 10px 9px 16px;
+    padding: 24px 18px 88px;
   }
 
-  .dashboardSearchInput {
-    font-size: 16px; /* 防止 iOS Safari 自动放大 */
+  .dashboardMasthead {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 18px;
   }
 
-  .dashboardPromptChip {
-    max-width: calc(100vw - 80px);
-  }
-  
-  /* 手机上用紧凑列表行而非大卡片（参照 iOS 备忘录），缩短滚动距离 */
-  .dashboardRecentGrid {
-    grid-template-columns: 1fr;
-    gap: 8px;
+  .dashboardHeading {
+    font-size: 22px;
   }
 
-  .dashboardRecentCard {
-    padding: 11px 14px;
-    border-radius: 12px;
+  .dashboardSearchBtn,
+  .dashboardDesktopOnly,
+  .dashboardFolderTag {
+    display: none;
   }
 
-  .dashboardRecentCard:hover {
-    transform: none;
+  .dashboardRecentRow {
+    padding: 12px 14px;
   }
 
-  .dashboardRecentCardMeta {
-    margin-top: 3px;
+  .dashboardTimeLabel {
+    min-width: auto;
+    font-size: 11.5px;
   }
 }
 

@@ -1,163 +1,289 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { NotesFileNode } from "@/lib/notesTypes";
 import styles from "./notes.module.css";
 
+export interface OpenedNoteEntry {
+  path: string;
+  at: number;
+}
+
+interface ActiveTicketSummary {
+  id: string;
+  title: string;
+  status: string;
+}
+
 interface NotesDashboardProps {
   files: NotesFileNode[];
-  /** 首页 → 对话过渡中：播放退场动画并屏蔽交互 */
-  exiting?: boolean;
+  openedNotes: OpenedNoteEntry[];
   onSelectNote: (path: string) => void;
-  onAskAI: (query?: string) => void;
   onQuickCapture: () => void;
   onCreateNote: () => void;
   onImport: () => void;
+  onOpenQuickSwitcher: () => void;
+  onToggleFellow: () => void;
+  onOpenFellowStage: () => void;
 }
 
-export default function NotesDashboard({ files, exiting = false, onSelectNote, onAskAI, onQuickCapture, onCreateNote, onImport }: NotesDashboardProps) {
-  const promptRef = useRef<HTMLTextAreaElement>(null);
+const IMAGE_EXT_RE = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif|tiff?)$/i;
+const LIVE_TICKET_STATUSES = new Set(["running", "queued", "needs_attention", "partial"]);
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
-  const recentFiles = useMemo(() => {
-    const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif|tiff?)$/i;
-    return [...files]
-      .filter((f) => !imageExts.test(f.name))
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .slice(0, 6);
-  }, [files]);
+function formatDateLine(now = new Date()): string {
+  return `${now.getMonth() + 1}月${now.getDate()}日 · ${WEEKDAYS[now.getDay()]}`;
+}
 
-  const isEmpty = files.length === 0;
+function formatRelativeTime(timestampMs: number, now = Date.now()): string {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return "";
+  const diffMin = Math.floor((now - timestampMs) / 60_000);
+  if (diffMin >= 0 && diffMin < 1) return "刚刚";
+  if (diffMin >= 1 && diffMin < 60) return `${diffMin} 分钟前`;
 
-  // 建议提示词：第二个 chip 基于最近编辑的笔记动态生成
-  const continueTitle = recentFiles[0]?.name.replace(/\.(md|html?)$/i, "") ?? null;
+  const date = new Date(timestampMs);
+  const today = new Date(now);
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(today) - dayStart(date)) / 86_400_000);
+  const clock = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  if (days <= 0) return `今天 ${clock}`;
+  if (days === 1) return `昨天 ${clock}`;
+  const md = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return date.getFullYear() === today.getFullYear() ? md : `${date.getFullYear()}年${md}`;
+}
 
-  const submitPrompt = useCallback(() => {
-    if (exiting) return;
-    const el = promptRef.current;
-    const text = el?.value.trim();
-    if (text) {
-      onAskAI(text);
-      if (el) {
-        el.value = "";
-        el.style.height = "auto";
+export default function NotesDashboard({
+  files,
+  openedNotes,
+  onSelectNote,
+  onQuickCapture,
+  onCreateNote,
+  onImport,
+  onOpenQuickSwitcher,
+  onToggleFellow,
+  onOpenFellowStage,
+}: NotesDashboardProps) {
+  const [sortMode, setSortMode] = useState<"recent" | "updated">("recent");
+  const [liveTickets, setLiveTickets] = useState<ActiveTicketSummary[]>([]);
+
+  const noteFiles = useMemo(
+    () => files.filter((f) => !IMAGE_EXT_RE.test(f.name)),
+    [files],
+  );
+
+  const isEmpty = noteFiles.length === 0;
+  const dateLine = useMemo(() => formatDateLine(), []);
+
+  useEffect(() => {
+    let active = true;
+    const loadTickets = async () => {
+      try {
+        const res = await fetch("/notes-claude/api/orchestrator/tickets?archived=active", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = Array.isArray(data?.tickets) ? data.tickets : (Array.isArray(data) ? data : []);
+        const filtered: ActiveTicketSummary[] = raw
+          .filter((t: { id?: string; status?: string }) => typeof t?.id === "string" && LIVE_TICKET_STATUSES.has(String(t.status || "")))
+          .map((t: { id: string; title?: string; status: string }) => ({
+            id: t.id,
+            title: String(t.title || "后台任务"),
+            status: String(t.status),
+          }));
+        if (active) setLiveTickets(filtered);
+      } catch {
+        /* 后台服务不可达时保持静默 */
       }
-    } else {
-      onAskAI();
+    };
+    void loadTickets();
+    const onFocus = () => { void loadTickets(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
+  const displayFiles = useMemo(() => {
+    const byUpdated = [...noteFiles].sort(
+      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+    );
+    if (sortMode === "updated") {
+      return byUpdated.slice(0, 8).map((file) => ({
+        file,
+        touchedAt: Date.parse(file.updatedAt),
+      }));
     }
-  }, [exiting, onAskAI]);
+    const byPath = new Map(noteFiles.map((f) => [f.path, f]));
+    const result: Array<{ file: NotesFileNode; touchedAt: number }> = [];
+    const seen = new Set<string>();
+    for (const entry of openedNotes) {
+      if (result.length >= 8) break;
+      const found = byPath.get(entry.path);
+      if (found && !seen.has(found.path)) {
+        seen.add(found.path);
+        result.push({ file: found, touchedAt: entry.at });
+      }
+    }
+    for (const file of byUpdated) {
+      if (result.length >= 8) break;
+      if (!seen.has(file.path)) {
+        seen.add(file.path);
+        result.push({ file, touchedAt: Date.parse(file.updatedAt) });
+      }
+    }
+    return result;
+  }, [noteFiles, openedNotes, sortMode]);
+
+  const highlightTicket = useMemo(() => {
+    if (liveTickets.length === 0) return null;
+    return (
+      liveTickets.find((t) => t.status === "needs_attention" || t.status === "partial")
+      ?? liveTickets.find((t) => t.status === "running")
+      ?? liveTickets[0]
+    );
+  }, [liveTickets]);
+
+  const isTicketAttention = highlightTicket?.status === "needs_attention" || highlightTicket?.status === "partial";
+  const stripTag = highlightTicket
+    ? (isTicketAttention ? "待验收" : highlightTicket.status === "queued" ? "排队中" : "Fellow 执行中")
+    : "";
 
   return (
-    <div className={`${styles.dashboardContainer} ${exiting ? styles.dashboardExiting : ""}`}>
-      <div className={styles.dashboardHero}>
-        <p className={styles.dashboardSubtitle}>
-          {isEmpty ? "这里还是空的——记下第一个想法，或直接向 AI 提问。" : "你的个人知识库，已就绪。"}
-        </p>
-
-        <form
-          className={styles.dashboardSearchBox}
-          onSubmit={(e) => {
-            e.preventDefault();
-            submitPrompt();
-          }}
-          onClick={() => promptRef.current?.focus()}
-        >
-          <textarea
-            ref={promptRef}
-            name="q"
-            rows={1}
-            className={styles.dashboardSearchInput}
-            placeholder="问问你的知识库…"
-            autoComplete="off"
-            onInput={(e) => {
-              // 自适应长高：先收缩再按内容撑开，封顶 8 行左右
-              const el = e.currentTarget;
-              el.style.height = "auto";
-              el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-            }}
-            onKeyDown={(e) => {
-              // Enter 发送、Shift+Enter 换行；IME 选字时的 Enter 不触发
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                submitPrompt();
-              }
-            }}
-          />
-          <button type="submit" className={styles.dashboardSendBtn} aria-label="发送">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 19V5" />
-              <polyline points="5 12 12 5 19 12" />
+    <div className={styles.dashboardContainer}>
+      <header className={styles.dashboardMasthead}>
+        <div className={styles.dashboardMastheadText}>
+          <div className={styles.dashboardDate}>{dateLine}</div>
+          <h1 className={styles.dashboardHeading}>
+            {isEmpty ? "开始第一篇笔记" : "继续今天的创作"}
+          </h1>
+        </div>
+        <div className={styles.dashboardActions}>
+          <button type="button" className={styles.dashboardPrimaryBtn} onClick={onCreateNote}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
             </svg>
+            <span>新建笔记</span>
           </button>
-        </form>
-
-        <div className={styles.dashboardPromptChips}>
-          {/* 记录灵感是「写」的一等入口：填充样式与描边的 AI 提问 chips 区分两条路径 */}
-          <button type="button" className={styles.dashboardCaptureChip} onClick={onQuickCapture}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
+          <button type="button" className={styles.dashboardSecondaryBtn} onClick={onQuickCapture}>
             <span>记录灵感</span>
           </button>
-          {isEmpty ? (
-            <>
-              {/* 空库首屏：给出建库的两条明确路径，而不是一句"没有文件" */}
-              <button type="button" className={styles.dashboardPromptChip} onClick={onCreateNote}>
-                新建笔记
-              </button>
-              <button type="button" className={styles.dashboardPromptChip} onClick={onImport}>
-                导入文件
-              </button>
-            </>
-          ) : (
-            <>
+          <button
+            type="button"
+            className={styles.dashboardSearchBtn}
+            onClick={onOpenQuickSwitcher}
+            title="快速打开或搜索笔记 (⌘K)"
+            aria-label="快速打开或搜索笔记"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <span className={styles.dashboardKbd}>⌘K</span>
+          </button>
+        </div>
+      </header>
+
+      {highlightTicket ? (
+        <button
+          type="button"
+          className={`${styles.dashboardFellowStrip} ${isTicketAttention ? styles.dashboardFellowStripReady : ""}`}
+          onClick={onOpenFellowStage}
+        >
+          <span className={styles.dashboardPulseDot} aria-hidden="true" />
+          <span className={styles.dashboardFellowStripBody}>
+            <span className={styles.dashboardFellowStripTag}>{stripTag}</span>
+            <span className={styles.dashboardFellowStripText}>
+              {highlightTicket.title}
+              {liveTickets.length > 1 ? ` 等 ${liveTickets.length} 项任务` : ""}
+            </span>
+          </span>
+          <span className={styles.dashboardFellowStripCta}>查看执行台 ›</span>
+        </button>
+      ) : null}
+
+      {isEmpty ? (
+        <div className={styles.dashboardEmptyCard}>
+          <p className={styles.dashboardEmptyText}>
+            这里还是空的。新建第一篇笔记，或者直接把本地 Markdown 文档导入进来。
+          </p>
+          <div className={styles.dashboardEmptyActions}>
+            <button type="button" className={styles.dashboardPrimaryBtn} onClick={onCreateNote}>
+              新建笔记
+            </button>
+            <button type="button" className={styles.dashboardSecondaryBtn} onClick={onImport}>
+              导入文件
+            </button>
+          </div>
+        </div>
+      ) : (
+        <section className={styles.dashboardSection}>
+          <div className={styles.dashboardSectionHeader}>
+            <h2 className={styles.dashboardSectionTitle}>继续工作</h2>
+            <div className={styles.dashboardFilterGroup} role="tablist" aria-label="排序方式">
               <button
                 type="button"
-                className={styles.dashboardPromptChip}
-                onClick={() => { if (!exiting) onAskAI("总结我本周的笔记"); }}
+                role="tab"
+                aria-selected={sortMode === "recent"}
+                className={`${styles.dashboardFilterTab} ${sortMode === "recent" ? styles.dashboardFilterTabActive : ""}`}
+                onClick={() => setSortMode("recent")}
               >
-                总结我本周的笔记
+                最近打开
               </button>
-              {continueTitle ? (
-                <button
-                  type="button"
-                  className={styles.dashboardPromptChip}
-                  onClick={() => { if (!exiting) onAskAI(`继续写「${continueTitle}」这篇笔记`); }}
-                >
-                  继续写「{continueTitle}」
-                </button>
-              ) : null}
-            </>
-          )}
-        </div>
-      </div>
-
-      {recentFiles.length > 0 && (
-        <div className={styles.dashboardSection}>
-          <div className={styles.dashboardSectionHeader}>
-            <h2 className={styles.dashboardSectionTitle}>继续你的工作</h2>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sortMode === "updated"}
+                className={`${styles.dashboardFilterTab} ${sortMode === "updated" ? styles.dashboardFilterTabActive : ""}`}
+                onClick={() => setSortMode("updated")}
+              >
+                最近修改
+              </button>
+            </div>
           </div>
-          
-          <div className={styles.dashboardRecentGrid}>
-            {recentFiles.map((file) => {
+
+          <div className={styles.dashboardRecentSheet}>
+            {displayFiles.map(({ file, touchedAt }, idx) => {
               const folder = file.path.split("/").slice(0, -1).pop() ?? "";
-              const date = new Date(file.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+              const title = file.name.replace(/\.(md|html?)$/i, "");
+              const timeLabel = formatRelativeTime(touchedAt);
               return (
                 <button
                   key={file.path}
                   type="button"
-                  className={styles.dashboardRecentCard}
+                  className={styles.dashboardRecentRow}
                   onClick={() => onSelectNote(file.path)}
                   title={file.path}
                 >
-                  <div className={styles.dashboardRecentCardContent}>
-                    <h3 className={styles.dashboardRecentCardTitle}>{file.name.replace(/\.(md|html?)$/i, "")}</h3>
-                    <p className={styles.dashboardRecentCardMeta}>{folder ? `${folder} · ${date}` : date}</p>
-                  </div>
+                  <span className={`${styles.dashboardRowIcon} ${idx === 0 ? styles.dashboardRowIconTop : ""}`} aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                  </span>
+                  <span className={styles.dashboardRowTitle}>{title}</span>
+                  <span className={styles.dashboardRowMeta}>
+                    {folder ? <span className={styles.dashboardFolderTag}>{folder}</span> : null}
+                    <span className={styles.dashboardTimeLabel}>{timeLabel}</span>
+                  </span>
                 </button>
               );
             })}
           </div>
-        </div>
+        </section>
       )}
+
+      <footer className={styles.dashboardFooter}>
+        <span>共 {noteFiles.length} 篇笔记</span>
+        <div className={styles.dashboardFooterLinks}>
+          <button type="button" className={styles.dashboardSubtleLink} onClick={onImport}>
+            导入文件
+          </button>
+          <button type="button" className={`${styles.dashboardSubtleLink} ${styles.dashboardDesktopOnly}`} onClick={onOpenQuickSwitcher}>
+            ⌘K 跳转
+          </button>
+          <button type="button" className={`${styles.dashboardSubtleLink} ${styles.dashboardDesktopOnly}`} onClick={onToggleFellow}>
+            ⌘J 开关 Fellow
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

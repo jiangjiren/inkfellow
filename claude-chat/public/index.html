@@ -6845,6 +6845,12 @@ window.addEventListener("message", (e) => {
     closeHistoryPanel();
     closeTicketStage({ restoreFocus: false });
   }
+  if (e.data?.type === "open-ticket-stage") {
+    closeAuthDialog();
+    closeHistoryPanel();
+    openTicketStage();
+    return;
+  }
   if (e.data?.type === "open-conversation" && typeof e.data.conversationId === "string") {
     closeHistoryPanel();
     void switchToConversation(e.data.conversationId);

@@ -18,7 +18,7 @@ import NotesMarkdown from "./NotesMarkdown";
 import ShareDialog from "./ShareDialog";
 import { NoteTabs, useNoteTabs } from "./NoteTabs";
 import NotesGit from "./NotesGit";
-import NotesDashboard from "./NotesDashboard";
+import NotesDashboard, { type OpenedNoteEntry } from "./NotesDashboard";
 import TreeItem from "./TreeItem";
 import QuickSwitcher from "./QuickSwitcher";
 import { isImagePath, isPdfPath, stripNoteExtension, type TreeActionTarget } from "./noteFileUtils";
@@ -46,6 +46,8 @@ const SIDEBAR_VISIBLE_KEY = "inkfellow-notes-sidebar-visible-v1";
 const SIDEBAR_WIDTH_KEY = "inkfellow-notes-sidebar-width-v1";
 const NOTE_SCROLL_STORAGE_PREFIX = "inkfellow-notes-scroll-v1:";
 const LAST_FILE_KEY = "inkfellow-notes-last-file-v1";
+const OPENED_NOTES_KEY = "inkfellow-notes-opened-v1";
+const MAX_OPENED_NOTES = 30;
 // 快速记录（草稿）默认落盘的文件夹，可在草稿顶部「存到…」切换并记忆
 const CAPTURE_FOLDER_KEY = "inkfellow-capture-folder-v1";
 const DEFAULT_CAPTURE_FOLDER = "灵感箱";
@@ -838,9 +840,21 @@ export default function NotesExplorer() {
   const noteUpdatedAtRef = useRef<string | null>(null);
   const claudeFrameRef = useRef<HTMLIFrameElement>(null);
   const htmlPreviewRef = useRef<NotesHtmlHandle>(null);
-  // iframe 是否已 load 完：load 前 postMessage 会丢，提问先暂存到 pending，就绪后补投
+  // iframe 是否已 load 完：load 前 postMessage 会丢，指令先暂存，就绪后补投
   const claudeFrameReadyRef = useRef(false);
-  const pendingClaudeAskRef = useRef<string | null>(null);
+  const pendingOpenTicketStageRef = useRef(false);
+  const [openedNotes, setOpenedNotes] = useState<OpenedNoteEntry[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(OPENED_NOTES_KEY) || "[]");
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .filter((item): item is OpenedNoteEntry => typeof item?.path === "string" && typeof item?.at === "number")
+        .slice(0, MAX_OPENED_NOTES);
+    } catch {
+      return [];
+    }
+  });
   const readerRef = useRef<HTMLElement>(null);
   const isSilentReloadRef = useRef(false);
   const syncTocRef = useRef<(() => void) | null>(null);
@@ -937,6 +951,14 @@ export default function NotesExplorer() {
       { type: "note-context", filePath: activePath },
       window.location.origin,
     );
+    setOpenedNotes((prev) => {
+      const next: OpenedNoteEntry[] = [
+        { path: activePath, at: Date.now() },
+        ...prev.filter((item) => item.path !== activePath),
+      ].slice(0, MAX_OPENED_NOTES);
+      try { window.localStorage.setItem(OPENED_NOTES_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
   }, [activePath]);
 
   useEffect(() => {
@@ -3468,8 +3490,6 @@ export default function NotesExplorer() {
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
   const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
-  // 首页 → 对话的退场过渡：仪表盘先做退场动画，再原地展开对话面板
-  const [isDashboardExiting, setIsDashboardExiting] = useState(false);
   const isDashboardChatMode = !note && isAssistantPanelOpen && isDashboardChatActive && !isMobileViewport;
   const isChatFocusMode = !isMobileViewport && isAssistantPanelOpen && chatFocusActive && !gitPanelOpen;
   const isCenteredChatMode = isDashboardChatMode || isChatFocusMode;
@@ -3627,14 +3647,21 @@ export default function NotesExplorer() {
       window.location.origin,
     );
   }, [isAssistantPanelOpen, isChildOverlayOpen]);
-  const postAskToClaude = useCallback((text: string) => {
+  const handleOpenFellowStage = useCallback(() => {
+    setChatFocusActive(false);
+    if (isMobileViewport) {
+      setMobileSidebarOpen(false);
+      setMobileAssistantSheet("expanded");
+    } else {
+      setAssistantPanelVisible(true);
+    }
     const frameWindow = claudeFrameRef.current?.contentWindow;
     if (claudeFrameReadyRef.current && frameWindow) {
-      frameWindow.postMessage({ type: "note-ask", text }, window.location.origin);
+      frameWindow.postMessage({ type: "open-ticket-stage" }, window.location.origin);
     } else {
-      pendingClaudeAskRef.current = text;
+      pendingOpenTicketStageRef.current = true;
     }
-  }, []);
+  }, [isMobileViewport]);
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
   const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantSheet !== 'closed' || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
@@ -4500,41 +4527,18 @@ export default function NotesExplorer() {
               )
             ) : null}
 
-            {/* 空库也渲染仪表盘：首屏保留输入框并给出新建/导入 CTA，而非一句"没有文件" */}
+            {/* 空库也渲染安静创作桌面：清晰给出新建/导入入口 */}
             {treeState === "ready" && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
               <NotesDashboard
                 files={files}
-                exiting={isDashboardExiting}
+                openedNotes={openedNotes}
                 onSelectNote={handleSelect}
-                onAskAI={(query?: string) => {
-                  // 提问先投递（或暂存），让对话面板露出时回显已经就位
-                  if (query) {
-                    postAskToClaude(query);
-                  }
-                  if (isMobileViewport) {
-                    if (isDashboardExiting) return;
-                    // 移动端与桌面端一致：仪表盘先退场，再原地转成全屏对话页，
-                    // 而不是从底部弹出 sheet
-                    setMobileSidebarOpen(false);
-                    setIsDashboardExiting(true);
-                    window.setTimeout(() => {
-                      setIsDashboardChatActive(true);
-                      setMobileAssistantSheet('expanded');
-                      setIsDashboardExiting(false);
-                    }, 240);
-                  } else if (!isDashboardExiting) {
-                    // 桌面端不直接切页：仪表盘先退场，再原地展开对话
-                    setIsDashboardExiting(true);
-                    window.setTimeout(() => {
-                      setIsDashboardChatActive(true);
-                      setAssistantPanelVisible(true);
-                      setIsDashboardExiting(false);
-                    }, 240);
-                  }
-                }}
                 onQuickCapture={handleQuickCapture}
                 onCreateNote={() => handleNewNote()}
                 onImport={() => handleStartImport("")}
+                onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
+                onToggleFellow={handleClaudeToggle}
+                onOpenFellowStage={handleOpenFellowStage}
               />
             ) : null}
           </article>
@@ -4818,13 +4822,12 @@ export default function NotesExplorer() {
                 window.location.origin,
               );
             }
-            // 首页提问可能早于 iframe 就绪，补投暂存的问题，避免首条提问丢失
-            if (pendingClaudeAskRef.current) {
+            if (pendingOpenTicketStageRef.current) {
               claudeFrameRef.current?.contentWindow?.postMessage(
-                { type: "note-ask", text: pendingClaudeAskRef.current },
+                { type: "open-ticket-stage" },
                 window.location.origin,
               );
-              pendingClaudeAskRef.current = null;
+              pendingOpenTicketStageRef.current = false;
             }
           }}
         />

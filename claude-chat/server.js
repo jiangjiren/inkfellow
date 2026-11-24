@@ -1352,7 +1352,10 @@ function isProfileReadyForFallback(p) {
   if (!p || p.hidden) return false;
   if (p.provider === "antigravity") return isAgyAuthAvailable();
   if (p.provider === "codex") return isCodexAuthAvailable();
-  if (p.provider === "claude") return hasLocalClaudeCredentials(claudeAccountConfigDir(p, CLAUDE_ACCOUNTS_DIR));
+  if (p.provider === "claude") {
+    const dir = claudeAccountConfigDir(p, CLAUDE_ACCOUNTS_DIR) || mainClaudeConfigDir();
+    return Boolean(dir) && hasLocalClaudeCredentials(dir) === true;
+  }
   return Boolean(p.apiKey);
 }
 
@@ -3638,7 +3641,7 @@ const DISPATCH_ALIASES = {
 export function resolveDispatchProfile(profileData, selector) {
   const wanted = normalizeProviderSelector(selector);
   if (!wanted) return null;
-  const profiles = Array.isArray(profileData?.profiles) ? profileData.profiles : [];
+  const profiles = (Array.isArray(profileData?.profiles) ? profileData.profiles : []).filter(profile => !profile.hidden);
   const aliased = DISPATCH_ALIASES[wanted];
   return profiles.find(profile => normalizeProviderSelector(profile.id) === wanted)
     ?? profiles.find(profile => normalizeProviderSelector(profile.provider) === wanted)
@@ -5180,8 +5183,8 @@ const dispatchTicketSchema = z.object({
 
 function validateWorkerExecution(config) {
   const profiles = readProfiles();
-  const profile = profiles.profiles.find(item => item.id === config.profileId);
-  if (!profile || profile.provider !== config.provider) throw new Error("工单执行账号已失效，请在现场选择可用账号");
+  const profile = profiles.profiles.find(item => item.id === config.profileId && !item.hidden);
+  if (!profile || profile.provider !== config.provider) throw new Error("工单执行账号已失效或已隐藏，请在现场选择可用账号");
   if (!isSubscriptionProvider(profile.provider) && !profile.apiKey) {
     throw new Error(`${profile.name || profile.provider} 缺少 API Key，请先在账号设置里保存`);
   }
@@ -5196,7 +5199,7 @@ function validateWorkerExecution(config) {
 function workerConfiguration(args) {
   const profiles = readProfiles();
   const profile = args.dispatchProvider ? resolveDispatchProfile(profiles, args.dispatchProvider)
-    : profiles.profiles.find(item => item.id === args.profileId);
+    : profiles.profiles.find(item => item.id === args.profileId && !item.hidden);
   if (!profile) throw new Error("找不到工单执行账号");
   return {
     profileId: profile.id, profileName: profile.name, provider: profile.provider,
@@ -5210,9 +5213,9 @@ async function dispatchConfiguredTicket(input, { parentConversationId = STRATEGI
   const requestedCwd = args.cwd || cwd || DEFAULT_CWD;
   const specialist = args.specialistId && loadSpecialists(DEFAULT_CWD).find(item => item.id === args.specialistId);
   const selector = args.provider || specialist?.provider;
-  const profile = args.profileId ? profiles.profiles.find(item => item.id === args.profileId)
+  const profile = args.profileId ? profiles.profiles.find(item => item.id === args.profileId && !item.hidden)
     : selector ? resolveDispatchProfile(profiles, selector) : getActiveProfile(profiles);
-  if (!profile || (args.profileId && selector && resolveDispatchProfile(profiles, selector)?.id !== profile.id)) {
+  if (!profile || profile.hidden || (args.profileId && selector && resolveDispatchProfile(profiles, selector)?.id !== profile.id)) {
     throw new Error("找不到指定的工单执行账号");
   }
   const parentCtx = sessions.peek(parentConversationId)?.activeForegroundDeliveryContext || null;
@@ -6242,6 +6245,11 @@ const http = createServer((req, res) => {
             return;
           }
           const profiles = current.profiles.filter(p => p.id !== id);
+          if (!profiles.some(p => !p.hidden)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "至少保留一个可用账号" }));
+            return;
+          }
           const activeProfileId = current.activeProfileId === id
             ? pickFallbackActiveProfileId(profiles)
             : current.activeProfileId;
@@ -7501,6 +7509,10 @@ const clearPendingAskUserQuestion = (reason = "cancelled") => {
   };
 
 wss.on("connection", (ws) => {
+  ws.on("error", (err) => {
+    console.error("[ws] socket error:", err?.message || err);
+    try { ws.terminate(); } catch { }
+  });
   // Last connection wins; any previous socket is stale (single-user desktop app).
   const previousWs = activeWs;
   activeWs = ws;

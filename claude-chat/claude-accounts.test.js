@@ -338,12 +338,16 @@ test("server adds, routes and deletes extra Claude member accounts", { timeout: 
     const primaryDelete = await put({ action: "delete", profileId: PRIMARY_CLAUDE_PROFILE_ID });
     assert.equal(primaryDelete.status, 400);
 
-    // 隐藏 Claude 主号（如账号被封）：自动切到其他可用账号、从 Fellow 派单列表与额度轮询中排除
+    // 隐藏 Claude 主号（如账号被封）：先激活主号，隐藏时自动切到其他可用账号、触发 resetSession，
+    // 并从 Fellow 派单列表与额度轮询中排除
+    const activatePrimaryRes = await put({ action: "activate", profileId: PRIMARY_CLAUDE_PROFILE_ID });
+    assert.equal(activatePrimaryRes.status, 200);
     const hideRes = await put({ action: "set-hidden", profileId: PRIMARY_CLAUDE_PROFILE_ID, hidden: true });
     assert.equal(hideRes.status, 200);
     const hiddenPayload = await hideRes.json();
     assert.equal(hiddenPayload.data.profiles.find(p => p.id === PRIMARY_CLAUDE_PROFILE_ID)?.hidden, true);
-    assert.notEqual(hiddenPayload.data.activeProfileId, PRIMARY_CLAUDE_PROFILE_ID);
+    assert.equal(hiddenPayload.data.activeProfileId, "p_ds");
+    assert.equal(hiddenPayload.resetSession, true);
 
     const providersAfterHide = await (await api("/api/providers")).json();
     assert.equal(providersAfterHide.providers.some(p => p.id === PRIMARY_CLAUDE_PROFILE_ID), false);

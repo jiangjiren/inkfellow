@@ -5516,8 +5516,8 @@ function renderProfileList(data, { adopt = false } = {}) {
     const canDelete = canEdit;
     // 任意会员账号（含被封/暂不用的 Claude 主号）都支持一键隐藏，至少保留一个可见账号
     const canHide   = isMembershipProfile(p) && visibleCount > 1;
-    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口（网页端无本机终端弹窗）
-    const canLogin  = isDesktopEmbed && p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
+    // 额外账号随时可以重登（换号也走这里）；主号只在没登录时给个入口（无终端时后端会返回可复制命令）
+    const canLogin  = p.provider === "claude" && (isExtraClaudeProfile(p) || claudeAuthFor(p)?.authenticated === false);
     const loginLabel = claudeAuthFor(p)?.authenticated ? "重新登录 / 换号" : "登录";
     const actions = (canEdit || canDelete || canLogin || canHide) ? `
       <span class="auth-profile-actions">
@@ -5554,8 +5554,9 @@ function renderProfileList(data, { adopt = false } = {}) {
   const renderFoldedRow = p => {
     const st = profileStatus(p);
     const reason = p.hidden ? "已隐藏" : st.text;
-    const canLogin = isDesktopEmbed && p.provider === "claude";
-    const canDelete = p.provider === "claude" && isExtraClaudeProfile(p);
+    const canLogin = p.provider === "claude";
+    const canEdit = p.provider !== "claude" || isExtraClaudeProfile(p);
+    const canDelete = canEdit && (p.hidden || visibleCount > 1);
     return `<div class="auth-hidden-row" data-hidden-id="${escapeAttr(p.id)}">
       <span class="auth-hidden-info">
         <span class="auth-hidden-name">${escapeHtml(p.name)}</span>
@@ -5565,15 +5566,15 @@ function renderProfileList(data, { adopt = false } = {}) {
         ${p.hidden
           ? `<button type="button" class="auth-hidden-pill auth-profile-unhide" data-unhide="${escapeAttr(p.id)}">恢复</button>`
           : `${canLogin ? `<button type="button" class="auth-hidden-pill auth-profile-login" data-login="${escapeAttr(p.id)}">登录</button>` : ""}${visibleCount > 1 ? `<button type="button" class="auth-hidden-pill auth-profile-hide" data-hide="${escapeAttr(p.id)}">隐藏</button>` : ""}`}
+        ${canEdit ? `<button type="button" class="auth-hidden-pill auth-profile-edit" data-edit="${escapeAttr(p.id)}">编辑</button>` : ""}
         ${canDelete ? `<button type="button" class="auth-hidden-pill auth-profile-del" data-del="${escapeAttr(p.id)}">删除</button>` : ""}
       </span>
     </div>`;
   };
-  const showDisclosure = foldedMembers.length > 0 || isDesktopEmbed;
   const disclosureLabel = foldedMembers.length > 0
     ? `已隐藏或未登录的会员账号 (${foldedMembers.length})`
     : "更多会员渠道";
-  const disclosureHtml = showDisclosure ? `
+  const disclosureHtml = `
     <div class="auth-hidden-section">
       <button type="button" class="auth-hidden-toggle" aria-expanded="${_hiddenMembersExpanded}">
         <span>${disclosureLabel}</span>
@@ -5582,9 +5583,9 @@ function renderProfileList(data, { adopt = false } = {}) {
       ${_hiddenMembersExpanded ? `
         <div class="auth-hidden-list">
           ${foldedMembers.map(renderFoldedRow).join("")}
-          ${isDesktopEmbed ? `<button type="button" class="auth-hidden-add-claude">+ 添加 Claude 会员账号</button>` : ""}
+          <button type="button" class="auth-hidden-add-claude">+ 添加 Claude 会员账号</button>
         </div>` : ""}
-    </div>` : "";
+    </div>`;
   authProfileList.innerHTML = groups.filter(group => group.profiles.length).map(group => `
     <div class="auth-profile-group" role="group" aria-labelledby="auth-group-${group.id}">
       <div class="auth-group-heading">
@@ -6010,6 +6011,7 @@ function openAuthDialog() {
   void fetchProfiles();
   checkClaudeAuth();
   checkCodexAuth();
+  checkAgyAuth();
   startUsageLimitPolling();
   if (typeof checkWechatStatus === "function") {
     stopWechatPolling();
@@ -6808,7 +6810,15 @@ window.addEventListener("message", (e) => {
   if (e.data?.type === "open-ticket-stage") {
     closeAuthDialog();
     closeHistoryPanel();
+    ticketStageFilter = "active";
+    document.querySelectorAll("#ticket-stage-filters [data-filter]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.filter === "active");
+    });
     openTicketStage();
+    return;
+  }
+  if (e.data?.type === "request-tickets-summary") {
+    pushFellowTicketsSummaryToParent();
     return;
   }
   if (e.data?.type === "open-conversation" && typeof e.data.conversationId === "string") {
@@ -14500,6 +14510,15 @@ function appendStrategistCompactedDivider(divider) {
   if (followLatestMessage) scrollBottom();
 }
 
+function pushFellowTicketsSummaryToParent() {
+  if (window.parent === window) return;
+  const liveStatuses = new Set(["running", "queued", "needs_attention", "partial"]);
+  const tickets = [...orchestratorTickets.values()]
+    .filter((t) => t && !t.archived && liveStatuses.has(String(t.status || "")))
+    .map((t) => ({ id: t.id, title: String(t.title || "后台任务"), status: String(t.status) }));
+  postParentMessage({ type: "fellow-tickets-summary", tickets });
+}
+
 function handleOrchestratorEvent(ev) {
   if (!ev || typeof ev.type !== "string") return false;
   if (ev.type === "strategist_context") {
@@ -14532,12 +14551,14 @@ function handleOrchestratorEvent(ev) {
     for (const t of tickets) upsertOrchestratorTicket(t);
     refreshInlineTicketCards();
     syncStrategistChrome();
+    if (typeof pushFellowTicketsSummaryToParent === "function") pushFellowTicketsSummaryToParent();
     return true;
   }
   if (ev.type === "ticket_updated" && ev.ticket) {
     upsertOrchestratorTicket(ev.ticket);
     refreshInlineTicketCards(ev.ticket.id);
     syncStrategistChrome();
+    if (typeof pushFellowTicketsSummaryToParent === "function") pushFellowTicketsSummaryToParent();
     return true;
   }
   if (ev.type === "ticket_reset_rejected" && ev.conversationId) {

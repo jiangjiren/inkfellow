@@ -2447,10 +2447,19 @@ function formatDashboardDateLine(now = new Date()) {
 
 function dashboardNoteFiles() {
   const projects = InkfellowVideoWorkbench.listProjects();
-  const files = collectFiles(state.tree);
+  const files = flattenFiles(state.tree);
+  if (dashboardSortMode === "updated") {
+    const notNote = /^(png|jpe?g|gif|webp|svg|avif|pdf)$/i;
+    const isGenerated = (path) => projects.some((p) => path.startsWith(p.path ? `${p.path}/work/` : "work/"));
+    return files
+      .filter((f) => !notNote.test(f.extension || "") && !isGenerated(f.path))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 8)
+      .map((f) => ({ ...f, touchedAt: f.updatedAt }));
+  }
   return InkfellowHomeModel.recentFiles({
     files,
-    opened: dashboardSortMode === "recent" ? readOpenedNotes() : [],
+    opened: readOpenedNotes(),
     projects,
     limit: 8,
   });
@@ -2490,9 +2499,10 @@ function renderFellowStripHtml() {
    不然有笔记的人每次打开都会闪一下「还没有笔记」。 */
 function renderDashboardSections() {
   const files = dashboardNoteFiles();
-  const totalNotes = state.tree ? collectFiles(state.tree).filter((f) => !/^(png|jpe?g|gif|webp|svg|avif|pdf)$/i.test(f.extension || "")).length : 0;
+  const totalNotes = state.tree ? flattenFiles(state.tree).filter((f) => !/^(png|jpe?g|gif|webp|svg|avif|pdf)$/i.test(f.extension || "")).length : 0;
   const projects = InkfellowVideoWorkbench.listProjects();
   const videos = projects.slice(0, DASHBOARD_VIDEO_LIMIT);
+  const modKey = navigator.platform.includes("Mac") ? "⌘" : "Ctrl+";
   return `
     ${renderFellowStripHtml()}
     ${videos.length ? `<div class="dashboardSection dashboardVideoSection">
@@ -2512,21 +2522,22 @@ function renderDashboardSections() {
       </div>
       ${files.length ? `<div class="dashboardRecentSheet">${files.map((file, idx) => recentNoteRowHtml(file, projects, idx === 0)).join("")}</div>` : `
         <div class="dashboardEmptyPanel">
-          <p>这里还是空的。新建第一篇笔记，或按 ⌘N 开始记录。</p>
+          <p>这里还是空的。新建第一篇笔记，或按 ${modKey}N 开始记录。</p>
           <button type="button" id="dashboard-empty-create" class="dashboardPrimaryBtn">新建笔记</button>
         </div>
       `}
       <footer class="dashboardFooter">
         <span>共 ${totalNotes} 篇笔记</span>
         <div class="dashboardFooterLinks">
-          <button type="button" id="dashboard-footer-search" class="dashboardSubtleLink">⌘P 快速跳转</button>
-          <button type="button" id="dashboard-footer-fellow" class="dashboardSubtleLink">⌘L 开关 Fellow</button>
+          <button type="button" id="dashboard-footer-search" class="dashboardSubtleLink">${modKey}P 快速跳转</button>
+          <button type="button" id="dashboard-footer-fellow" class="dashboardSubtleLink">${modKey}L 开关 Fellow</button>
         </div>
       </footer>
     </div>`}`;
 }
 
 function renderDashboard() {
+  const modKey = navigator.platform.includes("Mac") ? "⌘" : "Ctrl+";
   dashboardSectionsHtml = renderDashboardSections();
   return `
     <section class="dashboardContainer">
@@ -2540,9 +2551,9 @@ function renderDashboard() {
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
             <span>新建笔记</span>
           </button>
-          <button type="button" id="dashboard-quick-open" class="dashboardSearchBtn" title="快速打开笔记 (⌘P)">
+          <button type="button" id="dashboard-quick-open" class="dashboardSearchBtn" title="快速打开笔记 (${modKey}P)">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-            <span class="dashboardKbd">⌘P</span>
+            <span class="dashboardKbd">${modKey}P</span>
           </button>
         </div>
       </header>
@@ -2550,22 +2561,8 @@ function renderDashboard() {
     </section>`;
 }
 
-async function refreshDashboardFellowStrip() {
-  const origin = agentOrigin();
-  if (!origin) return;
-  try {
-    const headers = state.agentToken ? { Authorization: `Bearer ${state.agentToken}` } : {};
-    const res = await fetch(`${origin}/api/orchestrator/tickets?archived=active`, { cache: "no-store", headers });
-    if (!res.ok) return;
-    const data = await res.json();
-    const raw = Array.isArray(data?.tickets) ? data.tickets : (Array.isArray(data) ? data : []);
-    const liveStatuses = new Set(["running", "queued", "needs_attention", "partial"]);
-    dashboardLiveTickets = raw
-      .filter((t) => typeof t?.id === "string" && liveStatuses.has(String(t.status || "")))
-      .map((t) => ({ id: t.id, title: String(t.title || "后台任务"), status: String(t.status) }));
-    const docArea = qs("doc-area");
-    if (docArea) refreshDashboardInPlace(docArea);
-  } catch { /* sidecar 未就绪时静默忽略 */ }
+function requestDashboardFellowTickets() {
+  if (state.agentReady) postAgentMessage({ type: "request-tickets-summary" });
 }
 
 /* 笔记库里任何文件一变，首页就要刷新；视频工程列表也是后台异步回来的。整页重画会清掉
@@ -2622,7 +2619,7 @@ function onDashboardSectionsClick(event) {
     const docArea = qs("doc-area");
     if (docArea) refreshDashboardInPlace(docArea);
   } else if (button.id === "dashboard-footer-search") {
-    openQuickOpen();
+    openQuickOpen(button);
   } else if (button.id === "dashboard-footer-fellow") {
     togglePanel();
   } else if (button.id === "dashboard-capture" || button.id === "dashboard-empty-create") {
@@ -2635,7 +2632,7 @@ function wireDashboard() {
   qs("dashboard-sections")?.addEventListener("click", onDashboardSectionsClick);
   qs("dashboard-create-note")?.addEventListener("click", () => createNote());
   qs("dashboard-quick-open")?.addEventListener("click", (event) => openQuickOpen(event.currentTarget));
-  void refreshDashboardFellowStrip();
+  requestDashboardFellowTickets();
 }
 
 /* ── 全部视频 ──────────────────────────────────── */
@@ -3466,7 +3463,8 @@ function quickOpenMatches(query) {
 
 function openQuickOpen(anchor) {
   closeQuickOpen();
-  const rect = anchor.getBoundingClientRect();
+  const target = anchor || qs("dashboard-quick-open") || qs("btn-new-note") || document.body;
+  const rect = target.getBoundingClientRect();
 
   const pop = document.createElement("div");
   pop.className = "quickOpen";
@@ -5560,6 +5558,12 @@ function initKeyboard() {
       void createNote();
     }
 
+    if (mod && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      openQuickOpen(qs("dashboard-quick-open") || qs("btn-new-note") || document.body);
+      return;
+    }
+
     if (mod && e.shiftKey && (e.key === "l" || e.key === "L" || e.key === "f" || e.key === "F")) {
       e.preventDefault();
       toggleFellowMaximize();
@@ -5701,6 +5705,15 @@ function wireEvents() {
       if (!qs("shell").classList.contains("shellPanelHidden")) togglePanel();
       return;
     }
+    if (event.data?.type === "fellow-tickets-summary" && Array.isArray(event.data.tickets)) {
+      const liveStatuses = new Set(["running", "queued", "needs_attention", "partial"]);
+      dashboardLiveTickets = event.data.tickets
+        .filter((t) => typeof t?.id === "string" && liveStatuses.has(String(t.status || "")))
+        .map((t) => ({ id: t.id, title: String(t.title || "后台任务"), status: String(t.status) }));
+      const docArea = qs("doc-area");
+      if (docArea) refreshDashboardInPlace(docArea);
+      return;
+    }
     if (event.data?.type === "agent-toggle-maximize") {
       toggleFellowMaximize();
       return;
@@ -5714,6 +5727,7 @@ function wireEvents() {
     });
     sendNoteContext();
     sendVaultNotes(true);
+    postAgentMessage({ type: "request-tickets-summary" });
     postAgentMessage({
       type: "agent-maximize-state",
       isMaximized: qs("shell").classList.contains("shellPanelMaximized"),

@@ -1351,10 +1351,11 @@ input, textarea { font-family: inherit; }
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 960px;
+  max-width: 1120px;
   min-height: 100%;
   margin: 0 auto;
   padding: 44px 40px 88px;
+  container-type: inline-size;
   animation: dashboardFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -1502,12 +1503,22 @@ input, textarea { font-family: inherit; }
 .dashboardFellowStripTag {
   font-size: 11.5px;
   font-weight: 600;
-  color: #c4521c;
+  color: #a64112;
   flex-shrink: 0;
 }
 
 .dashboardFellowStrip.isReady .dashboardFellowStripTag {
-  color: #1e8e4e;
+  color: #167942;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dashboardFellowStripTag {
+    color: #f39562;
+  }
+
+  .dashboardFellowStrip.isReady .dashboardFellowStripTag {
+    color: #5cd48f;
+  }
 }
 
 .dashboardFellowStripText {
@@ -1572,7 +1583,7 @@ input, textarea { font-family: inherit; }
 
 .dashboardSectionTitle {
   margin: 0;
-  color: var(--notes-text-muted);
+  color: var(--notes-text-secondary);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -1692,11 +1703,21 @@ input, textarea { font-family: inherit; }
 
 .dashboardRecentRowDate {
   flex-shrink: 0;
-  color: var(--notes-text-muted);
+  color: var(--notes-text-secondary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   min-width: 68px;
   text-align: right;
+}
+
+@container (max-width: 460px) {
+  .dashboardFolderTag {
+    display: none;
+  }
+
+  .dashboardRecentRowDate {
+    min-width: auto;
+  }
 }
 
 .dashboardEmptyPanel {

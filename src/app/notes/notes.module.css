@@ -3629,10 +3629,9 @@
     padding-top: env(safe-area-inset-top, 0px);
   }
 
-  /* 全屏面板有 safe-area 顶部内边距，绝对定位的返回按钮要落到内边距之下，
-     才能与 iframe 顶栏同一行 */
+  /* 首页全屏面板已自带 padding-top: env(safe-area-inset-top)，常规流返回栏无需再做 top 偏移 */
   .assistantPanel.assistantPanelFullscreen .dashboardChatHeader {
-    top: env(safe-area-inset-top, 0px);
+    top: 0;
   }
 
   /* 首页提问：原地过渡成对话页 —— 淡入上浮，不走底部 sheet 的整页上滑 */
@@ -4271,6 +4270,62 @@
 
   .claudeFabBadge {
     display: none;
+  }
+
+  /* 首页态胶囊 FAB：展示「✦ 问 Fellow」提升发现性，进笔记/媒体页后收拢为纯 ✦ 圆球 */
+  .claudeFabPill {
+    width: auto;
+    height: 46px;
+    padding: 0 18px 0 14px;
+    gap: 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--notes-bg-document) 92%, transparent);
+    border: 1px solid var(--notes-border);
+    color: var(--notes-text-primary);
+    box-shadow:
+      0 8px 24px rgba(15, 23, 42, 0.12),
+      0 1px 3px rgba(15, 23, 42, 0.06);
+  }
+
+  .claudeFabPill .claudeFabIcon {
+    font-size: 18px;
+  }
+
+  .claudeFabLabel {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+
+  .claudeFabPill.claudeFabThinking {
+    border-color: transparent;
+  }
+
+  .claudeFabPill.claudeFabThinking::before {
+    border-radius: 999px;
+    background: conic-gradient(
+      from var(--pill-angle),
+      transparent 0%,
+      transparent 40%,
+      rgba(0, 240, 255, 0.8) 60%,
+      rgba(138, 43, 226, 0.9) 80%,
+      rgba(255, 191, 0, 1) 100%
+    );
+    animation: pillBorderSpin 1.5s linear infinite;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  @media (max-width: 900px), (orientation: portrait) {
+    .claudeFabPill {
+      background: color-mix(in srgb, var(--notes-bg-document) 88%, transparent);
+      border-color: rgba(255, 255, 255, 0.14);
+      box-shadow:
+        0 10px 28px rgba(0, 0, 0, 0.42),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
   }
 }
 

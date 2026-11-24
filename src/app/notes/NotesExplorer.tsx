@@ -712,6 +712,7 @@ export default function NotesExplorer() {
   const sheetDragRef = useRef<SheetDrag | null>(null);
   const [assistantPanelVisible, setAssistantPanelVisible] = useState(false);
   const [chatFocusActive, setChatFocusActive] = useState(false);
+  const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
   const chatFocusSnapshotRef = useRef<{ path: string | null; snapshot: ScrollSnapshot } | null>(null);
   const [claudeFrameTick, setClaudeFrameTick] = useState(0);
   // 面板内（设置/历史）是否正显示为满铺子页面：此时唯一的"返回"控件应是子页面自己的返回按钮，
@@ -1180,6 +1181,7 @@ export default function NotesExplorer() {
       if (!isMobile) {
         setMobileSidebarOpen(false);
         setMobileAssistantSheet('closed');
+        setIsDashboardChatActive(false);
       }
     };
 
@@ -3300,11 +3302,18 @@ export default function NotesExplorer() {
 
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
-      setMobileAssistantSheet((s) => s === 'closed' ? 'expanded' : 'closed');
+      if (mobileAssistantSheet === 'closed') {
+        if (!note && !isPdfPath(activePath) && !isImagePath(activePath)) {
+          setIsDashboardChatActive(true);
+        }
+        setMobileAssistantSheet('expanded');
+      } else {
+        setMobileAssistantSheet('closed');
+      }
     } else {
       setAssistantPanelVisible((visible) => !visible);
     }
-  }, [isMobileViewport]);
+  }, [isMobileViewport, mobileAssistantSheet, note, activePath]);
 
   const enterChatFocus = useCallback(() => {
     if (isMobileViewport) return;
@@ -3493,7 +3502,6 @@ export default function NotesExplorer() {
   };
   const isSidebarOpen = isMobileViewport ? mobileSidebarOpen : sidebarVisible;
   const isAssistantPanelOpen = isMobileViewport ? mobileAssistantPanelOpen : assistantPanelVisible;
-  const [isDashboardChatActive, setIsDashboardChatActive] = useState(false);
   const isDashboardChatMode = !note && isAssistantPanelOpen && isDashboardChatActive && !isMobileViewport;
   const isChatFocusMode = !isMobileViewport && isAssistantPanelOpen && chatFocusActive && !gitPanelOpen;
   const isCenteredChatMode = isDashboardChatMode || isChatFocusMode;
@@ -3666,6 +3674,9 @@ export default function NotesExplorer() {
     setChatFocusActive(false);
     if (isMobileViewport) {
       setMobileSidebarOpen(false);
+      if (!note && !isPdfPath(activePath) && !isImagePath(activePath)) {
+        setIsDashboardChatActive(true);
+      }
       setMobileAssistantSheet("expanded");
     } else {
       setAssistantPanelVisible(true);
@@ -3676,7 +3687,8 @@ export default function NotesExplorer() {
     } else {
       pendingOpenTicketStageRef.current = true;
     }
-  }, [isMobileViewport]);
+  }, [isMobileViewport, note, activePath]);
+  const isHomeDashboard = treeState === "ready" && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading";
   const isDesktopAssistantPanelHidden = !isMobileViewport && !assistantPanelVisible;
   const isDesktopGitView = !isMobileViewport && gitPanelOpen;
   const hasMobileOverlayOpen = isMobileViewport && (mobileSidebarOpen || mobileAssistantSheet !== 'closed' || gitPanelOpen || mobileTocOpen || treeSheetTarget !== null);
@@ -4543,7 +4555,7 @@ export default function NotesExplorer() {
             ) : null}
 
             {/* 空库也渲染安静创作桌面：清晰给出新建/导入入口 */}
-            {treeState === "ready" && !note && !isPdfPath(activePath) && !isImagePath(activePath) && noteState !== "loading" ? (
+            {isHomeDashboard ? (
               <NotesDashboard
                 files={files}
                 openedNotes={openedNotes}
@@ -4849,15 +4861,18 @@ export default function NotesExplorer() {
         />
       </aside>
 
-      {/* 移动端 Fellow 悬浮按钮：仅在打开笔记时显示 */}
-      {note ? <button
+      {/* 移动端 Fellow 悬浮入口：首页展示带文案的胶囊 FAB，阅读笔记/媒体时收拢为纯 ✦ 圆球 */}
+      {treeState === "ready" ? <button
         type="button"
-        className={`${styles.claudeFab} ${mobileAssistantSheet !== 'closed' ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
+        className={`${styles.claudeFab} ${isHomeDashboard ? styles.claudeFabPill : ""} ${hasMobileOverlayOpen ? styles.claudeFabHidden : ""} ${isAssistantPanelOpen ? styles.claudeFabActive : ""} ${aiStatus === "thinking" ? styles.claudeFabThinking : ""} ${aiStatus === "done" ? styles.claudeFabDone : ""}`}
         onClick={handleClaudeToggle}
-        aria-label="Fellow AI 助手"
+        aria-label={isHomeDashboard ? "问 Fellow AI 助手" : "Fellow AI 助手"}
         title="Fellow"
+        tabIndex={hasMobileOverlayOpen ? -1 : 0}
+        aria-hidden={hasMobileOverlayOpen}
       >
         <span className={styles.claudeFabIcon} aria-hidden="true">✦</span>
+        {isHomeDashboard ? <span className={styles.claudeFabLabel}>问 Fellow</span> : null}
         {aiStatus === "done" && <span className={styles.claudeFabBadge} />}
       </button> : null}
 
